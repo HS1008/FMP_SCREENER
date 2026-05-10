@@ -1,0 +1,13 @@
+{
+"_schema": "tech_val_panel_v2",
+"current_pe": 34.483057963163596,
+"historical_avg_pe": 20.11582829200926,
+"historical_pe_years_used": 5,
+"historical_pe_label": "5-year average annual PE",
+"eps_growth": 0.003921568627451071,
+"historical_avg_eps_growth": -0.000294857112809265,
+"historical_eps_growth_years_used": 5,
+"eps_ttm": 2.8005056890012643,
+"ebitda_latest": 15378000000.0,
+"free_cash_flow_latest": 13288000000.0
+}

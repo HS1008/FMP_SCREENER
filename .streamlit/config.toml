@@ -1,0 +1,3 @@
+[client]
+# Hide "Ask Google" / "Ask ChatGPT" links on exception tracebacks in the dashboard UI.
+showErrorLinks = false

@@ -1,0 +1,13 @@
+{
+"_schema": "tech_fund_panel_v1",
+"revenueGrowth": 0.13049037785307846,
+"epsGrowth": 0.040076335877862586,
+"operatingMargin": 0.35291246339082327,
+"netMargin": 0.2910836316303287,
+"grossMargin": 0.5732183534005858,
+"eps_ttm": 5.904290429042904,
+"epsEstimateCurrentYear": 5.13352,
+"epsEstimateNextYear": 5.49687,
+"analystRating": null,
+"operatingMargin_prior": 0.33303187881528373
+}
