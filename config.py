@@ -91,6 +91,8 @@ DISPERSION_DMA_WARMUP_DAYS: int = 420
 DISPERSION_PRICE_HISTORY_CAL_DAYS: int = 620
 # Dispersion σ time-series: 1 = every session; 2–5 skips rows for faster CPU (chart slightly coarser).
 DISPERSION_TS_STRIDE: int = 2
+# Hard cap for dispersion universe after filtering (top names by market cap).
+DISPERSION_MAX_UNIVERSE_SIZE: int = 150
 
 # Major US listing venues (exclude OTC / pink sheets)
 US_MAJOR_EXCHANGES: frozenset[str] = frozenset(
@@ -147,3 +149,5 @@ DASHBOARD_CACHE_TTL_SECONDS: int = 86400
 # After the selected sector renders, wait this many seconds before prefetching other sectors
 # so the active tab’s FMP/cache work finishes first (0 disables delay).
 DASHBOARD_BACKGROUND_WARM_DELAY_SECONDS: float = 45.0
+# Off by default to keep the active sector responsive and CPU usage lower.
+DASHBOARD_ENABLE_BACKGROUND_WARM: bool = False

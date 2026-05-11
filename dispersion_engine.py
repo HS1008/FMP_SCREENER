@@ -99,6 +99,9 @@ def build_dispersion_universe(
 
     df = df.dropna(subset=["symbol"])
     df = df.drop_duplicates(subset=["symbol"], keep="last")
+    df = df.sort_values("marketCap", ascending=False)
+    max_names = max(1, int(getattr(config, "DISPERSION_MAX_UNIVERSE_SIZE", 150)))
+    df = df.head(max_names)
 
     out = pd.DataFrame()
     out["symbol"] = df["symbol"]
@@ -134,7 +137,7 @@ def get_price_histories(
     start = date_from or (end - timedelta(days=config.PRICE_HISTORY_LOOKBACK_DAYS))
     syms = [str(s).upper().strip() for s in symbols if str(s).strip()]
     return data_loader.get_price_histories_long(
-        session, api_key, syms, start, end, force_refresh=force_refresh
+        session, api_key, syms, start, end, force_refresh=force_refresh, max_workers=max_workers
     )
 
 

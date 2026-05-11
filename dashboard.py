@@ -1,5 +1,6 @@
 """
-FMP sector dashboard (Streamlit): ETF trend, industry rotation, vs SPY, risk, internal dispersion.
+FMP sector dashboard (Streamlit): SPY overview tab, per-sector ETF tabs (trend, industry rotation,
+vs SPY, risk, optional internal dispersion).
 
 Run:
   pip install streamlit pandas openpyxl python-dotenv requests urllib3
@@ -33,17 +34,24 @@ import materials_rotation_engine
 import real_estate_rotation_engine
 import rotation_price_batch
 import sector_dashboard_ui
+import spy_sector_rotation_engine
 import tech_rotation_engine
 import utilities_rotation_engine
 
 ROOT = Path(__file__).resolve().parent
 _CACHE_TTL_SECONDS: int = int(getattr(config, "DASHBOARD_CACHE_TTL_SECONDS", 86400))
 _WARM_DELAY_S: float = float(getattr(config, "DASHBOARD_BACKGROUND_WARM_DELAY_SECONDS", 45.0))
+_ENABLE_BACKGROUND_WARM: bool = bool(getattr(config, "DASHBOARD_ENABLE_BACKGROUND_WARM", False))
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading sector dispersion…")
-def _cached_sector_dispersion(api_key: str, sector: str) -> dict:
-    """Session is created inside the cache (``Session`` objects are not cache-safe keys)."""
+def _cached_sector_dispersion(api_key: str, sector: str, data_revision: str) -> dict:
+    """Session is created inside the cache (``Session`` objects are not cache-safe keys).
+
+    ``data_revision`` must change when on-disk profile bulk or dispersion-universe price caches
+    update so this layer refreshes without waiting for TTL (see ``data_loader.dispersion_bundle_cache_revision``).
+    """
+    _ = data_revision
     session = data_loader.create_http_session()
     bundle_fn = dispersion_engine.run_dispersion_dashboard_bundle
     params = inspect.signature(bundle_fn).parameters
@@ -77,8 +85,13 @@ def _cached_sector_dispersion(api_key: str, sector: str) -> dict:
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading industry rotation prices (all sectors)…")
-def _cached_all_dashboard_rotation_prices_long(api_key: str) -> pd.DataFrame:
-    """One parallelized price pull for the union of all sector rotation symbols (see ``rotation_price_batch``)."""
+def _cached_all_dashboard_rotation_prices_long(api_key: str, data_revision: str) -> pd.DataFrame:
+    """One parallelized price pull for the union of all sector rotation symbols (see ``rotation_price_batch``).
+
+    ``data_revision`` should be ``data_loader.price_cache_fingerprint(dashboard_rotation_symbols())`` so
+    any updated rotation-symbol price cache busts this entry before TTL.
+    """
+    _ = data_revision
     session = data_loader.create_http_session()
     return rotation_price_batch.fetch_all_dashboard_rotation_prices_long(
         session, api_key, force_refresh=False
@@ -86,103 +99,113 @@ def _cached_all_dashboard_rotation_prices_long(api_key: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Technology industry rotation…")
-def _cached_tech_rotation(api_key: str) -> dict:
+def _cached_tech_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return tech_rotation_engine.build_tech_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Basic Materials industry rotation…")
-def _cached_materials_rotation(api_key: str) -> dict:
+def _cached_materials_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return materials_rotation_engine.build_materials_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Communication Services industry rotation…")
-def _cached_comm_rotation(api_key: str) -> dict:
+def _cached_comm_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return comm_rotation_engine.build_comm_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Consumer Cyclical industry rotation…")
-def _cached_consumer_cyclical_rotation(api_key: str) -> dict:
+def _cached_consumer_cyclical_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return consumer_cyclical_rotation_engine.build_consumer_cyclical_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Consumer Defensive industry rotation…")
-def _cached_consumer_defensive_rotation(api_key: str) -> dict:
+def _cached_consumer_defensive_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return consumer_defensive_rotation_engine.build_consumer_defensive_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Energy industry rotation…")
-def _cached_energy_rotation(api_key: str) -> dict:
+def _cached_energy_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return energy_rotation_engine.build_energy_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Financial Services industry rotation…")
-def _cached_financial_services_rotation(api_key: str) -> dict:
+def _cached_financial_services_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return financial_services_rotation_engine.build_financial_services_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Healthcare industry rotation…")
-def _cached_healthcare_rotation(api_key: str) -> dict:
+def _cached_healthcare_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return healthcare_rotation_engine.build_healthcare_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Industrials industry rotation…")
-def _cached_industrials_rotation(api_key: str) -> dict:
+def _cached_industrials_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return industrials_rotation_engine.build_industrials_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Real Estate industry rotation…")
-def _cached_real_estate_rotation(api_key: str) -> dict:
+def _cached_real_estate_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return real_estate_rotation_engine.build_real_estate_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Utilities industry rotation…")
-def _cached_utilities_rotation(api_key: str) -> dict:
+def _cached_utilities_rotation(api_key: str, data_revision: str) -> dict:
     session = data_loader.create_http_session()
-    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return utilities_rotation_engine.build_utilities_rotation_bundle(
         session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
+
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading sector rotation vs SPY…")
+def _cached_spy_sector_rotation(api_key: str, data_revision: str) -> dict:
+    """Sector ETF panel vs SPY; ``data_revision`` ties to on-disk price cache mtimes."""
+    _ = data_revision
+    session = data_loader.create_http_session()
+    return spy_sector_rotation_engine.build_spy_sector_rotation_bundle(session, api_key, force_refresh=False)
+
+
+SPY_OVERVIEW_PAGE_LABEL = "SPY & sectors"
 
 SectorTabSpec = sector_dashboard_ui.SectorTabSpec
 
@@ -227,7 +250,7 @@ SECTOR_SPECS: tuple[SectorTabSpec, ...] = (
     SectorTabSpec("Utilities Sector", "Utilities", "XLU", "Utilities", _cached_utilities_rotation),
 )
 
-_SECTOR_WARM_SPECS: tuple[tuple[str, str, Callable[[str], dict]], ...] = tuple(
+_SECTOR_WARM_SPECS: tuple[tuple[str, str, Callable[[str, str], dict]], ...] = tuple(
     (s.page_radio_label, s.fmp_sector, s.rotation_cache) for s in SECTOR_SPECS
 )
 
@@ -243,15 +266,23 @@ def _spawn_background_sector_warm(api_key: str, active_page: str) -> None:
     def _worker() -> None:
         global _WARM_THREAD
         try:
+            rot_syms = rotation_price_batch.dashboard_rotation_symbols()
+            rot_fp = data_loader.price_cache_fingerprint(rot_syms)
+            warm_session = data_loader.create_http_session()
             for page_label, fmp_sector, rot_cache in _SECTOR_WARM_SPECS:
                 if page_label == active_page:
                     continue
                 try:
-                    _cached_sector_dispersion(key, fmp_sector)
+                    rot_cache(key, rot_fp)
                 except Exception:
                     pass
                 try:
-                    rot_cache(key)
+                    uni = dispersion_engine.build_dispersion_universe(
+                        warm_session, key, sector=fmp_sector, force_refresh_profiles=False
+                    )
+                    syms = uni["symbol"].astype(str).tolist() if not uni.empty else []
+                    disp_rev = data_loader.dispersion_bundle_cache_revision(fmp_sector, syms)
+                    _cached_sector_dispersion(key, fmp_sector, disp_rev)
                 except Exception:
                     pass
         finally:
@@ -277,7 +308,8 @@ def main() -> None:
     col_cap, col_btn = st.columns([5, 1])
     with col_cap:
         st.caption(
-            f"Sector ETF dashboards using FMP data. Cached up to ~{ttl_h:g}h (`@st.cache_data` TTL). "
+            f"Sector ETF dashboards using FMP data. Streamlit cache TTL is ~{ttl_h:g}h, but rotation and "
+            "dispersion refresh automatically when on-disk price caches or profile-bulk data change. "
             "Pick a sector to view trend, relative strength, industry rotation, risk, and breadth."
         )
     with col_btn:
@@ -288,7 +320,7 @@ def main() -> None:
     load_dotenv(ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
 
-    sector_options = tuple(s.page_radio_label for s in SECTOR_SPECS)
+    sector_options = (SPY_OVERVIEW_PAGE_LABEL,) + tuple(s.page_radio_label for s in SECTOR_SPECS)
     st.markdown("##### Sectors")
     page = st.radio(
         "Active sector",
@@ -297,17 +329,21 @@ def main() -> None:
         key="fmp_dashboard_sector_tab",
         label_visibility="collapsed",
         help=(
-            "Selected sector loads first; other sectors prefetch only after "
-            f"~{_WARM_DELAY_S:.0f}s so FMP/cache work favors the tab you chose (config: DASHBOARD_BACKGROUND_WARM_DELAY_SECONDS)."
+            "SPY overview: sector ETFs vs SPY, RSP vs SPY, and SPY risk. Other tabs are per-sector dashboards. "
+            "Optional background prefetch can warm other sectors after "
+            f"~{_WARM_DELAY_S:.0f}s when enabled (config: DASHBOARD_ENABLE_BACKGROUND_WARM)."
         ),
     )
 
-    for spec in SECTOR_SPECS:
-        if page == spec.page_radio_label:
-            sector_dashboard_ui.render_sector_tab(spec, cached_sector_dispersion=_cached_sector_dispersion)
-            break
+    if page == SPY_OVERVIEW_PAGE_LABEL:
+        sector_dashboard_ui.render_spy_benchmark_tab(cached_spy_sector_rotation=_cached_spy_sector_rotation)
+    else:
+        for spec in SECTOR_SPECS:
+            if page == spec.page_radio_label:
+                sector_dashboard_ui.render_sector_tab(spec, cached_sector_dispersion=_cached_sector_dispersion)
+                break
 
-    if api_key:
+    if api_key and _ENABLE_BACKGROUND_WARM:
         skip_prefetch = bool(st.session_state.pop("_dashboard_skip_background_warm_once", False))
         if not skip_prefetch:
             if _WARM_DELAY_S > 0:

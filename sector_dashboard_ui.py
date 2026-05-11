@@ -18,7 +18,10 @@ from dotenv import load_dotenv
 
 import config
 import data_loader
+import dispersion_engine
+import rotation_price_batch
 import sector_pages
+import spy_sector_rotation_engine
 
 ROOT = Path(__file__).resolve().parent
 
@@ -31,7 +34,7 @@ class SectorTabSpec:
     display: str
     etf: str
     fmp_sector: str
-    rotation_cache: Callable[[str], dict]
+    rotation_cache: Callable[[str, str], dict]
     rotation_instruments: str = "stocks and ETFs listed per row"
 
 
@@ -85,13 +88,13 @@ def _dispersion_health_chart(disp_bundle: dict) -> pd.DataFrame:
 def render_sector_tab(
     spec: SectorTabSpec,
     *,
-    cached_sector_dispersion: Callable[[str, str], dict],
+    cached_sector_dispersion: Callable[[str, str, str], dict],
 ) -> None:
     """
     Render one sector: trend, rotation, vs SPY, risk, dispersion.
 
     ``cached_sector_dispersion`` is the dashboard's ``@st.cache_data`` wrapper
-    (signature ``(api_key, fmp_sector_name) -> bundle``).
+    (signature ``(api_key, fmp_sector_name, data_revision) -> bundle``).
     """
     etf = spec.etf
     label = spec.display
@@ -113,22 +116,15 @@ def render_sector_tab(
         st.warning(f"Could not create HTTP session: {e}")
         return
 
-    # Rotation + dispersion share FMP; threads start after ETF trend renders (see below).
-    # Dispersion keeps running behind vs SPY + risk until the dispersion section joins.
+    # Rotation runs in a background thread while ETF trend is rendering.
     _rot_box: dict[str, object] = {}
-    _disp_box: dict[str, object] = {}
+    rot_fp = data_loader.price_cache_fingerprint(rotation_price_batch.dashboard_rotation_symbols())
 
     def _run_rotation() -> None:
         try:
-            _rot_box["bundle"] = spec.rotation_cache(api_key)
+            _rot_box["bundle"] = spec.rotation_cache(api_key, rot_fp)
         except Exception as e:  # pragma: no cover - network
             _rot_box["bundle"] = {"ok": False, "error": str(e)}
-
-    def _run_dispersion() -> None:
-        try:
-            _disp_box["bundle"] = cached_sector_dispersion(api_key, fmp)
-        except Exception as e:  # pragma: no cover - network
-            _disp_box["bundle"] = {"ok": False, "error": str(e)}
 
     # --- ETF trend ---
     st.subheader(f"{label} ETF Trend & Technicals")
@@ -172,10 +168,6 @@ def render_sector_tab(
             st.markdown(f"**{etf} Price with Moving Averages**")
             st.line_chart(chart, height=460)
 
-    # Rotation uses a threaded price batch; dispersion uses another parallel price pool + NumPy/Pandas work.
-    # Start dispersion only after rotation finishes so cold cache does not saturate CPU with both pools at once.
-
-    _thr_disp: threading.Thread | None = None
     _thr_rot = threading.Thread(target=_run_rotation, name="sector-rotation", daemon=True)
     _thr_rot.start()
 
@@ -186,8 +178,6 @@ def render_sector_tab(
         f"Positive values mean that basket is outperforming broad {label} over the selected window."
     )
     _thr_rot.join()
-    _thr_disp = threading.Thread(target=_run_dispersion, name="sector-dispersion", daemon=True)
-    _thr_disp.start()
 
     rot_bundle = _rot_box.get(
         "bundle",
@@ -339,12 +329,20 @@ def render_sector_tab(
         f"{config.DISPERSION_MIN_AVG_VOLUME/1e3:.0f}k, price > ${config.DISPERSION_MIN_PRICE:.0f}; "
         "ETFs/funds excluded). Prices are dividend-adjusted from `data_loader.get_price_history`."
     )
-    if _thr_disp is not None:
-        _thr_disp.join()
-    disp_bundle = _disp_box.get(
-        "bundle",
-        {"ok": False, "error": "Internal dispersion did not complete."},
-    )
+    disp_state_key = f"dispersion_loaded__{spec.page_radio_label}"
+    if st.button("Load Internal Dispersion", key=f"load_dispersion_btn__{spec.page_radio_label}"):
+        st.session_state[disp_state_key] = True
+    if not bool(st.session_state.get(disp_state_key, False)):
+        st.info("Internal dispersion is lazy-loaded. Click **Load Internal Dispersion** to run it.")
+        return
+
+    try:
+        uni = dispersion_engine.build_dispersion_universe(session, api_key, sector=fmp, force_refresh_profiles=False)
+        disp_syms = uni["symbol"].astype(str).tolist() if not uni.empty else []
+        disp_rev = data_loader.dispersion_bundle_cache_revision(fmp, disp_syms)
+        disp_bundle = cached_sector_dispersion(api_key, fmp, disp_rev)
+    except Exception as e:  # pragma: no cover - network
+        disp_bundle = {"ok": False, "error": str(e)}
     if not disp_bundle.get("ok"):
         st.warning(
             disp_bundle.get("error")
@@ -423,3 +421,225 @@ def render_sector_tab(
             if isinstance(ind_p, pd.DataFrame) and not ind_p.empty:
                 st.markdown("**Industry participation**")
                 st.dataframe(ind_p.round(6), hide_index=True, width="stretch")
+
+
+def render_spy_benchmark_tab(
+    *,
+    cached_spy_sector_rotation: Callable[[str, str], dict],
+) -> None:
+    """
+    SPY as the headline ETF: trend, sector ETFs vs SPY rotation heatmap, RSP vs SPY, SPY risk.
+
+    No internal dispersion block.
+    """
+    etf = "SPY"
+    label = "S&P 500"
+
+    st.subheader(f"{label} ({etf}) overview")
+
+    load_dotenv(ROOT / ".env")
+    api_key = (os.getenv("FMP_API_KEY") or "").strip()
+    if not api_key:
+        st.warning(
+            "FMP_API_KEY is not set (check `.env`). Live SPY / RSP / sector ETF sections need a key."
+        )
+        return
+
+    try:
+        session = data_loader.create_http_session()
+    except Exception as e:
+        st.warning(f"Could not create HTTP session: {e}")
+        return
+
+    _rot_box: dict[str, object] = {}
+    rot_fp = data_loader.price_cache_fingerprint(spy_sector_rotation_engine.all_rotation_symbols())
+
+    def _run_rotation() -> None:
+        try:
+            _rot_box["bundle"] = cached_spy_sector_rotation(api_key, rot_fp)
+        except Exception as e:  # pragma: no cover - network
+            _rot_box["bundle"] = {"ok": False, "error": str(e)}
+
+    # --- SPY trend ---
+    st.subheader("SPY trend & technicals")
+    st.caption("Cap-weight S&P 500 proxy (SPY), dividend-adjusted.")
+
+    trend_detail = pd.DataFrame()
+    trend_summary: dict = {}
+    try:
+        trend_detail, trend_summary = sector_pages.get_sector_etf_trend_data(
+            session, api_key, sector_etf=etf
+        )
+    except Exception as e:
+        st.warning(f"Could not load {etf} trend data: {e}")
+
+    if trend_detail.empty:
+        st.warning(f"{etf} price history is missing or unavailable; trend section skipped.")
+    else:
+        as_of_t = trend_summary.get("as_of_date")
+        st.markdown(f"**As of:** `{as_of_t}`")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("1W Return", _fmt_rel_pct(trend_summary.get("return_1w")))
+        c2.metric("1M Return", _fmt_rel_pct(trend_summary.get("return_1m")))
+        c3.metric("3M Return", _fmt_rel_pct(trend_summary.get("return_3m")))
+        c4.metric("12M Skip-1M Return", _fmt_rel_pct(trend_summary.get("return_12m_skip_1m")))
+
+        plot_df = trend_detail.dropna(subset=["dma_200"]).copy()
+        if plot_df.empty:
+            st.info("Not enough history yet to plot 200-DMA alongside price.")
+        else:
+            chart = plot_df[["date", "price", "dma_50", "dma_100", "dma_200"]].copy()
+            chart["date"] = pd.to_datetime(chart["date"], errors="coerce")
+            chart = chart.dropna(subset=["date"]).set_index("date")
+            chart = chart.rename(
+                columns={
+                    "price": f"{etf} price",
+                    "dma_50": "50 DMA",
+                    "dma_100": "100 DMA",
+                    "dma_200": "200 DMA",
+                }
+            )
+            st.markdown(f"**{etf} price with moving averages**")
+            st.line_chart(chart, height=460)
+
+    _thr_rot = threading.Thread(target=_run_rotation, name="spy-sector-rotation", daemon=True)
+    _thr_rot.start()
+
+    st.divider()
+    st.subheader("Sector rotation vs SPY")
+    st.caption(
+        "Each row is a sector ETF from the dashboard map; values are RS vs SPY (rebased ratio) over "
+        "the window—same convention as industry rotation heatmaps. Positive means that sector ETF "
+        "outperformed SPY."
+    )
+    _thr_rot.join()
+
+    rot_bundle = _rot_box.get(
+        "bundle",
+        {"ok": False, "error": "Sector rotation did not complete."},
+    )
+    if isinstance(rot_bundle, dict) and not rot_bundle.get("ok"):
+        st.warning(rot_bundle.get("error") or "Sector rotation unavailable (check FMP key and caches).")
+    else:
+        st.markdown(f"**As of:** `{rot_bundle.get('as_of')}`")
+        hm = rot_bundle.get("heatmap")
+        if isinstance(hm, pd.DataFrame) and not hm.empty:
+            gmap_rot = hm.clip(lower=-30.0, upper=30.0)
+            styled = (
+                hm.style.background_gradient(
+                    cmap="RdYlGn",
+                    axis=None,
+                    vmin=-30,
+                    vmax=30,
+                    gmap=gmap_rot,
+                ).format("{:+.2f}%", na_rep="—")
+            )
+            st.dataframe(styled, use_container_width=True, hide_index=False)
+        else:
+            st.info("No sector rotation heatmap to display.")
+
+        with st.expander("Show sector rotation detail"):
+            met_r = rot_bundle.get("metrics")
+            if isinstance(met_r, pd.DataFrame) and not met_r.empty:
+                st.markdown("**RS metrics (decimals)**")
+                st.dataframe(met_r.round(4), use_container_width=True, hide_index=True)
+            px_r = rot_bundle.get("prices")
+            if isinstance(px_r, pd.DataFrame) and not px_r.empty:
+                st.markdown("**Prices (long format)**")
+                st.dataframe(
+                    px_r.sort_values(["date", "symbol"], ascending=[False, True]),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            rsh = rot_bundle.get("rs_ratio_history")
+            if isinstance(rsh, pd.DataFrame) and not rsh.empty:
+                st.markdown("**RS ratio vs SPY (level)**")
+                st.dataframe(rsh.tail(500).round(6), use_container_width=True)
+
+    st.divider()
+    st.subheader("RSP vs SPY")
+    st.caption(
+        "Equal-weight S&P 500 (RSP) vs cap-weight SPY. Dividend-adjusted closes; relative metrics are "
+        "RSP return minus SPY return over each window."
+    )
+
+    detail = pd.DataFrame()
+    summary: dict = {}
+    try:
+        detail, summary = sector_pages.get_sector_vs_spy_data(
+            session, api_key, sector_etf="RSP", benchmark="SPY", sector_name="Equal-weight S&P 500"
+        )
+    except Exception as e:
+        st.warning(f"Could not load RSP vs SPY data: {e}")
+
+    if detail.empty:
+        st.warning("Price data for RSP and/or SPY is missing or could not be aligned.")
+    else:
+        as_of = summary.get("as_of_date")
+        etf_sym = str(summary.get("sector_etf", "RSP"))
+        bench = str(summary.get("benchmark", "SPY"))
+        col_idx_etf = f"{etf_sym}_index"
+        col_idx_bench = f"{bench}_index"
+
+        st.markdown(f"**As of:** `{as_of}`")
+
+        rr1w = summary.get("relative_return_1w")
+        rr1 = summary.get("relative_return_1m")
+        rr3 = summary.get("relative_return_3m")
+        rr6 = summary.get("relative_return_6m")
+        rr12s = summary.get("relative_return_12m_skip_1m")
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c1.metric("1W relative return vs SPY", _fmt_rel_pct(rr1w))
+        c2.metric("1M relative return vs SPY", _fmt_rel_pct(rr1))
+        c3.metric("3M relative return vs SPY", _fmt_rel_pct(rr3))
+        c4.metric("6M relative return vs SPY", _fmt_rel_pct(rr6))
+        c5.metric("12M skip-1M relative return vs SPY", _fmt_rel_pct(rr12s))
+
+        st.caption("Positive relative return means RSP outperformed SPY over that window.")
+
+        perf = detail[["date", col_idx_etf, col_idx_bench]].copy()
+        perf["date"] = pd.to_datetime(perf["date"], errors="coerce")
+        perf = perf.dropna(subset=["date"]).set_index("date")
+        perf = perf.rename(
+            columns={
+                col_idx_etf: f"{etf_sym} (normalized)",
+                col_idx_bench: f"{bench} (normalized)",
+            }
+        )
+        st.markdown("**RSP vs SPY cumulative performance**")
+        st.line_chart(perf, height=420)
+
+        ratio = detail[["date", "relative_strength_ratio"]].copy()
+        ratio["date"] = pd.to_datetime(ratio["date"], errors="coerce")
+        ratio = ratio.dropna(subset=["date"]).set_index("date")
+        ratio = ratio.rename(columns={"relative_strength_ratio": f"{etf_sym} / {bench} ratio"})
+        st.markdown("**RSP / SPY relative strength ratio**")
+        st.line_chart(ratio, height=380)
+
+    st.divider()
+    st.subheader("SPY risk")
+    st.caption("Realized volatility and drawdowns for SPY.")
+
+    risk_summary: dict = {}
+    dd_ts = pd.DataFrame()
+    try:
+        risk_summary, _, dd_ts = sector_pages.get_sector_risk_data(session, api_key, sector_etf=etf)
+    except Exception as e:
+        st.warning(f"Could not load {etf} risk data: {e}")
+
+    if dd_ts.empty:
+        st.warning(f"{etf} price history is missing; risk section skipped.")
+    else:
+        st.markdown(f"**As of:** `{risk_summary.get('as_of_date')}`")
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Trailing 1Y Vol", _fmt_vol_pct(risk_summary.get("trailing_1y_vol")))
+        m2.metric("Trailing 3M Vol", _fmt_vol_pct(risk_summary.get("trailing_3m_vol")))
+        m3.metric("Trailing 20D Vol", _fmt_vol_pct(risk_summary.get("trailing_20d_vol")))
+        m4.metric("Trailing 1Y Max Drawdown", _fmt_rel_pct(risk_summary.get("trailing_1y_max_drawdown")))
+        m5.metric("Current Drawdown vs 1Y High", _fmt_rel_pct(risk_summary.get("current_drawdown_1y_high")))
+
+        st.markdown(f"**{etf} drawdown over time**")
+        dd_plot = dd_ts.copy()
+        dd_plot["date"] = pd.to_datetime(dd_plot["date"], errors="coerce")
+        dd_plot = dd_plot.dropna(subset=["date"]).set_index("date")
+        st.line_chart(dd_plot[["drawdown"]], height=360)

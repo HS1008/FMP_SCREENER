@@ -2,8 +2,8 @@
 FMP HTTP helpers, universe construction, and cached price loads.
 
 Beginner notes:
-- We cache each ticker's prices under `outputs/cache/prices/<SYMBOL>.csv`
-  so reruns are fast and gentle on the API.
+- We cache each ticker's prices under `outputs/cache/prices/<SYMBOL>.parquet`
+  (with CSV fallback compatibility) so reruns are fast and gentle on the API.
 - Multi-symbol pulls use ``get_price_histories_long`` (parallel cache-aware requests).
   FMP does not offer a single bulk endpoint for dividend-adjusted *history*; batch quote
   and EOD-bulk APIs cover other use cases.
@@ -11,6 +11,7 @@ Beginner notes:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -189,6 +190,117 @@ def _cache_path(symbol: str) -> Path:
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     safe = symbol.upper().replace("/", "_")
     return config.CACHE_DIR / f"{safe}.csv"
+
+
+def _parquet_cache_path(symbol: str) -> Path:
+    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    safe = symbol.upper().replace("/", "_")
+    return config.CACHE_DIR / f"{safe}.parquet"
+
+
+def _read_price_cache(symbol: str) -> pd.DataFrame:
+    """Prefer parquet cache; fall back to legacy CSV cache."""
+    pq = _parquet_cache_path(symbol)
+    if pq.is_file():
+        try:
+            df = pd.read_parquet(pq)
+            if "date" in df.columns:
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
+            return df
+        except Exception:
+            pass
+
+    csv = _cache_path(symbol)
+    if csv.is_file():
+        try:
+            return pd.read_csv(csv, parse_dates=["date"])
+        except Exception:
+            return pd.DataFrame()
+    return pd.DataFrame()
+
+
+def _price_cache_file_mtime_ns(symbol: str) -> int:
+    """Latest on-disk mtime for ``symbol`` (parquet preferred, else CSV)."""
+    pq = _parquet_cache_path(symbol)
+    if pq.is_file():
+        try:
+            return int(pq.stat().st_mtime_ns)
+        except OSError:
+            pass
+    csv = _cache_path(symbol)
+    if csv.is_file():
+        try:
+            return int(csv.stat().st_mtime_ns)
+        except OSError:
+            pass
+    return 0
+
+
+def price_cache_fingerprint(symbols: Iterable[str]) -> str:
+    """
+    Stable token derived from price cache file mtimes.
+
+    Intended as a Streamlit ``@st.cache_data`` argument: when any symbol’s parquet/CSV
+    is rewritten (new bars, merge, refresh), the fingerprint changes and cached bundles
+    recompute without waiting for TTL.
+    """
+    seen: set[str] = set()
+    pairs: list[tuple[str, int]] = []
+    for raw in symbols:
+        s = str(raw).upper().strip()
+        if not s or s in seen:
+            continue
+        seen.add(s)
+        pairs.append((s, _price_cache_file_mtime_ns(s)))
+    pairs.sort(key=lambda x: x[0])
+    payload = "\n".join(f"{sym}:{mt}" for sym, mt in pairs)
+    if not payload:
+        return "noprices"
+    return hashlib.sha256(payload.encode()).hexdigest()[:40]
+
+
+def profile_bulk_cache_fingerprint() -> str:
+    """Mtime token for the on-disk profile-bulk concat (dispersion universe source)."""
+    path = Path(getattr(config, "PROFILE_BULK_CACHE_PATH", ""))
+    if path.is_file():
+        try:
+            return str(path.stat().st_mtime_ns)
+        except OSError:
+            pass
+    return "0"
+
+
+def dispersion_settings_fingerprint() -> str:
+    """Knobs that affect ``build_dispersion_universe`` / price window (cache bust when config edits)."""
+    keys = (
+        "DISPERSION_MIN_MARKET_CAP",
+        "DISPERSION_MIN_AVG_VOLUME",
+        "DISPERSION_MIN_PRICE",
+        "DISPERSION_MAX_UNIVERSE_SIZE",
+        "DISPERSION_PRICE_HISTORY_CAL_DAYS",
+        "DISPERSION_CHART_LOOKBACK_DAYS",
+        "DISPERSION_DMA_WARMUP_DAYS",
+        "DISPERSION_RETURN_TRADING_DAYS",
+        "DISPERSION_CORR_TRADING_DAYS",
+        "DISPERSION_TS_STRIDE",
+    )
+    parts: list[str] = []
+    for k in keys:
+        parts.append(f"{k}={getattr(config, k, '')}")
+    return "|".join(parts)
+
+
+def dispersion_bundle_cache_revision(sector: str, universe_symbols: list[str]) -> str:
+    """Single string for ``@st.cache_data`` — changes when profile, settings, or member price files change."""
+    sec = str(sector).strip()
+    return "|".join(
+        (
+            profile_bulk_cache_fingerprint(),
+            dispersion_settings_fingerprint(),
+            sec,
+            price_cache_fingerprint(universe_symbols),
+        )
+    )
 
 
 def _fundamentals_cache_path(symbol: str) -> Path:
@@ -533,7 +645,12 @@ def _write_price_history_cache(path: Path, merged: pd.DataFrame, trim_as_of: dat
     trimmed = _trim_price_history_cache(merged, trim_as_of)
     if trimmed.empty:
         return
-    trimmed.to_csv(path, index=False)
+    pq_path = _parquet_cache_path(path.stem)
+    try:
+        trimmed.to_parquet(pq_path, index=False)
+        return
+    except Exception:
+        trimmed.to_csv(path, index=False)
 
 
 def get_price_history(
@@ -548,8 +665,9 @@ def get_price_history(
     """
     Daily dividend-adjusted prices for `symbol` between `date_from` and `date_to`.
 
-    Cached locally as CSV under ``outputs/cache/prices``. When possible, reused rows are merged
-    with **incremental** FMP requests (prefix/suffix gaps) instead of reloading the entire window.
+    Cached locally under ``outputs/cache/prices`` (parquet preferred, CSV fallback). When possible,
+    reused rows are merged with **incremental** FMP requests (prefix/suffix gaps) instead of
+    reloading the entire window.
     With ``force_refresh=True``, the requested window is re-fetched and merged back into cache so
     newer corrected values replace stale rows while older history is retained.
 
@@ -564,12 +682,7 @@ def get_price_history(
         if full.empty:
             return pd.DataFrame()
 
-        cached_force = pd.DataFrame()
-        if path.is_file():
-            try:
-                cached_force = pd.read_csv(path, parse_dates=["date"])
-            except Exception:
-                cached_force = pd.DataFrame()
+        cached_force = _read_price_cache(sym)
         if not cached_force.empty:
             cached_force = _normalize_price_history_save_format(cached_force, sym)
 
@@ -581,12 +694,7 @@ def get_price_history(
         _write_price_history_cache(path, merged_force, date_to)
         return _filter_price_history_window(merged_force, date_from, date_to)
 
-    cached = pd.DataFrame()
-    if path.is_file():
-        try:
-            cached = pd.read_csv(path, parse_dates=["date"])
-        except Exception:
-            cached = pd.DataFrame()
+    cached = _read_price_cache(sym)
 
     if not cached.empty:
         cached = _normalize_price_history_save_format(cached, sym)
