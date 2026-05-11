@@ -1,9 +1,9 @@
 """
 Sector ETF rotation vs SPY for the SPY benchmark dashboard tab.
 
-Each row is one sector proxy from ``config.SECTOR_ETF_MAP``; relative strength is that ETF
-rebased to 1 on the first aligned date divided by SPY rebased the same way (same convention as
-``tech_rotation_engine`` industry baskets vs XLK).
+Each row is one sector proxy from ``config.SECTOR_ETF_MAP`` plus **AI (AIQ)**; relative strength is
+that ETF rebased to 1 on the first aligned date divided by SPY rebased the same way (same
+convention as ``tech_rotation_engine`` industry baskets vs XLK).
 """
 
 from __future__ import annotations
@@ -31,15 +31,17 @@ TRADING_12M = int(config.TRADING_DAYS_1Y)
 
 
 def sector_etf_rows() -> tuple[tuple[str, str], ...]:
-    """Sorted (FMP sector name, sector ETF ticker) pairs."""
-    return tuple(sorted(config.SECTOR_ETF_MAP.items(), key=lambda x: str(x[0])))
+    """GICS-style sector ETFs plus an **AI** row (AIQ) for the theme basket on the SPY tab."""
+    base = tuple(sorted(config.SECTOR_ETF_MAP.items(), key=lambda x: str(x[0])))
+    return base + (("AI", "AIQ"),)
 
 
 def all_rotation_symbols() -> tuple[str, ...]:
-    """SPY plus every sector ETF in ``SECTOR_ETF_MAP`` (deduped, sorted)."""
+    """SPY, every sector ETF in ``SECTOR_ETF_MAP``, and AIQ (deduped, sorted)."""
     syms: set[str] = {BENCHMARK}
     for _, etf in config.SECTOR_ETF_MAP.items():
         syms.add(str(etf).upper().strip())
+    syms.add("AIQ")
     return tuple(sorted(syms))
 
 

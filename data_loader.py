@@ -290,6 +290,17 @@ def dispersion_settings_fingerprint() -> str:
     return "|".join(parts)
 
 
+def dispersion_universe_revision(sector: str) -> str:
+    """Streamlit cache key for ``build_dispersion_universe`` only (profile + settings + sector; no price files)."""
+    return "|".join(
+        (
+            profile_bulk_cache_fingerprint(),
+            dispersion_settings_fingerprint(),
+            str(sector).strip(),
+        )
+    )
+
+
 def dispersion_bundle_cache_revision(sector: str, universe_symbols: list[str]) -> str:
     """Single string for ``@st.cache_data`` — changes when profile, settings, or member price files change."""
     sec = str(sector).strip()

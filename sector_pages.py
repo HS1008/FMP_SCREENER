@@ -257,13 +257,15 @@ def get_sector_etf_trend_data(
     force_refresh: bool = False,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     """
-    Single-sector ETF trend pack: horizon returns and DMAs.
+    Single-sector ETF trend pack: horizon returns, DMAs, and % vs 50/200 DMA (latest close).
 
     Returns:
         (detail_df, summary_dict)
 
     `detail_df` columns:
         date, price, daily_return, dma_50, dma_100, dma_200
+
+    ``summary_dict`` adds ``pct_vs_50dma`` / ``pct_vs_200dma`` as decimals (e.g. 0.02 = 2% above DMA).
     """
     sym = sector_etf.upper().strip()
     empty_cols = ["date", "price", "daily_return", "dma_50", "dma_100", "dma_200"]
@@ -281,6 +283,8 @@ def get_sector_etf_trend_data(
             "dma_50": float("nan"),
             "dma_100": float("nan"),
             "dma_200": float("nan"),
+            "pct_vs_50dma": float("nan"),
+            "pct_vs_200dma": float("nan"),
         }
 
     date_from, date_to = _trend_price_window()
@@ -322,6 +326,17 @@ def get_sector_etf_trend_data(
     d100 = float(last["dma_100"]) if pd.notna(last["dma_100"]) else float("nan")
     d200 = float(last["dma_200"]) if pd.notna(last["dma_200"]) else float("nan")
 
+    pct_vs_50 = (
+        (latest_price / d50 - 1.0)
+        if (d50 == d50 and d50 != 0 and latest_price == latest_price)
+        else float("nan")
+    )
+    pct_vs_200 = (
+        (latest_price / d200 - 1.0)
+        if (d200 == d200 and d200 != 0 and latest_price == latest_price)
+        else float("nan")
+    )
+
     summary: dict[str, Any] = {
         "sector_etf": sym,
         "as_of_date": as_of_d,
@@ -333,6 +348,8 @@ def get_sector_etf_trend_data(
         "dma_50": d50,
         "dma_100": d100,
         "dma_200": d200,
+        "pct_vs_50dma": float(pct_vs_50),
+        "pct_vs_200dma": float(pct_vs_200),
     }
 
     out = df[["date", "price", "daily_return", "dma_50", "dma_100", "dma_200"]].copy()

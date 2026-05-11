@@ -7,7 +7,8 @@ Uses FMP `profile-bulk` (via `tech_universe`) for the **dispersion universe** an
 Thresholds and exchange lists live in ``config`` (``DISPERSION_*``).
 
 Designed to be called from the Streamlit dashboard with ``@st.cache_data`` around
-``run_dispersion_dashboard_bundle(..., sector=...)``.
+``run_dispersion_dashboard_bundle(..., sector=..., universe=...)`` when the universe is
+pre-built to avoid duplicate ``build_dispersion_universe`` work.
 
 Performance: ``tech_universe.fetch_profile_bulk_all`` disk-caches the full FMP ``profile-bulk``
 concat (see ``config.PROFILE_BULK_CACHE_*``). Price pulls use ``DISPERSION_PRICE_HISTORY_CAL_DAYS``.
@@ -592,16 +593,27 @@ def run_dispersion_dashboard_bundle(
     sector: str = "Technology",
     force_refresh: bool = False,
     price_fetch_max_workers: int | None = None,
+    universe: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     """
     End-to-end bundle for the dashboard: universe, prices, metrics, charts data, tables.
 
     ``price_fetch_max_workers`` caps concurrency for dividend-adjusted price loads (passed through
     to ``data_loader.get_price_histories_long``); omit to use ``config.PRICE_FETCH_MAX_WORKERS``.
+
+    If ``universe`` is provided and ``force_refresh`` is False, that frame is used instead of
+    calling ``build_dispersion_universe`` again (e.g. Streamlit-cached universe from the dashboard).
     """
-    uni = build_dispersion_universe(
-        session, api_key, sector=sector, force_refresh_profiles=force_refresh
-    )
+    if force_refresh:
+        uni = build_dispersion_universe(
+            session, api_key, sector=sector, force_refresh_profiles=True
+        )
+    elif universe is not None:
+        uni = universe.copy()
+    else:
+        uni = build_dispersion_universe(
+            session, api_key, sector=sector, force_refresh_profiles=False
+        )
     if uni.empty:
         return {
             "ok": False,

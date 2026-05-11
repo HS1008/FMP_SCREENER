@@ -18,7 +18,6 @@ from dotenv import load_dotenv
 
 import config
 import data_loader
-import dispersion_engine
 import rotation_price_batch
 import sector_pages
 import spy_sector_rotation_engine
@@ -89,12 +88,16 @@ def render_sector_tab(
     spec: SectorTabSpec,
     *,
     cached_sector_dispersion: Callable[[str, str, str], dict],
+    cached_dispersion_universe: Callable[[str, str, str], pd.DataFrame],
 ) -> None:
     """
     Render one sector: trend, rotation, vs SPY, risk, dispersion.
 
     ``cached_sector_dispersion`` is the dashboard's ``@st.cache_data`` wrapper
     (signature ``(api_key, fmp_sector_name, data_revision) -> bundle``).
+
+    ``cached_dispersion_universe`` matches ``dashboard._cached_dispersion_universe`` so the UI and
+    dispersion bundle share one profile-universe build per revision.
     """
     etf = spec.etf
     label = spec.display
@@ -144,11 +147,13 @@ def render_sector_tab(
     else:
         as_of_t = trend_summary.get("as_of_date")
         st.markdown(f"**As of:** `{as_of_t}`")
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("1W Return", _fmt_rel_pct(trend_summary.get("return_1w")))
         c2.metric("1M Return", _fmt_rel_pct(trend_summary.get("return_1m")))
         c3.metric("3M Return", _fmt_rel_pct(trend_summary.get("return_3m")))
         c4.metric("12M Skip-1M Return", _fmt_rel_pct(trend_summary.get("return_12m_skip_1m")))
+        c5.metric("% over 50 DMA", _fmt_rel_pct(trend_summary.get("pct_vs_50dma")))
+        c6.metric("% over 200 DMA", _fmt_rel_pct(trend_summary.get("pct_vs_200dma")))
 
         plot_df = trend_detail.dropna(subset=["dma_200"]).copy()
         if plot_df.empty:
@@ -239,9 +244,10 @@ def render_sector_tab(
 
     detail = pd.DataFrame()
     summary: dict = {}
+    vs_label = fmp.strip() if fmp.strip() else label
     try:
         detail, summary = sector_pages.get_sector_vs_spy_data(
-            session, api_key, sector_etf=etf, sector_name=fmp
+            session, api_key, sector_etf=etf, sector_name=vs_label
         )
     except Exception as e:
         st.warning(f"Could not load sector vs benchmark data: {e}")
@@ -321,10 +327,13 @@ def render_sector_tab(
         dd_plot = dd_plot.dropna(subset=["date"]).set_index("date")
         st.line_chart(dd_plot[["drawdown"]], height=360)
 
+    if not fmp.strip():
+        return
+
     st.divider()
     st.subheader(f"{label} Internal Dispersion")
     st.caption(
-        f"Breadth, cross-sectional dispersion, and concentration for the US {label} **dispersion** "
+        f"Breadth, cross-sectional dispersion, and concentration for the US {fmp} **dispersion** "
         f"universe (market cap > ${config.DISPERSION_MIN_MARKET_CAP/1e9:.1f}B, avg volume > "
         f"{config.DISPERSION_MIN_AVG_VOLUME/1e3:.0f}k, price > ${config.DISPERSION_MIN_PRICE:.0f}; "
         "ETFs/funds excluded). Prices are dividend-adjusted from `data_loader.get_price_history`."
@@ -337,7 +346,8 @@ def render_sector_tab(
         return
 
     try:
-        uni = dispersion_engine.build_dispersion_universe(session, api_key, sector=fmp, force_refresh_profiles=False)
+        uni_rev = data_loader.dispersion_universe_revision(fmp)
+        uni = cached_dispersion_universe(api_key, fmp, uni_rev)
         disp_syms = uni["symbol"].astype(str).tolist() if not uni.empty else []
         disp_rev = data_loader.dispersion_bundle_cache_revision(fmp, disp_syms)
         disp_bundle = cached_sector_dispersion(api_key, fmp, disp_rev)
@@ -478,11 +488,13 @@ def render_spy_benchmark_tab(
     else:
         as_of_t = trend_summary.get("as_of_date")
         st.markdown(f"**As of:** `{as_of_t}`")
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3, c4, c5, c6 = st.columns(6)
         c1.metric("1W Return", _fmt_rel_pct(trend_summary.get("return_1w")))
         c2.metric("1M Return", _fmt_rel_pct(trend_summary.get("return_1m")))
         c3.metric("3M Return", _fmt_rel_pct(trend_summary.get("return_3m")))
         c4.metric("12M Skip-1M Return", _fmt_rel_pct(trend_summary.get("return_12m_skip_1m")))
+        c5.metric("% over 50 DMA", _fmt_rel_pct(trend_summary.get("pct_vs_50dma")))
+        c6.metric("% over 200 DMA", _fmt_rel_pct(trend_summary.get("pct_vs_200dma")))
 
         plot_df = trend_detail.dropna(subset=["dma_200"]).copy()
         if plot_df.empty:

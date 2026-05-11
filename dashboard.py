@@ -20,6 +20,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+import ai_rotation_engine
 import comm_rotation_engine
 import config
 import consumer_cyclical_rotation_engine
@@ -44,6 +45,16 @@ _WARM_DELAY_S: float = float(getattr(config, "DASHBOARD_BACKGROUND_WARM_DELAY_SE
 _ENABLE_BACKGROUND_WARM: bool = bool(getattr(config, "DASHBOARD_ENABLE_BACKGROUND_WARM", False))
 
 
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading dispersion universe…")
+def _cached_dispersion_universe(api_key: str, sector: str, universe_revision: str) -> pd.DataFrame:
+    """Profile-filtered dispersion universe; keyed by ``data_loader.dispersion_universe_revision``."""
+    _ = universe_revision
+    session = data_loader.create_http_session()
+    return dispersion_engine.build_dispersion_universe(
+        session, api_key, sector=sector, force_refresh_profiles=False
+    )
+
+
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading sector dispersion…")
 def _cached_sector_dispersion(api_key: str, sector: str, data_revision: str) -> dict:
     """Session is created inside the cache (``Session`` objects are not cache-safe keys).
@@ -53,6 +64,8 @@ def _cached_sector_dispersion(api_key: str, sector: str, data_revision: str) -> 
     """
     _ = data_revision
     session = data_loader.create_http_session()
+    uni_rev = data_loader.dispersion_universe_revision(sector)
+    uni_pre = _cached_dispersion_universe(api_key, sector, uni_rev)
     bundle_fn = dispersion_engine.run_dispersion_dashboard_bundle
     params = inspect.signature(bundle_fn).parameters
     if "sector" in params:
@@ -62,9 +75,12 @@ def _cached_sector_dispersion(api_key: str, sector: str, data_revision: str) -> 
                 api_key,
                 sector=sector,
                 force_refresh=False,
-                price_fetch_max_workers=max(1, int(getattr(config, "DASHBOARD_PRICE_FETCH_MAX_WORKERS", 4))),
+                universe=uni_pre,
+                price_fetch_max_workers=max(
+                    1, int(getattr(config, "DASHBOARD_PRICE_FETCH_MAX_WORKERS", 4))
+                ),
             )
-        return bundle_fn(session, api_key, sector=sector, force_refresh=False)
+        return bundle_fn(session, api_key, sector=sector, force_refresh=False, universe=uni_pre)
     if str(sector).strip() != "Technology":
         return {
             "ok": False,
@@ -81,7 +97,7 @@ def _cached_sector_dispersion(api_key: str, sector: str, data_revision: str) -> 
             "dispersion_ts": pd.DataFrame(),
             "as_of": date.today(),
         }
-    return bundle_fn(session, api_key, force_refresh=False)
+    return bundle_fn(session, api_key, sector="Technology", force_refresh=False, universe=uni_pre)
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading industry rotation prices (all sectors)…")
@@ -197,6 +213,15 @@ def _cached_utilities_rotation(api_key: str, data_revision: str) -> dict:
     )
 
 
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading AI theme rotation…")
+def _cached_ai_rotation(api_key: str, data_revision: str) -> dict:
+    session = data_loader.create_http_session()
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
+    return ai_rotation_engine.build_ai_rotation_bundle(
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
+    )
+
+
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading sector rotation vs SPY…")
 def _cached_spy_sector_rotation(api_key: str, data_revision: str) -> dict:
     """Sector ETF panel vs SPY; ``data_revision`` ties to on-disk price cache mtimes."""
@@ -248,6 +273,14 @@ SECTOR_SPECS: tuple[SectorTabSpec, ...] = (
         rotation_instruments="REITs and ETFs listed per row",
     ),
     SectorTabSpec("Utilities Sector", "Utilities", "XLU", "Utilities", _cached_utilities_rotation),
+    SectorTabSpec(
+        "AI Sector",
+        "AI",
+        "AIQ",
+        "",
+        _cached_ai_rotation,
+        rotation_instruments="AI theme proxies per row (equal-weight vs AIQ)",
+    ),
 )
 
 _SECTOR_WARM_SPECS: tuple[tuple[str, str, Callable[[str, str], dict]], ...] = tuple(
@@ -268,7 +301,6 @@ def _spawn_background_sector_warm(api_key: str, active_page: str) -> None:
         try:
             rot_syms = rotation_price_batch.dashboard_rotation_symbols()
             rot_fp = data_loader.price_cache_fingerprint(rot_syms)
-            warm_session = data_loader.create_http_session()
             for page_label, fmp_sector, rot_cache in _SECTOR_WARM_SPECS:
                 if page_label == active_page:
                     continue
@@ -276,10 +308,11 @@ def _spawn_background_sector_warm(api_key: str, active_page: str) -> None:
                     rot_cache(key, rot_fp)
                 except Exception:
                     pass
+                if not str(fmp_sector).strip():
+                    continue
                 try:
-                    uni = dispersion_engine.build_dispersion_universe(
-                        warm_session, key, sector=fmp_sector, force_refresh_profiles=False
-                    )
+                    uni_rev = data_loader.dispersion_universe_revision(fmp_sector)
+                    uni = _cached_dispersion_universe(key, fmp_sector, uni_rev)
                     syms = uni["symbol"].astype(str).tolist() if not uni.empty else []
                     disp_rev = data_loader.dispersion_bundle_cache_revision(fmp_sector, syms)
                     _cached_sector_dispersion(key, fmp_sector, disp_rev)
@@ -340,7 +373,11 @@ def main() -> None:
     else:
         for spec in SECTOR_SPECS:
             if page == spec.page_radio_label:
-                sector_dashboard_ui.render_sector_tab(spec, cached_sector_dispersion=_cached_sector_dispersion)
+                sector_dashboard_ui.render_sector_tab(
+                    spec,
+                    cached_sector_dispersion=_cached_sector_dispersion,
+                    cached_dispersion_universe=_cached_dispersion_universe,
+                )
                 break
 
     if api_key and _ENABLE_BACKGROUND_WARM:

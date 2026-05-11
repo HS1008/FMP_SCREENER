@@ -12,6 +12,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+import ai_rotation_engine
 import comm_rotation_engine
 import config
 import consumer_cyclical_rotation_engine
@@ -44,6 +45,7 @@ def dashboard_rotation_symbols() -> tuple[str, ...]:
     )
     for mod in mods:
         syms.update(mod.ALL_ROTATION_SYMBOLS)
+    syms.update(ai_rotation_engine.ALL_ROTATION_SYMBOLS)
     return tuple(sorted(syms))
 
 
