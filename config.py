@@ -90,7 +90,7 @@ DISPERSION_DMA_WARMUP_DAYS: int = 420
 # ~620d is enough for ~270 trading rows (200-DMA + 21d returns + chart). Raise if charts truncate.
 DISPERSION_PRICE_HISTORY_CAL_DAYS: int = 620
 # Dispersion σ time-series: 1 = every session; 2–5 skips rows for faster CPU (chart slightly coarser).
-DISPERSION_TS_STRIDE: int = 1
+DISPERSION_TS_STRIDE: int = 2
 
 # Major US listing venues (exclude OTC / pink sheets)
 US_MAJOR_EXCHANGES: frozenset[str] = frozenset(
@@ -116,6 +116,9 @@ DEFAULT_WINDOWS: tuple[str, ...] = ("1W", "1M", "YTD")
 
 # Price history lookback (calendar days) — must cover 252 trading sessions + YTD buffer.
 PRICE_HISTORY_LOOKBACK_DAYS: int = 450
+# On-disk price CSVs are merged incrementally; trim rows older than this many calendar days from
+# the newest bar so files do not grow without bound (incremental + full-refresh saves both apply).
+PRICE_HISTORY_CACHE_MAX_CALENDAR_DAYS: int = 900
 
 # --- Trading windows ---
 TRADING_DAYS_1W: int = 5
@@ -133,6 +136,14 @@ HTTP_MAX_RETRIES: int = 3
 HTTP_BACKOFF_S: float = 1.5
 # Parallel FMP historical-price pulls (FMP has no bulk dividend-adjusted time-series endpoint).
 PRICE_FETCH_MAX_WORKERS: int = 10
+# Streamlit dashboard only: cap threads for rotation batch + dispersion price loads to limit CPU
+# spikes when CSV cache is cold (e.g. after "Force reload"). CLI/api_app still use PRICE_FETCH_MAX_WORKERS.
+DASHBOARD_PRICE_FETCH_MAX_WORKERS: int = 4
 
 # Streamlit @st.cache_data TTL for dashboard dispersion + rotation bundles (seconds).
-DASHBOARD_CACHE_TTL_SECONDS: int = 3600
+# 86400 ≈ reload from FMP at most once per day unless the user clicks "Force reload".
+DASHBOARD_CACHE_TTL_SECONDS: int = 86400
+
+# After the selected sector renders, wait this many seconds before prefetching other sectors
+# so the active tab’s FMP/cache work finishes first (0 disables delay).
+DASHBOARD_BACKGROUND_WARM_DELAY_SECONDS: float = 45.0

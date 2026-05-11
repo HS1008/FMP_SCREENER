@@ -31,12 +31,14 @@ import healthcare_rotation_engine
 import industrials_rotation_engine
 import materials_rotation_engine
 import real_estate_rotation_engine
+import rotation_price_batch
 import sector_dashboard_ui
 import tech_rotation_engine
 import utilities_rotation_engine
 
 ROOT = Path(__file__).resolve().parent
-_CACHE_TTL_SECONDS: int = int(getattr(config, "DASHBOARD_CACHE_TTL_SECONDS", 3600))
+_CACHE_TTL_SECONDS: int = int(getattr(config, "DASHBOARD_CACHE_TTL_SECONDS", 86400))
+_WARM_DELAY_S: float = float(getattr(config, "DASHBOARD_BACKGROUND_WARM_DELAY_SECONDS", 45.0))
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading sector dispersion…")
@@ -46,6 +48,14 @@ def _cached_sector_dispersion(api_key: str, sector: str) -> dict:
     bundle_fn = dispersion_engine.run_dispersion_dashboard_bundle
     params = inspect.signature(bundle_fn).parameters
     if "sector" in params:
+        if "price_fetch_max_workers" in params:
+            return bundle_fn(
+                session,
+                api_key,
+                sector=sector,
+                force_refresh=False,
+                price_fetch_max_workers=max(1, int(getattr(config, "DASHBOARD_PRICE_FETCH_MAX_WORKERS", 4))),
+            )
         return bundle_fn(session, api_key, sector=sector, force_refresh=False)
     if str(sector).strip() != "Technology":
         return {
@@ -66,85 +76,111 @@ def _cached_sector_dispersion(api_key: str, sector: str) -> dict:
     return bundle_fn(session, api_key, force_refresh=False)
 
 
+@st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading industry rotation prices (all sectors)…")
+def _cached_all_dashboard_rotation_prices_long(api_key: str) -> pd.DataFrame:
+    """One parallelized price pull for the union of all sector rotation symbols (see ``rotation_price_batch``)."""
+    session = data_loader.create_http_session()
+    return rotation_price_batch.fetch_all_dashboard_rotation_prices_long(
+        session, api_key, force_refresh=False
+    )
+
+
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Technology industry rotation…")
 def _cached_tech_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
-    return tech_rotation_engine.build_tech_rotation_bundle(session, api_key, force_refresh=False)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    return tech_rotation_engine.build_tech_rotation_bundle(
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
+    )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Basic Materials industry rotation…")
 def _cached_materials_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
     return materials_rotation_engine.build_materials_rotation_bundle(
-        session, api_key, force_refresh=False
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Communication Services industry rotation…")
 def _cached_comm_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
-    return comm_rotation_engine.build_comm_rotation_bundle(session, api_key, force_refresh=False)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    return comm_rotation_engine.build_comm_rotation_bundle(
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
+    )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Consumer Cyclical industry rotation…")
 def _cached_consumer_cyclical_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
     return consumer_cyclical_rotation_engine.build_consumer_cyclical_rotation_bundle(
-        session, api_key, force_refresh=False
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Consumer Defensive industry rotation…")
 def _cached_consumer_defensive_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
     return consumer_defensive_rotation_engine.build_consumer_defensive_rotation_bundle(
-        session, api_key, force_refresh=False
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Energy industry rotation…")
 def _cached_energy_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
-    return energy_rotation_engine.build_energy_rotation_bundle(session, api_key, force_refresh=False)
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
+    return energy_rotation_engine.build_energy_rotation_bundle(
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
+    )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Financial Services industry rotation…")
 def _cached_financial_services_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
     return financial_services_rotation_engine.build_financial_services_rotation_bundle(
-        session, api_key, force_refresh=False
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Healthcare industry rotation…")
 def _cached_healthcare_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
     return healthcare_rotation_engine.build_healthcare_rotation_bundle(
-        session, api_key, force_refresh=False
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Industrials industry rotation…")
 def _cached_industrials_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
     return industrials_rotation_engine.build_industrials_rotation_bundle(
-        session, api_key, force_refresh=False
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Real Estate industry rotation…")
 def _cached_real_estate_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
     return real_estate_rotation_engine.build_real_estate_rotation_bundle(
-        session, api_key, force_refresh=False
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Utilities industry rotation…")
 def _cached_utilities_rotation(api_key: str) -> dict:
     session = data_loader.create_http_session()
+    bulk = _cached_all_dashboard_rotation_prices_long(api_key)
     return utilities_rotation_engine.build_utilities_rotation_bundle(
-        session, api_key, force_refresh=False
+        session, api_key, force_refresh=False, prefetched_prices_long=bulk
     )
 
 
@@ -237,10 +273,17 @@ def _spawn_background_sector_warm(api_key: str, active_page: str) -> None:
 def main() -> None:
     st.set_page_config(page_title="FMP Sector Dashboard", layout="wide")
     st.title("FMP Sector Dashboard")
-    st.caption(
-        "Sector ETF dashboards using FMP data. Pick a sector to view trend, relative strength, "
-        "industry rotation, risk, and breadth."
-    )
+    ttl_h = _CACHE_TTL_SECONDS / 3600.0
+    col_cap, col_btn = st.columns([5, 1])
+    with col_cap:
+        st.caption(
+            f"Sector ETF dashboards using FMP data. Cached up to ~{ttl_h:g}h (`@st.cache_data` TTL). "
+            "Pick a sector to view trend, relative strength, industry rotation, risk, and breadth."
+        )
+    with col_btn:
+        if st.button("Force reload", type="secondary", key="force_reload_cache", help="Clear dashboard cache and refetch from FMP on next load."):
+            st.cache_data.clear()
+            st.rerun()
 
     load_dotenv(ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
@@ -253,7 +296,10 @@ def main() -> None:
         horizontal=True,
         key="fmp_dashboard_sector_tab",
         label_visibility="collapsed",
-        help="Selected sector loads immediately; others warm in a daemon thread when an API key is set.",
+        help=(
+            "Selected sector loads first; other sectors prefetch only after "
+            f"~{_WARM_DELAY_S:.0f}s so FMP/cache work favors the tab you chose (config: DASHBOARD_BACKGROUND_WARM_DELAY_SECONDS)."
+        ),
     )
 
     for spec in SECTOR_SPECS:
@@ -262,7 +308,15 @@ def main() -> None:
             break
 
     if api_key:
-        _spawn_background_sector_warm(api_key, page)
+        skip_prefetch = bool(st.session_state.pop("_dashboard_skip_background_warm_once", False))
+        if not skip_prefetch:
+            if _WARM_DELAY_S > 0:
+                threading.Timer(
+                    _WARM_DELAY_S,
+                    lambda k=api_key, p=page: _spawn_background_sector_warm(k, p),
+                ).start()
+            else:
+                _spawn_background_sector_warm(api_key, page)
 
 
 if __name__ == "__main__":

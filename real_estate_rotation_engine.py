@@ -19,6 +19,7 @@ import pandas as pd
 
 import config
 import data_loader
+import rotation_prefetch_slice
 
 BENCHMARK = "XLRE"
 
@@ -206,9 +207,17 @@ def build_real_estate_rotation_bundle(
     api_key: str,
     *,
     force_refresh: bool = False,
+    prefetched_prices_long: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     try:
-        prices = get_real_estate_rotation_prices(session, api_key, force_refresh=force_refresh)
+        sliced = rotation_prefetch_slice.slice_sector_rotation_prices(
+            prefetched_prices_long, ALL_ROTATION_SYMBOLS, BENCHMARK
+        )
+        prices = (
+            sliced
+            if sliced is not None
+            else get_real_estate_rotation_prices(session, api_key, force_refresh=force_refresh)
+        )
     except Exception as e:
         return {
             "ok": False,

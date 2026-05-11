@@ -125,6 +125,7 @@ def get_price_histories(
     date_from: date | None = None,
     date_to: date | None = None,
     force_refresh: bool = False,
+    max_workers: int | None = None,
 ) -> pd.DataFrame:
     """
     Long-format dividend-adjusted prices: columns `date`, `symbol`, `adjClose`.
@@ -587,9 +588,13 @@ def run_dispersion_dashboard_bundle(
     *,
     sector: str = "Technology",
     force_refresh: bool = False,
+    price_fetch_max_workers: int | None = None,
 ) -> dict[str, Any]:
     """
     End-to-end bundle for the dashboard: universe, prices, metrics, charts data, tables.
+
+    ``price_fetch_max_workers`` caps concurrency for dividend-adjusted price loads (passed through
+    to ``data_loader.get_price_histories_long``); omit to use ``config.PRICE_FETCH_MAX_WORKERS``.
     """
     uni = build_dispersion_universe(
         session, api_key, sector=sector, force_refresh_profiles=force_refresh
@@ -624,6 +629,7 @@ def run_dispersion_dashboard_bundle(
         date_from=start,
         date_to=end,
         force_refresh=force_refresh,
+        max_workers=price_fetch_max_workers,
     )
     wide = prices_to_wide_close(long_px)
     have = [s for s in syms if s in wide.columns]

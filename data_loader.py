@@ -434,6 +434,108 @@ def pick_price_column(df: pd.DataFrame) -> str:
     return "adjClose"
 
 
+def _price_history_window_covers(df: pd.DataFrame, date_from: date, date_to: date) -> bool:
+    if df.empty:
+        return False
+    ts = pd.to_datetime(df["date"], errors="coerce").dropna()
+    if ts.empty:
+        return False
+    lo = ts.min().date()
+    hi = ts.max().date()
+    return lo <= date_from and hi >= date_to
+
+
+def _filter_price_history_window(df: pd.DataFrame, date_from: date, date_to: date) -> pd.DataFrame:
+    if df.empty:
+        return df
+    d0 = pd.Timestamp(date_from).normalize()
+    d1 = pd.Timestamp(date_to).normalize()
+    out = df.copy()
+    out["_d"] = pd.to_datetime(out["date"], errors="coerce").dt.normalize()
+    out = out[(out["_d"] >= d0) & (out["_d"] <= d1)].drop(columns=["_d"], errors="ignore")
+    return out.reset_index(drop=True)
+
+
+def _trim_price_history_cache(df: pd.DataFrame, as_of_date: date) -> pd.DataFrame:
+    if df.empty:
+        return df
+    max_cal = int(getattr(config, "PRICE_HISTORY_CACHE_MAX_CALENDAR_DAYS", 900))
+    cutoff = pd.Timestamp(as_of_date).normalize() - timedelta(days=max_cal)
+    out = df.copy()
+    out["_d"] = pd.to_datetime(out["date"], errors="coerce").dt.normalize()
+    out = out[out["_d"].notna() & (out["_d"] >= cutoff)].drop(columns=["_d"], errors="ignore")
+    return out.sort_values("date").reset_index(drop=True)
+
+
+def _normalize_price_history_save_format(df: pd.DataFrame, sym: str) -> pd.DataFrame:
+    """Standardize to sorted ``date``, ``adjClose``, ``symbol`` for disk + callers."""
+    if df.empty:
+        return pd.DataFrame(columns=["date", "adjClose", "symbol"])
+    out = df.copy()
+    out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.normalize()
+    col = pick_price_column(out)
+    if col != "adjClose":
+        out["adjClose"] = pd.to_numeric(out[col], errors="coerce")
+    else:
+        out["adjClose"] = pd.to_numeric(out["adjClose"], errors="coerce")
+    out["symbol"] = sym
+    return (
+        out.dropna(subset=["date", "adjClose"])[["date", "adjClose", "symbol"]]
+        .drop_duplicates(subset=["date"], keep="last")
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+
+def _fmp_fetch_adj_history_range(
+    session: requests.Session,
+    api_key: str,
+    sym: str,
+    date_from: date,
+    date_to: date,
+) -> pd.DataFrame:
+    if date_from > date_to:
+        return pd.DataFrame()
+    meta_from = date_from.isoformat()
+    meta_to = date_to.isoformat()
+    try:
+        raw = _fmp_get(
+            session,
+            api_key,
+            "historical-price-eod/dividend-adjusted",
+            **{"symbol": sym, "from": meta_from, "to": meta_to},
+        )
+    except Exception:
+        return pd.DataFrame()
+    if not isinstance(raw, list) or not raw:
+        return pd.DataFrame()
+
+    fetched = pd.DataFrame(raw)
+    if "date" not in fetched.columns:
+        return pd.DataFrame()
+
+    fetched["date"] = pd.to_datetime(fetched["date"], errors="coerce").dt.normalize()
+    col = pick_price_column(fetched)
+    if col not in fetched.columns:
+        return pd.DataFrame()
+
+    fetched["adjClose"] = pd.to_numeric(fetched[col], errors="coerce")
+    fetched["symbol"] = sym
+    return (
+        fetched.dropna(subset=["date", "adjClose"])[["date", "adjClose", "symbol"]]
+        .drop_duplicates(subset=["date"], keep="last")
+        .sort_values("date")
+        .reset_index(drop=True)
+    )
+
+
+def _write_price_history_cache(path: Path, merged: pd.DataFrame, trim_as_of: date) -> None:
+    trimmed = _trim_price_history_cache(merged, trim_as_of)
+    if trimmed.empty:
+        return
+    trimmed.to_csv(path, index=False)
+
+
 def get_price_history(
     session: requests.Session,
     api_key: str,
@@ -446,45 +548,105 @@ def get_price_history(
     """
     Daily dividend-adjusted prices for `symbol` between `date_from` and `date_to`.
 
-    Cached locally as CSV to avoid re-downloading on every run.
+    Cached locally as CSV under ``outputs/cache/prices``. When possible, reused rows are merged
+    with **incremental** FMP requests (prefix/suffix gaps) instead of reloading the entire window.
+    With ``force_refresh=True``, the requested window is re-fetched and merged back into cache so
+    newer corrected values replace stale rows while older history is retained.
+
+    Caller receives rows filtered to ``[date_from, date_to]``. On-disk cache may hold more history
+    (trimmed by ``PRICE_HISTORY_CACHE_MAX_CALENDAR_DAYS``).
     """
     sym = symbol.upper()
     path = _cache_path(sym)
-    meta_from = date_from.isoformat()
-    meta_to = date_to.isoformat()
 
-    if path.is_file() and not force_refresh:
-        df = pd.read_csv(path, parse_dates=["date"])
-        # If cached window doesn't cover requested range, refresh.
-        if not df.empty:
-            lo = df["date"].min().date()
-            hi = df["date"].max().date()
-            if lo <= date_from and hi >= date_to:
-                return df
+    if force_refresh:
+        full = _fmp_fetch_adj_history_range(session, api_key, sym, date_from, date_to)
+        if full.empty:
+            return pd.DataFrame()
 
-    raw = _fmp_get(
-        session,
-        api_key,
-        "historical-price-eod/dividend-adjusted",
-        **{"symbol": sym, "from": meta_from, "to": meta_to},
+        cached_force = pd.DataFrame()
+        if path.is_file():
+            try:
+                cached_force = pd.read_csv(path, parse_dates=["date"])
+            except Exception:
+                cached_force = pd.DataFrame()
+        if not cached_force.empty:
+            cached_force = _normalize_price_history_save_format(cached_force, sym)
+
+        merged_force = (
+            _normalize_price_history_save_format(pd.concat([cached_force, full], ignore_index=True), sym)
+            if not cached_force.empty
+            else full
+        )
+        _write_price_history_cache(path, merged_force, date_to)
+        return _filter_price_history_window(merged_force, date_from, date_to)
+
+    cached = pd.DataFrame()
+    if path.is_file():
+        try:
+            cached = pd.read_csv(path, parse_dates=["date"])
+        except Exception:
+            cached = pd.DataFrame()
+
+    if not cached.empty:
+        cached = _normalize_price_history_save_format(cached, sym)
+
+    if cached.empty:
+        full = _fmp_fetch_adj_history_range(session, api_key, sym, date_from, date_to)
+        if not full.empty:
+            _write_price_history_cache(path, full, date_to)
+        return _filter_price_history_window(full, date_from, date_to)
+
+    if _price_history_window_covers(cached, date_from, date_to):
+        return _filter_price_history_window(cached, date_from, date_to)
+
+    lo = cached["date"].min().date()
+    hi = cached["date"].max().date()
+
+    extras: list[pd.DataFrame] = []
+    if lo > date_from:
+        pref_to = lo - timedelta(days=1)
+        if pref_to >= date_from:
+            pre = _fmp_fetch_adj_history_range(session, api_key, sym, date_from, pref_to)
+            if not pre.empty:
+                extras.append(pre)
+
+    if hi < date_to:
+        suf_from = hi + timedelta(days=1)
+        if suf_from <= date_to:
+            suf = _fmp_fetch_adj_history_range(session, api_key, sym, suf_from, date_to)
+            if not suf.empty:
+                extras.append(suf)
+
+    merged = (
+        pd.concat([cached] + extras, ignore_index=True) if extras else cached.copy(deep=False)
     )
-    if not isinstance(raw, list) or not raw:
-        return pd.DataFrame()
+    merged = _normalize_price_history_save_format(merged, sym)
 
-    df = pd.DataFrame(raw)
-    if "date" not in df.columns or "adjClose" not in df.columns:
-        return pd.DataFrame()
+    if merged.empty:
+        full = _fmp_fetch_adj_history_range(session, api_key, sym, date_from, date_to)
+        if not full.empty:
+            _write_price_history_cache(path, full, date_to)
+        return _filter_price_history_window(full, date_from, date_to)
 
-    df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df["adjClose"] = pd.to_numeric(df["adjClose"], errors="coerce")
-    df = df.dropna(subset=["date", "adjClose"]).sort_values("date")
-    # FMP sometimes includes `symbol` already; keep a normalized column for caching.
-    if "symbol" in df.columns:
-        df["symbol"] = sym
-    else:
-        df.insert(0, "symbol", sym)
-    df.to_csv(path, index=False)
-    return df
+    if _price_history_window_covers(merged, date_from, date_to):
+        _write_price_history_cache(path, merged, date_to)
+        return _filter_price_history_window(merged, date_from, date_to)
+
+    full_win = _fmp_fetch_adj_history_range(session, api_key, sym, date_from, date_to)
+    merged_full = (
+        _normalize_price_history_save_format(
+            pd.concat([cached, full_win], ignore_index=True), sym,
+        )
+        if not full_win.empty
+        else merged
+    )
+
+    if _price_history_window_covers(merged_full, date_from, date_to):
+        _write_price_history_cache(path, merged_full, date_to)
+        return _filter_price_history_window(merged_full, date_from, date_to)
+
+    return _filter_price_history_window(merged_full, date_from, date_to)
 
 
 def get_price_histories_long(

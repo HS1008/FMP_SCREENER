@@ -7,6 +7,7 @@ Used only by ``dashboard.py``; keeps the main dashboard file small.
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -112,6 +113,23 @@ def render_sector_tab(
         st.warning(f"Could not create HTTP session: {e}")
         return
 
+    # Rotation + dispersion share FMP; threads start after ETF trend renders (see below).
+    # Dispersion keeps running behind vs SPY + risk until the dispersion section joins.
+    _rot_box: dict[str, object] = {}
+    _disp_box: dict[str, object] = {}
+
+    def _run_rotation() -> None:
+        try:
+            _rot_box["bundle"] = spec.rotation_cache(api_key)
+        except Exception as e:  # pragma: no cover - network
+            _rot_box["bundle"] = {"ok": False, "error": str(e)}
+
+    def _run_dispersion() -> None:
+        try:
+            _disp_box["bundle"] = cached_sector_dispersion(api_key, fmp)
+        except Exception as e:  # pragma: no cover - network
+            _disp_box["bundle"] = {"ok": False, "error": str(e)}
+
     # --- ETF trend ---
     st.subheader(f"{label} ETF Trend & Technicals")
     st.caption(f"This section analyzes {etf} on its own before comparing {label} against SPY.")
@@ -154,17 +172,28 @@ def render_sector_tab(
             st.markdown(f"**{etf} Price with Moving Averages**")
             st.line_chart(chart, height=460)
 
+    # Rotation uses a threaded price batch; dispersion uses another parallel price pool + NumPy/Pandas work.
+    # Start dispersion only after rotation finishes so cold cache does not saturate CPU with both pools at once.
+
+    _thr_disp: threading.Thread | None = None
+    _thr_rot = threading.Thread(target=_run_rotation, name="sector-rotation", daemon=True)
+    _thr_rot.start()
+
     st.divider()
     st.subheader(f"{label} Industry Rotation")
     st.caption(
         f"Relative strength of equal-weight **proxy baskets** ({spec.rotation_instruments}) versus {etf}. "
         f"Positive values mean that basket is outperforming broad {label} over the selected window."
     )
-    try:
-        rot_bundle = spec.rotation_cache(api_key)
-    except Exception as e:
-        rot_bundle = {"ok": False, "error": str(e)}
-    if not rot_bundle.get("ok"):
+    _thr_rot.join()
+    _thr_disp = threading.Thread(target=_run_dispersion, name="sector-dispersion", daemon=True)
+    _thr_disp.start()
+
+    rot_bundle = _rot_box.get(
+        "bundle",
+        {"ok": False, "error": "Industry rotation did not complete."},
+    )
+    if isinstance(rot_bundle, dict) and not rot_bundle.get("ok"):
         st.warning(
             rot_bundle.get("error") or f"{label} industry rotation unavailable (check FMP key and caches)."
         )
@@ -310,10 +339,12 @@ def render_sector_tab(
         f"{config.DISPERSION_MIN_AVG_VOLUME/1e3:.0f}k, price > ${config.DISPERSION_MIN_PRICE:.0f}; "
         "ETFs/funds excluded). Prices are dividend-adjusted from `data_loader.get_price_history`."
     )
-    try:
-        disp_bundle = cached_sector_dispersion(api_key, fmp)
-    except Exception as e:
-        disp_bundle = {"ok": False, "error": str(e)}
+    if _thr_disp is not None:
+        _thr_disp.join()
+    disp_bundle = _disp_box.get(
+        "bundle",
+        {"ok": False, "error": "Internal dispersion did not complete."},
+    )
     if not disp_bundle.get("ok"):
         st.warning(
             disp_bundle.get("error")
