@@ -32,6 +32,7 @@ import financial_services_rotation_engine
 import healthcare_rotation_engine
 import industrials_rotation_engine
 import materials_rotation_engine
+import precomputed_loader
 import real_estate_rotation_engine
 import rotation_price_batch
 import sector_dashboard_ui
@@ -49,6 +50,9 @@ _ENABLE_BACKGROUND_WARM: bool = bool(getattr(config, "DASHBOARD_ENABLE_BACKGROUN
 def _cached_dispersion_universe(api_key: str, sector: str, universe_revision: str) -> pd.DataFrame:
     """Profile-filtered dispersion universe; keyed by ``data_loader.dispersion_universe_revision``."""
     _ = universe_revision
+    pre_uni = precomputed_loader.load_dispersion_universe(sector)
+    if pre_uni is not None and not pre_uni.empty:
+        return pre_uni
     session = data_loader.create_http_session()
     return dispersion_engine.build_dispersion_universe(
         session, api_key, sector=sector, force_refresh_profiles=False
@@ -63,6 +67,9 @@ def _cached_sector_dispersion(api_key: str, sector: str, data_revision: str) -> 
     update so this layer refreshes without waiting for TTL (see ``data_loader.dispersion_bundle_cache_revision``).
     """
     _ = data_revision
+    pre_bundle = precomputed_loader.load_dispersion_dashboard_bundle(sector)
+    if pre_bundle is not None:
+        return pre_bundle
     session = data_loader.create_http_session()
     uni_rev = data_loader.dispersion_universe_revision(sector)
     uni_pre = _cached_dispersion_universe(api_key, sector, uni_rev)
@@ -108,6 +115,9 @@ def _cached_all_dashboard_rotation_prices_long(api_key: str, data_revision: str)
     any updated rotation-symbol price cache busts this entry before TTL.
     """
     _ = data_revision
+    pre_long = precomputed_loader.load_rotation_prices_long()
+    if pre_long is not None and not pre_long.empty:
+        return pre_long
     session = data_loader.create_http_session()
     return rotation_price_batch.fetch_all_dashboard_rotation_prices_long(
         session, api_key, force_refresh=False
@@ -116,6 +126,9 @@ def _cached_all_dashboard_rotation_prices_long(api_key: str, data_revision: str)
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Technology industry rotation…")
 def _cached_tech_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Technology")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return tech_rotation_engine.build_tech_rotation_bundle(
@@ -125,6 +138,9 @@ def _cached_tech_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Basic Materials industry rotation…")
 def _cached_materials_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Basic Materials")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return materials_rotation_engine.build_materials_rotation_bundle(
@@ -134,6 +150,9 @@ def _cached_materials_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Communication Services industry rotation…")
 def _cached_comm_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Communication Services")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return comm_rotation_engine.build_comm_rotation_bundle(
@@ -143,6 +162,9 @@ def _cached_comm_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Consumer Cyclical industry rotation…")
 def _cached_consumer_cyclical_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Consumer Cyclical")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return consumer_cyclical_rotation_engine.build_consumer_cyclical_rotation_bundle(
@@ -152,6 +174,9 @@ def _cached_consumer_cyclical_rotation(api_key: str, data_revision: str) -> dict
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Consumer Defensive industry rotation…")
 def _cached_consumer_defensive_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Consumer Defensive")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return consumer_defensive_rotation_engine.build_consumer_defensive_rotation_bundle(
@@ -161,6 +186,9 @@ def _cached_consumer_defensive_rotation(api_key: str, data_revision: str) -> dic
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Energy industry rotation…")
 def _cached_energy_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Energy")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return energy_rotation_engine.build_energy_rotation_bundle(
@@ -170,6 +198,9 @@ def _cached_energy_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Financial Services industry rotation…")
 def _cached_financial_services_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Financial Services")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return financial_services_rotation_engine.build_financial_services_rotation_bundle(
@@ -179,6 +210,9 @@ def _cached_financial_services_rotation(api_key: str, data_revision: str) -> dic
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Healthcare industry rotation…")
 def _cached_healthcare_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Healthcare")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return healthcare_rotation_engine.build_healthcare_rotation_bundle(
@@ -188,6 +222,9 @@ def _cached_healthcare_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Industrials industry rotation…")
 def _cached_industrials_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Industrials")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return industrials_rotation_engine.build_industrials_rotation_bundle(
@@ -197,6 +234,9 @@ def _cached_industrials_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Real Estate industry rotation…")
 def _cached_real_estate_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Real Estate")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return real_estate_rotation_engine.build_real_estate_rotation_bundle(
@@ -206,6 +246,9 @@ def _cached_real_estate_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Utilities industry rotation…")
 def _cached_utilities_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_industry_rotation_bundle("Utilities")
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return utilities_rotation_engine.build_utilities_rotation_bundle(
@@ -215,6 +258,9 @@ def _cached_utilities_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading AI theme rotation…")
 def _cached_ai_rotation(api_key: str, data_revision: str) -> dict:
+    pre = precomputed_loader.load_ai_rotation_bundle()
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return ai_rotation_engine.build_ai_rotation_bundle(
@@ -226,6 +272,9 @@ def _cached_ai_rotation(api_key: str, data_revision: str) -> dict:
 def _cached_spy_sector_rotation(api_key: str, data_revision: str) -> dict:
     """Sector ETF panel vs SPY; ``data_revision`` ties to on-disk price cache mtimes."""
     _ = data_revision
+    pre = precomputed_loader.load_spy_sector_rotation_bundle()
+    if pre is not None:
+        return pre
     session = data_loader.create_http_session()
     return spy_sector_rotation_engine.build_spy_sector_rotation_bundle(session, api_key, force_refresh=False)
 
