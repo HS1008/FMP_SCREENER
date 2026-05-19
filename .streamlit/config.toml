@@ -1,3 +1,14 @@
 [client]
 # Hide "Ask Google" / "Ask ChatGPT" links on exception tracebacks in the dashboard UI.
 showErrorLinks = false
+
+[server]
+# Listen on all interfaces so other devices on the same WiFi can connect.
+address = "0.0.0.0"
+port = 8501
+headless = true
+enableCORS = true
+enableXsrfProtection = true
+
+[browser]
+gatherUsageStats = false
