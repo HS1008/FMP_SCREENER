@@ -8,3 +8,5 @@ tqdm>=4.66
 fastapi>=0.110
 uvicorn[standard]>=0.27
 streamlit>=1.32
+yfinance>=0.2.40
+plotly>=5.20
