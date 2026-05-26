@@ -957,58 +957,154 @@ def build_underlying_allocation(
     return summary_df, detail_df, warnings
 
 
-def build_portfolio_summary(
-    holdings: pd.DataFrame,
-    histories: dict[str, pd.Series],
-    sources: dict[str, str],
-    *,
-    risk_free_rate: float = 0.04,
-) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, float]]:
-    """Holding-level stats, correlation matrix, portfolio-level metrics dict."""
-    h = clean_holdings_df(holdings)
-    weights = h.set_index("Ticker")["Allocation %"] / 100.0
-    panel = build_price_panel(h, histories)
-    daily = calculate_returns(panel)
+def calculate_single_asset_metrics(
+    ticker: str,
+    price_series: pd.Series,
+    source: str,
+    allocation_pct: float,
+) -> dict[str, Any]:
+    """Metrics from the ticker's own full available history (independent of other holdings)."""
+    s, ok, _ = normalize_price_series(price_series)
+    daily = s.pct_change().dropna() if ok else pd.Series(dtype=float)
+    return {
+        "Ticker": ticker,
+        "Allocation %": allocation_pct,
+        "Source": source,
+        "Latest Price": float(s.iloc[-1]) if not s.empty else np.nan,
+        "History Start": s.index.min().date() if not s.empty else None,
+        "History End": s.index.max().date() if not s.empty else None,
+        "Data Points": len(s),
+        "Ann. Return": calculate_annualized_return(daily),
+        "Ann. Volatility": calculate_annualized_volatility(daily),
+        "Max Drawdown": calculate_max_drawdown(s),
+    }
 
-    rows: list[dict[str, Any]] = []
-    for t in h["Ticker"]:
-        s = histories.get(t, pd.Series(dtype=float))
-        r = daily[t].dropna() if t in daily.columns else pd.Series(dtype=float)
-        rows.append(
-            {
-                "Ticker": t,
-                "Allocation %": float(weights.get(t, 0) * 100),
-                "Source": sources.get(t, SOURCE_MISSING),
-                "Latest Price": float(s.iloc[-1]) if not s.empty else np.nan,
-                "History Start": s.index.min().date() if not s.empty else None,
-                "History End": s.index.max().date() if not s.empty else None,
-                "Ann. Return": calculate_annualized_return(r),
-                "Ann. Volatility": calculate_annualized_volatility(r),
-                "Max Drawdown": calculate_max_drawdown(s),
-            }
+
+def get_portfolio_overlap_panel(
+    price_panel: pd.DataFrame,
+    required_tickers: list[str],
+) -> tuple[pd.DataFrame, list[str]]:
+    """
+    Drop rows where any required ticker is NaN.
+
+    Returns ``(overlap_panel, warnings)``.
+    """
+    cols = [c for c in required_tickers if c in price_panel.columns]
+    if not cols:
+        return pd.DataFrame(), ["No holdings with valid price data for overlap."]
+
+    overlap = price_panel[cols].dropna(how="any")
+    warnings: list[str] = []
+    if overlap.empty:
+        warnings.append("No overlapping dates across all holdings.")
+        return overlap, warnings
+
+    overlap_start = overlap.index.min()
+    latest_ticker_start = overlap_start
+    latest_ticker_name = ""
+    for t in cols:
+        full = price_panel[t].dropna()
+        if full.empty:
+            continue
+        t_start = full.index.min()
+        if t_start > latest_ticker_start:
+            latest_ticker_start = t_start
+            latest_ticker_name = t
+
+    if latest_ticker_name:
+        warnings.append(
+            f"Overlap starts on {overlap_start.date()} because "
+            f"{latest_ticker_name} has limited history (begins {latest_ticker_start.date()})."
         )
 
-    holding_df = pd.DataFrame(rows)
-    corr = daily.corr() if not daily.empty else pd.DataFrame()
+    return overlap, warnings
 
-    port_r = calculate_portfolio_returns(panel, weights)
+
+def calculate_portfolio_metrics_from_overlap(
+    overlap_panel: pd.DataFrame,
+    weights: pd.Series,
+    risk_free_rate: float,
+) -> dict[str, Any]:
+    """Portfolio-level metrics computed on the shared overlapping window."""
+    if overlap_panel.empty or overlap_panel.shape[0] < 2:
+        return {
+            "portfolio_ann_return": float("nan"),
+            "portfolio_ann_volatility": float("nan"),
+            "portfolio_max_drawdown": float("nan"),
+            "portfolio_sharpe": float("nan"),
+            "portfolio_start_date": None,
+            "portfolio_end_date": None,
+            "portfolio_data_points": 0,
+        }
+
+    daily = calculate_returns(overlap_panel)
+    w = weights.reindex(daily.columns).fillna(0.0)
+    if w.sum() > 0:
+        w = w / w.sum()
+    port_r = (daily * w).sum(axis=1)
+    equity = portfolio_equity_curve(port_r)
+
     port_ann_ret = calculate_annualized_return(port_r)
     port_ann_vol = calculate_annualized_volatility(port_r)
-    equity = portfolio_equity_curve(port_r)
     port_dd = calculate_max_drawdown(equity)
     sharpe = (
         (port_ann_ret - risk_free_rate) / port_ann_vol
         if np.isfinite(port_ann_ret) and np.isfinite(port_ann_vol) and port_ann_vol > 0
         else float("nan")
     )
-
-    port_metrics = {
+    return {
         "portfolio_ann_return": port_ann_ret,
         "portfolio_ann_volatility": port_ann_vol,
         "portfolio_max_drawdown": port_dd,
         "portfolio_sharpe": sharpe,
+        "portfolio_start_date": overlap_panel.index.min().date(),
+        "portfolio_end_date": overlap_panel.index.max().date(),
+        "portfolio_data_points": len(overlap_panel),
     }
-    return holding_df, corr, port_metrics
+
+
+def build_portfolio_summary(
+    holdings: pd.DataFrame,
+    histories: dict[str, pd.Series],
+    sources: dict[str, str],
+    *,
+    risk_free_rate: float = 0.04,
+) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any], list[str]]:
+    """
+    Returns ``(asset_metrics_df, correlation_matrix, portfolio_metrics_dict, overlap_warnings)``.
+
+    Asset-level metrics use each ticker's own full history.
+    Portfolio-level metrics use the shared overlapping window.
+    """
+    h = clean_holdings_df(holdings)
+    weights = h.set_index("Ticker")["Allocation %"] / 100.0
+
+    asset_rows = [
+        calculate_single_asset_metrics(
+            t,
+            histories.get(t, pd.Series(dtype=float)),
+            sources.get(t, SOURCE_MISSING),
+            float(weights.get(t, 0) * 100),
+        )
+        for t in h["Ticker"]
+    ]
+    asset_df = pd.DataFrame(asset_rows)
+
+    panel = build_price_panel(h, histories)
+    tickers_with_data = [t for t in h["Ticker"] if t in panel.columns]
+    overlap, overlap_warnings = get_portfolio_overlap_panel(panel, tickers_with_data)
+
+    if not overlap.empty and overlap.shape[0] < 30:
+        overlap_warnings.append(
+            f"Portfolio overlap window has only {overlap.shape[0]} trading days — "
+            "portfolio metrics may not be reliable."
+        )
+
+    overlap_daily = calculate_returns(overlap) if not overlap.empty else pd.DataFrame()
+    corr = overlap_daily.corr() if not overlap_daily.empty else pd.DataFrame()
+
+    port_metrics = calculate_portfolio_metrics_from_overlap(overlap, weights, risk_free_rate)
+    return asset_df, corr, port_metrics, overlap_warnings
 
 
 # ---------------------------------------------------------------------------
@@ -1063,6 +1159,8 @@ def build_excel_report(
 
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         clean_holdings_df(holdings).to_excel(writer, sheet_name="Holdings", index=False)
+
+        holding_summary.to_excel(writer, sheet_name="Asset-Level Metrics", index=False)
 
         summary_rows = [
             {"Metric": k, "Value": v} for k, v in port_metrics.items()
@@ -1167,11 +1265,39 @@ def render_current_portfolio_breakdown() -> None:
         st.info("Run analysis from the **Inputs** tab first.")
         return
 
-    st.subheader("Current Portfolio Breakdown")
+    # --- Asset-Level Holding Metrics ---
+    st.subheader("Asset-Level Holding Metrics")
+    st.caption(
+        "These metrics use each holding's own full available history, "
+        "so they do not change when other holdings are swapped."
+    )
     hs = st.session_state["holding_summary"]
-    st.dataframe(hs, use_container_width=True, hide_index=True)
+    display_hs = hs.copy()
+    for col in ("Ann. Return", "Ann. Volatility", "Max Drawdown"):
+        if col in display_hs.columns:
+            display_hs[col] = display_hs[col].apply(lambda x: _fmt_pct(x))
+    if "Latest Price" in display_hs.columns:
+        display_hs["Latest Price"] = display_hs["Latest Price"].apply(
+            lambda x: f"{float(x):.2f}" if pd.notna(x) and np.isfinite(float(x)) else "N/A"
+        )
+    st.dataframe(display_hs, use_container_width=True, hide_index=True)
+
+    # --- Portfolio-Level Metrics ---
+    st.markdown("---")
+    st.subheader("Portfolio-Level Metrics")
+    st.caption(
+        "These metrics use the shared overlapping window across all selected holdings."
+    )
 
     pm = st.session_state.get("port_metrics", {})
+    for w in st.session_state.get("overlap_warnings", []):
+        st.warning(w)
+
+    c_dates = st.columns(3)
+    c_dates[0].metric("Portfolio start date", str(pm.get("portfolio_start_date", "—")))
+    c_dates[1].metric("Portfolio end date", str(pm.get("portfolio_end_date", "—")))
+    c_dates[2].metric("Portfolio data points", f"{pm.get('portfolio_data_points', 0):,}")
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Portfolio ann. return", _fmt_pct(pm.get("portfolio_ann_return")))
     c2.metric("Portfolio ann. volatility", _fmt_pct(pm.get("portfolio_ann_volatility")))
@@ -1335,6 +1461,10 @@ def render_monte_carlo_simulation() -> None:
         return
 
     st.subheader("Monte Carlo Simulation")
+    st.caption(
+        "Monte Carlo uses the shared overlapping historical return window across all "
+        "selected holdings by default."
+    )
     holdings = st.session_state.get("holdings_normalized", DEFAULT_HOLDINGS)
     panel = st.session_state["price_panel"]
 
@@ -1466,7 +1596,7 @@ def run_portfolio_analysis(
         holdings, date_from, date_to, force_refresh=force_refresh
     )
     panel = build_price_panel(holdings, histories)
-    holding_summary, corr, port_metrics = build_portfolio_summary(
+    holding_summary, corr, port_metrics, overlap_warnings = build_portfolio_summary(
         holdings, histories, sources, risk_free_rate=risk_free_rate
     )
     scenario_summary, scenario_details = run_scenario_analysis(holdings, histories, sources)
@@ -1483,6 +1613,7 @@ def run_portfolio_analysis(
     st.session_state["port_metrics"] = port_metrics
     st.session_state["scenario_summary"] = scenario_summary
     st.session_state["scenario_details"] = scenario_details
+    st.session_state["overlap_warnings"] = overlap_warnings
     st.session_state["underlying_summary"] = underlying_summary
     st.session_state["underlying_detail"] = underlying_detail
     st.session_state["underlying_warnings"] = underlying_warnings
