@@ -1,0 +1,9 @@
+region,power_hub,gas_hub,iso,notes
+New England,Mass Hub,Algonquin,ISO-NE,New England power vs Algonquin gas
+PJM,PJM West,TETCO-M3,PJM,PJM West power vs Tetco M3 gas
+Midwest,Indiana Hub,Chicago Citygates,MISO,Indiana Hub power vs Chicago gas
+Texas,ERCOT North,Henry Hub,ERCOT,ERCOT North power vs Henry Hub
+Northwest,Mid-C,Malin,WECC,Mid-C power vs Malin gas
+Northern California,NP-15,PG&E Citygate,CAISO,NP15 power vs PG&E Citygate gas
+Southwest,Palo Verde,Socal-Ehrenberg,WECC,Palo Verde power vs SoCal Ehrenberg gas
+Southern California,SP-15,Socal-Citygate,CAISO,SP15 power vs SoCal Citygate gas
