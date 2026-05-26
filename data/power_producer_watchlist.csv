@@ -1,0 +1,11 @@
+ticker,company,type,main_power_source,secondary_power_source,region_market,notes
+VST,Vistra,Merchant IPP / Retail Power,"Gas; Nuclear; Coal; Solar; Battery","Retail electricity","ERCOT; PJM; CAISO; ISO-NE","Diversified competitive generator"
+CEG,Constellation Energy,Nuclear-heavy Power Producer,"Nuclear","Hydro; Wind; Solar; Gas","PJM; ISO-NE; NYISO; Other","Largest nuclear-heavy public power producer"
+NRG,NRG Energy,Merchant IPP / Retail Power,"Natural Gas","Retail electricity; VPP","ERCOT; Northeast; PJM","Gas-heavy merchant/retail power exposure"
+TLN,Talen Energy,Merchant IPP,"Nuclear; Natural Gas","Coal; Oil","PJM; ERCOT","Susquehanna nuclear anchor plus gas/coal"
+AES,AES Corp,Global Power Producer,"Renewables; Natural Gas","Utilities","Global","Hybrid global power producer"
+CWEN,Clearway Energy,Renewable IPP,"Wind; Solar; Battery","Contracted clean power","U.S.","Contracted renewable power producer"
+BE,Bloom Energy,Distributed Power,"Fuel Cells","Onsite power","U.S.; Global","Distributed power / data center power theme"
+NEE,NextEra Energy,Utility / Renewable Comp,"Wind; Solar; Gas","Regulated utility","U.S.","Utility and renewables comp"
+DUK,Duke Energy,Regulated Utility Comp,"Gas; Nuclear; Coal","Renewables","U.S.","Regulated utility comp"
+SO,Southern Company,Regulated Utility Comp,"Gas; Nuclear; Coal","Renewables","U.S.","Regulated utility comp"

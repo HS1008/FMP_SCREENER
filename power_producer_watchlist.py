@@ -64,8 +64,19 @@ def load_watchlist() -> pd.DataFrame:
     return df
 
 
+def _load_api_key() -> str:
+    """Return the FMP API key or empty string (with a visible Streamlit warning)."""
+    load_dotenv(config.PROJECT_ROOT / ".env")
+    key = (os.getenv("FMP_API_KEY") or "").strip()
+    if not key:
+        st.warning(
+            "FMP_API_KEY is missing. Add it to `.env` or Streamlit secrets to load price data."
+        )
+    return key
+
+
 @st.cache_data(ttl=900, show_spinner="Fetching FMP prices…")
-def fetch_price_history(ticker: str, _date_from: date, _date_to: date) -> pd.Series:
+def fetch_price_history(ticker: str, date_from: date, date_to: date) -> pd.Series:
     """Daily adjusted-close series for one ticker (cached 15 min)."""
     load_dotenv(config.PROJECT_ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
@@ -73,7 +84,7 @@ def fetch_price_history(ticker: str, _date_from: date, _date_to: date) -> pd.Ser
         return pd.Series(dtype=float, name=ticker)
     session = data_loader.create_http_session()
     try:
-        hist = data_loader.get_price_history(session, api_key, ticker, _date_from, _date_to)
+        hist = data_loader.get_price_history(session, api_key, ticker, date_from, date_to)
     except Exception:
         return pd.Series(dtype=float, name=ticker)
     if hist is None or hist.empty:
@@ -297,6 +308,8 @@ def render_dashboard() -> None:
         "It is meant to identify which power themes are being rewarded by the market."
     )
 
+    _load_api_key()
+
     watchlist = load_watchlist()
     if watchlist.empty:
         st.stop()
@@ -379,4 +392,5 @@ def render_dashboard() -> None:
         st.dataframe(group, use_container_width=True, hide_index=True)
 
 
-render_dashboard()
+if __name__ == "__main__":
+    render_dashboard()

@@ -196,6 +196,7 @@ outputs/*.json
 outputs/
 *.json
 *.csv
+!data/power_producer_watchlist.csv
 *.xlsx
 *.pkl
 .env
