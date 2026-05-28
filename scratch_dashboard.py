@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 import traceback
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -38,6 +39,17 @@ DEFAULT_HOLDINGS = pd.DataFrame(
 )
 
 YAHOO_CACHE_DIR = config.PROJECT_ROOT / "outputs" / "cache" / "portfolio_yahoo"
+
+
+def _log_exception() -> str:
+    """Format traceback for UI; print to terminal when Streamlit allows it."""
+    tb = traceback.format_exc()
+    try:
+        sys.stderr.write(tb)
+        sys.stderr.flush()
+    except OSError:
+        pass
+    return tb
 UNDERLYING_CACHE_DIR = config.PROJECT_ROOT / "outputs" / "cache" / "portfolio_underlying"
 TRADING_DAYS_PER_YEAR = 252
 MAX_UNDERLYING_DISPLAY = 50
@@ -156,6 +168,112 @@ def clean_holdings_df(df: pd.DataFrame) -> pd.DataFrame:
     return work[["Ticker", "Allocation %"]].reset_index(drop=True)
 
 
+_TICKER_COL_ALIASES = frozenset(
+    {"ticker", "symbol", "sym", "stock", "holding", "security", "asset"}
+)
+_WEIGHT_COL_ALIASES = frozenset(
+    {
+        "allocation %",
+        "allocation",
+        "allocation pct",
+        "weight %",
+        "weight",
+        "pct",
+        "percent",
+        "percentage",
+        "alloc",
+        "weights",
+    }
+)
+_VALUE_COL_ALIASES = frozenset(
+    {"market value", "market_value", "value", "amount", "dollars", "notional", "mv"}
+)
+_SKIP_TICKERS = frozenset({"", "TOTAL", "CASH", "NAN", "NONE", "NA"})
+
+
+def _normalize_col_label(name: str) -> str:
+    return str(name or "").strip().lower().replace("_", " ")
+
+
+def _find_import_column(columns: list[str], aliases: frozenset[str]) -> str | None:
+    by_norm = {_normalize_col_label(c): c for c in columns}
+    for alias in aliases:
+        if alias in by_norm:
+            return by_norm[alias]
+    for norm, orig in by_norm.items():
+        if any(alias in norm or norm in alias for alias in aliases):
+            return orig
+    return None
+
+
+def read_portfolio_upload(uploaded: Any) -> pd.DataFrame:
+    """Read an uploaded CSV or Excel portfolio file."""
+    name = str(getattr(uploaded, "name", "") or "").lower()
+    if name.endswith((".xlsx", ".xls")):
+        return pd.read_excel(uploaded)
+    return pd.read_csv(uploaded)
+
+
+def parse_portfolio_import(raw: pd.DataFrame) -> tuple[pd.DataFrame, str | None]:
+    """
+    Map flexible columns to ``Ticker`` and ``Allocation %``.
+
+    Accepts percent weights (0–100), decimal weights (0–1), or dollar values
+  (converted to percent of total).
+    """
+    if raw is None or raw.empty:
+        return pd.DataFrame(columns=["Ticker", "Allocation %"]), "File is empty."
+
+    df = raw.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    cols = list(df.columns)
+
+    ticker_col = _find_import_column(cols, _TICKER_COL_ALIASES) or cols[0]
+    weight_col = _find_import_column(cols, _WEIGHT_COL_ALIASES)
+    value_col = None if weight_col else _find_import_column(cols, _VALUE_COL_ALIASES)
+
+    tickers = df[ticker_col].astype(str).map(clean_ticker)
+    mask = tickers.str.len() > 0
+    mask &= ~tickers.str.upper().isin(_SKIP_TICKERS)
+
+    if weight_col:
+        weights = pd.to_numeric(df[weight_col], errors="coerce")
+    elif value_col:
+        weights = pd.to_numeric(df[value_col], errors="coerce")
+    else:
+        weights = pd.Series(1.0, index=df.index)
+
+    out = pd.DataFrame({"Ticker": tickers[mask], "Allocation %": weights[mask]})
+    out["Allocation %"] = pd.to_numeric(out["Allocation %"], errors="coerce").fillna(0.0)
+    out = out[out["Allocation %"] > 0]
+
+    if out.empty:
+        return clean_holdings_df(out), "No valid holdings found after parsing."
+
+    total = float(out["Allocation %"].sum())
+    if 0 < total <= 1.5:
+        out["Allocation %"] = out["Allocation %"] * 100.0
+        total = float(out["Allocation %"].sum())
+
+    if value_col and not weight_col and total > 0:
+        out["Allocation %"] = out["Allocation %"] / total * 100.0
+
+    out = clean_holdings_df(out)
+    note = f"Imported {len(out)} holdings"
+    if value_col and not weight_col:
+        note += " (converted dollar values to allocation %)"
+    elif not weight_col and not value_col:
+        note += " (equal-weighted — no weight column found)"
+    return out, note
+
+
+def portfolio_import_template_csv() -> bytes:
+    template = pd.DataFrame(
+        {"Ticker": ["SPY", "AGG", "GLD"], "Allocation %": [60.0, 30.0, 10.0]}
+    )
+    return template.to_csv(index=False).encode("utf-8")
+
+
 def validate_weights(
     holdings: pd.DataFrame,
     *,
@@ -198,8 +316,26 @@ def _read_yahoo_cache(ticker: str) -> pd.DataFrame:
 def _write_yahoo_cache(ticker: str, series: pd.Series) -> None:
     if series.empty:
         return
-    df = pd.DataFrame({"date": series.index, "close": series.values})
+    df = pd.DataFrame({"date": series.index, "close": _as_1d_array(series.values)})
     df.to_parquet(_yahoo_cache_path(ticker), index=False)
+
+
+def _as_1d_array(values: Any) -> np.ndarray:
+    """Flatten (n, 1) or other 2D price arrays to 1D for pd.Series."""
+    arr = np.asarray(values, dtype=float)
+    if arr.ndim == 2 and arr.shape[1] == 1:
+        return arr.ravel()
+    if arr.ndim > 1:
+        return arr.ravel()
+    return arr
+
+
+def _series_from_price_column(values: Any, index: Any) -> pd.Series:
+    idx = normalize_datetime_index(index)
+    arr = _as_1d_array(values)
+    n = min(len(arr), len(idx))
+    s = pd.Series(arr[:n], index=idx[:n])
+    return pd.to_numeric(s, errors="coerce").dropna()
 
 
 def _df_to_price_series(df: pd.DataFrame) -> pd.Series:
@@ -216,20 +352,27 @@ def _df_to_price_series(df: pd.DataFrame) -> pd.Series:
         except Exception:
             return pd.Series(dtype=float)
     idx = normalize_datetime_index(df["date"])
-    vals = pd.to_numeric(df[col], errors="coerce")
-    s = pd.Series(vals.values, index=idx).dropna()
+    s = _series_from_price_column(df[col], idx)
     return s[~s.index.duplicated(keep="last")].sort_index()
 
 
-def normalize_price_series(series: pd.Series) -> tuple[pd.Series, bool, str]:
-    if series is None or series.empty:
+def normalize_price_series(series: pd.Series | pd.DataFrame) -> tuple[pd.Series, bool, str]:
+    if series is None:
+        return pd.Series(dtype=float), False, ""
+    if isinstance(series, pd.DataFrame):
+        if series.empty:
+            return pd.Series(dtype=float), False, ""
+        series = series.squeeze()
+        if isinstance(series, pd.DataFrame):
+            series = series.iloc[:, 0]
+    if series.empty:
         return pd.Series(dtype=float), False, ""
     tz = ""
     try:
         if isinstance(series.index, pd.DatetimeIndex) and series.index.tz is not None:
             tz = str(series.index.tz)
         idx = normalize_datetime_index(series.index)
-        vals = pd.to_numeric(series.values, errors="coerce")
+        vals = pd.to_numeric(_as_1d_array(series.values), errors="coerce")
         out = pd.Series(vals, index=idx).dropna().sort_index()
         out = out[~out.index.duplicated(keep="last")]
         return out, len(out) >= 5, tz
@@ -311,11 +454,24 @@ def fetch_yahoo_price_history(
     if data is None or data.empty:
         return pd.Series(dtype=float), "Yahoo: no rows"
 
-    col = "Close" if "Close" in data.columns else None
-    if col is None:
+    if isinstance(data.columns, pd.MultiIndex):
+        data = data.copy()
+        data.columns = [
+            str(c[0]) if isinstance(c, tuple) else str(c) for c in data.columns
+        ]
+
+    close_col = None
+    for name in ("Close", "Adj Close", "close"):
+        if name in data.columns:
+            close_col = name
+            break
+    if close_col is None:
         return pd.Series(dtype=float), "Yahoo: no Close column"
 
-    s, ok, _ = normalize_price_series(pd.Series(data[col].values, index=data.index))
+    close = data[close_col]
+    if isinstance(close, pd.DataFrame):
+        close = close.squeeze(axis=1)
+    s, ok, _ = normalize_price_series(close)
     if not ok or len(s) < 5:
         return pd.Series(dtype=float), "Yahoo: insufficient history"
 
@@ -957,6 +1113,149 @@ def build_underlying_allocation(
     return summary_df, detail_df, warnings
 
 
+# ---------------------------------------------------------------------------
+# Sector allocation
+# ---------------------------------------------------------------------------
+def fetch_ticker_sector(ticker: str, *, force_refresh: bool = False) -> str:
+    """GICS sector from FMP company profile (cached on disk)."""
+    sym = clean_ticker(ticker)
+    if not sym:
+        return "Unknown"
+    api_key = fmp_api_key()
+    if not api_key:
+        return "Unknown"
+    try:
+        prof = data_loader.get_profile_snapshot(
+            fmp_session(), api_key, sym, force_refresh=force_refresh
+        )
+        sector = str(prof.get("sector") or "").strip()
+        if sector:
+            return sector
+        industry = str(prof.get("industry") or "").strip()
+        return industry or "Unknown"
+    except Exception:
+        return "Unknown"
+
+
+def build_sector_allocation_from_underlying(
+    underlying_summary: pd.DataFrame,
+    *,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """Aggregate effective portfolio % by GICS sector using underlying positions."""
+    if underlying_summary is None or underlying_summary.empty:
+        return pd.DataFrame(columns=["Sector", "Allocation %", "Holdings"])
+
+    rows: list[dict[str, Any]] = []
+    for _, row in underlying_summary.iterrows():
+        underlying = str(row.get("Underlying", "")).strip()
+        pct = float(row.get("Effective Portfolio %", 0) or 0)
+        if not underlying or pct <= 0:
+            continue
+        if underlying.upper() in {"OTHER", "CASH"}:
+            sector = "Other / Unclassified"
+        else:
+            sector = fetch_ticker_sector(underlying, force_refresh=force_refresh)
+        rows.append(
+            {
+                "Underlying": underlying,
+                "Sector": sector,
+                "Allocation %": pct,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame(columns=["Sector", "Allocation %", "Holdings"])
+
+    by_sector = (
+        pd.DataFrame(rows)
+        .groupby("Sector", as_index=False)
+        .agg(
+            Allocation_Pct=("Allocation %", "sum"),
+            Holdings=("Underlying", lambda s: ", ".join(sorted(set(s)))),
+        )
+    )
+    by_sector = by_sector.rename(columns={"Allocation_Pct": "Allocation %"})
+    return by_sector.sort_values("Allocation %", ascending=False).reset_index(drop=True)
+
+
+def build_sector_allocation(
+    holdings: pd.DataFrame,
+    *,
+    force_refresh: bool = False,
+) -> pd.DataFrame:
+    """Fallback: aggregate direct holding weights by sector when underlying data is unavailable."""
+    h = clean_holdings_df(holdings)
+    if h.empty:
+        return pd.DataFrame(columns=["Sector", "Allocation %", "Holdings"])
+
+    rows: list[dict[str, Any]] = []
+    for _, row in h.iterrows():
+        ticker = str(row["Ticker"])
+        rows.append(
+            {
+                "Ticker": ticker,
+                "Sector": fetch_ticker_sector(ticker, force_refresh=force_refresh),
+                "Allocation %": float(row["Allocation %"]),
+            }
+        )
+    by_sector = (
+        pd.DataFrame(rows)
+        .groupby("Sector", as_index=False)
+        .agg(Allocation_Pct=("Allocation %", "sum"), Holdings=("Ticker", lambda s: ", ".join(s)))
+    )
+    by_sector = by_sector.rename(columns={"Allocation_Pct": "Allocation %"})
+    return by_sector.sort_values("Allocation %", ascending=False).reset_index(drop=True)
+
+
+def render_sector_allocation_chart(sector_df: pd.DataFrame, *, from_underlying: bool = True) -> None:
+    st.subheader("Sector allocation")
+    if from_underlying:
+        st.caption(
+            "Effective portfolio weights grouped by GICS sector of **underlying** stocks. "
+            "Fund/ETF positions are expanded using reported holdings before sector lookup."
+        )
+    else:
+        st.caption(
+            "Portfolio weights grouped by GICS sector from each top-level holding's profile "
+            "(underlying holdings data was not available)."
+        )
+    if sector_df is None or sector_df.empty:
+        st.info("No sector data available.")
+        return
+
+    display = sector_df.copy()
+    display["Allocation %"] = display["Allocation %"].apply(
+        lambda x: f"{float(x):.2f}%" if pd.notna(x) else "N/A"
+    )
+    col_chart, col_table = st.columns([1.2, 1])
+    with col_table:
+        st.dataframe(display, use_container_width=True, hide_index=True)
+
+    try:
+        import plotly.graph_objects as go
+
+        fig = go.Figure(
+            go.Pie(
+                labels=sector_df["Sector"],
+                values=sector_df["Allocation %"],
+                hole=0.35,
+                textinfo="label+percent",
+                textposition="auto",
+                hovertemplate="%{label}<br>%{value:.2f}%<extra></extra>",
+            )
+        )
+        fig.update_layout(
+            title="Portfolio by sector (underlying exposure)",
+            height=420,
+            margin=dict(t=50, b=20, l=20, r=20),
+            showlegend=False,
+        )
+        col_chart.plotly_chart(fig, use_container_width=True)
+    except ImportError:
+        col_chart.info("Install plotly for the sector pie chart: `pip install plotly>=5.20`")
+
+
 def calculate_single_asset_metrics(
     ticker: str,
     price_series: pd.Series,
@@ -1234,6 +1533,43 @@ def build_excel_report(
 # ---------------------------------------------------------------------------
 def render_portfolio_inputs() -> tuple[pd.DataFrame, bool, bool, float]:
     st.subheader("Portfolio Holdings")
+
+    with st.expander("Import portfolio", expanded=False):
+        st.caption(
+            "Upload **CSV** or **Excel** with ticker/symbol and weight columns. "
+            "Recognized headers include: `Ticker`, `Symbol`, `Allocation %`, "
+            "`Weight`, `Weight %`, or dollar columns like `Market Value`."
+        )
+        st.download_button(
+            "Download template CSV",
+            data=portfolio_import_template_csv(),
+            file_name="portfolio_template.csv",
+            mime="text/csv",
+            key="portfolio_template_dl",
+        )
+        uploaded = st.file_uploader(
+            "Portfolio file",
+            type=["csv", "xlsx", "xls"],
+            key="portfolio_import_file",
+        )
+        if uploaded is not None:
+            try:
+                raw = read_portfolio_upload(uploaded)
+                preview, import_msg = parse_portfolio_import(raw)
+                if import_msg:
+                    st.info(import_msg)
+                if preview.empty:
+                    st.warning("No holdings could be parsed from this file.")
+                else:
+                    st.dataframe(preview, use_container_width=True, hide_index=True)
+                    if st.button("Use imported portfolio", type="primary", key="apply_import"):
+                        st.session_state["holdings_df"] = preview
+                        if "holdings_editor" in st.session_state:
+                            del st.session_state["holdings_editor"]
+                        st.rerun()
+            except Exception as e:
+                st.error(f"Could not read file: {type(e).__name__}: {e}")
+
     edited = st.data_editor(
         DEFAULT_HOLDINGS if "holdings_df" not in st.session_state else st.session_state["holdings_df"],
         num_rows="dynamic",
@@ -1385,6 +1721,12 @@ def render_current_portfolio_breakdown() -> None:
                 st.dataframe(det, use_container_width=True, hide_index=True)
     else:
         st.info("No underlying holdings data available for the current portfolio.")
+
+    st.markdown("---")
+    render_sector_allocation_chart(
+        st.session_state.get("sector_allocation"),
+        from_underlying=st.session_state.get("sector_from_underlying", True),
+    )
 
     st.markdown("---")
     st.markdown("**Correlation matrix**")
@@ -1571,8 +1913,10 @@ def render_excel_export() -> None:
                 )
             st.success("Report ready.")
         except Exception as e:
-            traceback.print_exc()
-            st.error(f"Export failed: {e}")
+            tb = _log_exception()
+            st.error(f"Export failed: {type(e).__name__}: {e}")
+            with st.expander("Error details"):
+                st.code(tb)
 
     if st.session_state.get("excel_bytes"):
         st.download_button(
@@ -1603,6 +1947,14 @@ def run_portfolio_analysis(
     underlying_summary, underlying_detail, underlying_warnings = build_underlying_allocation(
         holdings, force_refresh=force_refresh
     )
+    if underlying_summary is not None and not underlying_summary.empty:
+        sector_allocation = build_sector_allocation_from_underlying(
+            underlying_summary, force_refresh=force_refresh
+        )
+        sector_from_underlying = True
+    else:
+        sector_allocation = build_sector_allocation(holdings, force_refresh=force_refresh)
+        sector_from_underlying = False
 
     st.session_state["histories"] = histories
     st.session_state["sources"] = sources
@@ -1617,6 +1969,8 @@ def run_portfolio_analysis(
     st.session_state["underlying_summary"] = underlying_summary
     st.session_state["underlying_detail"] = underlying_detail
     st.session_state["underlying_warnings"] = underlying_warnings
+    st.session_state["sector_allocation"] = sector_allocation
+    st.session_state["sector_from_underlying"] = sector_from_underlying
     st.session_state["holdings_normalized"] = holdings
 
 
@@ -1648,8 +2002,10 @@ def main() -> None:
                     )
                 st.success("Analysis complete. Open other tabs for results.")
             except Exception as e:
-                traceback.print_exc()
+                tb = _log_exception()
                 st.error(f"Analysis failed: {type(e).__name__}: {e}")
+                with st.expander("Error details"):
+                    st.code(tb)
 
     with tab_bd:
         render_current_portfolio_breakdown()
