@@ -198,6 +198,7 @@ outputs/
 *.csv
 !data/power_producer_watchlist.csv
 !data/power_market_hub_map.csv
+!.cursor/environment.json
 *.xlsx
 *.pkl
 .env

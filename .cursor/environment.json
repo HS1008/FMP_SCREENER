@@ -1,0 +1,21 @@
+{
+  "name": "FMP Screener",
+  "user": "ubuntu",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "api",
+      "command": ". .venv/bin/activate && uvicorn api_app:app --host 127.0.0.1 --port 8765",
+      "description": "FastAPI JSON service (health at /health, OpenAPI at /docs). Data routes need FMP_API_KEY."
+    },
+    {
+      "name": "dashboard",
+      "command": ". .venv/bin/activate && streamlit run dashboard.py",
+      "description": "Streamlit sector dashboard on port 8501. Data tabs need FMP_API_KEY."
+    }
+  ],
+  "ports": [
+    { "name": "dashboard", "port": 8501 },
+    { "name": "api", "port": 8765 }
+  ]
+}
