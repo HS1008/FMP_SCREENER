@@ -16,9 +16,12 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
         run: |
           mkdir -p ~/.ssh
+
           printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
+
           ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Deploy to DigitalOcean
         env:
@@ -44,12 +47,11 @@ jobs:
               pip install -r requirements.txt
             fi
 
-            echo "Deployment complete."
-          EOF
-                      echo "Restarting Streamlit..."
+            echo "Restarting Streamlit..."
             systemctl restart fmp-dashboard
 
             echo "Verifying Streamlit service..."
             systemctl is-active --quiet fmp-dashboard
 
             echo "Deployment complete."
+          EOF
