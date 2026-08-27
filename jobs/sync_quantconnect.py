@@ -148,6 +148,7 @@ def get_strategies():
             text("""
                 SELECT
                     strategy_id,
+                    name,
                     qc_project_id,
                     qc_deployment_id
                 FROM strategies
@@ -232,52 +233,213 @@ def get_live_portfolio(project_id):
     )
 
 
-def parse_portfolio(result):
-    portfolio = result.get("portfolio", {})
+def _safe_float(value, default=0.0):
+    if value is None:
+        return default
 
-    cash_data = portfolio.get("cash", {}) or {}
-    holdings = portfolio.get("holdings", {}) or {}
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _first_number(data, keys, default=0.0):
+    if not isinstance(data, dict):
+        return default
+
+    for key in keys:
+        if key not in data:
+            continue
+
+        value = data.get(key)
+
+        if value is None:
+            continue
+
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+
+    return default
+
+
+def _extract_portfolio(result):
+    if not isinstance(result, dict):
+        return {}
+
+    portfolio = result.get("portfolio")
+
+    if isinstance(portfolio, dict):
+        return portfolio
+
+    if "cash" in result or "holdings" in result:
+        return result
+
+    return {}
+
+
+def _extract_holdings(portfolio):
+    if not isinstance(portfolio, dict):
+        return {}
+
+    holdings = portfolio.get("holdings") or {}
+
+    if isinstance(holdings, dict):
+        return holdings
+
+    if isinstance(holdings, list):
+        extracted = {}
+
+        for index, holding in enumerate(holdings):
+            if not isinstance(holding, dict):
+                continue
+
+            symbol_obj = holding.get("symbol")
+
+            if isinstance(symbol_obj, dict):
+                key = (
+                    symbol_obj.get("value")
+                    or symbol_obj.get("symbol")
+                    or f"holding-{index}"
+                )
+            elif symbol_obj:
+                key = str(symbol_obj)
+            else:
+                key = (
+                    holding.get("s")
+                    or holding.get("ticker")
+                    or f"holding-{index}"
+                )
+
+            extracted[str(key)] = holding
+
+        return extracted
+
+    return {}
+
+
+def _holding_fields_recognized(holding):
+    if not isinstance(holding, dict):
+        return False
+
+    return any(
+        key in holding
+        for key in (
+            "q",
+            "p",
+            "v",
+            "quantity",
+            "price",
+            "marketPrice",
+            "marketValue",
+        )
+    )
+
+
+def _infer_symbol(symbol_key, holding):
+    if isinstance(symbol_key, str) and symbol_key.strip():
+        return symbol_key.strip().split()[0]
+
+    if isinstance(holding, dict):
+        symbol_obj = holding.get("symbol")
+
+        if isinstance(symbol_obj, dict):
+            value = (
+                symbol_obj.get("value")
+                or symbol_obj.get("ticker")
+                or symbol_obj.get("symbol")
+            )
+
+            if isinstance(value, str) and value.strip():
+                return value.strip().split()[0]
+
+        elif isinstance(symbol_obj, str) and symbol_obj.strip():
+            return symbol_obj.strip().split()[0]
+
+        for field in ("s", "ticker", "symbolValue"):
+            value = holding.get(field)
+
+            if isinstance(value, str) and value.strip():
+                return value.strip().split()[0]
+
+    if symbol_key:
+        return str(symbol_key).split()[0]
+
+    return "UNKNOWN"
+
+
+def parse_portfolio(result):
+    """Parse a QuantConnect live portfolio/read payload.
+
+    Live holdings use compact fields:
+      q = quantity, p = price, v = market value
+    Cash uses valueInAccountCurrency on each currency entry.
+    """
+
+    empty = {
+        "cash": 0.0,
+        "holdings_value": 0.0,
+        "equity": 0.0,
+        "positions": [],
+    }
+
+    if not isinstance(result, dict):
+        return empty
+
+    portfolio = _extract_portfolio(result)
+    cash_data = portfolio.get("cash") or {}
+    holdings = _extract_holdings(portfolio)
 
     total_cash = 0.0
 
-    for currency in cash_data.values():
-        total_cash += float(
-            currency.get("valueInAccountCurrency", 0) or 0
-        )
+    if isinstance(cash_data, dict):
+        for currency in cash_data.values():
+            if isinstance(currency, dict):
+                total_cash += _safe_float(
+                    currency.get("valueInAccountCurrency")
+                )
+            else:
+                total_cash += _safe_float(currency)
+
+    else:
+        total_cash = _safe_float(cash_data)
 
     positions = []
     holdings_value = 0.0
 
     for symbol_key, holding in holdings.items():
 
-        symbol_obj = holding.get("symbol", {})
+        if not isinstance(holding, dict):
+            continue
 
-        if isinstance(symbol_obj, dict):
-            symbol = (
-                symbol_obj.get("value")
-                or symbol_key
+        symbol = _infer_symbol(symbol_key, holding)
+
+        quantity = _first_number(
+            holding,
+            ("q", "quantity"),
+        )
+
+        price = _first_number(
+            holding,
+            ("p", "price", "marketPrice"),
+        )
+
+        if any(
+            holding.get(key) is not None
+            for key in ("v", "marketValue")
+        ):
+            market_value = _first_number(
+                holding,
+                ("v", "marketValue"),
             )
         else:
-            symbol = symbol_key
-
-        quantity = float(
-            holding.get("quantity", 0) or 0
-        )
-
-        price = float(
-            holding.get("price", 0)
-            or holding.get("marketPrice", 0)
-            or 0
-        )
-
-        market_value = holding.get("marketValue")
-
-        if market_value is None:
             market_value = quantity * price
 
-        market_value = float(market_value or 0)
-
         holdings_value += market_value
+
+        if abs(quantity) < 1e-12 and abs(market_value) < 1e-6:
+            continue
 
         positions.append({
             "symbol": symbol,
@@ -292,7 +454,7 @@ def parse_portfolio(result):
         position["weight"] = (
             position["market_value"] / equity
             if equity
-            else 0
+            else 0.0
         )
 
     return {
@@ -303,38 +465,147 @@ def parse_portfolio(result):
     }
 
 
+def snapshot_is_malformed(portfolio, result):
+    """Return a warning message if this snapshot should not be inserted."""
+
+    if not isinstance(portfolio, dict):
+        return "portfolio parser returned a non-dict payload"
+
+    equity = _safe_float(portfolio.get("equity"))
+    cash = _safe_float(portfolio.get("cash"))
+    holdings_value = _safe_float(
+        portfolio.get("holdings_value")
+    )
+
+    if equity <= 0:
+        return (
+            f"skipping live snapshot: equity is {equity:.4f} (<= 0)"
+        )
+
+    raw_holdings = _extract_holdings(
+        _extract_portfolio(result)
+    )
+
+    if (
+        cash > 0
+        and raw_holdings
+        and abs(holdings_value) < 1e-9
+    ):
+        recognized = any(
+            _holding_fields_recognized(holding)
+            for holding in raw_holdings.values()
+        )
+
+        if not recognized:
+            return (
+                "skipping live snapshot: cash is positive and the "
+                "QuantConnect holdings payload is non-empty, but "
+                "parsed holdings_value is 0 (unrecognized holding "
+                "fields; likely a parser error)"
+            )
+
+    return None
+
+
 # =========================================================
 # LIVE SNAPSHOTS
 # =========================================================
 
-def get_previous_peak(strategy_id):
+def _historical_snapshot_valid(row, peak_equity):
+    equity = _safe_float(row.get("equity"), default=None)
+
+    if equity is None or equity <= 0:
+        return False
+
+    cash = _safe_float(row.get("cash"))
+    holdings_value = _safe_float(row.get("holdings_value"))
+
+    cash_only = (
+        abs(holdings_value) < 1e-6
+        and cash > 0
+        and abs(equity - cash) <= max(1.0, 0.02 * abs(equity))
+    )
+
+    if (
+        cash_only
+        and peak_equity
+        and equity < 0.5 * peak_equity
+    ):
+        return False
+
+    return True
+
+
+def load_snapshot_equity_rows(strategy_id):
     with engine.connect() as conn:
-        value = conn.execute(
+        return conn.execute(
             text("""
-                SELECT MAX(equity)
-                FROM live_snapshots
-                WHERE strategy_id = :strategy_id
-            """),
-            {"strategy_id": strategy_id},
-        ).scalar()
-
-    return float(value) if value is not None else None
-
-
-def get_first_equity(strategy_id):
-    with engine.connect() as conn:
-        value = conn.execute(
-            text("""
-                SELECT equity
+                SELECT
+                    timestamp,
+                    equity,
+                    cash,
+                    holdings_value
                 FROM live_snapshots
                 WHERE strategy_id = :strategy_id
                 ORDER BY timestamp ASC
-                LIMIT 1
             """),
             {"strategy_id": strategy_id},
-        ).scalar()
+        ).mappings().all()
 
-    return float(value) if value is not None else None
+
+def get_previous_peak(strategy_id, incoming_equity=None):
+    rows = load_snapshot_equity_rows(strategy_id)
+
+    candidates = [
+        _safe_float(row["equity"])
+        for row in rows
+        if row["equity"] is not None
+        and _safe_float(row["equity"]) > 0
+    ]
+
+    if incoming_equity is not None and incoming_equity > 0:
+        candidates.append(float(incoming_equity))
+
+    raw_peak = max(candidates) if candidates else None
+
+    valid_equities = [
+        _safe_float(row["equity"])
+        for row in rows
+        if _historical_snapshot_valid(row, raw_peak)
+    ]
+
+    if incoming_equity is not None and incoming_equity > 0:
+        valid_equities.append(float(incoming_equity))
+
+    if not valid_equities:
+        return None
+
+    return max(valid_equities)
+
+
+def get_first_equity(strategy_id, incoming_equity=None):
+    rows = load_snapshot_equity_rows(strategy_id)
+
+    candidates = [
+        _safe_float(row["equity"])
+        for row in rows
+        if row["equity"] is not None
+        and _safe_float(row["equity"]) > 0
+    ]
+
+    if incoming_equity is not None and incoming_equity > 0:
+        candidates.append(float(incoming_equity))
+
+    raw_peak = max(candidates) if candidates else None
+
+    for row in rows:
+        if _historical_snapshot_valid(row, raw_peak):
+            return _safe_float(row["equity"])
+
+    if incoming_equity is not None and incoming_equity > 0:
+        return float(incoming_equity)
+
+    return None
 
 
 def insert_live_snapshot(
@@ -342,10 +613,23 @@ def insert_live_snapshot(
     status,
     portfolio,
 ):
-    equity = float(portfolio["equity"])
+    equity = _safe_float(portfolio["equity"])
 
-    first_equity = get_first_equity(strategy_id)
-    previous_peak = get_previous_peak(strategy_id)
+    if equity <= 0:
+        print(
+            "WARNING: skipping live snapshot insert: "
+            f"equity is {equity:.4f} (<= 0)"
+        )
+        return False
+
+    first_equity = get_first_equity(
+        strategy_id,
+        incoming_equity=equity,
+    )
+    previous_peak = get_previous_peak(
+        strategy_id,
+        incoming_equity=equity,
+    )
 
     total_return = None
     drawdown = None
@@ -396,6 +680,8 @@ def insert_live_snapshot(
                 "status": status,
             },
         )
+
+    return True
 
 
 # =========================================================
@@ -814,6 +1100,51 @@ def sync_backtests(
 # MAIN
 # =========================================================
 
+def print_sync_summary(
+    strategy_id,
+    strategy_name,
+    status,
+    portfolio,
+    position_count,
+    order_count,
+    trade_count,
+    backtest_count,
+):
+    label = strategy_id
+
+    if strategy_name and strategy_name != strategy_id:
+        label = f"{strategy_name} ({strategy_id})"
+
+    print()
+    print("-" * 60)
+    print(f"Sync summary: {label}")
+    print(f"  Live status:          {status}")
+
+    if portfolio:
+        print(
+            f"  Equity:               "
+            f"${portfolio['equity']:,.2f}"
+        )
+        print(
+            f"  Cash:                 "
+            f"${portfolio['cash']:,.2f}"
+        )
+        print(
+            f"  Holdings value:       "
+            f"${portfolio['holdings_value']:,.2f}"
+        )
+    else:
+        print("  Equity:               —")
+        print("  Cash:                 —")
+        print("  Holdings value:       —")
+
+    print(f"  Positions:            {position_count}")
+    print(f"  Orders synced:        {order_count}")
+    print(f"  Closed trades synced: {trade_count}")
+    print(f"  Backtests synced:     {backtest_count}")
+    print("-" * 60)
+
+
 def main():
 
     ensure_schema()
@@ -827,12 +1158,20 @@ def main():
     for strategy in strategies:
 
         strategy_id = strategy["strategy_id"]
+        strategy_name = strategy.get("name") or strategy_id
         project_id = strategy["qc_project_id"]
         deployment_id = strategy["qc_deployment_id"]
 
+        status = "UNKNOWN"
+        portfolio = None
+        position_count = 0
+        order_count = 0
+        trade_count = 0
+        backtest_count = 0
+
         print()
         print("=" * 60)
-        print(f"Syncing {strategy_id}")
+        print(f"Syncing {strategy_name} ({strategy_id})")
         print("=" * 60)
 
         # -------------------------------------------------
@@ -848,10 +1187,6 @@ def main():
                 backtests_result,
             )
 
-            print(
-                f"Backtests synced: {backtest_count}"
-            )
-
         except Exception as exc:
             print(
                 f"Backtest sync error: {exc}"
@@ -862,6 +1197,16 @@ def main():
             print(
                 "No live deployment ID. "
                 "Skipping live sync."
+            )
+            print_sync_summary(
+                strategy_id,
+                strategy_name,
+                status,
+                portfolio,
+                position_count,
+                order_count,
+                trade_count,
+                backtest_count,
             )
             continue
 
@@ -888,10 +1233,6 @@ def main():
                 current_deployment,
             )
 
-            print(
-                f"Live status: {status}"
-            )
-
         except Exception as exc:
             print(
                 f"Status sync error: {exc}"
@@ -912,36 +1253,39 @@ def main():
                 portfolio_result
             )
 
-            insert_live_snapshot(
-                strategy_id,
-                status,
+            position_count = len(
+                portfolio["positions"]
+            )
+
+            skip_reason = snapshot_is_malformed(
                 portfolio,
+                portfolio_result,
             )
 
-            insert_positions(
-                strategy_id,
-                portfolio["positions"],
-            )
+            if skip_reason:
+                print(f"WARNING: {skip_reason}")
+                print(
+                    "  parsed equity="
+                    f"${portfolio['equity']:,.2f} "
+                    "cash="
+                    f"${portfolio['cash']:,.2f} "
+                    "holdings="
+                    f"${portfolio['holdings_value']:,.2f} "
+                    f"positions={position_count}"
+                )
 
-            print(
-                f"Equity: "
-                f"${portfolio['equity']:,.2f}"
-            )
+            else:
+                inserted = insert_live_snapshot(
+                    strategy_id,
+                    status,
+                    portfolio,
+                )
 
-            print(
-                f"Cash: "
-                f"${portfolio['cash']:,.2f}"
-            )
-
-            print(
-                f"Holdings: "
-                f"${portfolio['holdings_value']:,.2f}"
-            )
-
-            print(
-                f"Positions: "
-                f"{len(portfolio['positions'])}"
-            )
+                if inserted:
+                    insert_positions(
+                        strategy_id,
+                        portfolio["positions"],
+                    )
 
         except Exception as exc:
             print(
@@ -961,10 +1305,6 @@ def main():
             order_count = sync_orders(
                 strategy_id,
                 orders_result,
-            )
-
-            print(
-                f"Orders synced: {order_count}"
             )
 
         except Exception as exc:
@@ -987,17 +1327,20 @@ def main():
                 trades_result,
             )
 
-            print(
-                f"Closed trades synced: {trade_count}"
-            )
-
         except Exception as exc:
             print(
                 f"Trades sync error: {exc}"
             )
 
-        print(
-            f"{strategy_id} sync complete."
+        print_sync_summary(
+            strategy_id,
+            strategy_name,
+            status,
+            portfolio,
+            position_count,
+            order_count,
+            trade_count,
+            backtest_count,
         )
 
 
