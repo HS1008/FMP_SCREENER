@@ -58,6 +58,7 @@ def load_latest_snapshot(strategy_id):
             status
         FROM live_snapshots
         WHERE strategy_id = :strategy_id
+          AND equity > 0
         ORDER BY timestamp DESC
         LIMIT 1
     """)
@@ -70,7 +71,7 @@ def load_latest_snapshot(strategy_id):
 
 
 def load_equity_history(strategy_id):
-    return pd.read_sql(
+    history = pd.read_sql(
         text("""
             SELECT
                 timestamp,
@@ -86,6 +87,8 @@ def load_equity_history(strategy_id):
         engine,
         params={"strategy_id": strategy_id},
     )
+
+    return filter_valid_equity_history(history)
 
 
 def load_latest_positions(strategy_id):
@@ -186,6 +189,59 @@ def load_backtests(strategy_id):
 # =========================================================
 # HELPERS
 # =========================================================
+
+def filter_valid_equity_history(history):
+    """Drop snapshots that cannot be a real equity path.
+
+    Always drops equity <= 0. Also drops cash-only collapses that are
+    inconsistent with later holdings-bearing equity (the signature of
+    the prior QuantConnect holdings parser bug).
+
+    This is relative to observed equity, not a hardcoded dollar floor,
+    so other strategies with different starting capital still work.
+    """
+
+    if history is None or history.empty:
+        return history
+
+    df = history.copy()
+
+    df["equity"] = pd.to_numeric(
+        df["equity"],
+        errors="coerce",
+    )
+    df["cash"] = pd.to_numeric(
+        df.get("cash"),
+        errors="coerce",
+    )
+    df["holdings_value"] = pd.to_numeric(
+        df.get("holdings_value"),
+        errors="coerce",
+    )
+
+    df = df.dropna(subset=["equity"])
+    df = df[df["equity"] > 0]
+
+    if df.empty:
+        return df
+
+    holdings = df["holdings_value"].fillna(0)
+    invested = df.loc[holdings.abs() > 1e-6]
+
+    if not invested.empty:
+        reference_equity = float(invested["equity"].median())
+        cash = df["cash"].fillna(0)
+        cash_only = holdings.abs() < 1e-6
+        cash_equals_equity = (
+            (cash - df["equity"]).abs()
+            <= (df["equity"].abs() * 0.02 + 1.0)
+        )
+        collapsed = df["equity"] < (0.5 * reference_equity)
+
+        df = df.loc[~(cash_only & cash_equals_equity & collapsed)]
+
+    return df.reset_index(drop=True)
+
 
 def fmt_money(value):
     if value is None or pd.isna(value):
