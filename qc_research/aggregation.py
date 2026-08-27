@@ -10,6 +10,9 @@ import pandas as pd
 PASS = "PASS"
 WATCH = "WATCH"
 FAIL = "FAIL"
+IN_PROGRESS = "IN_PROGRESS"
+COMPLETE = "COMPLETE"
+INCOMPLETE = "INCOMPLETE"
 
 DEFAULT_THRESHOLDS = {
     "min_validation_sharpe": 0.0,
@@ -142,9 +145,11 @@ def _comparison_label(row: Any, test_type: str) -> str:
     params = row.get("parameters_json") or {}
     param_text = ""
     if isinstance(params, dict):
-        sma = params.get("sma_period")
-        if sma is not None:
-            param_text = " — SMA {0}".format(sma)
+        primary = row.get("research_primary_parameter")
+        if not primary:
+            primary = next((k for k in params if k not in {"start_date", "end_date", "starting_cash"}), None)
+        if primary and params.get(primary) is not None:
+            param_text = " — {0} {1}".format(primary, params.get(primary))
     window = ""
     if start and end:
         window = " — {0}-{1}".format(str(start)[:10], str(end)[:10])
@@ -157,11 +162,18 @@ def filter_test_type(df: pd.DataFrame, test_type: str) -> pd.DataFrame:
     return df[df["research_test_type"] == test_type].copy()
 
 
-def walk_forward_aggregates(df: pd.DataFrame, *, include_holdout: bool = False) -> dict[str, Any]:
+def walk_forward_aggregates(df: pd.DataFrame, *, include_holdout: bool = False, expected_wfo_windows: int | None = None) -> dict[str, Any]:
     empty = {
         "n_windows": 0,
         "n_profitable": 0,
         "profitable_fraction": None,
+        "profitable_completed_fraction": None,
+        "profitable_planned_fraction": None,
+        "expected_wfo_windows": expected_wfo_windows,
+        "completed_wfo_windows": 0,
+        "failed_wfo_windows": 0,
+        "skipped_wfo_windows": 0,
+        "completion_fraction": None,
         "median_oos_sharpe": None,
         "mean_oos_sharpe": None,
         "worst_oos_sharpe": None,
@@ -181,18 +193,36 @@ def walk_forward_aggregates(df: pd.DataFrame, *, include_holdout: bool = False) 
     if tests.empty:
         return empty
 
-    sharpes = pd.to_numeric(tests["sharpe_ratio"], errors="coerce").dropna()
-    cagrs = pd.to_numeric(tests["cagr"], errors="coerce").dropna() if "cagr" in tests.columns else pd.Series(dtype=float)
-    dds = pd.to_numeric(tests["max_drawdown"], errors="coerce").dropna() if "max_drawdown" in tests.columns else pd.Series(dtype=float)
-    nets = pd.to_numeric(tests["net_profit"], errors="coerce") if "net_profit" in tests.columns else pd.Series([None] * len(tests))
-    profitable = int((nets.fillna(0) > 0).sum()) if nets.notna().any() else int((sharpes > 0).sum())
-    n = int(len(tests))
+    failed_mask = tests["status"].astype(str).str.lower().str.contains("error|fail", na=False) if "status" in tests.columns else pd.Series([False] * len(tests), index=tests.index)
+    skipped_mask = tests["status"].astype(str).str.lower().eq("skipped") if "status" in tests.columns else pd.Series([False] * len(tests), index=tests.index)
+    completed = tests[~failed_mask & ~skipped_mask]
+    n_failed = int(failed_mask.sum())
+    n_skipped = int(skipped_mask.sum())
+    n_completed = int(len(completed))
+    planned = expected_wfo_windows if expected_wfo_windows else int(len(tests))
+
+    sharpes = pd.to_numeric(completed["sharpe_ratio"], errors="coerce").dropna() if n_completed else pd.Series(dtype=float)
+    cagrs = pd.to_numeric(completed["cagr"], errors="coerce").dropna() if n_completed and "cagr" in completed.columns else pd.Series(dtype=float)
+    dds = pd.to_numeric(completed["max_drawdown"], errors="coerce").dropna() if n_completed and "max_drawdown" in completed.columns else pd.Series(dtype=float)
+    nets = pd.to_numeric(completed["net_profit"], errors="coerce") if n_completed and "net_profit" in completed.columns else pd.Series(dtype=float)
+    profitable = int((nets.fillna(0) > 0).sum()) if n_completed and nets.notna().any() else int((sharpes > 0).sum()) if n_completed else 0
     history = []
-    for _, row in tests.iterrows():
+    for _, row in completed.iterrows():
+        summary = row.get("research_selection_summary_json")
+        if isinstance(summary, dict) and summary.get("selected_parameter") is not None:
+            history.append(summary.get("selected_parameter"))
+            continue
         params = row.get("parameters_json") or {}
         if isinstance(params, dict):
-            primary = row.get("research_primary_parameter") or "sma_period"
-            history.append(params.get(primary))
+            primary = (
+                row.get("research_primary_parameter")
+                or (summary or {}).get("primary_parameter")
+                if isinstance(summary, dict)
+                else row.get("research_primary_parameter")
+            )
+            if not primary:
+                primary = next((k for k in params if k not in {"start_date", "end_date", "starting_cash"}), None)
+            history.append(params.get(primary) if primary else None)
         else:
             history.append(None)
     unique = sorted({str(v) for v in history if v is not None})
@@ -200,9 +230,16 @@ def walk_forward_aggregates(df: pd.DataFrame, *, include_holdout: bool = False) 
     if history:
         stability = 1.0 - ((len(unique) - 1) / float(max(len(history), 1)))
     return {
-        "n_windows": n,
+        "n_windows": n_completed,
         "n_profitable": profitable,
-        "profitable_fraction": profitable / float(n) if n else None,
+        "profitable_fraction": profitable / float(n_completed) if n_completed else None,
+        "profitable_completed_fraction": profitable / float(n_completed) if n_completed else None,
+        "profitable_planned_fraction": profitable / float(planned) if planned else None,
+        "expected_wfo_windows": planned,
+        "completed_wfo_windows": n_completed,
+        "failed_wfo_windows": n_failed,
+        "skipped_wfo_windows": n_skipped,
+        "completion_fraction": n_completed / float(planned) if planned else None,
         "median_oos_sharpe": float(sharpes.median()) if not sharpes.empty else None,
         "mean_oos_sharpe": float(sharpes.mean()) if not sharpes.empty else None,
         "worst_oos_sharpe": float(sharpes.min()) if not sharpes.empty else None,
@@ -221,7 +258,88 @@ def _first_row(df: pd.DataFrame, test_type: str) -> pd.Series | None:
     return matches.iloc[0]
 
 
-def parameter_robustness_summary(param_sens: pd.DataFrame, *, primary: str = "sma_period", default_value: Any = 200) -> dict[str, Any]:
+def _parse_json_value(value: Any) -> dict[str, Any]:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            import json
+
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except ValueError:
+            return {}
+    return {}
+
+
+def authoritative_selection_summary(run_df: pd.DataFrame) -> dict[str, Any] | None:
+    """Prefer orchestrator selection metadata on VALIDATION (then WFO_TEST)."""
+    for test_type in ("VALIDATION", "WFO_TEST"):
+        matches = filter_test_type(run_df, test_type)
+        if matches is None or matches.empty:
+            continue
+        if "research_selection_summary_json" not in matches.columns:
+            continue
+        for _, row in matches.iterrows():
+            parsed = _parse_json_value(row.get("research_selection_summary_json"))
+            if parsed.get("selected_parameter") is not None or parsed.get("primary_parameter"):
+                parsed = dict(parsed)
+                parsed["authoritative"] = True
+                parsed["source"] = parsed.get("source") or "orchestrator"
+                if "best_sharpe" not in parsed and parsed.get("best_objective") is not None:
+                    parsed["best_sharpe"] = parsed.get("best_objective")
+                if "selected_sharpe" not in parsed and parsed.get("selected_objective") is not None:
+                    parsed["selected_sharpe"] = parsed.get("selected_objective")
+                return parsed
+    return None
+
+
+def parameter_robustness_summary(
+    param_sens: pd.DataFrame,
+    *,
+    primary: str | None = None,
+    default_value: Any = None,
+    run_df: pd.DataFrame | None = None,
+) -> dict[str, Any]:
+    """Display selection. Orchestrator summary is authoritative.
+
+    Local recomputation is a documented legacy fallback only, used when no
+    research_selection_summary was persisted. It must not invent a primary
+    parameter of sma_period unless that is stored on the run.
+    """
+    authoritative = authoritative_selection_summary(run_df if run_df is not None else param_sens)
+    if authoritative:
+        return authoritative
+
+    resolved_primary = primary
+    if not resolved_primary and param_sens is not None and not param_sens.empty:
+        if "research_primary_parameter" in param_sens.columns:
+            values = param_sens["research_primary_parameter"].dropna()
+            if not values.empty:
+                resolved_primary = values.iloc[0]
+        if not resolved_primary:
+            sample = param_sens.iloc[0].get("parameters_json") or {}
+            if isinstance(sample, dict):
+                resolved_primary = next(
+                    (k for k in sample if k not in {"start_date", "end_date", "starting_cash"}),
+                    None,
+                )
+    if not resolved_primary:
+        return {
+            "raw_best_parameter": None,
+            "selected_parameter": None,
+            "best_sharpe": None,
+            "selected_sharpe": None,
+            "positive_parameter_fraction": None,
+            "plateau_width": None,
+            "robustness_label": "insufficient_data",
+            "authoritative": False,
+            "source": "legacy_fallback",
+            "primary_parameter": None,
+        }
+
     if param_sens is None or param_sens.empty:
         return {
             "raw_best_parameter": None,
@@ -231,6 +349,9 @@ def parameter_robustness_summary(param_sens: pd.DataFrame, *, primary: str = "sm
             "positive_parameter_fraction": None,
             "plateau_width": None,
             "robustness_label": "insufficient_data",
+            "authoritative": False,
+            "source": "legacy_fallback",
+            "primary_parameter": resolved_primary,
         }
     rows = []
     for _, row in param_sens.iterrows():
@@ -238,7 +359,7 @@ def parameter_robustness_summary(param_sens: pd.DataFrame, *, primary: str = "sm
         if not isinstance(params, dict):
             continue
         try:
-            param = float(params.get(primary))
+            param = float(params.get(resolved_primary))
         except (TypeError, ValueError):
             continue
         sharpe = pd.to_numeric(pd.Series([row.get("sharpe_ratio")]), errors="coerce").iloc[0]
@@ -254,15 +375,22 @@ def parameter_robustness_summary(param_sens: pd.DataFrame, *, primary: str = "sm
             "positive_parameter_fraction": None,
             "plateau_width": None,
             "robustness_label": "insufficient_data",
+            "authoritative": False,
+            "source": "legacy_fallback",
+            "primary_parameter": resolved_primary,
         }
     rows.sort(key=lambda item: item[0])
     sharpes = [item[1] for item in rows]
     best = max(sharpes)
-    raw_best = min((item for item in rows if item[1] == best), key=lambda item: abs(item[0] - float(default_value or 0)))[0]
+    default_number = 0.0
+    try:
+        default_number = float(default_value) if default_value is not None else rows[0][0]
+    except (TypeError, ValueError):
+        default_number = rows[0][0]
+    raw_best = min((item for item in rows if item[1] == best), key=lambda item: abs(item[0] - default_number))[0]
     positive = sum(1 for value in sharpes if value > 0) / float(len(sharpes))
     threshold = 0.90 * best if best > 0 else best
     plateau = [item for item in rows if item[1] >= threshold]
-    # Neighbor-mean selection among plateau members
     param_list = [item[0] for item in rows]
 
     def neighbor_mean(param: float) -> float:
@@ -279,8 +407,8 @@ def parameter_robustness_summary(param_sens: pd.DataFrame, *, primary: str = "sm
     selected = min(
         solid,
         key=lambda item: (
-            abs(item[0] - float(default_value or 0)),
             -neighbor_mean(item[0]),
+            abs(item[0] - default_number),
         ),
     )
     label = "isolated_peak" if len(plateau) <= 1 else ("stable_plateau" if len(plateau) >= 3 else "narrow_plateau")
@@ -295,6 +423,14 @@ def parameter_robustness_summary(param_sens: pd.DataFrame, *, primary: str = "sm
         "plateau_width": len(plateau),
         "robustness_label": label,
         "default_parameter": default_value,
+        "primary_parameter": resolved_primary,
+        "authoritative": False,
+        "source": "legacy_fallback",
+        "note": (
+            "Legacy fallback: recomputed locally because no orchestrator "
+            "research_selection_summary was stored. Do not treat this as "
+            "authoritative for a new strategy."
+        ),
     }
 
 
@@ -304,11 +440,38 @@ def assess_stage1(run_df: pd.DataFrame, thresholds: dict[str, Any] | None = None
     validation = _first_row(run_df, "VALIDATION")
     holdout = _first_row(run_df, "FINAL_HOLDOUT")
     param_sens = filter_test_type(run_df, "PARAM_SENS")
-    robustness = parameter_robustness_summary(param_sens)
-    wfo = walk_forward_aggregates(run_df, include_holdout=False)
+    robustness = parameter_robustness_summary(param_sens, run_df=run_df)
+    expected_wfo = None
+    if run_df is not None and not run_df.empty and "expected_experiment_count" in run_df.columns:
+        pass
+    wfo = walk_forward_aggregates(run_df, include_holdout=False, expected_wfo_windows=expected_wfo)
+
+    expected = None
+    if run_df is not None and not run_df.empty:
+        for column in ("expected_experiment_count",):
+            if column in run_df.columns:
+                values = pd.to_numeric(run_df[column], errors="coerce").dropna()
+                if not values.empty:
+                    expected = int(values.iloc[0])
+                    break
+    synced = int(len(run_df)) if run_df is not None else 0
+    completed = 0
+    failed = 0
+    skipped = 0
+    if run_df is not None and not run_df.empty and "status" in run_df.columns:
+        status = run_df["status"].astype(str).str.lower()
+        completed = int(status.str.contains("completed").sum())
+        failed = int(status.str.contains("error|fail").sum())
+        skipped = int(status.eq("skipped").sum())
+    if expected and synced < expected:
+        run_status = IN_PROGRESS
+    elif failed or skipped or (expected and completed < expected):
+        run_status = INCOMPLETE if expected and synced >= expected else (IN_PROGRESS if expected else COMPLETE)
+    else:
+        run_status = COMPLETE if not expected or synced >= expected else IN_PROGRESS
 
     validation_sharpe = _num(validation, "sharpe_ratio") if validation is not None else None
-    is_sharpe = robustness.get("selected_sharpe")
+    is_sharpe = robustness.get("selected_sharpe") or robustness.get("selected_objective")
     oos_is = None
     if validation_sharpe is not None and is_sharpe not in (None, 0):
         oos_is = float(validation_sharpe) / float(is_sharpe)
@@ -379,17 +542,34 @@ def assess_stage1(run_df: pd.DataFrame, thresholds: dict[str, Any] | None = None
 
     hard = [c for c in checks if c["name"] != "parameter_neighborhood" and c["passed"] is False]
     neighborhood_failed = any(c["name"] == "parameter_neighborhood" and c["passed"] is False for c in checks)
-    label = FAIL if hard else (WATCH if neighborhood_failed else PASS)
+    if run_status == IN_PROGRESS:
+        label = IN_PROGRESS
+    elif run_status == INCOMPLETE:
+        label = INCOMPLETE
+    else:
+        label = FAIL if hard else (WATCH if neighborhood_failed else PASS)
 
     return {
         "label": label,
+        "run_status": run_status,
+        "progress": {
+            "expected_experiment_count": expected,
+            "synced_experiment_count": synced,
+            "completed_count": completed,
+            "failed_count": failed,
+            "skipped_count": skipped,
+        },
         "checks": checks,
         "baseline": _kpi(baseline),
-        "validation": {**_kpi(validation), "oos_is_sharpe_ratio": oos_is},
+        "validation": {**(_kpi(validation) or {}), "oos_is_sharpe_ratio": oos_is},
         "holdout": _kpi(holdout) if holdout is not None else None,
         "robustness": robustness,
         "walk_forward": wfo,
         "thresholds": thresholds,
+        "note": (
+            "PASS/WATCH/FAIL is assigned only to COMPLETE suites. "
+            "In-progress research is not FAIL. Holdout is not used for the label."
+        ),
     }
 
 
@@ -424,9 +604,21 @@ def parse_thresholds_from_row(row: Any) -> dict[str, Any] | None:
         return None
     raw = None
     if isinstance(row, dict):
-        raw = row.get("research_guide_json") or row.get("thresholds")
+        raw = row.get("research_thresholds_json") or row.get("thresholds") or row.get("research_guide_json")
     else:
-        raw = row.get("research_guide_json") if hasattr(row, "get") else None
+        raw = None
+        if hasattr(row, "get"):
+            raw = row.get("research_thresholds_json")
+            if not raw:
+                raw = row.get("thresholds")
+            if not raw:
+                # research_guide_json is QuantConnect researchGuide, not Stage 1 thresholds.
+                candidate = row.get("research_guide_json")
+                parsed = candidate if isinstance(candidate, dict) else {}
+                if "min_validation_sharpe" in parsed:
+                    raw = parsed
+    if isinstance(raw, str):
+        raw = _parse_json_value(raw)
     if isinstance(raw, dict) and "min_validation_sharpe" in raw:
         return raw
     return None

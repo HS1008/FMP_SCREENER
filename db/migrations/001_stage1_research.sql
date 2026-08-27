@@ -45,6 +45,12 @@ ALTER TABLE backtests ADD COLUMN IF NOT EXISTS objective_name VARCHAR(64);
 ALTER TABLE backtests ADD COLUMN IF NOT EXISTS objective_value NUMERIC;
 ALTER TABLE backtests ADD COLUMN IF NOT EXISTS raw_statistics_json JSONB;
 ALTER TABLE backtests ADD COLUMN IF NOT EXISTS research_guide_json JSONB;
+ALTER TABLE backtests ADD COLUMN IF NOT EXISTS research_thresholds_json JSONB;
+ALTER TABLE backtests ADD COLUMN IF NOT EXISTS research_primary_parameter VARCHAR(64);
+ALTER TABLE backtests ADD COLUMN IF NOT EXISTS research_selection_summary_json JSONB;
+ALTER TABLE backtests ADD COLUMN IF NOT EXISTS research_lineage_id VARCHAR(128);
+ALTER TABLE backtests ADD COLUMN IF NOT EXISTS economic_parameter_count INTEGER;
+ALTER TABLE backtests ADD COLUMN IF NOT EXISTS research_metadata_count INTEGER;
 ALTER TABLE backtests ADD COLUMN IF NOT EXISTS backtest_start TIMESTAMPTZ;
 ALTER TABLE backtests ADD COLUMN IF NOT EXISTS backtest_end TIMESTAMPTZ;
 ALTER TABLE backtests ADD COLUMN IF NOT EXISTS error_message TEXT;
@@ -85,3 +91,37 @@ CREATE TABLE IF NOT EXISTS research_runs (
 
 CREATE INDEX IF NOT EXISTS idx_research_runs_strategy ON research_runs (strategy_id);
 CREATE INDEX IF NOT EXISTS idx_research_runs_git_commit ON research_runs (git_commit);
+
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS research_lineage_id VARCHAR(128);
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS expected_experiment_count INTEGER;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS synced_experiment_count INTEGER;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS completed_count INTEGER;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS failed_count INTEGER;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS skipped_count INTEGER;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS run_status VARCHAR(32);
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS holdout_exposure_status VARCHAR(64);
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS holdout_start DATE;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS holdout_end DATE;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS config_fingerprint VARCHAR(64);
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS plan_fingerprint VARCHAR(64);
+
+CREATE TABLE IF NOT EXISTS holdout_exposures (
+    id BIGSERIAL PRIMARY KEY,
+    strategy_id VARCHAR(100) NOT NULL,
+    research_lineage_id VARCHAR(128) NOT NULL,
+    holdout_start DATE NOT NULL,
+    holdout_end DATE,
+    status VARCHAR(64) NOT NULL,
+    source VARCHAR(64),
+    backtest_id VARCHAR(100) NOT NULL DEFAULT '',
+    git_commit VARCHAR(80),
+    notes TEXT,
+    first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (strategy_id, research_lineage_id, holdout_start, backtest_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_holdout_exposures_strategy
+    ON holdout_exposures (strategy_id, research_lineage_id);
+CREATE INDEX IF NOT EXISTS idx_backtests_research_lineage
+    ON backtests (research_lineage_id);

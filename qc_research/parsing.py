@@ -58,8 +58,9 @@ STAT_ALIASES = {
     "psr": ("psr", "Probabilistic Sharpe Ratio", "probabilisticSharpeRatio", "PSR"),
 }
 
-PERCENT_KEYS = {"cagr", "max_drawdown", "net_profit", "win_rate", "loss_rate", "psr"}
+PERCENT_KEYS = {"cagr", "net_profit", "win_rate", "loss_rate", "psr"}
 RATIO_KEYS = {"sharpe_ratio", "sortino_ratio", "alpha", "beta"}
+DRAWDOWN_KEYS = {"max_drawdown"}
 
 RESEARCH_FIELD_MAP = {
     "research_suite_version": "research_suite_version",
@@ -79,6 +80,12 @@ RESEARCH_FIELD_MAP = {
     "research_primary_parameter": "research_primary_parameter",
     "research_dirty": "research_dirty",
     "research_strategy_id": "research_strategy_id",
+    "research_lineage_id": "research_lineage_id",
+    "research_selection_summary": "research_selection_summary_raw",
+    "research_meta": "research_meta_raw",
+    "research_expected_experiments": "expected_experiment_count",
+    "economic_parameter_count": "economic_parameter_count",
+    "research_metadata_count": "research_metadata_count",
 }
 
 STRATEGY_PARAM_KEYS_HINT = {
@@ -126,6 +133,16 @@ def parse_percent_to_decimal(value: Any) -> float | None:
     if had_percent or abs(number) > 1.0:
         return number / 100.0
     return number
+
+
+def parse_drawdown_to_decimal(value: Any) -> float | None:
+    """Store drawdown as a negative decimal. QC '20%' or 0.20 -> -0.20."""
+    magnitude = parse_percent_to_decimal(value)
+    if magnitude is None:
+        return None
+    if magnitude > 0:
+        return -magnitude
+    return magnitude
 
 
 def _lookup(source: dict[str, Any], aliases: tuple[str, ...]) -> Any:
@@ -186,6 +203,8 @@ def normalize_statistics(raw: dict[str, Any] | None, *, failed: bool = False) ->
         result[key] = parse_number(extract_statistic(raw, key))
     for key in PERCENT_KEYS:
         result[key] = parse_percent_to_decimal(extract_statistic(raw, key))
+    for key in DRAWDOWN_KEYS:
+        result[key] = parse_drawdown_to_decimal(extract_statistic(raw, key))
     trades = parse_number(extract_statistic(raw, "trade_count"))
     result["trade_count"] = int(trades) if trades is not None else None
     return result
@@ -215,6 +234,23 @@ def split_parameters(parameter_set: dict[str, Any] | None) -> tuple[dict[str, An
         else:
             strategy[name] = value
     return research, strategy
+
+
+def parameter_kind_counts(
+    strategy_parameters: dict[str, Any] | None,
+    research_parameters: dict[str, Any] | None,
+) -> tuple[int, int]:
+    """Count economic strategy parameters vs orchestration metadata.
+
+    QuantConnect researchGuide.parameters is not an economic parameter count.
+    start_date/end_date are window bounds, not optimized strategy parameters.
+    """
+    economic = [
+        key
+        for key in (strategy_parameters or {})
+        if key not in {"start_date", "end_date", "economic_parameter_count", "research_metadata_count"}
+    ]
+    return len(economic), len(research_parameters or {})
 
 
 def _as_bool(value: Any) -> bool | None:
@@ -287,12 +323,19 @@ def extract_stage1_metadata(
         "research_dirty": None,
         "research_strategy_id": None,
         "research_primary_parameter": None,
+        "research_lineage_id": None,
         "objective_name": None,
         "train_start": None,
         "train_end": None,
         "test_start": None,
         "test_end": None,
         "thresholds": None,
+        "research_thresholds_json": None,
+        "research_selection_summary": None,
+        "research_meta": None,
+        "expected_experiment_count": None,
+        "economic_parameter_count": None,
+        "research_metadata_count": None,
         "parameters": strategy,
         "research_parameters": research,
         "source": "parameterSet" if research else ("name" if fallback["research_run_id"] else None),
@@ -306,6 +349,48 @@ def extract_stage1_metadata(
     meta["research_dirty"] = _as_bool(meta.get("research_dirty"))
     meta["thresholds"] = _as_json(research.get("research_thresholds") or meta.get("research_thresholds_raw"))
     meta.pop("research_thresholds_raw", None)
+    meta["research_thresholds_json"] = meta["thresholds"]
+    meta["research_selection_summary"] = _as_json(
+        research.get("research_selection_summary") or meta.get("research_selection_summary_raw")
+    )
+    meta.pop("research_selection_summary_raw", None)
+    meta["research_meta"] = _as_json(research.get("research_meta") or meta.get("research_meta_raw"))
+    meta.pop("research_meta_raw", None)
+
+    nested = meta.get("research_meta") if isinstance(meta.get("research_meta"), dict) else {}
+    if nested:
+        if not meta["thresholds"] and isinstance(nested.get("thresholds"), dict):
+            meta["thresholds"] = nested.get("thresholds")
+            meta["research_thresholds_json"] = nested.get("thresholds")
+        if not meta["research_primary_parameter"] and nested.get("primary_parameter"):
+            meta["research_primary_parameter"] = nested.get("primary_parameter")
+        if not meta["research_lineage_id"] and nested.get("research_lineage_id"):
+            meta["research_lineage_id"] = nested.get("research_lineage_id")
+        if not meta["research_selection_summary"] and nested.get("selection_summary"):
+            meta["research_selection_summary"] = nested.get("selection_summary")
+        if meta.get("expected_experiment_count") in (None, "") and nested.get("expected_experiment_count") is not None:
+            meta["expected_experiment_count"] = nested.get("expected_experiment_count")
+        if not meta["objective_name"] and nested.get("objective"):
+            meta["objective_name"] = nested.get("objective")
+
+    if meta.get("expected_experiment_count") not in (None, ""):
+        try:
+            meta["expected_experiment_count"] = int(meta["expected_experiment_count"])
+        except (TypeError, ValueError):
+            pass
+    for count_key in ("economic_parameter_count", "research_metadata_count"):
+        if meta.get(count_key) not in (None, ""):
+            try:
+                meta[count_key] = int(meta[count_key])
+            except (TypeError, ValueError):
+                pass
+
+    if meta["economic_parameter_count"] is None or meta["research_metadata_count"] is None:
+        economic, research_count = parameter_kind_counts(strategy, research)
+        if meta["economic_parameter_count"] is None:
+            meta["economic_parameter_count"] = economic
+        if meta["research_metadata_count"] is None:
+            meta["research_metadata_count"] = research_count
 
     if not meta["research_run_id"]:
         meta["research_run_id"] = fallback["research_run_id"]

@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from qc_research.aggregation import (
+    IN_PROGRESS,
     assess_stage1,
     filter_test_type,
     holdout_access_count,
@@ -18,6 +19,7 @@ from qc_research.aggregation import (
     stage1_backtests,
     walk_forward_aggregates,
 )
+from qc_research.holdout import classify_rows
 
 
 def fmt_num(value, decimals=2):
@@ -156,8 +158,53 @@ def render_stage1_section(
     c4.metric("Backtests", int(len(run_df)))
     c5.metric("Holdout accessed?", "Yes" if holdout_flag else "No")
 
+    expected = None
+    if db_run and db_run.get("expected_experiment_count") is not None:
+        expected = int(db_run.get("expected_experiment_count"))
+    elif "expected_experiment_count" in run_df.columns:
+        values = pd.to_numeric(run_df["expected_experiment_count"], errors="coerce").dropna()
+        if not values.empty:
+            expected = int(values.iloc[0])
+    run_status = (db_run or {}).get("run_status")
+    if expected:
+        st.markdown(
+            f"**Stage 1 Research**  \n{int(len(run_df))} / {expected} backtests synced  \n"
+            f"Status: **{(run_status or IN_PROGRESS).replace('_', ' ')}**"
+        )
+
+    exposure = classify_rows(
+        run_df.to_dict("records") if run_df is not None else [],
+        holdout_start=(db_run or {}).get("holdout_start") or "2023-01-01",
+        holdout_end=(db_run or {}).get("holdout_end"),
+        strategy_id=strategy_id,
+        research_lineage_id=(db_run or {}).get("research_lineage_id") or strategy_id,
+    )
+    # Include legacy/other backtests for the same strategy when available.
+    try:
+        all_rows = backtests.to_dict("records") if backtests is not None else []
+        exposure = classify_rows(
+            all_rows,
+            holdout_start=(db_run or {}).get("holdout_start") or "2023-01-01",
+            holdout_end=(db_run or {}).get("holdout_end"),
+            strategy_id=strategy_id,
+            research_lineage_id=(db_run or {}).get("research_lineage_id") or strategy_id,
+        )
+    except Exception:
+        pass
     st.caption(
-        f"Holdout access count (this git commit): {holdout_count}  •  "
+        f"Holdout exposure (lineage, all Git commits): **{exposure['label']}**  •  "
+        f"Stage 1 FINAL_HOLDOUT count: {exposure['stage1_final_holdout_count']}  •  "
+        f"Legacy overlap: {exposure['legacy_overlap_count']}"
+    )
+    if exposure["status"] == "EXPOSED_PRIOR_TO_STAGE1":
+        st.warning(
+            "A historical backtest already overlaps the configured holdout. "
+            "This period is not statistically pristine merely because no Stage 1 "
+            "FINAL_HOLDOUT experiment exists. The overlapping backtest is kept visible "
+            "and is not re-run automatically."
+        )
+    st.caption(
+        f"Holdout access count (this git commit, Stage 1 names): {holdout_count}  •  "
         f"Run date: {(run_row or {}).get('last_created') or '—'}"
     )
     if holdout_count > 1:
@@ -191,19 +238,36 @@ def render_stage1_section(
 
 
 def _thresholds_from_run(run_df: pd.DataFrame) -> dict[str, Any] | None:
-    if "research_guide_json" not in run_df.columns:
-        return None
-    for value in run_df["research_guide_json"]:
-        parsed = _parse_json(value)
-        if parsed and "min_validation_sharpe" in parsed:
-            return parsed
+    for column in ("research_thresholds_json", "research_guide_json"):
+        if column not in run_df.columns:
+            continue
+        for value in run_df[column]:
+            parsed = _parse_json(value)
+            if parsed and "min_validation_sharpe" in parsed:
+                if column == "research_guide_json":
+                    # researchGuide is not Stage 1 thresholds; only accept if it
+                    # actually contains our threshold keys.
+                    return parsed
+                return parsed
     return None
 
 
 def render_summary(run_df: pd.DataFrame, holdout_flag: bool, holdout_count: int):
     assessment = assess_stage1(run_df, _thresholds_from_run(run_df))
     st.markdown(f"#### Overall: **{assessment['label']}**")
-    st.caption(assessment.get("note") if assessment.get("note") else "The label is supplemental. Underlying metrics are shown below. Holdout is not used for PASS/WATCH/FAIL.")
+    st.caption(
+        assessment.get("note")
+        or "The label is supplemental. Underlying metrics are shown below. Holdout is not used for PASS/WATCH/FAIL."
+    )
+    progress = assessment.get("progress") or {}
+    if progress.get("expected_experiment_count"):
+        st.caption(
+            "Stage 1 Research: {0} / {1} backtests synced. Status: {2}.".format(
+                progress.get("synced_experiment_count"),
+                progress.get("expected_experiment_count"),
+                assessment.get("run_status") or assessment.get("label"),
+            )
+        )
 
     baseline = assessment.get("baseline") or {}
     validation = assessment.get("validation") or {}
@@ -302,7 +366,7 @@ def render_parameter_robustness(run_df: pd.DataFrame):
     assessment = assess_stage1(run_df, _thresholds_from_run(run_df))
     rob = assessment.get("robustness") or {}
     k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Default parameter", fmt_num(rob.get("default_parameter"), 0))
+    k1.metric("Primary parameter", str(rob.get("primary_parameter") or "—"))
     k2.metric("Raw best parameter", fmt_num(rob.get("raw_best_parameter"), 0))
     k3.metric("Robust selected", fmt_num(rob.get("selected_parameter"), 0))
     k4.metric("Robustness", str(rob.get("robustness_label") or "—"))
@@ -311,21 +375,28 @@ def render_parameter_robustness(run_df: pd.DataFrame):
     k6.metric("Selected Sharpe", fmt_num(rob.get("selected_sharpe")))
     k7.metric("Positive fraction", fmt_decimal_pct(rob.get("positive_parameter_fraction")))
     k8.metric("Plateau width", fmt_num(rob.get("plateau_width"), 0))
-    st.caption("The raw maximum is recorded for audit. Stage 1 does not automatically prefer it.")
+    st.caption(
+        "The orchestrator selection is authoritative when "
+        "research_selection_summary is present. Local recomputation is a "
+        "legacy fallback only. The raw maximum is recorded for audit."
+    )
+    if rob.get("source") == "legacy_fallback":
+        st.caption(rob.get("note") or "Using legacy local recomputation.")
 
+    primary = rob.get("primary_parameter") or "parameter"
     plot_rows = []
     for _, row in grid.iterrows():
         params = _parse_json(row.get("parameters_json"))
-        sma = params.get("sma_period")
+        value = params.get(primary)
         try:
-            sma = float(sma)
+            value = float(value)
         except (TypeError, ValueError):
-            sma = None
+            value = None
         sharpe = pd.to_numeric(pd.Series([row.get("sharpe_ratio")]), errors="coerce").iloc[0]
-        if sma is not None and not pd.isna(sharpe):
-            plot_rows.append({"sma_period": sma, "sharpe_ratio": float(sharpe)})
+        if value is not None and not pd.isna(sharpe):
+            plot_rows.append({primary: value, "sharpe_ratio": float(sharpe)})
     if plot_rows:
-        _plotly_line(pd.DataFrame(plot_rows).sort_values("sma_period"), "sma_period", "sharpe_ratio", "IS Sharpe vs sma_period")
+        _plotly_line(pd.DataFrame(plot_rows).sort_values(primary), primary, "sharpe_ratio", "IS Sharpe vs {0}".format(primary))
     else:
         st.info("Primary parameter is not a single numeric series; showing table only.")
 
@@ -397,25 +468,36 @@ def render_walk_forward(run_df: pd.DataFrame):
                 "OOS Sharpe by test window",
             )
             param_rows = []
+            primary = None
+            if "research_primary_parameter" in tests.columns:
+                values = tests["research_primary_parameter"].dropna()
+                if not values.empty:
+                    primary = values.iloc[0]
             for _, row in chart_df.iterrows():
                 params = _parse_json(row.get("parameters_json"))
+                summary = _parse_json(row.get("research_selection_summary_json"))
+                name = primary or summary.get("primary_parameter")
+                if not name:
+                    name = next((k for k in params if k not in {"start_date", "end_date", "starting_cash"}), None)
                 try:
-                    sma = float(params.get("sma_period"))
+                    value = float(params.get(name) if name else None)
                 except (TypeError, ValueError):
-                    sma = None
-                if sma is not None:
+                    value = None
+                if value is not None:
                     param_rows.append(
                         {
                             "research_window_id": row.get("research_window_id"),
-                            "sma_period": sma,
+                            name or "parameter": value,
+                            "parameter_name": name,
                         }
                     )
             if param_rows:
+                axis = param_rows[0].get("parameter_name") or "parameter"
                 _plotly_line(
                     pd.DataFrame(param_rows),
                     "research_window_id",
-                    "sma_period",
-                    "Selected sma_period by test window",
+                    axis,
+                    "Selected {0} by test window".format(axis),
                 )
 
     if holdout_tests is not None and not holdout_tests.empty:
@@ -573,6 +655,18 @@ def render_all_backtests(run_df: pd.DataFrame, load_equity):
         st.json(_parse_json(selected.get("raw_statistics_json")))
     with st.expander("QuantConnect researchGuide"):
         st.json(_parse_json(selected.get("research_guide_json")))
+        st.caption(
+            "researchGuide is QuantConnect's overfitting-risk aid. "
+            "It is not the Stage 1 threshold configuration. "
+            "Economic strategy parameters: {0}. Research metadata parameters: {1}.".format(
+                selected.get("economic_parameter_count") or "—",
+                selected.get("research_metadata_count") or "—",
+            )
+        )
+    with st.expander("Stage 1 research thresholds"):
+        st.json(_parse_json(selected.get("research_thresholds_json")))
+    with st.expander("Authoritative parameter selection"):
+        st.json(_parse_json(selected.get("research_selection_summary_json")))
 
     equity = load_equity(selected.get("backtest_id")) if load_equity else pd.DataFrame()
     if equity is None or equity.empty:

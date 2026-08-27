@@ -196,6 +196,12 @@ def load_backtests(strategy_id):
             objective_value,
             raw_statistics_json,
             research_guide_json,
+            research_thresholds_json,
+            research_primary_parameter,
+            research_selection_summary_json,
+            research_lineage_id,
+            economic_parameter_count,
+            research_metadata_count,
             backtest_start,
             backtest_end,
             error_message
@@ -271,7 +277,18 @@ def load_research_run(run_id):
                         first_seen_at,
                         last_seen_at,
                         holdout_accessed,
-                        holdout_access_count
+                        holdout_access_count,
+                        config_json,
+                        research_lineage_id,
+                        expected_experiment_count,
+                        synced_experiment_count,
+                        completed_count,
+                        failed_count,
+                        skipped_count,
+                        run_status,
+                        holdout_exposure_status,
+                        holdout_start,
+                        holdout_end
                     FROM research_runs
                     WHERE research_run_id = :run_id
                 """),

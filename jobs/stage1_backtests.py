@@ -8,6 +8,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from qc_research.dates import qc_simulation_dates
 from qc_research.parsing import (
     extract_stage1_metadata,
     is_failed_status,
@@ -24,6 +25,21 @@ def json_param(value: Any) -> str | None:
     return json.dumps(value, default=str)
 
 
+STAGE1_METRIC_COLUMNS = (
+    "sharpe_ratio",
+    "sortino_ratio",
+    "alpha",
+    "beta",
+    "cagr",
+    "max_drawdown",
+    "net_profit",
+    "win_rate",
+    "loss_rate",
+    "trade_count",
+    "psr",
+)
+
+
 def existing_backtest_map(conn, strategy_id: str) -> dict[str, dict[str, Any]]:
     rows = conn.execute(
         text(
@@ -34,7 +50,20 @@ def existing_backtest_map(conn, strategy_id: str) -> dict[str, dict[str, Any]]:
                 status,
                 research_run_id,
                 research_suite_version,
-                research_test_type
+                research_test_type,
+                backtest_start,
+                backtest_end,
+                sharpe_ratio,
+                sortino_ratio,
+                alpha,
+                beta,
+                cagr,
+                max_drawdown,
+                net_profit,
+                win_rate,
+                loss_rate,
+                trade_count,
+                psr
             FROM backtests
             WHERE strategy_id = :strategy_id
             """
@@ -75,6 +104,26 @@ def needs_detail_read(existing: dict[str, Any] | None, backtest: dict[str, Any])
     return False
 
 
+def merge_stage1_lightweight_metrics(
+    existing: dict[str, Any] | None,
+    incoming: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """SQL COALESCE(EXCLUDED.col, backtests.col) equivalent for Stage 1.
+
+    Incoming values must already be canonical. Missing incoming values keep
+    previously stored detailed metrics.
+    """
+    merged = {}
+    existing = existing or {}
+    incoming = incoming or {}
+    for column in STAGE1_METRIC_COLUMNS:
+        value = incoming.get(column)
+        if value is None:
+            value = existing.get(column)
+        merged[column] = value
+    return merged
+
+
 def needs_equity_curve(existing: dict[str, Any] | None, backtest: dict[str, Any], point_count: int) -> bool:
     name = backtest.get("name") or ""
     status = str(backtest.get("status") or "").lower()
@@ -101,8 +150,35 @@ def stage1_upsert_fields(detail: dict[str, Any], name: str | None) -> dict[str, 
     metrics = normalize_statistics(detail, failed=failed)
     objective_name = meta.get("objective_name") or "sharpe_ratio"
     objective_value = metrics.get(objective_name)
-    research_guide = detail.get("researchGuide") or detail.get("research_guide") or meta.get("thresholds")
+    research_guide = detail.get("researchGuide") or detail.get("research_guide")
     raw_stats = detail.get("statistics") or detail.get("Statistics") or {}
+    dates = qc_simulation_dates(detail)
+    expected = meta.get("expected_experiment_count")
+    config_json = None
+    nested = meta.get("research_meta") if isinstance(meta.get("research_meta"), dict) else {}
+    if nested:
+        config_json = {
+            "thresholds": nested.get("thresholds") or meta.get("thresholds"),
+            "primary_parameter": nested.get("primary_parameter")
+            or meta.get("research_primary_parameter"),
+            "selection": nested.get("selection"),
+            "in_sample": nested.get("in_sample"),
+            "validation": nested.get("validation"),
+            "holdout": nested.get("holdout"),
+            "parameter_grid": nested.get("parameter_grid"),
+            "walk_forward": nested.get("walk_forward"),
+            "default_parameters": nested.get("default_parameters"),
+            "expected_experiment_count": nested.get("expected_experiment_count") or expected,
+            "research_lineage_id": nested.get("research_lineage_id")
+            or meta.get("research_lineage_id"),
+        }
+    elif meta.get("thresholds"):
+        config_json = {
+            "thresholds": meta.get("thresholds"),
+            "primary_parameter": meta.get("research_primary_parameter"),
+            "expected_experiment_count": expected,
+            "research_lineage_id": meta.get("research_lineage_id"),
+        }
     return {
         **metrics,
         "research_suite_version": empty_to_none(meta.get("research_suite_version")),
@@ -114,6 +190,9 @@ def stage1_upsert_fields(detail: dict[str, Any], name: str | None) -> dict[str, 
         "research_git_commit": empty_to_none(meta.get("research_git_commit")),
         "research_is_holdout": meta.get("research_is_holdout"),
         "research_dirty": meta.get("research_dirty"),
+        "research_lineage_id": empty_to_none(
+            meta.get("research_lineage_id") or meta.get("research_strategy_id")
+        ),
         "train_start": empty_to_none(meta.get("train_start")),
         "train_end": empty_to_none(meta.get("train_end")),
         "test_start": empty_to_none(meta.get("test_start")),
@@ -122,9 +201,18 @@ def stage1_upsert_fields(detail: dict[str, Any], name: str | None) -> dict[str, 
         "objective_name": objective_name,
         "objective_value": objective_value,
         "raw_statistics_json": raw_stats if isinstance(raw_stats, dict) else {"value": raw_stats},
-        "research_guide_json": research_guide if research_guide is not None else meta.get("thresholds"),
-        "backtest_start": detail.get("startDate") or detail.get("created"),
-        "backtest_end": detail.get("endDate") or detail.get("completedDate"),
+        "research_guide_json": research_guide if isinstance(research_guide, dict) else research_guide,
+        "research_thresholds_json": meta.get("research_thresholds_json") or meta.get("thresholds"),
+        "research_primary_parameter": empty_to_none(meta.get("research_primary_parameter")),
+        "research_selection_summary_json": meta.get("research_selection_summary"),
+        "economic_parameter_count": meta.get("economic_parameter_count"),
+        "research_metadata_count": meta.get("research_metadata_count"),
+        "expected_experiment_count": expected,
+        "config_json": config_json,
+        "backtest_start": dates["backtest_start"],
+        "backtest_end": dates["backtest_end"],
+        "backtest_start_source": dates["backtest_start_source"],
+        "created": dates["created"],
         "error_message": empty_to_none(detail.get("error") or detail.get("stacktrace")),
         "failed": failed,
     }
@@ -135,6 +223,7 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
     if not run_id:
         return
     holdout = bool(fields.get("research_is_holdout"))
+    holdout_window = (fields.get("config_json") or {}).get("holdout") or {}
     conn.execute(
         text(
             """
@@ -148,7 +237,12 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
                 last_seen_at,
                 holdout_accessed,
                 holdout_access_count,
-                metadata_json
+                config_json,
+                metadata_json,
+                research_lineage_id,
+                expected_experiment_count,
+                holdout_start,
+                holdout_end
             )
             VALUES (
                 :research_run_id,
@@ -160,7 +254,12 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
                 NOW(),
                 :holdout_accessed,
                 :holdout_increment,
-                CAST(:metadata_json AS jsonb)
+                CAST(:config_json AS jsonb),
+                CAST(:metadata_json AS jsonb),
+                :research_lineage_id,
+                :expected_experiment_count,
+                :holdout_start,
+                :holdout_end
             )
             ON CONFLICT (research_run_id)
             DO UPDATE SET
@@ -175,7 +274,15 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
                              AND research_runs.holdout_accessed IS FALSE
                         THEN 1
                         ELSE 0
-                      END
+                      END,
+                config_json = COALESCE(EXCLUDED.config_json, research_runs.config_json),
+                research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, research_runs.research_lineage_id),
+                expected_experiment_count = COALESCE(
+                    EXCLUDED.expected_experiment_count,
+                    research_runs.expected_experiment_count
+                ),
+                holdout_start = COALESCE(EXCLUDED.holdout_start, research_runs.holdout_start),
+                holdout_end = COALESCE(EXCLUDED.holdout_end, research_runs.holdout_end)
             """
         ),
         {
@@ -186,9 +293,17 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
             "dirty": fields.get("research_dirty"),
             "holdout_accessed": holdout,
             "holdout_increment": 1 if holdout else 0,
+            "config_json": json_param(fields.get("config_json")),
+            "research_lineage_id": fields.get("research_lineage_id") or strategy_id,
+            "expected_experiment_count": fields.get("expected_experiment_count"),
+            "holdout_start": holdout_window.get("start"),
+            "holdout_end": holdout_window.get("end"),
             "metadata_json": json_param(
                 {
                     "objective_name": fields.get("objective_name"),
+                    "primary_parameter": fields.get("research_primary_parameter"),
+                    "economic_parameter_count": fields.get("economic_parameter_count"),
+                    "research_metadata_count": fields.get("research_metadata_count"),
                     "primary_seen_at": datetime.now(timezone.utc).isoformat(),
                 }
             ),
@@ -247,3 +362,129 @@ def list_metrics_from_summary(backtest: dict[str, Any]) -> dict[str, Any]:
     failed = is_failed_status(backtest.get("status"), backtest)
     metrics = normalize_statistics(backtest, failed=failed)
     return metrics
+
+
+def audit_holdout_exposures(conn, strategy_id: str) -> dict[str, Any] | None:
+    """Record lineage-level holdout exposure without launching backtests."""
+    from qc_research.holdout import (
+        STATUS_EXPOSED_PRIOR_TO_STAGE1,
+        classify_rows,
+    )
+
+    run_rows = conn.execute(
+        text(
+            """
+            SELECT research_run_id, research_lineage_id, holdout_start, holdout_end,
+                   config_json, expected_experiment_count
+            FROM research_runs
+            WHERE strategy_id = :strategy_id
+            ORDER BY last_seen_at DESC
+            """
+        ),
+        {"strategy_id": strategy_id},
+    ).mappings()
+    runs = [dict(row) for row in run_rows]
+    if not runs:
+        holdout_start = "2023-01-01"
+        holdout_end = None
+        lineage = strategy_id
+    else:
+        latest = runs[0]
+        holdout_start = latest.get("holdout_start")
+        holdout_end = latest.get("holdout_end")
+        config = latest.get("config_json") or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config)
+            except ValueError:
+                config = {}
+        holdout = (config or {}).get("holdout") or {}
+        holdout_start = holdout_start or holdout.get("start") or "2023-01-01"
+        holdout_end = holdout_end or holdout.get("end")
+        lineage = latest.get("research_lineage_id") or strategy_id
+
+    backtest_rows = conn.execute(
+        text(
+            """
+            SELECT
+                backtest_id, name, strategy_id, research_run_id,
+                research_suite_version, research_test_type, research_lineage_id,
+                research_git_commit, backtest_start, backtest_end,
+                test_start, test_end, parameters_json
+            FROM backtests
+            WHERE strategy_id = :strategy_id
+            """
+        ),
+        {"strategy_id": strategy_id},
+    ).mappings()
+    rows = [dict(row) for row in backtest_rows]
+    if holdout_end is None:
+        ends = [row.get("backtest_end") or row.get("test_end") for row in rows]
+        holdout_end = max((str(item)[:10] for item in ends if item), default=None)
+
+    classified = classify_rows(
+        rows,
+        holdout_start=holdout_start,
+        holdout_end=holdout_end,
+        strategy_id=strategy_id,
+        research_lineage_id=lineage,
+    )
+    for row in classified["legacy_overlap_backtests"]:
+        conn.execute(
+            text(
+                """
+                INSERT INTO holdout_exposures (
+                    strategy_id,
+                    research_lineage_id,
+                    holdout_start,
+                    holdout_end,
+                    status,
+                    source,
+                    backtest_id,
+                    git_commit,
+                    notes
+                )
+                VALUES (
+                    :strategy_id,
+                    :research_lineage_id,
+                    :holdout_start,
+                    :holdout_end,
+                    :status,
+                    :source,
+                    :backtest_id,
+                    :git_commit,
+                    :notes
+                )
+                ON CONFLICT (strategy_id, research_lineage_id, holdout_start, backtest_id)
+                DO UPDATE SET
+                    last_seen_at = NOW(),
+                    status = holdout_exposures.status
+                """
+            ),
+            {
+                "strategy_id": strategy_id,
+                "research_lineage_id": lineage,
+                "holdout_start": holdout_start,
+                "holdout_end": holdout_end,
+                "status": STATUS_EXPOSED_PRIOR_TO_STAGE1,
+                "source": "legacy_overlap",
+                "backtest_id": row.get("backtest_id"),
+                "git_commit": row.get("research_git_commit"),
+                "notes": (
+                    "Historical backtest overlaps the configured holdout. "
+                    "Marked EXPOSED_PRIOR_TO_STAGE1. Not deleted, hidden, or re-run."
+                ),
+            },
+        )
+    conn.execute(
+        text(
+            """
+            UPDATE research_runs
+            SET holdout_exposure_status = :status
+            WHERE strategy_id = :strategy_id
+              AND COALESCE(research_lineage_id, strategy_id) = :lineage
+            """
+        ),
+        {"status": classified["status"], "strategy_id": strategy_id, "lineage": lineage},
+    )
+    return classified

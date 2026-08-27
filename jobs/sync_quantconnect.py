@@ -10,16 +10,19 @@ from sqlalchemy import text
 
 from db.connection import engine
 from jobs.stage1_backtests import (
+    audit_holdout_exposures,
     existing_backtest_map,
     equity_point_counts,
     insert_equity_points,
     json_param,
     list_metrics_from_summary,
+    merge_stage1_lightweight_metrics,
     needs_detail_read,
     needs_equity_curve,
     stage1_upsert_fields,
     upsert_research_run,
 )
+from qc_research.dates import chart_request_window
 from qc_research.parsing import is_stage1_name, parse_equity_chart
 
 
@@ -1044,6 +1047,12 @@ STAGE1_UPSERT_SQL = """
         objective_value,
         raw_statistics_json,
         research_guide_json,
+        research_thresholds_json,
+        research_primary_parameter,
+        research_selection_summary_json,
+        research_lineage_id,
+        economic_parameter_count,
+        research_metadata_count,
         backtest_start,
         backtest_end,
         error_message
@@ -1085,6 +1094,12 @@ STAGE1_UPSERT_SQL = """
         :objective_value,
         CAST(:raw_statistics_json AS jsonb),
         CAST(:research_guide_json AS jsonb),
+        CAST(:research_thresholds_json AS jsonb),
+        :research_primary_parameter,
+        CAST(:research_selection_summary_json AS jsonb),
+        :research_lineage_id,
+        :economic_parameter_count,
+        :research_metadata_count,
         :backtest_start,
         :backtest_end,
         :error_message
@@ -1123,9 +1138,75 @@ STAGE1_UPSERT_SQL = """
         objective_value = COALESCE(EXCLUDED.objective_value, backtests.objective_value),
         raw_statistics_json = COALESCE(EXCLUDED.raw_statistics_json, backtests.raw_statistics_json),
         research_guide_json = COALESCE(EXCLUDED.research_guide_json, backtests.research_guide_json),
+        research_thresholds_json = COALESCE(EXCLUDED.research_thresholds_json, backtests.research_thresholds_json),
+        research_primary_parameter = COALESCE(EXCLUDED.research_primary_parameter, backtests.research_primary_parameter),
+        research_selection_summary_json = COALESCE(EXCLUDED.research_selection_summary_json, backtests.research_selection_summary_json),
+        research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, backtests.research_lineage_id),
+        economic_parameter_count = COALESCE(EXCLUDED.economic_parameter_count, backtests.economic_parameter_count),
+        research_metadata_count = COALESCE(EXCLUDED.research_metadata_count, backtests.research_metadata_count),
         backtest_start = COALESCE(EXCLUDED.backtest_start, backtests.backtest_start),
         backtest_end = COALESCE(EXCLUDED.backtest_end, backtests.backtest_end),
         error_message = COALESCE(EXCLUDED.error_message, backtests.error_message)
+"""
+
+
+STAGE1_LIGHTWEIGHT_UPSERT_SQL = """
+    INSERT INTO backtests (
+        backtest_id,
+        strategy_id,
+        qc_project_id,
+        name,
+        status,
+        created_at,
+        sharpe_ratio,
+        sortino_ratio,
+        alpha,
+        beta,
+        cagr,
+        max_drawdown,
+        net_profit,
+        win_rate,
+        loss_rate,
+        trade_count,
+        psr,
+        synced_at
+    )
+    VALUES (
+        :backtest_id,
+        :strategy_id,
+        :qc_project_id,
+        :name,
+        :status,
+        :created_at,
+        :sharpe_ratio,
+        :sortino_ratio,
+        :alpha,
+        :beta,
+        :cagr,
+        :max_drawdown,
+        :net_profit,
+        :win_rate,
+        :loss_rate,
+        :trade_count,
+        :psr,
+        NOW()
+    )
+    ON CONFLICT (backtest_id)
+    DO UPDATE SET
+        name = EXCLUDED.name,
+        status = EXCLUDED.status,
+        sharpe_ratio = COALESCE(EXCLUDED.sharpe_ratio, backtests.sharpe_ratio),
+        sortino_ratio = COALESCE(EXCLUDED.sortino_ratio, backtests.sortino_ratio),
+        alpha = COALESCE(EXCLUDED.alpha, backtests.alpha),
+        beta = COALESCE(EXCLUDED.beta, backtests.beta),
+        cagr = COALESCE(EXCLUDED.cagr, backtests.cagr),
+        max_drawdown = COALESCE(EXCLUDED.max_drawdown, backtests.max_drawdown),
+        net_profit = COALESCE(EXCLUDED.net_profit, backtests.net_profit),
+        win_rate = COALESCE(EXCLUDED.win_rate, backtests.win_rate),
+        loss_rate = COALESCE(EXCLUDED.loss_rate, backtests.loss_rate),
+        trade_count = COALESCE(EXCLUDED.trade_count, backtests.trade_count),
+        psr = COALESCE(EXCLUDED.psr, backtests.psr),
+        synced_at = NOW()
 """
 
 
@@ -1225,7 +1306,10 @@ def sync_backtests(
                 continue
             name = backtest.get("name")
             row_existing = existing.get(backtest_id)
-            metrics = _legacy_metric_payload(backtest)
+            if is_stage1_name(name):
+                metrics = list_metrics_from_summary(backtest)
+            else:
+                metrics = _legacy_metric_payload(backtest)
             base = {
                 "backtest_id": backtest_id,
                 "strategy_id": strategy_id,
@@ -1239,7 +1323,14 @@ def sync_backtests(
             fetch_detail = needs_detail_read(row_existing, backtest)
             point_count = equity_counts.get(backtest_id, 0)
             fetch_chart = needs_equity_curve(row_existing, backtest, point_count)
+            has_dates = bool(
+                row_existing
+                and (row_existing.get("backtest_start") or row_existing.get("backtest_end"))
+            )
+            if fetch_chart and not has_dates and not fetch_detail and is_stage1_name(name):
+                fetch_detail = True
 
+            detail = None
             if fetch_detail:
                 try:
                     detail_result = get_backtest_detail(project_id, backtest_id)
@@ -1277,6 +1368,14 @@ def sync_backtests(
                         "objective_value": fields.get("objective_value"),
                         "raw_statistics_json": json_param(fields.get("raw_statistics_json")),
                         "research_guide_json": json_param(fields.get("research_guide_json")),
+                        "research_thresholds_json": json_param(fields.get("research_thresholds_json")),
+                        "research_primary_parameter": fields.get("research_primary_parameter"),
+                        "research_selection_summary_json": json_param(
+                            fields.get("research_selection_summary_json")
+                        ),
+                        "research_lineage_id": fields.get("research_lineage_id"),
+                        "economic_parameter_count": fields.get("economic_parameter_count"),
+                        "research_metadata_count": fields.get("research_metadata_count"),
                         "backtest_start": fields.get("backtest_start"),
                         "backtest_end": fields.get("backtest_end"),
                         "error_message": fields.get("error_message"),
@@ -1290,22 +1389,23 @@ def sync_backtests(
                     )
                     conn.execute(text(LEGACY_UPSERT_SQL), base)
             elif is_stage1_name(name) and row_existing and row_existing.get("research_run_id"):
-                # Completed Stage 1 with metadata: lightweight summary update only.
-                conn.execute(text(LEGACY_UPSERT_SQL), base)
+                merged = merge_stage1_lightweight_metrics(row_existing, metrics)
+                conn.execute(text(STAGE1_LIGHTWEIGHT_UPSERT_SQL), {**base, **merged})
             else:
                 conn.execute(text(LEGACY_UPSERT_SQL), base)
 
             if fetch_chart:
                 try:
-                    start_ts = backtest.get("created")
-                    start_unix = 0
-                    if isinstance(start_ts, (int, float)):
-                        start_unix = int(start_ts)
+                    bounds = chart_request_window(
+                        detail if isinstance(detail, dict) else None,
+                        existing_row=row_existing,
+                    )
                     chart = get_backtest_chart(
                         project_id,
                         backtest_id,
-                        start=start_unix,
-                        count=1000,
+                        start=bounds["start"],
+                        end=bounds["end"],
+                        count=bounds["count"],
                     )
                     chart_reads += 1
                     points = parse_equity_chart(chart)
@@ -1326,6 +1426,11 @@ def sync_backtests(
                         "Equity chart sync failed for "
                         f"{name} ({backtest_id}): {exc}"
                     )
+
+        try:
+            audit_holdout_exposures(conn, strategy_id)
+        except Exception as exc:
+            print(f"Holdout exposure audit skipped: {exc}")
 
     print(
         f"Backtest sync: {len(backtests)} listed, "
@@ -1403,15 +1508,28 @@ def parse_args(argv=None):
 
 def main(argv=None):
     args = parse_args(argv)
+    sync_live = not args.backtests_only
+    sync_bts = not args.live_only
 
     ensure_schema()
 
+    migration_error = None
     try:
         from jobs.apply_migrations import apply_migrations
 
         apply_migrations()
     except Exception as exc:
+        migration_error = exc
         print(f"WARNING: migrations were not applied: {exc}")
+
+    if migration_error and sync_bts:
+        print(
+            "ERROR: Stage 1 backtest sync requires a successful migration. "
+            "Refusing to continue and downgrade Stage 1 rows to legacy upserts."
+        )
+        return 1
+    if migration_error and not sync_bts:
+        print("WARNING: continuing --live-only without Stage 1 schema updates.")
 
     strategies = get_strategies()
 

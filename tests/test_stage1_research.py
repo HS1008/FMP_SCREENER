@@ -2,20 +2,27 @@ import pandas as pd
 import pytest
 
 from qc_research.aggregation import (
+    IN_PROGRESS,
     assess_stage1,
     holdout_access_count,
     legacy_backtests,
+    parameter_robustness_summary,
     research_runs,
     select_comparison_backtest,
     stage1_backtests,
     walk_forward_aggregates,
 )
+from qc_research.dates import chart_request_window, created_unix, qc_simulation_dates
+from qc_research.holdout import STATUS_EXPOSED_PRIOR_TO_STAGE1, classify_rows
 from qc_research.parsing import (
     extract_stage1_metadata,
     normalize_statistics,
+    parse_drawdown_to_decimal,
     parse_equity_chart,
     parse_percent_to_decimal,
 )
+from jobs.apply_migrations import pending_migration_files
+from jobs.stage1_backtests import merge_stage1_lightweight_metrics, stage1_upsert_fields
 
 
 def test_parameter_set_splits_research_from_strategy_params():
@@ -102,6 +109,7 @@ def test_metric_parsing_percent_and_missing():
     assert parse_percent_to_decimal("not-a-percent") is None
     failed = normalize_statistics({"statistics": {"Sharpe Ratio": "9"}}, failed=True)
     assert failed["sharpe_ratio"] is None
+    assert abs(stats["max_drawdown"] - (-0.25)) < 1e-12
 
 
 def test_research_run_grouping_does_not_merge_commits():
@@ -325,6 +333,18 @@ def test_assess_does_not_use_holdout():
                 "max_drawdown": -0.15,
                 "net_profit": 0.3,
                 "parameters_json": {"sma_period": 200},
+                "research_selection_summary_json": {
+                    "primary_parameter": "sma_period",
+                    "selected_parameter": 200,
+                    "raw_best_parameter": 200,
+                    "selected_objective": 1.2,
+                    "best_objective": 1.2,
+                    "selected_sharpe": 1.2,
+                    "authoritative": True,
+                    "source": "orchestrator",
+                    "positive_parameter_fraction": 1.0,
+                    "robustness_label": "stable_plateau",
+                },
             },
             {
                 "research_suite_version": "S1",
@@ -354,5 +374,236 @@ def test_assess_does_not_use_holdout():
     assert result["holdout"]["sharpe"] == -9.0
     # Holdout Sharpe must not flip the label by itself when validation/WFO pass.
     assert result["validation"]["sharpe"] == 0.9
-    assert result["label"] in {"PASS", "WATCH", "FAIL"}
+    assert result["label"] in {"PASS", "WATCH", "FAIL", "IN_PROGRESS", "INCOMPLETE"}
     assert result["validation"]["oos_is_sharpe_ratio"] == pytest.approx(0.9 / 1.2)
+
+
+def test_official_qc_backtest_start_end_not_confused_with_created():
+    detail = {
+        "name": "S1__SPYTrend__run__VALIDATION__VAL__009",
+        "created": "2026-08-27T12:00:00Z",
+        "backtestStart": "2010-01-01T00:00:00Z",
+        "backtestEnd": "2022-12-31T00:00:00Z",
+        "startDate": "1999-01-01",
+        "parameterSet": {
+            "sma_period": "200",
+            "research_run_id": "run",
+            "research_suite_version": "S1",
+            "research_test_type": "VALIDATION",
+        },
+        "statistics": {"Sharpe Ratio": "0.8", "Compounding Annual Return": "9%"},
+    }
+    dates = qc_simulation_dates(detail)
+    assert dates["backtest_start"].year == 2010
+    assert dates["backtest_end"].year == 2022
+    assert dates["created"].year == 2026
+    fields = stage1_upsert_fields(detail, detail["name"])
+    assert fields["backtest_start"].year == 2010
+    assert fields["backtest_end"].year == 2022
+    assert fields["created"].year == 2026
+    assert fields["backtest_start"] != fields["created"]
+
+
+def test_equity_chart_request_never_starts_at_creation_time():
+    detail = {
+        "created": "2026-08-27T00:00:00Z",
+        "backtestStart": "2010-01-01T00:00:00Z",
+        "backtestEnd": "2022-12-31T00:00:00Z",
+    }
+    bounds = chart_request_window(detail)
+    created = created_unix(detail)
+    assert bounds["start"] != created
+    assert bounds["start"] < created
+    assert bounds["count"] <= 1000
+    missing = chart_request_window({"created": "2026-08-27T00:00:00Z"})
+    assert missing["start"] == 0
+    assert missing["start"] != created_unix({"created": "2026-08-27T00:00:00Z"})
+
+
+def test_detailed_metrics_survive_incomplete_lightweight_refresh():
+    existing = {"sharpe_ratio": 0.80, "cagr": 0.09, "max_drawdown": -0.2}
+    incoming = normalize_statistics({"statistics": {}})
+    merged = merge_stage1_lightweight_metrics(existing, incoming)
+    assert merged["sharpe_ratio"] == 0.80
+    assert merged["cagr"] == 0.09
+
+
+def test_stage1_thresholds_survive_when_qc_research_guide_present():
+    payload = {
+        "name": "S1__SPYTrend__run__VALIDATION__VAL__009",
+        "researchGuide": {"parameters": 12, "overfit": True},
+        "parameterSet": {
+            "sma_period": "190",
+            "research_run_id": "run",
+            "research_suite_version": "S1",
+            "research_test_type": "VALIDATION",
+            "research_thresholds": '{"min_validation_sharpe":0.0,"min_oos_is_sharpe_ratio":0.6}',
+            "research_meta": '{"thresholds":{"min_validation_sharpe":0.0},"primary_parameter":"sma_period","selection":{"plateau_fraction":0.9}}',
+        },
+    }
+    meta = extract_stage1_metadata(payload)
+    fields = stage1_upsert_fields(payload, payload["name"])
+    assert fields["research_guide_json"]["parameters"] == 12
+    assert fields["research_thresholds_json"]["min_validation_sharpe"] == 0.0
+    assert meta["thresholds"]["min_validation_sharpe"] == 0.0
+    assert fields["config_json"]["thresholds"]["min_validation_sharpe"] == 0.0
+    assert fields["config_json"]["primary_parameter"] == "sma_period"
+
+
+def test_non_sma_primary_parameter_and_authoritative_dashboard_selection():
+    df = pd.DataFrame(
+        [
+            {
+                "research_suite_version": "S1",
+                "research_run_id": "r",
+                "research_test_type": "PARAM_SENS",
+                "research_primary_parameter": "lookback_period",
+                "sharpe_ratio": 1.0,
+                "parameters_json": {"lookback_period": 10},
+            },
+            {
+                "research_suite_version": "S1",
+                "research_run_id": "r",
+                "research_test_type": "PARAM_SENS",
+                "research_primary_parameter": "lookback_period",
+                "sharpe_ratio": 1.2,
+                "parameters_json": {"lookback_period": 20},
+            },
+            {
+                "research_suite_version": "S1",
+                "research_run_id": "r",
+                "research_test_type": "VALIDATION",
+                "research_primary_parameter": "lookback_period",
+                "sharpe_ratio": 0.9,
+                "parameters_json": {"lookback_period": 15},
+                "research_selection_summary_json": {
+                    "primary_parameter": "lookback_period",
+                    "raw_best_parameter": 20,
+                    "selected_parameter": 15,
+                    "best_objective": 1.2,
+                    "selected_objective": 1.05,
+                    "neighbor_mean": 1.1,
+                    "positive_parameter_fraction": 1.0,
+                    "plateau_width": 3,
+                    "robustness_label": "stable_plateau",
+                    "plateau_fraction": 0.9,
+                    "neighbor_radius": 1,
+                    "tie_breaker": "closest_to_default",
+                    "authoritative": True,
+                    "source": "orchestrator",
+                },
+            },
+        ]
+    )
+    rob = parameter_robustness_summary(
+        df[df["research_test_type"] == "PARAM_SENS"],
+        run_df=df,
+    )
+    assert rob["primary_parameter"] == "lookback_period"
+    assert rob["selected_parameter"] == 15
+    assert rob["raw_best_parameter"] == 20
+    assert rob["authoritative"] is True
+    assert rob["source"] == "orchestrator"
+
+
+def test_holdout_exposure_persists_across_git_commits_within_a_lineage():
+    rows = [
+        {
+            "backtest_id": "old",
+            "name": "S1__SPYTrend__r1__FINAL_HOLDOUT__HOLDOUT__080",
+            "strategy_id": "SPYTrend",
+            "research_lineage_id": "SPYTrend",
+            "research_git_commit": "commit-a",
+            "research_suite_version": "S1",
+            "research_test_type": "FINAL_HOLDOUT",
+            "backtest_start": "2023-01-01",
+            "backtest_end": "2026-08-27",
+        }
+    ]
+    first = classify_rows(
+        rows,
+        holdout_start="2023-01-01",
+        holdout_end="2026-08-27",
+        strategy_id="SPYTrend",
+        research_lineage_id="SPYTrend",
+    )
+    second = classify_rows(
+        rows,
+        holdout_start="2023-01-01",
+        holdout_end="2026-08-27",
+        strategy_id="SPYTrend",
+        research_lineage_id="SPYTrend",
+    )
+    assert first["stage1_final_holdout_count"] == 1
+    assert second["stage1_final_holdout_count"] == 1
+    assert first["status"] == second["status"]
+
+
+def test_legacy_backtest_overlap_marks_holdout_previously_exposed():
+    rows = [
+        {
+            "backtest_id": "legacy-full",
+            "name": "SPYTrend full history",
+            "strategy_id": "SPYTrend",
+            "research_suite_version": None,
+            "research_run_id": None,
+            "research_test_type": None,
+            "backtest_start": "2010-01-01",
+            "backtest_end": "2026-08-25",
+        }
+    ]
+    result = classify_rows(
+        rows,
+        holdout_start="2023-01-01",
+        holdout_end="2026-08-27",
+        strategy_id="SPYTrend",
+        research_lineage_id="SPYTrend",
+    )
+    assert result["status"] == STATUS_EXPOSED_PRIOR_TO_STAGE1
+    assert result["legacy_overlap_count"] == 1
+    assert result["stage1_final_holdout_count"] == 0
+
+
+def test_applied_migrations_are_skipped(tmp_path):
+    first = tmp_path / "001_stage1_research.sql"
+    second = tmp_path / "002_later.sql"
+    first.write_text("SELECT 1;")
+    second.write_text("SELECT 2;")
+    pending = pending_migration_files(
+        [first, second],
+        {"001_stage1_research.sql"},
+        recheck=False,
+    )
+    assert [path.name for path in pending] == ["002_later.sql"]
+    recheck = pending_migration_files(
+        [first, second],
+        {"001_stage1_research.sql"},
+        recheck=True,
+    )
+    assert [path.name for path in recheck] == ["001_stage1_research.sql", "002_later.sql"]
+
+
+def test_in_progress_monitor_is_not_fail():
+    df = pd.DataFrame(
+        [
+            {
+                "research_suite_version": "S1",
+                "research_run_id": "r",
+                "research_test_type": "BASELINE_DEV",
+                "status": "completed",
+                "sharpe_ratio": 0.5,
+                "expected_experiment_count": 81,
+                "parameters_json": {"sma_period": 200},
+            }
+        ]
+    )
+    result = assess_stage1(df)
+    assert result["run_status"] == IN_PROGRESS
+    assert result["label"] == IN_PROGRESS
+
+
+def test_drawdown_worst_is_minimum():
+    assert parse_drawdown_to_decimal("10%") == -0.10
+    assert parse_drawdown_to_decimal("20%") == -0.20
+    assert parse_drawdown_to_decimal("30%") == -0.30
+    assert min([-0.10, -0.20, -0.30]) == -0.30
