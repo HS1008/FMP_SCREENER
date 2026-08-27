@@ -46,6 +46,7 @@ def dashboard_rotation_symbols() -> tuple[str, ...]:
     for mod in mods:
         syms.update(mod.ALL_ROTATION_SYMBOLS)
     syms.update(ai_rotation_engine.ALL_ROTATION_SYMBOLS)
+    syms.add("SPY")
     return tuple(sorted(syms))
 
 

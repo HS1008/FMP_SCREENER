@@ -15,6 +15,7 @@ import pandas as pd
 
 import config
 import data_loader
+import rotation_correlation
 import rotation_prefetch_slice
 
 BENCHMARK = "XLB"
@@ -32,7 +33,9 @@ INDUSTRY_ETF_MAP: dict[str, str] = {
     "MOO": "Agriculture Inputs / Fertilizers",
 }
 
-ALL_ROTATION_SYMBOLS: tuple[str, ...] = (BENCHMARK,) + tuple(INDUSTRY_ETF_MAP.keys())
+ALL_ROTATION_SYMBOLS: tuple[str, ...] = tuple(
+    dict.fromkeys((BENCHMARK, rotation_correlation.SPY_SYMBOL, *INDUSTRY_ETF_MAP.keys()))
+)
 
 ROTATION_LOOKBACK_CAL_DAYS: int = 520
 
@@ -104,13 +107,11 @@ def calculate_relative_strength_metrics(price_df: pd.DataFrame) -> pd.DataFrame:
     Metric columns store **decimals** (e.g. 0.05 = 5%); heatmap builder converts to percentage points.
     """
     if price_df.empty or "symbol" not in price_df.columns:
-        return pd.DataFrame(
-            columns=["ETF", "Industry", *METRIC_COLS],
-        )
+        return pd.DataFrame(columns=rotation_correlation.metrics_table_columns(METRIC_COLS))
 
     wide = price_df.pivot(index="date", columns="symbol", values="adjClose").sort_index()
     if BENCHMARK not in wide.columns:
-        return pd.DataFrame(columns=["ETF", "Industry", *METRIC_COLS])
+        return pd.DataFrame(columns=rotation_correlation.metrics_table_columns(METRIC_COLS))
 
     bench = pd.to_numeric(wide[BENCHMARK], errors="coerce")
     rows: list[dict[str, Any]] = []
@@ -134,6 +135,9 @@ def calculate_relative_strength_metrics(price_df: pd.DataFrame) -> pd.DataFrame:
             "12M RS %": _rs_pct_change(rs, TRADING_12M),
             "RS vs 50 DMA %": _rs_vs_dma_pct(rs, 50),
             "RS vs 200 DMA %": _rs_vs_dma_pct(rs, 200),
+            rotation_correlation.CORR_COL: rotation_correlation.trailing_corr_to_spy_from_wide(
+                wide, etf
+            ),
         }
         rows.append(row)
 
@@ -141,19 +145,8 @@ def calculate_relative_strength_metrics(price_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_rotation_heatmap_table(metrics_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Heatmap-ready table: index = ``Industry (ETF)``, values = percentage points, sorted by 3M RS %.
-    """
-    if metrics_df.empty:
-        return pd.DataFrame(columns=list(METRIC_COLS))
-
-    df = metrics_df.copy()
-    df["Industry_label"] = df["Industry"].astype(str) + " (" + df["ETF"].astype(str) + ")"
-    out = df.set_index("Industry_label")[list(METRIC_COLS)].copy()
-    for c in METRIC_COLS:
-        out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
-    out = out.sort_values("3M RS %", ascending=False, na_position="last")
-    return out
+    """Heatmap-ready table: RS as percentage points; ``Corr vs SPY`` as decimal correlation."""
+    return rotation_correlation.build_rotation_heatmap_table(metrics_df, METRIC_COLS)
 
 
 def _build_rs_ratio_history(price_df: pd.DataFrame) -> pd.DataFrame:

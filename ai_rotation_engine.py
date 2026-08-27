@@ -16,6 +16,7 @@ import pandas as pd
 
 import config
 import data_loader
+import rotation_correlation
 import rotation_prefetch_slice
 import tech_rotation_engine
 
@@ -42,7 +43,7 @@ INDUSTRY_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 def _unique_rotation_symbols() -> tuple[str, ...]:
-    syms: set[str] = {BENCHMARK}
+    syms: set[str] = {BENCHMARK, rotation_correlation.SPY_SYMBOL}
     for _, tickers in INDUSTRY_GROUPS:
         for t in tickers:
             syms.add(str(t).upper().strip())
@@ -103,11 +104,11 @@ def _rs_vs_dma_pct(rs: pd.Series, window: int) -> float:
 
 def calculate_relative_strength_metrics(price_df: pd.DataFrame) -> pd.DataFrame:
     if price_df.empty or "symbol" not in price_df.columns:
-        return pd.DataFrame(columns=["ETF", "Industry", *METRIC_COLS])
+        return pd.DataFrame(columns=rotation_correlation.metrics_table_columns(METRIC_COLS))
 
     wide = price_df.pivot(index="date", columns="symbol", values="adjClose").sort_index()
     if BENCHMARK not in wide.columns:
-        return pd.DataFrame(columns=["ETF", "Industry", *METRIC_COLS])
+        return pd.DataFrame(columns=rotation_correlation.metrics_table_columns(METRIC_COLS))
 
     rows: list[dict[str, Any]] = []
     for industry, tickers in INDUSTRY_GROUPS:
@@ -126,6 +127,9 @@ def calculate_relative_strength_metrics(price_df: pd.DataFrame) -> pd.DataFrame:
                 "12M RS %": _rs_pct_change(rs, TRADING_12M),
                 "RS vs 50 DMA %": _rs_vs_dma_pct(rs, 50),
                 "RS vs 200 DMA %": _rs_vs_dma_pct(rs, 200),
+                rotation_correlation.CORR_COL: rotation_correlation.trailing_corr_to_spy_from_wide(
+                    wide, tickers
+                ),
             }
         )
 

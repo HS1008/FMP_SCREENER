@@ -17,6 +17,7 @@ import pandas as pd
 
 import config
 import data_loader
+import rotation_correlation
 import tech_rotation_engine
 
 BENCHMARK = "SPY"
@@ -104,11 +105,11 @@ def get_spy_sector_rotation_prices(
 def calculate_sector_rs_vs_spy_metrics(price_df: pd.DataFrame) -> pd.DataFrame:
     """One row per sector ETF vs SPY; metric columns are decimals (heatmap ×100)."""
     if price_df.empty or "symbol" not in price_df.columns:
-        return pd.DataFrame(columns=["ETF", "Industry", *METRIC_COLS])
+        return pd.DataFrame(columns=rotation_correlation.metrics_table_columns(METRIC_COLS))
 
     wide = price_df.pivot(index="date", columns="symbol", values="adjClose").sort_index()
     if BENCHMARK not in wide.columns:
-        return pd.DataFrame(columns=["ETF", "Industry", *METRIC_COLS])
+        return pd.DataFrame(columns=rotation_correlation.metrics_table_columns(METRIC_COLS))
 
     rows: list[dict[str, Any]] = []
     for sector_name, etf in sector_etf_rows():
@@ -127,6 +128,9 @@ def calculate_sector_rs_vs_spy_metrics(price_df: pd.DataFrame) -> pd.DataFrame:
                 "12M RS %": _rs_pct_change(rs, TRADING_12M),
                 "RS vs 50 DMA %": _rs_vs_dma_pct(rs, 50),
                 "RS vs 200 DMA %": _rs_vs_dma_pct(rs, 200),
+                rotation_correlation.CORR_COL: rotation_correlation.trailing_corr_to_spy_from_wide(
+                    wide, etf_u
+                ),
             }
         )
 
@@ -134,17 +138,8 @@ def calculate_sector_rs_vs_spy_metrics(price_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_sector_rotation_heatmap_table(metrics_df: pd.DataFrame) -> pd.DataFrame:
-    """Heatmap index: sector name (ETF ticker); same column layout as industry rotation."""
-    if metrics_df.empty:
-        return pd.DataFrame(columns=list(METRIC_COLS))
-
-    df = metrics_df.copy()
-    df["Industry_label"] = df["Industry"].astype(str) + " (" + df["ETF"].astype(str) + ")"
-    out = df.set_index("Industry_label")[list(METRIC_COLS)].copy()
-    for c in METRIC_COLS:
-        out[c] = pd.to_numeric(out[c], errors="coerce") * 100.0
-    out = out.sort_values("3M RS %", ascending=False, na_position="last")
-    return out
+    """Heatmap index: sector name (ETF ticker); RS as %; ``Corr vs SPY`` as decimal."""
+    return rotation_correlation.build_rotation_heatmap_table(metrics_df, METRIC_COLS)
 
 
 def _build_sector_rs_ratio_history(price_df: pd.DataFrame) -> pd.DataFrame:

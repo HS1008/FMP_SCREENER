@@ -18,11 +18,48 @@ from dotenv import load_dotenv
 
 import config
 import data_loader
+import rotation_correlation
 import rotation_price_batch
 import sector_pages
 import spy_sector_rotation_engine
 
 ROOT = Path(__file__).resolve().parent
+
+ROTATION_CORR_CAPTION = (
+    "Corr vs SPY is trailing 63 trading day daily return correlation. "
+    "Higher values mean the row has moved more like SPY; lower or negative values "
+    "indicate more diversification."
+)
+
+
+def _style_rotation_heatmap(hm: pd.DataFrame):
+    """Separate color scales for RS % columns vs decimal correlation."""
+    rs_cols = [c for c in hm.columns if str(c).endswith("%")]
+    styled = hm.style
+    if rs_cols:
+        gmap_rs = hm[rs_cols].clip(lower=-30.0, upper=30.0)
+        styled = styled.background_gradient(
+            cmap="RdYlGn",
+            axis=None,
+            vmin=-30,
+            vmax=30,
+            subset=rs_cols,
+            gmap=gmap_rs,
+        )
+    if rotation_correlation.CORR_COL in hm.columns:
+        gmap_corr = hm[[rotation_correlation.CORR_COL]].clip(lower=-1.0, upper=1.0)
+        styled = styled.background_gradient(
+            cmap="RdYlGn",
+            axis=None,
+            vmin=-1,
+            vmax=1,
+            subset=[rotation_correlation.CORR_COL],
+            gmap=gmap_corr,
+        )
+    fmt: dict[str, str] = {c: "{:+.2f}%" for c in rs_cols}
+    if rotation_correlation.CORR_COL in hm.columns:
+        fmt[rotation_correlation.CORR_COL] = "{:.2f}"
+    return styled.format(fmt, na_rep="—")
 
 
 @dataclass(frozen=True)
@@ -121,7 +158,9 @@ def render_sector_tab(
 
     # Rotation runs in a background thread while ETF trend is rendering.
     _rot_box: dict[str, object] = {}
-    rot_fp = data_loader.price_cache_fingerprint(rotation_price_batch.dashboard_rotation_symbols())
+    rot_fp = rotation_correlation.rotation_cache_revision(
+        data_loader.price_cache_fingerprint(rotation_price_batch.dashboard_rotation_symbols())
+    )
 
     def _run_rotation() -> None:
         try:
@@ -196,17 +235,8 @@ def render_sector_tab(
         st.markdown(f"**As of:** `{rot_bundle.get('as_of')}`")
         hm = rot_bundle.get("heatmap")
         if isinstance(hm, pd.DataFrame) and not hm.empty:
-            gmap_rot = hm.clip(lower=-30.0, upper=30.0)
-            styled = (
-                hm.style.background_gradient(
-                    cmap="RdYlGn",
-                    axis=None,
-                    vmin=-30,
-                    vmax=30,
-                    gmap=gmap_rot,
-                ).format("{:+.2f}%", na_rep="—")
-            )
-            st.dataframe(styled, use_container_width=True, hide_index=False)
+            st.dataframe(_style_rotation_heatmap(hm), use_container_width=True, hide_index=False)
+            st.caption(ROTATION_CORR_CAPTION)
             col_3m = pd.to_numeric(hm.get("3M RS %"), errors="coerce").dropna()
             if not col_3m.empty:
                 mx = float(col_3m.max())
@@ -462,7 +492,9 @@ def render_spy_benchmark_tab(
         return
 
     _rot_box: dict[str, object] = {}
-    rot_fp = data_loader.price_cache_fingerprint(spy_sector_rotation_engine.all_rotation_symbols())
+    rot_fp = rotation_correlation.rotation_cache_revision(
+        data_loader.price_cache_fingerprint(spy_sector_rotation_engine.all_rotation_symbols())
+    )
 
     def _run_rotation() -> None:
         try:
@@ -536,17 +568,8 @@ def render_spy_benchmark_tab(
         st.markdown(f"**As of:** `{rot_bundle.get('as_of')}`")
         hm = rot_bundle.get("heatmap")
         if isinstance(hm, pd.DataFrame) and not hm.empty:
-            gmap_rot = hm.clip(lower=-30.0, upper=30.0)
-            styled = (
-                hm.style.background_gradient(
-                    cmap="RdYlGn",
-                    axis=None,
-                    vmin=-30,
-                    vmax=30,
-                    gmap=gmap_rot,
-                ).format("{:+.2f}%", na_rep="—")
-            )
-            st.dataframe(styled, use_container_width=True, hide_index=False)
+            st.dataframe(_style_rotation_heatmap(hm), use_container_width=True, hide_index=False)
+            st.caption(ROTATION_CORR_CAPTION)
         else:
             st.info("No sector rotation heatmap to display.")
 

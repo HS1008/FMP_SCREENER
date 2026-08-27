@@ -34,6 +34,7 @@ import industrials_rotation_engine
 import materials_rotation_engine
 import precomputed_loader
 import real_estate_rotation_engine
+import rotation_correlation
 import rotation_price_batch
 import sector_dashboard_ui
 import spy_sector_rotation_engine
@@ -44,6 +45,13 @@ ROOT = Path(__file__).resolve().parent
 _CACHE_TTL_SECONDS: int = int(getattr(config, "DASHBOARD_CACHE_TTL_SECONDS", 86400))
 _WARM_DELAY_S: float = float(getattr(config, "DASHBOARD_BACKGROUND_WARM_DELAY_SECONDS", 45.0))
 _ENABLE_BACKGROUND_WARM: bool = bool(getattr(config, "DASHBOARD_ENABLE_BACKGROUND_WARM", False))
+
+
+def _precomputed_rotation_if_current(bundle: dict | None) -> dict | None:
+    """Skip nightly/precomputed bundles that predate Corr vs SPY."""
+    if bundle is not None and rotation_correlation.bundle_includes_corr_vs_spy(bundle):
+        return bundle
+    return None
 
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading dispersion universe…")
@@ -126,7 +134,9 @@ def _cached_all_dashboard_rotation_prices_long(api_key: str, data_revision: str)
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Technology industry rotation…")
 def _cached_tech_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Technology")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Technology")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -138,7 +148,9 @@ def _cached_tech_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Basic Materials industry rotation…")
 def _cached_materials_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Basic Materials")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Basic Materials")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -150,7 +162,9 @@ def _cached_materials_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Communication Services industry rotation…")
 def _cached_comm_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Communication Services")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Communication Services")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -162,7 +176,9 @@ def _cached_comm_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Consumer Cyclical industry rotation…")
 def _cached_consumer_cyclical_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Consumer Cyclical")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Consumer Cyclical")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -174,7 +190,9 @@ def _cached_consumer_cyclical_rotation(api_key: str, data_revision: str) -> dict
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Consumer Defensive industry rotation…")
 def _cached_consumer_defensive_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Consumer Defensive")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Consumer Defensive")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -186,7 +204,9 @@ def _cached_consumer_defensive_rotation(api_key: str, data_revision: str) -> dic
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Energy industry rotation…")
 def _cached_energy_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Energy")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Energy")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -198,7 +218,9 @@ def _cached_energy_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Financial Services industry rotation…")
 def _cached_financial_services_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Financial Services")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Financial Services")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -210,7 +232,9 @@ def _cached_financial_services_rotation(api_key: str, data_revision: str) -> dic
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Healthcare industry rotation…")
 def _cached_healthcare_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Healthcare")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Healthcare")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -222,7 +246,9 @@ def _cached_healthcare_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Industrials industry rotation…")
 def _cached_industrials_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Industrials")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Industrials")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -234,7 +260,9 @@ def _cached_industrials_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Real Estate industry rotation…")
 def _cached_real_estate_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Real Estate")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Real Estate")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -246,7 +274,9 @@ def _cached_real_estate_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading Utilities industry rotation…")
 def _cached_utilities_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_industry_rotation_bundle("Utilities")
+    pre = _precomputed_rotation_if_current(
+        precomputed_loader.load_industry_rotation_bundle("Utilities")
+    )
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -258,7 +288,7 @@ def _cached_utilities_rotation(api_key: str, data_revision: str) -> dict:
 
 @st.cache_data(ttl=_CACHE_TTL_SECONDS, show_spinner="Loading AI theme rotation…")
 def _cached_ai_rotation(api_key: str, data_revision: str) -> dict:
-    pre = precomputed_loader.load_ai_rotation_bundle()
+    pre = _precomputed_rotation_if_current(precomputed_loader.load_ai_rotation_bundle())
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
@@ -272,7 +302,7 @@ def _cached_ai_rotation(api_key: str, data_revision: str) -> dict:
 def _cached_spy_sector_rotation(api_key: str, data_revision: str) -> dict:
     """Sector ETF panel vs SPY; ``data_revision`` ties to on-disk price cache mtimes."""
     _ = data_revision
-    pre = precomputed_loader.load_spy_sector_rotation_bundle()
+    pre = _precomputed_rotation_if_current(precomputed_loader.load_spy_sector_rotation_bundle())
     if pre is not None:
         return pre
     session = data_loader.create_http_session()
