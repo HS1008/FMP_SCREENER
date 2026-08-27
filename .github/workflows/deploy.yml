@@ -46,3 +46,10 @@ jobs:
 
             echo "Deployment complete."
           EOF
+                      echo "Restarting Streamlit..."
+            systemctl restart fmp-dashboard
+
+            echo "Verifying Streamlit service..."
+            systemctl is-active --quiet fmp-dashboard
+
+            echo "Deployment complete."
