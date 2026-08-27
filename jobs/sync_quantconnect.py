@@ -1,3 +1,4 @@
+import argparse
 import os
 from base64 import b64encode
 from hashlib import sha256
@@ -8,6 +9,25 @@ from dotenv import load_dotenv
 from sqlalchemy import text
 
 from db.connection import engine
+from jobs.stage1_backtests import (
+    audit_holdout_exposures,
+    apply_run_summary,
+    existing_backtest_map,
+    equity_point_counts,
+    insert_equity_points,
+    json_param,
+    legacy_hydration_fields,
+    list_metrics_from_summary,
+    merge_stage1_lightweight_metrics,
+    needs_detail_read,
+    needs_equity_curve,
+    needs_legacy_date_hydration,
+    refresh_research_run_progress,
+    stage1_upsert_fields,
+    upsert_research_run,
+)
+from qc_research.dates import chart_request_window
+from qc_research.parsing import is_stage1_name, parse_equity_chart
 
 
 # =========================================================
@@ -21,11 +41,13 @@ QC_API_TOKEN = os.getenv("QC_API_TOKEN")
 
 BASE_URL = "https://www.quantconnect.com/api/v2"
 
-if not QC_USER_ID or not QC_API_TOKEN:
-    raise RuntimeError(
-        "Missing QuantConnect credentials. "
-        "Add QC_USER_ID and QC_API_TOKEN to .env"
-    )
+
+def require_credentials():
+    if not QC_USER_ID or not QC_API_TOKEN:
+        raise RuntimeError(
+            "Missing QuantConnect credentials. "
+            "Add QC_USER_ID and QC_API_TOKEN to .env"
+        )
 
 
 # =========================================================
@@ -71,6 +93,7 @@ ORDER_DIRECTIONS = {
 # =========================================================
 
 def get_headers():
+    require_credentials()
     timestamp = str(int(time()))
 
     token = f"{QC_API_TOKEN}:{timestamp}".encode("utf-8")
@@ -971,128 +994,549 @@ def get_backtests(project_id):
     )
 
 
+def get_backtest_detail(project_id, backtest_id):
+    return qc_post(
+        "/backtests/read",
+        {
+            "projectId": int(project_id),
+            "backtestId": str(backtest_id),
+        },
+    )
+
+
+def get_backtest_chart(project_id, backtest_id, start=0, end=None, count=1000):
+    payload = {
+        "projectId": int(project_id),
+        "backtestId": str(backtest_id),
+        "name": "Strategy Equity",
+        "count": int(count),
+        "start": int(start or 0),
+        "end": int(end or int(time())),
+    }
+    return qc_post("/backtests/chart/read", payload)
+
+
+STAGE1_UPSERT_SQL = """
+    INSERT INTO backtests (
+        backtest_id,
+        strategy_id,
+        qc_project_id,
+        name,
+        status,
+        created_at,
+        sharpe_ratio,
+        sortino_ratio,
+        alpha,
+        beta,
+        cagr,
+        max_drawdown,
+        net_profit,
+        win_rate,
+        loss_rate,
+        trade_count,
+        psr,
+        synced_at,
+        research_suite_version,
+        research_run_id,
+        research_experiment_id,
+        research_test_type,
+        research_phase,
+        research_window_id,
+        research_git_commit,
+        research_is_holdout,
+        research_dirty,
+        train_start,
+        train_end,
+        test_start,
+        test_end,
+        parameters_json,
+        objective_name,
+        objective_value,
+        raw_statistics_json,
+        research_guide_json,
+        research_thresholds_json,
+        research_primary_parameter,
+        research_selection_summary_json,
+        research_lineage_id,
+        economic_parameter_count,
+        research_metadata_count,
+        backtest_start,
+        backtest_end,
+        error_message
+    )
+    VALUES (
+        :backtest_id,
+        :strategy_id,
+        :qc_project_id,
+        :name,
+        :status,
+        :created_at,
+        :sharpe_ratio,
+        :sortino_ratio,
+        :alpha,
+        :beta,
+        :cagr,
+        :max_drawdown,
+        :net_profit,
+        :win_rate,
+        :loss_rate,
+        :trade_count,
+        :psr,
+        NOW(),
+        :research_suite_version,
+        :research_run_id,
+        :research_experiment_id,
+        :research_test_type,
+        :research_phase,
+        :research_window_id,
+        :research_git_commit,
+        :research_is_holdout,
+        :research_dirty,
+        :train_start,
+        :train_end,
+        :test_start,
+        :test_end,
+        CAST(:parameters_json AS jsonb),
+        :objective_name,
+        :objective_value,
+        CAST(:raw_statistics_json AS jsonb),
+        CAST(:research_guide_json AS jsonb),
+        CAST(:research_thresholds_json AS jsonb),
+        :research_primary_parameter,
+        CAST(:research_selection_summary_json AS jsonb),
+        :research_lineage_id,
+        :economic_parameter_count,
+        :research_metadata_count,
+        :backtest_start,
+        :backtest_end,
+        :error_message
+    )
+    ON CONFLICT (backtest_id)
+    DO UPDATE SET
+        name = EXCLUDED.name,
+        status = EXCLUDED.status,
+        sharpe_ratio = EXCLUDED.sharpe_ratio,
+        sortino_ratio = EXCLUDED.sortino_ratio,
+        alpha = EXCLUDED.alpha,
+        beta = EXCLUDED.beta,
+        cagr = EXCLUDED.cagr,
+        max_drawdown = EXCLUDED.max_drawdown,
+        net_profit = EXCLUDED.net_profit,
+        win_rate = EXCLUDED.win_rate,
+        loss_rate = EXCLUDED.loss_rate,
+        trade_count = EXCLUDED.trade_count,
+        psr = EXCLUDED.psr,
+        synced_at = NOW(),
+        research_suite_version = COALESCE(EXCLUDED.research_suite_version, backtests.research_suite_version),
+        research_run_id = COALESCE(EXCLUDED.research_run_id, backtests.research_run_id),
+        research_experiment_id = COALESCE(EXCLUDED.research_experiment_id, backtests.research_experiment_id),
+        research_test_type = COALESCE(EXCLUDED.research_test_type, backtests.research_test_type),
+        research_phase = COALESCE(EXCLUDED.research_phase, backtests.research_phase),
+        research_window_id = COALESCE(EXCLUDED.research_window_id, backtests.research_window_id),
+        research_git_commit = COALESCE(EXCLUDED.research_git_commit, backtests.research_git_commit),
+        research_is_holdout = COALESCE(EXCLUDED.research_is_holdout, backtests.research_is_holdout),
+        research_dirty = COALESCE(EXCLUDED.research_dirty, backtests.research_dirty),
+        train_start = COALESCE(EXCLUDED.train_start, backtests.train_start),
+        train_end = COALESCE(EXCLUDED.train_end, backtests.train_end),
+        test_start = COALESCE(EXCLUDED.test_start, backtests.test_start),
+        test_end = COALESCE(EXCLUDED.test_end, backtests.test_end),
+        parameters_json = COALESCE(EXCLUDED.parameters_json, backtests.parameters_json),
+        objective_name = COALESCE(EXCLUDED.objective_name, backtests.objective_name),
+        objective_value = COALESCE(EXCLUDED.objective_value, backtests.objective_value),
+        raw_statistics_json = COALESCE(EXCLUDED.raw_statistics_json, backtests.raw_statistics_json),
+        research_guide_json = COALESCE(EXCLUDED.research_guide_json, backtests.research_guide_json),
+        research_thresholds_json = COALESCE(EXCLUDED.research_thresholds_json, backtests.research_thresholds_json),
+        research_primary_parameter = COALESCE(EXCLUDED.research_primary_parameter, backtests.research_primary_parameter),
+        research_selection_summary_json = COALESCE(EXCLUDED.research_selection_summary_json, backtests.research_selection_summary_json),
+        research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, backtests.research_lineage_id),
+        economic_parameter_count = COALESCE(EXCLUDED.economic_parameter_count, backtests.economic_parameter_count),
+        research_metadata_count = COALESCE(EXCLUDED.research_metadata_count, backtests.research_metadata_count),
+        backtest_start = COALESCE(EXCLUDED.backtest_start, backtests.backtest_start),
+        backtest_end = COALESCE(EXCLUDED.backtest_end, backtests.backtest_end),
+        error_message = COALESCE(EXCLUDED.error_message, backtests.error_message)
+"""
+
+
+STAGE1_LIGHTWEIGHT_UPSERT_SQL = """
+    INSERT INTO backtests (
+        backtest_id,
+        strategy_id,
+        qc_project_id,
+        name,
+        status,
+        created_at,
+        sharpe_ratio,
+        sortino_ratio,
+        alpha,
+        beta,
+        cagr,
+        max_drawdown,
+        net_profit,
+        win_rate,
+        loss_rate,
+        trade_count,
+        psr,
+        synced_at
+    )
+    VALUES (
+        :backtest_id,
+        :strategy_id,
+        :qc_project_id,
+        :name,
+        :status,
+        :created_at,
+        :sharpe_ratio,
+        :sortino_ratio,
+        :alpha,
+        :beta,
+        :cagr,
+        :max_drawdown,
+        :net_profit,
+        :win_rate,
+        :loss_rate,
+        :trade_count,
+        :psr,
+        NOW()
+    )
+    ON CONFLICT (backtest_id)
+    DO UPDATE SET
+        name = EXCLUDED.name,
+        status = EXCLUDED.status,
+        sharpe_ratio = COALESCE(EXCLUDED.sharpe_ratio, backtests.sharpe_ratio),
+        sortino_ratio = COALESCE(EXCLUDED.sortino_ratio, backtests.sortino_ratio),
+        alpha = COALESCE(EXCLUDED.alpha, backtests.alpha),
+        beta = COALESCE(EXCLUDED.beta, backtests.beta),
+        cagr = COALESCE(EXCLUDED.cagr, backtests.cagr),
+        max_drawdown = COALESCE(EXCLUDED.max_drawdown, backtests.max_drawdown),
+        net_profit = COALESCE(EXCLUDED.net_profit, backtests.net_profit),
+        win_rate = COALESCE(EXCLUDED.win_rate, backtests.win_rate),
+        loss_rate = COALESCE(EXCLUDED.loss_rate, backtests.loss_rate),
+        trade_count = COALESCE(EXCLUDED.trade_count, backtests.trade_count),
+        psr = COALESCE(EXCLUDED.psr, backtests.psr),
+        synced_at = NOW()
+"""
+
+
+LEGACY_UPSERT_SQL = """
+    INSERT INTO backtests (
+        backtest_id,
+        strategy_id,
+        qc_project_id,
+        name,
+        status,
+        created_at,
+        sharpe_ratio,
+        sortino_ratio,
+        alpha,
+        beta,
+        cagr,
+        max_drawdown,
+        net_profit,
+        win_rate,
+        loss_rate,
+        trade_count,
+        psr,
+        synced_at
+    )
+    VALUES (
+        :backtest_id,
+        :strategy_id,
+        :qc_project_id,
+        :name,
+        :status,
+        :created_at,
+        :sharpe_ratio,
+        :sortino_ratio,
+        :alpha,
+        :beta,
+        :cagr,
+        :max_drawdown,
+        :net_profit,
+        :win_rate,
+        :loss_rate,
+        :trade_count,
+        :psr,
+        NOW()
+    )
+    ON CONFLICT (backtest_id)
+    DO UPDATE SET
+        name = EXCLUDED.name,
+        status = EXCLUDED.status,
+        sharpe_ratio = EXCLUDED.sharpe_ratio,
+        sortino_ratio = EXCLUDED.sortino_ratio,
+        alpha = EXCLUDED.alpha,
+        beta = EXCLUDED.beta,
+        cagr = EXCLUDED.cagr,
+        max_drawdown = EXCLUDED.max_drawdown,
+        net_profit = EXCLUDED.net_profit,
+        win_rate = EXCLUDED.win_rate,
+        loss_rate = EXCLUDED.loss_rate,
+        trade_count = EXCLUDED.trade_count,
+        psr = EXCLUDED.psr,
+        synced_at = NOW()
+"""
+
+
+LEGACY_DATE_UPSERT_SQL = """
+    INSERT INTO backtests (
+        backtest_id,
+        strategy_id,
+        qc_project_id,
+        name,
+        status,
+        created_at,
+        sharpe_ratio,
+        sortino_ratio,
+        alpha,
+        beta,
+        cagr,
+        max_drawdown,
+        net_profit,
+        win_rate,
+        loss_rate,
+        trade_count,
+        psr,
+        synced_at,
+        backtest_start,
+        backtest_end,
+        parameters_json
+    )
+    VALUES (
+        :backtest_id,
+        :strategy_id,
+        :qc_project_id,
+        :name,
+        :status,
+        :created_at,
+        :sharpe_ratio,
+        :sortino_ratio,
+        :alpha,
+        :beta,
+        :cagr,
+        :max_drawdown,
+        :net_profit,
+        :win_rate,
+        :loss_rate,
+        :trade_count,
+        :psr,
+        NOW(),
+        :backtest_start,
+        :backtest_end,
+        CAST(:parameters_json AS jsonb)
+    )
+    ON CONFLICT (backtest_id)
+    DO UPDATE SET
+        name = EXCLUDED.name,
+        status = EXCLUDED.status,
+        sharpe_ratio = EXCLUDED.sharpe_ratio,
+        sortino_ratio = EXCLUDED.sortino_ratio,
+        alpha = EXCLUDED.alpha,
+        beta = EXCLUDED.beta,
+        cagr = EXCLUDED.cagr,
+        max_drawdown = EXCLUDED.max_drawdown,
+        net_profit = EXCLUDED.net_profit,
+        win_rate = EXCLUDED.win_rate,
+        loss_rate = EXCLUDED.loss_rate,
+        trade_count = EXCLUDED.trade_count,
+        psr = EXCLUDED.psr,
+        synced_at = NOW(),
+        backtest_start = COALESCE(EXCLUDED.backtest_start, backtests.backtest_start),
+        backtest_end = COALESCE(EXCLUDED.backtest_end, backtests.backtest_end),
+        parameters_json = COALESCE(EXCLUDED.parameters_json, backtests.parameters_json)
+"""
+
+
+def _legacy_metric_payload(backtest):
+    metrics = list_metrics_from_summary(backtest)
+    return {
+        "sharpe_ratio": metrics.get("sharpe_ratio") if metrics.get("sharpe_ratio") is not None else backtest.get("sharpeRatio"),
+        "sortino_ratio": metrics.get("sortino_ratio") if metrics.get("sortino_ratio") is not None else backtest.get("sortinoRatio"),
+        "alpha": metrics.get("alpha") if metrics.get("alpha") is not None else backtest.get("alpha"),
+        "beta": metrics.get("beta") if metrics.get("beta") is not None else backtest.get("beta"),
+        "cagr": metrics.get("cagr") if metrics.get("cagr") is not None else backtest.get("compoundingAnnualReturn"),
+        "max_drawdown": metrics.get("max_drawdown") if metrics.get("max_drawdown") is not None else backtest.get("drawdown"),
+        "net_profit": metrics.get("net_profit") if metrics.get("net_profit") is not None else backtest.get("netProfit"),
+        "win_rate": metrics.get("win_rate") if metrics.get("win_rate") is not None else backtest.get("winRate"),
+        "loss_rate": metrics.get("loss_rate") if metrics.get("loss_rate") is not None else backtest.get("lossRate"),
+        "trade_count": metrics.get("trade_count") if metrics.get("trade_count") is not None else backtest.get("trades"),
+        "psr": metrics.get("psr") if metrics.get("psr") is not None else backtest.get("psr"),
+    }
+
+
 def sync_backtests(
     strategy_id,
     project_id,
     result,
 ):
     backtests = result.get("backtests", []) or []
+    detail_reads = 0
+    chart_reads = 0
 
     with engine.begin() as conn:
+        existing = existing_backtest_map(conn, strategy_id)
+        equity_counts = equity_point_counts(conn, strategy_id)
 
         for backtest in backtests:
+            backtest_id = backtest.get("backtestId")
+            if not backtest_id:
+                continue
+            name = backtest.get("name")
+            row_existing = existing.get(backtest_id)
+            if is_stage1_name(name):
+                metrics = list_metrics_from_summary(backtest)
+            else:
+                metrics = _legacy_metric_payload(backtest)
+            base = {
+                "backtest_id": backtest_id,
+                "strategy_id": strategy_id,
+                "qc_project_id": str(project_id),
+                "name": name,
+                "status": backtest.get("status"),
+                "created_at": backtest.get("created"),
+                **metrics,
+            }
 
-            conn.execute(
-                text("""
-                    INSERT INTO backtests (
-                        backtest_id,
-                        strategy_id,
-                        qc_project_id,
-                        name,
-                        status,
-                        created_at,
-                        sharpe_ratio,
-                        sortino_ratio,
-                        alpha,
-                        beta,
-                        cagr,
-                        max_drawdown,
-                        net_profit,
-                        win_rate,
-                        loss_rate,
-                        trade_count,
-                        psr,
-                        synced_at
-                    )
-                    VALUES (
-                        :backtest_id,
-                        :strategy_id,
-                        :qc_project_id,
-                        :name,
-                        :status,
-                        :created_at,
-                        :sharpe_ratio,
-                        :sortino_ratio,
-                        :alpha,
-                        :beta,
-                        :cagr,
-                        :max_drawdown,
-                        :net_profit,
-                        :win_rate,
-                        :loss_rate,
-                        :trade_count,
-                        :psr,
-                        NOW()
-                    )
-
-                    ON CONFLICT (backtest_id)
-                    DO UPDATE SET
-                        name = EXCLUDED.name,
-                        status = EXCLUDED.status,
-                        sharpe_ratio =
-                            EXCLUDED.sharpe_ratio,
-                        sortino_ratio =
-                            EXCLUDED.sortino_ratio,
-                        alpha =
-                            EXCLUDED.alpha,
-                        beta =
-                            EXCLUDED.beta,
-                        cagr =
-                            EXCLUDED.cagr,
-                        max_drawdown =
-                            EXCLUDED.max_drawdown,
-                        net_profit =
-                            EXCLUDED.net_profit,
-                        win_rate =
-                            EXCLUDED.win_rate,
-                        loss_rate =
-                            EXCLUDED.loss_rate,
-                        trade_count =
-                            EXCLUDED.trade_count,
-                        psr =
-                            EXCLUDED.psr,
-                        synced_at = NOW()
-                """),
-                {
-                    "backtest_id":
-                        backtest.get("backtestId"),
-                    "strategy_id":
-                        strategy_id,
-                    "qc_project_id":
-                        str(project_id),
-                    "name":
-                        backtest.get("name"),
-                    "status":
-                        backtest.get("status"),
-                    "created_at":
-                        backtest.get("created"),
-                    "sharpe_ratio":
-                        backtest.get("sharpeRatio"),
-                    "sortino_ratio":
-                        backtest.get("sortinoRatio"),
-                    "alpha":
-                        backtest.get("alpha"),
-                    "beta":
-                        backtest.get("beta"),
-                    "cagr":
-                        backtest.get(
-                            "compoundingAnnualReturn"
-                        ),
-                    "max_drawdown":
-                        backtest.get("drawdown"),
-                    "net_profit":
-                        backtest.get("netProfit"),
-                    "win_rate":
-                        backtest.get("winRate"),
-                    "loss_rate":
-                        backtest.get("lossRate"),
-                    "trade_count":
-                        backtest.get("trades"),
-                    "psr":
-                        backtest.get("psr"),
-                },
+            fetch_detail = needs_detail_read(row_existing, backtest)
+            point_count = equity_counts.get(backtest_id, 0)
+            fetch_chart = needs_equity_curve(row_existing, backtest, point_count)
+            has_dates = bool(
+                row_existing
+                and (row_existing.get("backtest_start") or row_existing.get("backtest_end"))
             )
+            if fetch_chart and not has_dates and not fetch_detail and is_stage1_name(name):
+                fetch_detail = True
 
+            detail = None
+            if fetch_detail:
+                try:
+                    detail_result = get_backtest_detail(project_id, backtest_id)
+                    detail_reads += 1
+                    detail = detail_result.get("backtest") or detail_result
+                    fields = stage1_upsert_fields(detail, name)
+                    payload = {
+                        **base,
+                        "sharpe_ratio": fields.get("sharpe_ratio"),
+                        "sortino_ratio": fields.get("sortino_ratio"),
+                        "alpha": fields.get("alpha"),
+                        "beta": fields.get("beta"),
+                        "cagr": fields.get("cagr"),
+                        "max_drawdown": fields.get("max_drawdown"),
+                        "net_profit": fields.get("net_profit"),
+                        "win_rate": fields.get("win_rate"),
+                        "loss_rate": fields.get("loss_rate"),
+                        "trade_count": fields.get("trade_count"),
+                        "psr": fields.get("psr"),
+                        "research_suite_version": fields.get("research_suite_version"),
+                        "research_run_id": fields.get("research_run_id"),
+                        "research_experiment_id": fields.get("research_experiment_id"),
+                        "research_test_type": fields.get("research_test_type"),
+                        "research_phase": fields.get("research_phase"),
+                        "research_window_id": fields.get("research_window_id"),
+                        "research_git_commit": fields.get("research_git_commit"),
+                        "research_is_holdout": fields.get("research_is_holdout"),
+                        "research_dirty": fields.get("research_dirty"),
+                        "train_start": fields.get("train_start"),
+                        "train_end": fields.get("train_end"),
+                        "test_start": fields.get("test_start"),
+                        "test_end": fields.get("test_end"),
+                        "parameters_json": json_param(fields.get("parameters_json")),
+                        "objective_name": fields.get("objective_name"),
+                        "objective_value": fields.get("objective_value"),
+                        "raw_statistics_json": json_param(fields.get("raw_statistics_json")),
+                        "research_guide_json": json_param(fields.get("research_guide_json")),
+                        "research_thresholds_json": json_param(fields.get("research_thresholds_json")),
+                        "research_primary_parameter": fields.get("research_primary_parameter"),
+                        "research_selection_summary_json": json_param(
+                            fields.get("research_selection_summary_json")
+                        ),
+                        "research_lineage_id": fields.get("research_lineage_id"),
+                        "economic_parameter_count": fields.get("economic_parameter_count"),
+                        "research_metadata_count": fields.get("research_metadata_count"),
+                        "backtest_start": fields.get("backtest_start"),
+                        "backtest_end": fields.get("backtest_end"),
+                        "error_message": fields.get("error_message"),
+                    }
+                    conn.execute(text(STAGE1_UPSERT_SQL), payload)
+                    upsert_research_run(conn, strategy_id, fields)
+                except Exception as exc:
+                    print(
+                        "Stage 1 detail read failed for "
+                        f"{name} ({backtest_id}): {exc}"
+                    )
+                    conn.execute(text(LEGACY_UPSERT_SQL), base)
+            elif is_stage1_name(name) and row_existing and row_existing.get("research_run_id"):
+                merged = merge_stage1_lightweight_metrics(row_existing, metrics)
+                conn.execute(text(STAGE1_LIGHTWEIGHT_UPSERT_SQL), {**base, **merged})
+            elif needs_legacy_date_hydration(row_existing, backtest):
+                try:
+                    detail_result = get_backtest_detail(project_id, backtest_id)
+                    detail_reads += 1
+                    detail = detail_result.get("backtest") or detail_result
+                    dates = legacy_hydration_fields(detail)
+                    conn.execute(
+                        text(LEGACY_DATE_UPSERT_SQL),
+                        {
+                            **base,
+                            "backtest_start": dates.get("backtest_start"),
+                            "backtest_end": dates.get("backtest_end"),
+                            "parameters_json": json_param(dates.get("parameters_json")),
+                        },
+                    )
+                except Exception as exc:
+                    print(
+                        "Legacy date hydration failed for "
+                        f"{name} ({backtest_id}): {exc}"
+                    )
+                    conn.execute(text(LEGACY_UPSERT_SQL), base)
+            else:
+                conn.execute(text(LEGACY_UPSERT_SQL), base)
+
+            if fetch_chart:
+                try:
+                    bounds = chart_request_window(
+                        detail if isinstance(detail, dict) else None,
+                        existing_row=row_existing,
+                    )
+                    chart = get_backtest_chart(
+                        project_id,
+                        backtest_id,
+                        start=bounds["start"],
+                        end=bounds["end"],
+                        count=bounds["count"],
+                    )
+                    chart_reads += 1
+                    points = parse_equity_chart(chart)
+                    if points:
+                        insert_equity_points(
+                            conn,
+                            strategy_id,
+                            backtest_id,
+                            points,
+                        )
+                    else:
+                        print(
+                            "Equity curve not available yet for "
+                            f"{name} ({backtest_id})"
+                        )
+                except Exception as exc:
+                    print(
+                        "Equity chart sync failed for "
+                        f"{name} ({backtest_id}): {exc}"
+                    )
+
+        try:
+            audit_holdout_exposures(conn, strategy_id)
+        except Exception as exc:
+            print(f"Holdout exposure audit skipped: {exc}")
+        try:
+            refresh_research_run_progress(conn, strategy_id)
+        except Exception as exc:
+            print(f"Research run progress refresh skipped: {exc}")
+
+    print(
+        f"Backtest sync: {len(backtests)} listed, "
+        f"{detail_reads} detail reads, {chart_reads} chart reads"
+    )
     return len(backtests)
 
 
@@ -1145,15 +1589,91 @@ def print_sync_summary(
     print("-" * 60)
 
 
-def main():
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Sync QuantConnect live state and/or backtests into PostgreSQL.",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--live-only",
+        action="store_true",
+        help="Skip backtest sync; keep live/paper reconciliation only.",
+    )
+    mode.add_argument(
+        "--backtests-only",
+        action="store_true",
+        help="Skip live APIs; sync research/legacy backtests only.",
+    )
+    parser.add_argument(
+        "--import-run-summary",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Import an orchestrator run_summary.json so skipped/no-QC "
+            "experiments update research_runs instead of leaving 80/81 "
+            "IN_PROGRESS."
+        ),
+    )
+    return parser.parse_args(argv)
+
+
+def migration_failure_exit_code(migration_error, sync_backtests_requested: bool):
+    if migration_error and sync_backtests_requested:
+        return 1
+    return None
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    sync_live = not args.backtests_only
+    sync_bts = not args.live_only
 
     ensure_schema()
+
+    migration_error = None
+    try:
+        from jobs.apply_migrations import apply_migrations
+
+        apply_migrations()
+    except Exception as exc:
+        migration_error = exc
+        print(f"WARNING: migrations were not applied: {exc}")
+
+    blocked = migration_failure_exit_code(migration_error, sync_bts)
+    if blocked is not None:
+        print(
+            "ERROR: Stage 1 backtest sync requires a successful migration. "
+            "Refusing to continue and downgrade Stage 1 rows to legacy upserts."
+        )
+        return blocked
+    if migration_error and not sync_bts:
+        print("WARNING: continuing --live-only without Stage 1 schema updates.")
+
+    if args.import_run_summary:
+        summary_path = args.import_run_summary
+        try:
+            import json as json_mod
+
+            with open(summary_path, encoding="utf-8") as handle:
+                payload = json_mod.load(handle)
+            with engine.begin() as conn:
+                apply_run_summary(conn, payload)
+                strategy_id = payload.get("strategy_id")
+                if strategy_id:
+                    refresh_research_run_progress(conn, strategy_id)
+            print("Imported orchestrator run summary: {0}".format(summary_path))
+        except Exception as exc:
+            print("ERROR: failed to import run summary {0}: {1}".format(summary_path, exc))
+            return 1
 
     strategies = get_strategies()
 
     print(
         f"Found {len(strategies)} registered strategies."
     )
+
+    sync_live = not args.backtests_only
+    sync_bts = not args.live_only
 
     for strategy in strategies:
 
@@ -1178,19 +1698,36 @@ def main():
         # BACKTESTS
         # -------------------------------------------------
 
-        try:
-            backtests_result = get_backtests(project_id)
+        if sync_bts:
+            try:
+                backtests_result = get_backtests(project_id)
 
-            backtest_count = sync_backtests(
+                backtest_count = sync_backtests(
+                    strategy_id,
+                    project_id,
+                    backtests_result,
+                )
+
+            except Exception as exc:
+                print(
+                    f"Backtest sync error: {exc}"
+                )
+        else:
+            print("Skipping backtest sync (--live-only).")
+
+        if not sync_live:
+            print("Skipping live sync (--backtests-only).")
+            print_sync_summary(
                 strategy_id,
-                project_id,
-                backtests_result,
+                strategy_name,
+                status,
+                portfolio,
+                position_count,
+                order_count,
+                trade_count,
+                backtest_count,
             )
-
-        except Exception as exc:
-            print(
-                f"Backtest sync error: {exc}"
-            )
+            continue
 
         # No live deployment yet
         if not deployment_id:
@@ -1343,6 +1880,8 @@ def main():
             backtest_count,
         )
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
