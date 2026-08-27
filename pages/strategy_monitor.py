@@ -5,6 +5,7 @@ import streamlit as st
 from sqlalchemy import text
 
 from db.connection import engine
+from qc_research.monitor_ui import render_backtest_vs_paper, render_stage1_section
 
 
 st.set_page_config(
@@ -159,31 +160,125 @@ def load_trades(strategy_id):
 
 
 def load_backtests(strategy_id):
-    return pd.read_sql(
-        text("""
-            SELECT
-                backtest_id,
-                name,
-                status,
-                created_at,
-                sharpe_ratio,
-                sortino_ratio,
-                alpha,
-                beta,
-                cagr,
-                max_drawdown,
-                net_profit,
-                win_rate,
-                loss_rate,
-                trade_count,
-                psr
-            FROM backtests
-            WHERE strategy_id = :strategy_id
-            ORDER BY created_at DESC NULLS LAST
-        """),
-        engine,
-        params={"strategy_id": strategy_id},
-    )
+    query = """
+        SELECT
+            backtest_id,
+            strategy_id,
+            name,
+            status,
+            created_at,
+            sharpe_ratio,
+            sortino_ratio,
+            alpha,
+            beta,
+            cagr,
+            max_drawdown,
+            net_profit,
+            win_rate,
+            loss_rate,
+            trade_count,
+            psr,
+            research_suite_version,
+            research_run_id,
+            research_experiment_id,
+            research_test_type,
+            research_phase,
+            research_window_id,
+            research_git_commit,
+            research_is_holdout,
+            research_dirty,
+            train_start,
+            train_end,
+            test_start,
+            test_end,
+            parameters_json,
+            objective_name,
+            objective_value,
+            raw_statistics_json,
+            research_guide_json,
+            backtest_start,
+            backtest_end,
+            error_message
+        FROM backtests
+        WHERE strategy_id = :strategy_id
+        ORDER BY created_at DESC NULLS LAST
+    """
+    try:
+        return pd.read_sql(
+            text(query),
+            engine,
+            params={"strategy_id": strategy_id},
+        )
+    except Exception:
+        return pd.read_sql(
+            text("""
+                SELECT
+                    backtest_id,
+                    name,
+                    status,
+                    created_at,
+                    sharpe_ratio,
+                    sortino_ratio,
+                    alpha,
+                    beta,
+                    cagr,
+                    max_drawdown,
+                    net_profit,
+                    win_rate,
+                    loss_rate,
+                    trade_count,
+                    psr
+                FROM backtests
+                WHERE strategy_id = :strategy_id
+                ORDER BY created_at DESC NULLS LAST
+            """),
+            engine,
+            params={"strategy_id": strategy_id},
+        )
+
+
+def load_backtest_equity(backtest_id):
+    try:
+        return pd.read_sql(
+            text("""
+                SELECT
+                    timestamp,
+                    equity,
+                    period_return,
+                    series_name
+                FROM backtest_equity_points
+                WHERE backtest_id = :backtest_id
+                ORDER BY timestamp ASC
+            """),
+            engine,
+            params={"backtest_id": backtest_id},
+        )
+    except Exception:
+        return pd.DataFrame()
+
+
+def load_research_run(run_id):
+    try:
+        with engine.connect() as conn:
+            return conn.execute(
+                text("""
+                    SELECT
+                        research_run_id,
+                        strategy_id,
+                        suite_version,
+                        git_commit,
+                        dirty,
+                        first_seen_at,
+                        last_seen_at,
+                        holdout_accessed,
+                        holdout_access_count
+                    FROM research_runs
+                    WHERE research_run_id = :run_id
+                """),
+                {"run_id": run_id},
+            ).mappings().first()
+    except Exception:
+        return None
 
 
 # =========================================================
@@ -541,113 +636,28 @@ else:
 
 
 # =========================================================
+# STAGE 1 VALIDATION
+# =========================================================
+
+render_stage1_section(
+    strategy_id,
+    backtests,
+    load_equity=load_backtest_equity,
+    load_run_row=load_research_run,
+)
+
+
+# =========================================================
 # BACKTEST VS PAPER
 # =========================================================
 
-st.markdown("### Backtest vs Paper")
-
-if backtests.empty:
-
-    st.info(
-        "No QuantConnect backtests have been synced yet."
-    )
-
-else:
-
-    latest_backtest = backtests.iloc[0]
-
-    comparison = pd.DataFrame(
-        {
-            "Metric": [
-                "CAGR",
-                "Sharpe",
-                "Sortino",
-                "Max Drawdown",
-                "Net Profit",
-                "Alpha",
-                "Beta",
-                "Win Rate",
-                "Trades",
-            ],
-            "Backtest": [
-                fmt_pct(
-                    latest_backtest["cagr"]
-                ),
-                fmt_num(
-                    latest_backtest["sharpe_ratio"]
-                ),
-                fmt_num(
-                    latest_backtest["sortino_ratio"]
-                ),
-                fmt_pct(
-                    latest_backtest[
-                        "max_drawdown"
-                    ]
-                ),
-                fmt_pct(
-                    latest_backtest[
-                        "net_profit"
-                    ]
-                ),
-                fmt_num(
-                    latest_backtest["alpha"]
-                ),
-                fmt_num(
-                    latest_backtest["beta"]
-                ),
-                fmt_pct(
-                    latest_backtest["win_rate"]
-                ),
-                latest_backtest[
-                    "trade_count"
-                ],
-            ],
-            "Paper": [
-                "—",
-                "—",
-                "—",
-                (
-                    fmt_pct(
-                        snapshot["drawdown"]
-                    )
-                    if snapshot
-                    else "—"
-                ),
-                (
-                    fmt_pct(
-                        snapshot["total_return"]
-                    )
-                    if snapshot
-                    else "—"
-                ),
-                "—",
-                "—",
-                "—",
-                len(trades),
-            ],
-        }
-    )
-
-    st.caption(
-        f"Latest backtest: "
-        f"{latest_backtest['name']}"
-    )
-
-    st.dataframe(
-        comparison,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-    with st.expander(
-        "Backtest History"
-    ):
-
-        st.dataframe(
-            backtests,
-            use_container_width=True,
-            hide_index=True,
-        )
+render_backtest_vs_paper(
+    backtests,
+    snapshot,
+    trades,
+    fmt_num,
+    fmt_pct,
+)
 
 
 # =========================================================
