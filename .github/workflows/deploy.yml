@@ -1,0 +1,48 @@
+name: Deploy FMP Dashboard
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+
+      - name: Deploy to DigitalOcean
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+            set -e
+
+            cd /root/FMP_SCREENER
+
+            echo "Fetching latest code..."
+            git fetch origin main
+
+            echo "Updating server..."
+            git pull --ff-only origin main
+
+            echo "Activating virtual environment..."
+            source venv/bin/activate
+
+            if [ -f requirements.txt ]; then
+              echo "Updating dependencies..."
+              pip install -r requirements.txt
+            fi
+
+            echo "Deployment complete."
+          EOF
