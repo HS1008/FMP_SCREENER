@@ -34,6 +34,21 @@ Primary experiment metadata comes from QuantConnect `parameterSet`.
 Backtest name parsing (`S1__strategy__run__type__window__seq`) is fallback
 only.
 
+Legacy backtests missing `backtest_start` / `backtest_end` get **one**
+`/backtests/read` to store official `backtestStart` / `backtestEnd`. They
+are never converted into Stage 1 rows. Once dates are stored they are not
+re-read on later syncs. That is how historical SPYTrend full-history
+runs become `EXPOSED_PRIOR_TO_STAGE1`.
+
+`research_runs` is authoritative for progress (`expected_experiment_count`,
+`run_status`, completed/failed/skipped). Import an orchestrator
+`run_summary.json` so a locally skipped OOS test does not leave the
+monitor at 80/81 `IN_PROGRESS`:
+
+```bash
+python -m jobs.sync_quantconnect --backtests-only --import-run-summary path/to/run_summary.json
+```
+
 Canonical metric storage:
 
 - CAGR / drawdown / net profit / win rate / PSR = **decimal** (`0.12` = 12%)

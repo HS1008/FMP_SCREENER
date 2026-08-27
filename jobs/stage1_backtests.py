@@ -104,6 +104,91 @@ def needs_detail_read(existing: dict[str, Any] | None, backtest: dict[str, Any])
     return False
 
 
+def needs_legacy_date_hydration(
+    existing: dict[str, Any] | None,
+    backtest: dict[str, Any] | None = None,
+) -> bool:
+    """One /backtests/read when a legacy row is missing official simulation dates."""
+    name = ""
+    if backtest:
+        name = str(backtest.get("name") or "")
+    if not name and existing:
+        name = str(existing.get("name") or "")
+    if is_stage1_name(name):
+        return False
+    if existing and existing.get("backtest_start") and existing.get("backtest_end"):
+        return False
+    return True
+
+
+def _parameter_set(detail: dict[str, Any] | None) -> dict[str, Any]:
+    detail = detail or {}
+    for key in ("parameterSet", "parameters", "ParameterSet"):
+        value = detail.get(key)
+        if isinstance(value, dict):
+            return value
+    nested = detail.get("backtest")
+    if isinstance(nested, dict):
+        for key in ("parameterSet", "parameters"):
+            value = nested.get(key)
+            if isinstance(value, dict):
+                return value
+    return {}
+
+
+def legacy_hydration_fields(detail: dict[str, Any] | None) -> dict[str, Any]:
+    """Official dates (and optional parameterSet) for a non-Stage-1 backtest.
+
+    Does not attach Stage 1 research metadata.
+    """
+    dates = qc_simulation_dates(detail or {})
+    params = _parameter_set(detail)
+    strategy_params = {
+        key: value
+        for key, value in params.items()
+        if not str(key).startswith("research_")
+    }
+    return {
+        "backtest_start": dates["backtest_start"],
+        "backtest_end": dates["backtest_end"],
+        "parameters_json": strategy_params or None,
+        "research_suite_version": None,
+        "research_run_id": None,
+        "research_test_type": None,
+    }
+
+
+def hydrate_legacy_and_classify(
+    list_row: dict[str, Any],
+    detail: dict[str, Any],
+    *,
+    holdout_start: Any,
+    holdout_end: Any,
+    strategy_id: str | None = None,
+    research_lineage_id: str | None = None,
+) -> dict[str, Any]:
+    """Apply one detail read to a dateless legacy row and classify holdout exposure."""
+    from qc_research.holdout import classify_rows
+
+    fields = legacy_hydration_fields(detail)
+    stored = dict(list_row)
+    stored["backtest_start"] = fields["backtest_start"]
+    stored["backtest_end"] = fields["backtest_end"]
+    if fields.get("parameters_json"):
+        stored["parameters_json"] = fields["parameters_json"]
+    stored["research_suite_version"] = None
+    stored["research_run_id"] = None
+    stored["research_test_type"] = None
+    classified = classify_rows(
+        [stored],
+        holdout_start=holdout_start,
+        holdout_end=holdout_end,
+        strategy_id=strategy_id or stored.get("strategy_id"),
+        research_lineage_id=research_lineage_id or strategy_id or stored.get("strategy_id"),
+    )
+    return {"stored": stored, "classified": classified}
+
+
 def merge_stage1_lightweight_metrics(
     existing: dict[str, Any] | None,
     incoming: dict[str, Any] | None,
@@ -488,3 +573,213 @@ def audit_holdout_exposures(conn, strategy_id: str) -> dict[str, Any] | None:
         {"status": classified["status"], "strategy_id": strategy_id, "lineage": lineage},
     )
     return classified
+
+
+IN_PROGRESS = "IN_PROGRESS"
+COMPLETE = "COMPLETE"
+INCOMPLETE = "INCOMPLETE"
+
+
+def compute_research_run_progress(
+    *,
+    expected: int | None,
+    row_statuses: list[str],
+    orchestrator_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Authoritative progress for research_runs.
+
+    80/81 stays IN_PROGRESS until the orchestrator summary finalizes skipped
+    experiments. PASS/WATCH/FAIL are not assigned here.
+    """
+    completed = 0
+    failed = 0
+    db_skipped = 0
+    for raw in row_statuses:
+        status = str(raw or "").lower()
+        if "completed" in status or status == "dry_run":
+            completed += 1
+        elif "fail" in status or "error" in status:
+            failed += 1
+        elif status == "skipped":
+            db_skipped += 1
+    summary = orchestrator_summary or {}
+    skipped = int(summary.get("skipped_count") if summary.get("skipped_count") is not None else db_skipped)
+    synced = len(row_statuses)
+    expected_count = expected
+    if expected_count is None and summary.get("expected_experiment_count") is not None:
+        expected_count = int(summary.get("expected_experiment_count"))
+    terminal = completed + failed + skipped
+    summary_status = str(summary.get("run_status") or "")
+    if summary_status in {COMPLETE, INCOMPLETE}:
+        run_status = summary_status
+    elif expected_count and terminal < int(expected_count):
+        run_status = IN_PROGRESS
+    elif expected_count and terminal >= int(expected_count):
+        if failed or skipped or completed < int(expected_count):
+            run_status = INCOMPLETE
+        else:
+            run_status = COMPLETE
+    else:
+        run_status = IN_PROGRESS
+    return {
+        "expected_experiment_count": expected_count,
+        "synced_experiment_count": synced,
+        "completed_count": completed,
+        "failed_count": failed,
+        "skipped_count": skipped,
+        "run_status": run_status,
+    }
+
+
+def apply_run_summary(conn, payload: dict[str, Any]) -> None:
+    """Upsert compact orchestrator run_summary.json into research_runs."""
+    if not payload or not payload.get("research_run_id"):
+        raise ValueError("run summary is missing research_run_id")
+    run_id = payload["research_run_id"]
+    conn.execute(
+        text(
+            """
+            INSERT INTO research_runs (
+                research_run_id,
+                strategy_id,
+                suite_version,
+                git_commit,
+                first_seen_at,
+                last_seen_at,
+                expected_experiment_count,
+                synced_experiment_count,
+                completed_count,
+                failed_count,
+                skipped_count,
+                run_status,
+                parent_research_run_id,
+                source_research_run_id,
+                orchestrator_summary_json
+            )
+            VALUES (
+                :research_run_id,
+                :strategy_id,
+                'S1',
+                :git_commit,
+                NOW(),
+                NOW(),
+                :expected_experiment_count,
+                :synced_experiment_count,
+                :completed_count,
+                :failed_count,
+                :skipped_count,
+                :run_status,
+                :parent_research_run_id,
+                :source_research_run_id,
+                CAST(:summary AS jsonb)
+            )
+            ON CONFLICT (research_run_id)
+            DO UPDATE SET
+                last_seen_at = NOW(),
+                expected_experiment_count = COALESCE(
+                    EXCLUDED.expected_experiment_count,
+                    research_runs.expected_experiment_count
+                ),
+                synced_experiment_count = EXCLUDED.synced_experiment_count,
+                completed_count = EXCLUDED.completed_count,
+                failed_count = EXCLUDED.failed_count,
+                skipped_count = EXCLUDED.skipped_count,
+                run_status = EXCLUDED.run_status,
+                parent_research_run_id = COALESCE(
+                    EXCLUDED.parent_research_run_id,
+                    research_runs.parent_research_run_id
+                ),
+                source_research_run_id = COALESCE(
+                    EXCLUDED.source_research_run_id,
+                    research_runs.source_research_run_id
+                ),
+                orchestrator_summary_json = COALESCE(
+                    EXCLUDED.orchestrator_summary_json,
+                    research_runs.orchestrator_summary_json
+                )
+            """
+        ),
+        {
+            "research_run_id": run_id,
+            "strategy_id": payload.get("strategy_id") or "",
+            "git_commit": payload.get("git_commit"),
+            "expected_experiment_count": payload.get("expected_experiment_count"),
+            "synced_experiment_count": payload.get("synced_experiment_count"),
+            "completed_count": payload.get("completed_count"),
+            "failed_count": payload.get("failed_count"),
+            "skipped_count": payload.get("skipped_count"),
+            "run_status": payload.get("run_status"),
+            "parent_research_run_id": payload.get("parent_research_run_id"),
+            "source_research_run_id": payload.get("source_research_run_id"),
+            "summary": json_param(payload),
+        },
+    )
+
+
+def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]]:
+    """Recompute research_runs progress after a backtest sync."""
+    run_rows = conn.execute(
+        text(
+            """
+            SELECT
+                research_run_id,
+                expected_experiment_count,
+                orchestrator_summary_json,
+                run_status
+            FROM research_runs
+            WHERE strategy_id = :strategy_id
+            """
+        ),
+        {"strategy_id": strategy_id},
+    ).mappings()
+    runs = {row["research_run_id"]: dict(row) for row in run_rows}
+    backtest_rows = conn.execute(
+        text(
+            """
+            SELECT research_run_id, status
+            FROM backtests
+            WHERE strategy_id = :strategy_id
+              AND research_run_id IS NOT NULL
+            """
+        ),
+        {"strategy_id": strategy_id},
+    ).mappings()
+    by_run: dict[str, list[str]] = {}
+    for row in backtest_rows:
+        by_run.setdefault(row["research_run_id"], []).append(str(row.get("status") or ""))
+    updated = []
+    run_ids = set(runs) | set(by_run)
+    for run_id in run_ids:
+        meta = runs.get(run_id) or {}
+        summary = meta.get("orchestrator_summary_json") or {}
+        if isinstance(summary, str):
+            try:
+                summary = json.loads(summary)
+            except ValueError:
+                summary = {}
+        progress = compute_research_run_progress(
+            expected=meta.get("expected_experiment_count"),
+            row_statuses=by_run.get(run_id) or [],
+            orchestrator_summary=summary if isinstance(summary, dict) else {},
+        )
+        conn.execute(
+            text(
+                """
+                UPDATE research_runs
+                SET
+                    synced_experiment_count = :synced_experiment_count,
+                    completed_count = :completed_count,
+                    failed_count = :failed_count,
+                    skipped_count = :skipped_count,
+                    run_status = :run_status
+                WHERE research_run_id = :research_run_id
+                """
+            ),
+            {
+                "research_run_id": run_id,
+                **progress,
+            },
+        )
+        updated.append({"research_run_id": run_id, **progress})
+    return updated
+

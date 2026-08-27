@@ -11,14 +11,18 @@ from sqlalchemy import text
 from db.connection import engine
 from jobs.stage1_backtests import (
     audit_holdout_exposures,
+    apply_run_summary,
     existing_backtest_map,
     equity_point_counts,
     insert_equity_points,
     json_param,
+    legacy_hydration_fields,
     list_metrics_from_summary,
     merge_stage1_lightweight_metrics,
     needs_detail_read,
     needs_equity_curve,
+    needs_legacy_date_hydration,
+    refresh_research_run_progress,
     stage1_upsert_fields,
     upsert_research_run,
 )
@@ -37,11 +41,13 @@ QC_API_TOKEN = os.getenv("QC_API_TOKEN")
 
 BASE_URL = "https://www.quantconnect.com/api/v2"
 
-if not QC_USER_ID or not QC_API_TOKEN:
-    raise RuntimeError(
-        "Missing QuantConnect credentials. "
-        "Add QC_USER_ID and QC_API_TOKEN to .env"
-    )
+
+def require_credentials():
+    if not QC_USER_ID or not QC_API_TOKEN:
+        raise RuntimeError(
+            "Missing QuantConnect credentials. "
+            "Add QC_USER_ID and QC_API_TOKEN to .env"
+        )
 
 
 # =========================================================
@@ -87,6 +93,7 @@ ORDER_DIRECTIONS = {
 # =========================================================
 
 def get_headers():
+    require_credentials()
     timestamp = str(int(time()))
 
     token = f"{QC_API_TOKEN}:{timestamp}".encode("utf-8")
@@ -1270,6 +1277,75 @@ LEGACY_UPSERT_SQL = """
 """
 
 
+LEGACY_DATE_UPSERT_SQL = """
+    INSERT INTO backtests (
+        backtest_id,
+        strategy_id,
+        qc_project_id,
+        name,
+        status,
+        created_at,
+        sharpe_ratio,
+        sortino_ratio,
+        alpha,
+        beta,
+        cagr,
+        max_drawdown,
+        net_profit,
+        win_rate,
+        loss_rate,
+        trade_count,
+        psr,
+        synced_at,
+        backtest_start,
+        backtest_end,
+        parameters_json
+    )
+    VALUES (
+        :backtest_id,
+        :strategy_id,
+        :qc_project_id,
+        :name,
+        :status,
+        :created_at,
+        :sharpe_ratio,
+        :sortino_ratio,
+        :alpha,
+        :beta,
+        :cagr,
+        :max_drawdown,
+        :net_profit,
+        :win_rate,
+        :loss_rate,
+        :trade_count,
+        :psr,
+        NOW(),
+        :backtest_start,
+        :backtest_end,
+        CAST(:parameters_json AS jsonb)
+    )
+    ON CONFLICT (backtest_id)
+    DO UPDATE SET
+        name = EXCLUDED.name,
+        status = EXCLUDED.status,
+        sharpe_ratio = EXCLUDED.sharpe_ratio,
+        sortino_ratio = EXCLUDED.sortino_ratio,
+        alpha = EXCLUDED.alpha,
+        beta = EXCLUDED.beta,
+        cagr = EXCLUDED.cagr,
+        max_drawdown = EXCLUDED.max_drawdown,
+        net_profit = EXCLUDED.net_profit,
+        win_rate = EXCLUDED.win_rate,
+        loss_rate = EXCLUDED.loss_rate,
+        trade_count = EXCLUDED.trade_count,
+        psr = EXCLUDED.psr,
+        synced_at = NOW(),
+        backtest_start = COALESCE(EXCLUDED.backtest_start, backtests.backtest_start),
+        backtest_end = COALESCE(EXCLUDED.backtest_end, backtests.backtest_end),
+        parameters_json = COALESCE(EXCLUDED.parameters_json, backtests.parameters_json)
+"""
+
+
 def _legacy_metric_payload(backtest):
     metrics = list_metrics_from_summary(backtest)
     return {
@@ -1391,6 +1467,27 @@ def sync_backtests(
             elif is_stage1_name(name) and row_existing and row_existing.get("research_run_id"):
                 merged = merge_stage1_lightweight_metrics(row_existing, metrics)
                 conn.execute(text(STAGE1_LIGHTWEIGHT_UPSERT_SQL), {**base, **merged})
+            elif needs_legacy_date_hydration(row_existing, backtest):
+                try:
+                    detail_result = get_backtest_detail(project_id, backtest_id)
+                    detail_reads += 1
+                    detail = detail_result.get("backtest") or detail_result
+                    dates = legacy_hydration_fields(detail)
+                    conn.execute(
+                        text(LEGACY_DATE_UPSERT_SQL),
+                        {
+                            **base,
+                            "backtest_start": dates.get("backtest_start"),
+                            "backtest_end": dates.get("backtest_end"),
+                            "parameters_json": json_param(dates.get("parameters_json")),
+                        },
+                    )
+                except Exception as exc:
+                    print(
+                        "Legacy date hydration failed for "
+                        f"{name} ({backtest_id}): {exc}"
+                    )
+                    conn.execute(text(LEGACY_UPSERT_SQL), base)
             else:
                 conn.execute(text(LEGACY_UPSERT_SQL), base)
 
@@ -1431,6 +1528,10 @@ def sync_backtests(
             audit_holdout_exposures(conn, strategy_id)
         except Exception as exc:
             print(f"Holdout exposure audit skipped: {exc}")
+        try:
+            refresh_research_run_progress(conn, strategy_id)
+        except Exception as exc:
+            print(f"Research run progress refresh skipped: {exc}")
 
     print(
         f"Backtest sync: {len(backtests)} listed, "
@@ -1503,7 +1604,23 @@ def parse_args(argv=None):
         action="store_true",
         help="Skip live APIs; sync research/legacy backtests only.",
     )
+    parser.add_argument(
+        "--import-run-summary",
+        metavar="PATH",
+        default=None,
+        help=(
+            "Import an orchestrator run_summary.json so skipped/no-QC "
+            "experiments update research_runs instead of leaving 80/81 "
+            "IN_PROGRESS."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def migration_failure_exit_code(migration_error, sync_backtests_requested: bool):
+    if migration_error and sync_backtests_requested:
+        return 1
+    return None
 
 
 def main(argv=None):
@@ -1522,14 +1639,32 @@ def main(argv=None):
         migration_error = exc
         print(f"WARNING: migrations were not applied: {exc}")
 
-    if migration_error and sync_bts:
+    blocked = migration_failure_exit_code(migration_error, sync_bts)
+    if blocked is not None:
         print(
             "ERROR: Stage 1 backtest sync requires a successful migration. "
             "Refusing to continue and downgrade Stage 1 rows to legacy upserts."
         )
-        return 1
+        return blocked
     if migration_error and not sync_bts:
         print("WARNING: continuing --live-only without Stage 1 schema updates.")
+
+    if args.import_run_summary:
+        summary_path = args.import_run_summary
+        try:
+            import json as json_mod
+
+            with open(summary_path, encoding="utf-8") as handle:
+                payload = json_mod.load(handle)
+            with engine.begin() as conn:
+                apply_run_summary(conn, payload)
+                strategy_id = payload.get("strategy_id")
+                if strategy_id:
+                    refresh_research_run_progress(conn, strategy_id)
+            print("Imported orchestrator run summary: {0}".format(summary_path))
+        except Exception as exc:
+            print("ERROR: failed to import run summary {0}: {1}".format(summary_path, exc))
+            return 1
 
     strategies = get_strategies()
 
@@ -1745,6 +1880,8 @@ def main(argv=None):
             backtest_count,
         )
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

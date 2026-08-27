@@ -2,7 +2,9 @@ import pandas as pd
 import pytest
 
 from qc_research.aggregation import (
+    COMPLETE,
     IN_PROGRESS,
+    INCOMPLETE,
     assess_stage1,
     holdout_access_count,
     legacy_backtests,
@@ -22,7 +24,14 @@ from qc_research.parsing import (
     parse_percent_to_decimal,
 )
 from jobs.apply_migrations import pending_migration_files
-from jobs.stage1_backtests import merge_stage1_lightweight_metrics, stage1_upsert_fields
+from jobs.stage1_backtests import (
+    compute_research_run_progress,
+    hydrate_legacy_and_classify,
+    legacy_hydration_fields,
+    merge_stage1_lightweight_metrics,
+    needs_legacy_date_hydration,
+    stage1_upsert_fields,
+)
 
 
 def test_parameter_set_splits_research_from_strategy_params():
@@ -592,14 +601,23 @@ def test_in_progress_monitor_is_not_fail():
                 "research_test_type": "BASELINE_DEV",
                 "status": "completed",
                 "sharpe_ratio": 0.5,
-                "expected_experiment_count": 81,
                 "parameters_json": {"sma_period": 200},
             }
         ]
     )
-    result = assess_stage1(df)
+    research_run = {
+        "research_run_id": "r",
+        "expected_experiment_count": 81,
+        "synced_experiment_count": 1,
+        "completed_count": 1,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "run_status": "IN_PROGRESS",
+    }
+    result = assess_stage1(df, research_run=research_run)
     assert result["run_status"] == IN_PROGRESS
     assert result["label"] == IN_PROGRESS
+    assert "expected_experiment_count" not in df.columns
 
 
 def test_drawdown_worst_is_minimum():
@@ -607,3 +625,253 @@ def test_drawdown_worst_is_minimum():
     assert parse_drawdown_to_decimal("20%") == -0.20
     assert parse_drawdown_to_decimal("30%") == -0.30
     assert min([-0.10, -0.20, -0.30]) == -0.30
+
+
+LOAD_BACKTESTS_COLUMNS = [
+    "backtest_id",
+    "strategy_id",
+    "name",
+    "status",
+    "created_at",
+    "sharpe_ratio",
+    "sortino_ratio",
+    "alpha",
+    "beta",
+    "cagr",
+    "max_drawdown",
+    "net_profit",
+    "win_rate",
+    "loss_rate",
+    "trade_count",
+    "psr",
+    "research_suite_version",
+    "research_run_id",
+    "research_experiment_id",
+    "research_test_type",
+    "research_phase",
+    "research_window_id",
+    "research_git_commit",
+    "research_is_holdout",
+    "research_dirty",
+    "train_start",
+    "train_end",
+    "test_start",
+    "test_end",
+    "parameters_json",
+    "objective_name",
+    "objective_value",
+    "raw_statistics_json",
+    "research_guide_json",
+    "research_thresholds_json",
+    "research_primary_parameter",
+    "research_selection_summary_json",
+    "research_lineage_id",
+    "economic_parameter_count",
+    "research_metadata_count",
+    "backtest_start",
+    "backtest_end",
+    "error_message",
+]
+
+
+def _monitor_backtest_row(**overrides):
+    row = {column: None for column in LOAD_BACKTESTS_COLUMNS}
+    row.update(
+        {
+            "strategy_id": "SPYTrend",
+            "research_suite_version": "S1",
+            "research_run_id": "r",
+            "status": "Completed.",
+            "research_is_holdout": False,
+            "parameters_json": {"sma_period": 200},
+        }
+    )
+    row.update(overrides)
+    return row
+
+
+def _monitor_research_run(**overrides):
+    row = {
+        "research_run_id": "r",
+        "strategy_id": "SPYTrend",
+        "suite_version": "S1",
+        "git_commit": "abc123",
+        "dirty": False,
+        "first_seen_at": None,
+        "last_seen_at": None,
+        "holdout_accessed": False,
+        "holdout_access_count": 0,
+        "config_json": None,
+        "research_lineage_id": "SPYTrend",
+        "expected_experiment_count": 81,
+        "synced_experiment_count": 0,
+        "completed_count": 0,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "run_status": "IN_PROGRESS",
+        "holdout_exposure_status": None,
+        "holdout_start": "2023-01-01",
+        "holdout_end": "2026-08-27",
+    }
+    row.update(overrides)
+    return row
+
+
+def test_legacy_dateless_row_hydrates_and_classifies_exposed_prior():
+    list_row = {
+        "backtest_id": "legacy-full",
+        "name": "SPYTrend full history",
+        "strategy_id": "SPYTrend",
+        "status": "Completed.",
+        "backtest_start": None,
+        "backtest_end": None,
+        "research_suite_version": None,
+        "research_run_id": None,
+        "research_test_type": None,
+    }
+    assert needs_legacy_date_hydration(list_row, list_row) is True
+    detail = {
+        "name": "SPYTrend full history",
+        "backtestStart": "2010-01-01T00:00:00Z",
+        "backtestEnd": "2026-08-25T00:00:00Z",
+        "parameterSet": {"sma_period": "200", "start_date": "2010-01-01", "end_date": "2026-08-25"},
+    }
+    fields = legacy_hydration_fields(detail)
+    assert fields["backtest_start"].year == 2010
+    assert fields["backtest_end"].year == 2026
+    assert fields["research_run_id"] is None
+    result = hydrate_legacy_and_classify(
+        list_row,
+        detail,
+        holdout_start="2023-01-01",
+        holdout_end="2026-08-27",
+        strategy_id="SPYTrend",
+        research_lineage_id="SPYTrend",
+    )
+    stored = result["stored"]
+    assert stored["backtest_start"].year == 2010
+    assert str(stored["backtest_end"])[:10] == "2026-08-25"
+    assert stored["research_suite_version"] is None
+    classified = result["classified"]
+    assert classified["status"] == STATUS_EXPOSED_PRIOR_TO_STAGE1
+    assert classified["legacy_overlap_count"] == 1
+    populated = dict(stored)
+    assert needs_legacy_date_hydration(populated, {"name": populated["name"]}) is False
+
+
+def test_progress_uses_research_run_not_dataframe_column():
+    cases = [
+        (1, IN_PROGRESS),
+        (40, IN_PROGRESS),
+        (80, IN_PROGRESS),
+    ]
+    for n, expected_status in cases:
+        rows = [
+            _monitor_backtest_row(
+                backtest_id="bt-{0}".format(i),
+                research_test_type="PARAM_SENS" if i else "BASELINE_DEV",
+            )
+            for i in range(n)
+        ]
+        df = pd.DataFrame(rows)
+        assert "expected_experiment_count" not in df.columns
+        research_run = _monitor_research_run(
+            synced_experiment_count=n,
+            completed_count=n,
+            run_status="IN_PROGRESS",
+        )
+        result = assess_stage1(df, research_run=research_run)
+        assert result["run_status"] == expected_status
+        assert result["label"] == IN_PROGRESS
+        assert result["label"] not in {"PASS", "WATCH", "FAIL"}
+
+    complete_rows = [
+        _monitor_backtest_row(
+            backtest_id="bt-{0}".format(i),
+            research_test_type="BASELINE_DEV",
+            sharpe_ratio=0.5,
+        )
+        for i in range(81)
+    ]
+    df = pd.DataFrame(complete_rows)
+    research_run = _monitor_research_run(
+        synced_experiment_count=81,
+        completed_count=81,
+        run_status="COMPLETE",
+    )
+    result = assess_stage1(df, research_run=research_run)
+    assert result["run_status"] == COMPLETE
+    assert result["label"] in {"PASS", "WATCH", "FAIL", COMPLETE}
+
+
+def test_skipped_oos_finalizes_incomplete_via_run_summary():
+    rows = [
+        _monitor_backtest_row(backtest_id="bt-{0}".format(i), research_test_type="WFO_TEST")
+        for i in range(80)
+    ]
+    df = pd.DataFrame(rows)
+    assert "expected_experiment_count" not in df.columns
+    still_open = assess_stage1(
+        df,
+        research_run=_monitor_research_run(
+            synced_experiment_count=80,
+            completed_count=80,
+            skipped_count=0,
+            run_status="IN_PROGRESS",
+        ),
+    )
+    assert still_open["run_status"] == IN_PROGRESS
+    summary = {
+        "research_run_id": "r",
+        "expected_experiment_count": 81,
+        "completed_count": 80,
+        "failed_count": 0,
+        "skipped_count": 1,
+        "run_status": "INCOMPLETE",
+    }
+    progress = compute_research_run_progress(
+        expected=81,
+        row_statuses=["Completed."] * 80,
+        orchestrator_summary=summary,
+    )
+    assert progress["run_status"] == INCOMPLETE
+    assert progress["skipped_count"] == 1
+    finalized = assess_stage1(
+        df,
+        research_run=_monitor_research_run(
+            synced_experiment_count=80,
+            completed_count=80,
+            skipped_count=1,
+            run_status="INCOMPLETE",
+        ),
+    )
+    assert finalized["run_status"] == INCOMPLETE
+    assert finalized["label"] == INCOMPLETE
+
+
+def test_migration_failure_exits_nonzero_when_backtests_requested():
+    from jobs.sync_quantconnect import migration_failure_exit_code
+    from pathlib import Path
+
+    source = Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py"
+    text = source.read_text(encoding="utf-8")
+    assert "raise SystemExit(main())" in text
+    assert migration_failure_exit_code(RuntimeError("boom"), True) == 1
+    assert migration_failure_exit_code(RuntimeError("boom"), False) is None
+    assert migration_failure_exit_code(None, True) is None
+
+
+def test_backtest_cron_installer_uses_nonblocking_flock():
+    from pathlib import Path
+
+    script = (
+        Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "install_backtest_sync_cron.sh"
+    )
+    text = script.read_text(encoding="utf-8")
+    assert "flock -n" in text
+    assert "--backtests-only" in text
+    assert "live" in text.lower()
+    assert "not modified" in text.lower()
+

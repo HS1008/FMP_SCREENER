@@ -434,26 +434,24 @@ def parameter_robustness_summary(
     }
 
 
-def assess_stage1(run_df: pd.DataFrame, thresholds: dict[str, Any] | None = None) -> dict[str, Any]:
+def assess_stage1(
+    run_df: pd.DataFrame,
+    thresholds: dict[str, Any] | None = None,
+    research_run: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     thresholds = dict(DEFAULT_THRESHOLDS if not thresholds else {**DEFAULT_THRESHOLDS, **thresholds})
     baseline = _first_row(run_df, "BASELINE_DEV")
     validation = _first_row(run_df, "VALIDATION")
     holdout = _first_row(run_df, "FINAL_HOLDOUT")
     param_sens = filter_test_type(run_df, "PARAM_SENS")
     robustness = parameter_robustness_summary(param_sens, run_df=run_df)
+    run_meta = dict(research_run or {})
     expected_wfo = None
-    if run_df is not None and not run_df.empty and "expected_experiment_count" in run_df.columns:
-        pass
     wfo = walk_forward_aggregates(run_df, include_holdout=False, expected_wfo_windows=expected_wfo)
 
     expected = None
-    if run_df is not None and not run_df.empty:
-        for column in ("expected_experiment_count",):
-            if column in run_df.columns:
-                values = pd.to_numeric(run_df[column], errors="coerce").dropna()
-                if not values.empty:
-                    expected = int(values.iloc[0])
-                    break
+    if run_meta.get("expected_experiment_count") is not None:
+        expected = int(run_meta.get("expected_experiment_count"))
     synced = int(len(run_df)) if run_df is not None else 0
     completed = 0
     failed = 0
@@ -463,12 +461,28 @@ def assess_stage1(run_df: pd.DataFrame, thresholds: dict[str, Any] | None = None
         completed = int(status.str.contains("completed").sum())
         failed = int(status.str.contains("error|fail").sum())
         skipped = int(status.eq("skipped").sum())
-    if expected and synced < expected:
+    if run_meta.get("skipped_count") is not None:
+        skipped = max(skipped, int(run_meta.get("skipped_count") or 0))
+    if run_meta.get("completed_count") is not None and run_meta.get("expected_experiment_count") is not None:
+        completed = max(completed, int(run_meta.get("completed_count") or 0))
+    if run_meta.get("failed_count") is not None:
+        failed = max(failed, int(run_meta.get("failed_count") or 0))
+    if run_meta.get("synced_experiment_count") is not None:
+        synced = max(synced, int(run_meta.get("synced_experiment_count") or 0))
+
+    authoritative_status = str(run_meta.get("run_status") or "")
+    if authoritative_status == IN_PROGRESS:
         run_status = IN_PROGRESS
-    elif failed or skipped or (expected and completed < expected):
-        run_status = INCOMPLETE if expected and synced >= expected else (IN_PROGRESS if expected else COMPLETE)
+    elif authoritative_status in {COMPLETE, INCOMPLETE}:
+        run_status = authoritative_status
+    elif expected and (completed + failed + skipped) < expected:
+        run_status = IN_PROGRESS
+    elif expected and (failed or skipped or completed < expected):
+        run_status = INCOMPLETE
+    elif expected and completed >= expected:
+        run_status = COMPLETE
     else:
-        run_status = COMPLETE if not expected or synced >= expected else IN_PROGRESS
+        run_status = IN_PROGRESS if expected else COMPLETE
 
     validation_sharpe = _num(validation, "sharpe_ratio") if validation is not None else None
     is_sharpe = robustness.get("selected_sharpe") or robustness.get("selected_objective")
@@ -514,7 +528,15 @@ def assess_stage1(run_df: pd.DataFrame, thresholds: dict[str, Any] | None = None
         )
     add(
         "parameter_neighborhood",
-        robustness.get("robustness_label") not in {"isolated_peak", "weak_objective", "insufficient_data", None},
+        robustness.get("robustness_label")
+        not in {
+            "isolated_peak",
+            "weak_objective",
+            "insufficient_data",
+            "incomplete_grid",
+            "multi_dim_best_objective_only",
+            None,
+        },
         "Robustness classification: {0}".format(robustness.get("robustness_label")),
     )
     frac = wfo.get("profitable_fraction")
@@ -548,6 +570,8 @@ def assess_stage1(run_df: pd.DataFrame, thresholds: dict[str, Any] | None = None
         label = INCOMPLETE
     else:
         label = FAIL if hard else (WATCH if neighborhood_failed else PASS)
+        if robustness.get("robustness_label") == "multi_dim_best_objective_only" and label == PASS:
+            label = WATCH
 
     return {
         "label": label,
@@ -568,7 +592,8 @@ def assess_stage1(run_df: pd.DataFrame, thresholds: dict[str, Any] | None = None
         "thresholds": thresholds,
         "note": (
             "PASS/WATCH/FAIL is assigned only to COMPLETE suites. "
-            "In-progress research is not FAIL. Holdout is not used for the label."
+            "In-progress research is not FAIL. Holdout is not used for the label. "
+            "research_runs is authoritative for expected count and run_status."
         ),
     }
 

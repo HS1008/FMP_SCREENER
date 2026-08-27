@@ -102,8 +102,9 @@ ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS run_status VARCHAR(32);
 ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS holdout_exposure_status VARCHAR(64);
 ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS holdout_start DATE;
 ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS holdout_end DATE;
-ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS config_fingerprint VARCHAR(64);
-ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS plan_fingerprint VARCHAR(64);
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS parent_research_run_id VARCHAR(128);
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS source_research_run_id VARCHAR(128);
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS orchestrator_summary_json JSONB;
 
 CREATE TABLE IF NOT EXISTS holdout_exposures (
     id BIGSERIAL PRIMARY KEY,

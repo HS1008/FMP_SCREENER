@@ -223,11 +223,11 @@ def render_stage1_section(
         ]
     )
     with tabs[0]:
-        render_summary(run_df, holdout_flag, holdout_count)
+        render_summary(run_df, holdout_flag, holdout_count, research_run=db_run)
     with tabs[1]:
         render_split_tests(run_df)
     with tabs[2]:
-        render_parameter_robustness(run_df)
+        render_parameter_robustness(run_df, research_run=db_run)
     with tabs[3]:
         render_walk_forward(run_df)
     with tabs[4]:
@@ -252,8 +252,17 @@ def _thresholds_from_run(run_df: pd.DataFrame) -> dict[str, Any] | None:
     return None
 
 
-def render_summary(run_df: pd.DataFrame, holdout_flag: bool, holdout_count: int):
-    assessment = assess_stage1(run_df, _thresholds_from_run(run_df))
+def render_summary(
+    run_df: pd.DataFrame,
+    holdout_flag: bool,
+    holdout_count: int,
+    research_run: dict[str, Any] | None = None,
+):
+    assessment = assess_stage1(
+        run_df,
+        _thresholds_from_run(run_df),
+        research_run=research_run,
+    )
     st.markdown(f"#### Overall: **{assessment['label']}**")
     st.caption(
         assessment.get("note")
@@ -358,12 +367,16 @@ def render_split_tests(run_df: pd.DataFrame):
     st.dataframe(_metric_table(subset), use_container_width=True, hide_index=True)
 
 
-def render_parameter_robustness(run_df: pd.DataFrame):
+def render_parameter_robustness(run_df: pd.DataFrame, research_run: dict[str, Any] | None = None):
     grid = filter_test_type(run_df, "PARAM_SENS")
     if grid is None or grid.empty:
         st.info("No in-sample parameter sensitivity backtests in this run.")
         return
-    assessment = assess_stage1(run_df, _thresholds_from_run(run_df))
+    assessment = assess_stage1(
+        run_df,
+        _thresholds_from_run(run_df),
+        research_run=research_run,
+    )
     rob = assessment.get("robustness") or {}
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Primary parameter", str(rob.get("primary_parameter") or "—"))
