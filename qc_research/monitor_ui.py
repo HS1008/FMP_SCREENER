@@ -229,6 +229,7 @@ def render_stage1_section(
         "Research Run",
         run_ids,
         index=0,
+        key="strategy_monitor_research_run",
         help="Defaults to the latest Stage 1 run for this strategy.",
     )
     run_df = stage[stage["research_run_id"].astype(str) == selected_run].copy()
@@ -869,7 +870,11 @@ def render_all_backtests(run_df: pd.DataFrame, load_equity):
         f"{row.get('name')} ({row.get('backtest_id')})"
         for _, row in filtered.iterrows()
     ]
-    choice = st.selectbox("Selected backtest", labels)
+    choice = st.selectbox(
+        "Selected backtest",
+        labels,
+        key="strategy_monitor_experiment_backtest",
+    )
     selected = filtered.iloc[labels.index(choice)]
     st.markdown(f"**{selected.get('name')}**")
     st.write(f"QuantConnect backtest ID: `{selected.get('backtest_id')}`")

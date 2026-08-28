@@ -1030,7 +1030,7 @@ def test_upsert_research_run_skips_smoke():
     )
 
 
-def test_strategy_monitor_has_smoke_section_and_30s_refresh():
+def test_strategy_monitor_has_smoke_section_and_fragment_refresh():
     from pathlib import Path
 
     monitor = (
@@ -1040,7 +1040,8 @@ def test_strategy_monitor_has_smoke_section_and_30s_refresh():
         Path(__file__).resolve().parent.parent / "qc_research" / "monitor_ui.py"
     ).read_text(encoding="utf-8")
     assert "render_smoke_section" in monitor
-    assert "30000" in monitor
+    assert '@st.fragment(run_every=LIVE_MONITOR_REFRESH)' in monitor
+    assert "window.parent.location.reload" not in monitor
     assert "### Smoke Tests" in ui
     assert "PASS/WATCH/FAIL" in ui
 

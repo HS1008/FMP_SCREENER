@@ -1,8 +1,10 @@
 import json
+import logging
+import os
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 from sqlalchemy import text
 
 from db.connection import engine
@@ -13,6 +15,12 @@ from qc_research.monitor_ui import (
 )
 
 
+logger = logging.getLogger(__name__)
+
+LIVE_MONITOR_REFRESH = "30s"
+_LAST_OK_DATA_KEY = "strategy_monitor_last_ok_data"
+
+
 st.set_page_config(
     page_title="Strategy Monitor",
     page_icon="📈",
@@ -21,20 +29,9 @@ st.set_page_config(
 
 st.title("Strategy Monitor")
 st.caption(
-    "QuantConnect strategy status, paper performance, "
-    "positions, execution, and backtest monitoring. "
-    "This page refreshes about every 30 seconds so new smoke tests appear after sync."
-)
-
-components.html(
-    """
-    <script>
-      setTimeout(function() {
-        window.parent.location.reload();
-      }, 30000);
-    </script>
-    """,
-    height=0,
+    "QuantConnect strategy status, paper performance, positions, execution, "
+    "and backtest monitoring. Live monitor data updates automatically as new "
+    "synchronized results become available."
 )
 
 
@@ -63,6 +60,36 @@ def load_strategies():
         """,
         engine,
     )
+
+
+def load_strategy_by_id(strategy_id):
+    """Reload one strategy row so fragment refreshes see updated status."""
+    rows = pd.read_sql(
+        text(
+            """
+            SELECT
+                strategy_id,
+                name,
+                environment,
+                status,
+                qc_project_id,
+                qc_deployment_id,
+                qc_research_project_id,
+                qc_research_project_name,
+                git_commit,
+                rules_json,
+                created_at,
+                updated_at
+            FROM strategies
+            WHERE strategy_id = :strategy_id
+            """
+        ),
+        engine,
+        params={"strategy_id": strategy_id},
+    )
+    if rows is None or rows.empty:
+        return None
+    return rows.iloc[0]
 
 
 def load_latest_snapshot(strategy_id):
@@ -444,8 +471,475 @@ def status_badge(status):
     return f"⚫ {status_text}"
 
 
+def _query_live_monitor_data(strategy_id, fallback_strategy):
+    """PostgreSQL reads only. Never calls QuantConnect or launches backtests."""
+    latest = load_strategy_by_id(strategy_id)
+    strategy = latest if latest is not None else fallback_strategy
+    return {
+        "strategy": strategy,
+        "snapshot": load_latest_snapshot(strategy_id),
+        "history": load_equity_history(strategy_id),
+        "positions": load_latest_positions(strategy_id),
+        "orders": load_orders(strategy_id),
+        "trades": load_trades(strategy_id),
+        "backtests": load_backtests(strategy_id),
+    }
+
+
+def _render_refresh_debug():
+    flag = str(os.environ.get("STREAMLIT_REFRESH_DEBUG") or "").strip().lower()
+    if flag not in {"1", "true", "yes", "on"}:
+        return
+    stamp = datetime.now(timezone.utc).strftime("%H:%M:%S")
+    st.caption("Monitor fragment refreshed: {0}".format(stamp))
+
+
+def _render_live_strategy_monitor(strategy_id, strategy):
+    _render_refresh_debug()
+    # A widget click inside a fragment reruns only this fragment (Streamlit 1.37+).
+    # Do not trigger a full-app rerun — that remounts the whole page.
+    st.button(
+        "Refresh now",
+        key="strategy_monitor_refresh",
+        help="Reload monitor data from PostgreSQL without reloading the page.",
+    )
+
+    cache_key = "{0}:{1}".format(_LAST_OK_DATA_KEY, strategy_id)
+    try:
+        data = _query_live_monitor_data(strategy_id, strategy)
+        st.session_state[cache_key] = data
+    except Exception:
+        logger.exception(
+            "Strategy Monitor live query failed for strategy_id=%s",
+            strategy_id,
+        )
+        st.error(
+            "Unable to refresh latest Strategy Monitor data. "
+            "Last successfully rendered data may be stale."
+        )
+        data = st.session_state.get(cache_key)
+        if not data:
+            return
+
+    strategy = data.get("strategy") if data.get("strategy") is not None else strategy
+    snapshot = data.get("snapshot")
+    history = data.get("history")
+    positions = data.get("positions")
+    orders = data.get("orders")
+    trades = data.get("trades")
+    backtests = data.get("backtests")
+    if history is None:
+        history = pd.DataFrame()
+    if positions is None:
+        positions = pd.DataFrame()
+    if orders is None:
+        orders = pd.DataFrame()
+    if trades is None:
+        trades = pd.DataFrame()
+    if backtests is None:
+        backtests = pd.DataFrame()
+
+    _render_live_monitor_body(
+        strategy_id,
+        strategy,
+        snapshot,
+        history,
+        positions,
+        orders,
+        trades,
+        backtests,
+    )
+
+
+@st.fragment(run_every=LIVE_MONITOR_REFRESH)
+def render_live_strategy_monitor_auto(strategy_id, strategy):
+    _render_live_strategy_monitor(strategy_id, strategy)
+
+
+@st.fragment
+def render_live_strategy_monitor_manual(strategy_id, strategy):
+    _render_live_strategy_monitor(strategy_id, strategy)
+
+
+def _render_live_monitor_body(
+    strategy_id,
+    strategy,
+    snapshot,
+    history,
+    positions,
+    orders,
+    trades,
+    backtests,
+):
+    # Existing Strategy Monitor body. Invoked only from the live fragment.
+
+
+    # =========================================================
+    # HEADER
+    # =========================================================
+
+    header_left, header_right = st.columns([4, 1])
+
+    with header_left:
+        st.subheader(strategy["name"])
+
+        st.caption(
+            f"{strategy['environment']}  •  "
+            f"Research Project: {strategy.get('qc_research_project_name') or '—'}  •  "
+            f"Execution Project: {strategy['strategy_id']}"
+        )
+
+    with header_right:
+        st.markdown(
+            f"### {status_badge(strategy['status'])}"
+        )
+
+
+    # =========================================================
+    # CURRENT PAPER STATE
+    # =========================================================
+
+    st.markdown("### Current Paper State")
+
+    if snapshot:
+
+        equity = snapshot["equity"]
+        cash = snapshot["cash"]
+        holdings_value = snapshot["holdings_value"]
+        total_return = snapshot["total_return"]
+        drawdown = snapshot["drawdown"]
+
+        col1, col2, col3, col4, col5 = st.columns(5)
+
+        col1.metric(
+            "Equity",
+            fmt_money(equity),
+        )
+
+        col2.metric(
+            "Cash",
+            fmt_money(cash),
+        )
+
+        col3.metric(
+            "Holdings",
+            fmt_money(holdings_value),
+        )
+
+        col4.metric(
+            "Paper Return",
+            fmt_pct(total_return),
+        )
+
+        col5.metric(
+            "Drawdown",
+            fmt_pct(drawdown),
+        )
+
+        st.caption(
+            f"Last portfolio sync: {snapshot['timestamp']}"
+        )
+
+    else:
+        st.info("No live paper snapshot available yet.")
+
+
+    # =========================================================
+    # PAPER EQUITY CURVE
+    # =========================================================
+
+    st.markdown("### Paper Performance")
+
+    if history.empty:
+        st.info("No historical paper snapshots available.")
+
+    else:
+        chart_data = history[
+            ["timestamp", "equity"]
+        ].copy()
+
+        chart_data["equity"] = pd.to_numeric(
+            chart_data["equity"],
+            errors="coerce",
+        )
+
+        chart_data = (
+            chart_data
+            .dropna()
+            .set_index("timestamp")
+        )
+
+        st.line_chart(
+            chart_data["equity"],
+            use_container_width=True,
+        )
+
+
+    # =========================================================
+    # CURRENT POSITIONS
+    # =========================================================
+
+    st.markdown("### Current Positions")
+
+    if positions.empty:
+
+        st.info("No open positions currently recorded.")
+
+    else:
+
+        display = positions.copy()
+
+        display["quantity"] = pd.to_numeric(
+            display["quantity"],
+            errors="coerce",
+        )
+
+        display["price"] = pd.to_numeric(
+            display["price"],
+            errors="coerce",
+        ).map(
+            lambda x: fmt_money(x)
+        )
+
+        display["market_value"] = pd.to_numeric(
+            display["market_value"],
+            errors="coerce",
+        ).map(
+            lambda x: fmt_money(x)
+        )
+
+        display["weight"] = pd.to_numeric(
+            display["weight"],
+            errors="coerce",
+        ).map(
+            lambda x: fmt_pct(x)
+        )
+
+        display = display[
+            [
+                "symbol",
+                "quantity",
+                "price",
+                "market_value",
+                "weight",
+            ]
+        ]
+
+        display.columns = [
+            "Symbol",
+            "Quantity",
+            "Price",
+            "Market Value",
+            "Weight",
+        ]
+
+        st.dataframe(
+            display,
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+    # =========================================================
+    # STRATEGY RULESET
+    # =========================================================
+
+    st.markdown("### Strategy Rules")
+
+    rules = parse_rules(
+        strategy["rules_json"]
+    )
+
+    if not rules:
+
+        st.info(
+            "No structured rules stored for this strategy."
+        )
+
+    else:
+
+        for key, value in rules.items():
+
+            col_rule, col_value = st.columns(
+                [1, 3]
+            )
+
+            with col_rule:
+                st.markdown(
+                    f"**{key.replace('_', ' ').title()}**"
+                )
+
+            with col_value:
+                st.write(value)
+
+
+    # =========================================================
+    # SMOKE TESTS
+    # =========================================================
+
+    render_smoke_section(
+        backtests,
+        load_equity=load_backtest_equity,
+    )
+
+
+    # =========================================================
+    # STAGE 1 VALIDATION
+    # =========================================================
+
+    render_stage1_section(
+        strategy_id,
+        backtests,
+        load_equity=load_backtest_equity,
+        load_run_row=load_research_run,
+        strategy_row=strategy,
+    )
+
+
+    # =========================================================
+    # BACKTEST VS PAPER
+    # =========================================================
+
+    render_backtest_vs_paper(
+        backtests,
+        snapshot,
+        trades,
+        fmt_num,
+        fmt_pct,
+    )
+
+
+    # =========================================================
+    # EXECUTION
+    # =========================================================
+
+    st.markdown("### Execution")
+
+    tab_orders, tab_trades = st.tabs(
+        [
+            "Orders / Fills",
+            "Closed Trades",
+        ]
+    )
+
+
+    with tab_orders:
+
+        if orders.empty:
+
+            st.info(
+                "No orders have been synced."
+            )
+
+        else:
+
+            display_orders = orders.copy()
+
+            if "fill_price" in display_orders:
+                display_orders["fill_price"] = (
+                    pd.to_numeric(
+                        display_orders[
+                            "fill_price"
+                        ],
+                        errors="coerce",
+                    )
+                    .map(
+                        lambda x:
+                        fmt_money(x)
+                        if not pd.isna(x)
+                        else "—"
+                    )
+                )
+
+            st.dataframe(
+                display_orders,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+    with tab_trades:
+
+        if trades.empty:
+
+            st.info(
+                "No closed trades have been synced."
+            )
+
+        else:
+
+            display_trades = trades.copy()
+
+            for column in [
+                "entry_price",
+                "exit_price",
+                "pnl",
+            ]:
+                display_trades[column] = (
+                    pd.to_numeric(
+                        display_trades[column],
+                        errors="coerce",
+                    )
+                    .map(
+                        lambda x:
+                        fmt_money(x)
+                        if not pd.isna(x)
+                        else "—"
+                    )
+                )
+
+            st.dataframe(
+                display_trades,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+
+    # =========================================================
+    # TECHNICAL / DEPLOYMENT DETAILS
+    # =========================================================
+
+    with st.expander(
+        "Strategy Metadata"
+    ):
+
+        metadata = {
+            "Strategy ID":
+                strategy["strategy_id"],
+
+            "Environment":
+                strategy["environment"],
+
+            "QuantConnect Execution Project ID":
+                strategy["qc_project_id"],
+
+            "QuantConnect Research Project":
+                strategy.get("qc_research_project_name") or "—",
+
+            "QuantConnect Research Project ID":
+                strategy.get("qc_research_project_id") or "not initialized",
+
+            "QuantConnect Deployment ID":
+                strategy["qc_deployment_id"],
+
+            "Git Commit":
+                strategy["git_commit"],
+
+            "Status":
+                strategy["status"],
+
+            "Created":
+                strategy["created_at"],
+
+            "Updated":
+                strategy["updated_at"],
+        }
+
+        st.json(metadata)
+
+
 # =========================================================
-# STRATEGY SELECTOR
+# STRATEGY SELECTOR (outside the auto-refresh fragment)
 # =========================================================
 
 strategies = load_strategies()
@@ -454,10 +948,20 @@ if strategies.empty:
     st.warning("No strategies are registered.")
     st.stop()
 
-selected_name = st.selectbox(
-    "Strategy",
-    strategies["name"].tolist(),
-)
+picker_col, auto_col = st.columns([4, 1])
+with picker_col:
+    selected_name = st.selectbox(
+        "Strategy",
+        strategies["name"].tolist(),
+        key="strategy_monitor_selected_strategy",
+    )
+with auto_col:
+    st.checkbox(
+        "Auto refresh",
+        value=True,
+        key="strategy_monitor_auto_refresh",
+        help="Update live monitor data every 30 seconds without reloading the page.",
+    )
 
 strategy = strategies[
     strategies["name"] == selected_name
@@ -465,373 +969,7 @@ strategy = strategies[
 
 strategy_id = strategy["strategy_id"]
 
-snapshot = load_latest_snapshot(strategy_id)
-history = load_equity_history(strategy_id)
-positions = load_latest_positions(strategy_id)
-orders = load_orders(strategy_id)
-trades = load_trades(strategy_id)
-backtests = load_backtests(strategy_id)
-
-
-# =========================================================
-# HEADER
-# =========================================================
-
-header_left, header_right = st.columns([4, 1])
-
-with header_left:
-    st.subheader(strategy["name"])
-
-    st.caption(
-        f"{strategy['environment']}  •  "
-        f"Research Project: {strategy.get('qc_research_project_name') or '—'}  •  "
-        f"Execution Project: {strategy['strategy_id']}"
-    )
-
-with header_right:
-    st.markdown(
-        f"### {status_badge(strategy['status'])}"
-    )
-
-
-# =========================================================
-# CURRENT PAPER STATE
-# =========================================================
-
-st.markdown("### Current Paper State")
-
-if snapshot:
-
-    equity = snapshot["equity"]
-    cash = snapshot["cash"]
-    holdings_value = snapshot["holdings_value"]
-    total_return = snapshot["total_return"]
-    drawdown = snapshot["drawdown"]
-
-    col1, col2, col3, col4, col5 = st.columns(5)
-
-    col1.metric(
-        "Equity",
-        fmt_money(equity),
-    )
-
-    col2.metric(
-        "Cash",
-        fmt_money(cash),
-    )
-
-    col3.metric(
-        "Holdings",
-        fmt_money(holdings_value),
-    )
-
-    col4.metric(
-        "Paper Return",
-        fmt_pct(total_return),
-    )
-
-    col5.metric(
-        "Drawdown",
-        fmt_pct(drawdown),
-    )
-
-    st.caption(
-        f"Last portfolio sync: {snapshot['timestamp']}"
-    )
-
+if st.session_state["strategy_monitor_auto_refresh"]:
+    render_live_strategy_monitor_auto(strategy_id, strategy)
 else:
-    st.info("No live paper snapshot available yet.")
-
-
-# =========================================================
-# PAPER EQUITY CURVE
-# =========================================================
-
-st.markdown("### Paper Performance")
-
-if history.empty:
-    st.info("No historical paper snapshots available.")
-
-else:
-    chart_data = history[
-        ["timestamp", "equity"]
-    ].copy()
-
-    chart_data["equity"] = pd.to_numeric(
-        chart_data["equity"],
-        errors="coerce",
-    )
-
-    chart_data = (
-        chart_data
-        .dropna()
-        .set_index("timestamp")
-    )
-
-    st.line_chart(
-        chart_data["equity"],
-        use_container_width=True,
-    )
-
-
-# =========================================================
-# CURRENT POSITIONS
-# =========================================================
-
-st.markdown("### Current Positions")
-
-if positions.empty:
-
-    st.info("No open positions currently recorded.")
-
-else:
-
-    display = positions.copy()
-
-    display["quantity"] = pd.to_numeric(
-        display["quantity"],
-        errors="coerce",
-    )
-
-    display["price"] = pd.to_numeric(
-        display["price"],
-        errors="coerce",
-    ).map(
-        lambda x: fmt_money(x)
-    )
-
-    display["market_value"] = pd.to_numeric(
-        display["market_value"],
-        errors="coerce",
-    ).map(
-        lambda x: fmt_money(x)
-    )
-
-    display["weight"] = pd.to_numeric(
-        display["weight"],
-        errors="coerce",
-    ).map(
-        lambda x: fmt_pct(x)
-    )
-
-    display = display[
-        [
-            "symbol",
-            "quantity",
-            "price",
-            "market_value",
-            "weight",
-        ]
-    ]
-
-    display.columns = [
-        "Symbol",
-        "Quantity",
-        "Price",
-        "Market Value",
-        "Weight",
-    ]
-
-    st.dataframe(
-        display,
-        use_container_width=True,
-        hide_index=True,
-    )
-
-
-# =========================================================
-# STRATEGY RULESET
-# =========================================================
-
-st.markdown("### Strategy Rules")
-
-rules = parse_rules(
-    strategy["rules_json"]
-)
-
-if not rules:
-
-    st.info(
-        "No structured rules stored for this strategy."
-    )
-
-else:
-
-    for key, value in rules.items():
-
-        col_rule, col_value = st.columns(
-            [1, 3]
-        )
-
-        with col_rule:
-            st.markdown(
-                f"**{key.replace('_', ' ').title()}**"
-            )
-
-        with col_value:
-            st.write(value)
-
-
-# =========================================================
-# SMOKE TESTS
-# =========================================================
-
-render_smoke_section(
-    backtests,
-    load_equity=load_backtest_equity,
-)
-
-
-# =========================================================
-# STAGE 1 VALIDATION
-# =========================================================
-
-render_stage1_section(
-    strategy_id,
-    backtests,
-    load_equity=load_backtest_equity,
-    load_run_row=load_research_run,
-    strategy_row=strategy,
-)
-
-
-# =========================================================
-# BACKTEST VS PAPER
-# =========================================================
-
-render_backtest_vs_paper(
-    backtests,
-    snapshot,
-    trades,
-    fmt_num,
-    fmt_pct,
-)
-
-
-# =========================================================
-# EXECUTION
-# =========================================================
-
-st.markdown("### Execution")
-
-tab_orders, tab_trades = st.tabs(
-    [
-        "Orders / Fills",
-        "Closed Trades",
-    ]
-)
-
-
-with tab_orders:
-
-    if orders.empty:
-
-        st.info(
-            "No orders have been synced."
-        )
-
-    else:
-
-        display_orders = orders.copy()
-
-        if "fill_price" in display_orders:
-            display_orders["fill_price"] = (
-                pd.to_numeric(
-                    display_orders[
-                        "fill_price"
-                    ],
-                    errors="coerce",
-                )
-                .map(
-                    lambda x:
-                    fmt_money(x)
-                    if not pd.isna(x)
-                    else "—"
-                )
-            )
-
-        st.dataframe(
-            display_orders,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
-with tab_trades:
-
-    if trades.empty:
-
-        st.info(
-            "No closed trades have been synced."
-        )
-
-    else:
-
-        display_trades = trades.copy()
-
-        for column in [
-            "entry_price",
-            "exit_price",
-            "pnl",
-        ]:
-            display_trades[column] = (
-                pd.to_numeric(
-                    display_trades[column],
-                    errors="coerce",
-                )
-                .map(
-                    lambda x:
-                    fmt_money(x)
-                    if not pd.isna(x)
-                    else "—"
-                )
-            )
-
-        st.dataframe(
-            display_trades,
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
-# =========================================================
-# TECHNICAL / DEPLOYMENT DETAILS
-# =========================================================
-
-with st.expander(
-    "Strategy Metadata"
-):
-
-    metadata = {
-        "Strategy ID":
-            strategy["strategy_id"],
-
-        "Environment":
-            strategy["environment"],
-
-        "QuantConnect Execution Project ID":
-            strategy["qc_project_id"],
-
-        "QuantConnect Research Project":
-            strategy.get("qc_research_project_name") or "—",
-
-        "QuantConnect Research Project ID":
-            strategy.get("qc_research_project_id") or "not initialized",
-
-        "QuantConnect Deployment ID":
-            strategy["qc_deployment_id"],
-
-        "Git Commit":
-            strategy["git_commit"],
-
-        "Status":
-            strategy["status"],
-
-        "Created":
-            strategy["created_at"],
-
-        "Updated":
-            strategy["updated_at"],
-    }
-
-    st.json(metadata)
+    render_live_strategy_monitor_manual(strategy_id, strategy)

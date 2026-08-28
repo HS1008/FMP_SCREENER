@@ -18,6 +18,35 @@ If `qc_research_project_id` is still NULL, `--backtests-only` looks up the
 exact research project name via `/projects/read` and stores the ID. It
 never falls back to the execution project.
 
+## Monitor refresh architecture
+
+QuantConnect results and the Streamlit UI are decoupled:
+
+```
+QuantConnect
+      ↓
+periodic server-side sync
+(`jobs.sync_quantconnect --backtests-only`, one-minute cron)
+      ↓
+PostgreSQL
+      ↓
+Strategy Monitor fragment refresh (every 30 seconds)
+```
+
+Backend synchronization cadence and frontend refresh cadence are
+independent. The one-minute cron writes PostgreSQL. The Strategy Monitor
+only queries PostgreSQL; fragment refresh never launches backtests, never
+calls QuantConnect, and never hard-reloads the browser.
+
+The strategy selector and Auto refresh toggle stay outside the
+auto-refresh fragment so selection is not reset by live updates.
+Refresh now lives inside the fragment: clicking it reruns only the
+monitor body. Scroll position is not reset by a browser reload because
+there is no JavaScript `location.reload` timer.
+
+`STREAMLIT_REFRESH_DEBUG=true` can show a fragment timestamp in
+development only.
+
 ## Database tables
 
 Migrations live in `db/migrations/` and are applied by:
