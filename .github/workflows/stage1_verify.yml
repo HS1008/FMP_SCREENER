@@ -83,11 +83,9 @@ jobs:
               exit 1
             fi
 
-            if [ -n "$(git status --porcelain)" ]; then
-              echo "FAIL: working tree is dirty"
-              git status --porcelain
-              exit 1
-            fi
+            source /root/FMP_SCREENER/venv/bin/activate
+
+            python scripts/verify_stage1_production.py --working-tree-only
 
             GIT_SHA="$(git rev-parse HEAD)"
             echo "Git SHA: $GIT_SHA"
@@ -98,8 +96,6 @@ jobs:
               systemctl is-active fmp-dashboard || true
               exit 1
             fi
-
-            source /root/FMP_SCREENER/venv/bin/activate
 
             python -c "import sqlalchemy, psycopg2; print('DB dependencies OK')"
 

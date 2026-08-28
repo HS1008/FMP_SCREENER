@@ -6,7 +6,9 @@ from scripts.verify_stage1_production import (
     check_schema,
     evaluate_legacy_and_holdout,
     evaluate_live_parser,
+    evaluate_working_tree,
     format_report,
+    format_working_tree_report,
     redact,
     REQUIRED_BACKTEST_COLUMNS,
     REQUIRED_MIGRATION,
@@ -219,3 +221,64 @@ def test_verify_workflow_runs_after_successful_main_deploy_only():
         line for line in workflow.splitlines() if not line.lstrip().startswith("#")
     )
     assert "systemctl restart" not in uncommented
+    assert "--working-tree-only" in workflow
+    assert "--untracked-files=no" not in workflow
+    assert 'if [ -n "$(git status --porcelain)" ]' not in workflow
+
+
+def test_working_tree_clean_passes():
+    result = evaluate_working_tree("")
+    assert result["ok"] is True
+    assert result["tracked_status"] == "CLEAN"
+    assert result["working_tree_check"] == "PASS"
+    report = format_working_tree_report(result)
+    assert "Working tree tracked files: CLEAN" in report
+    assert "Unexpected untracked files: NONE" in report
+    assert report.strip().endswith("PASS")
+
+
+def test_working_tree_allows_known_server_only_files():
+    result = evaluate_working_tree("?? test_db.py\n?? update_dashboard.sh\n")
+    assert result["ok"] is True
+    assert result["tracked_status"] == "CLEAN"
+    assert result["allowed_untracked"] == ["test_db.py", "update_dashboard.sh"]
+    report = format_working_tree_report(result)
+    assert "  test_db.py" in report
+    assert "  update_dashboard.sh" in report
+    assert "Unexpected untracked files: NONE" in report
+    assert result["working_tree_check"] == "PASS"
+
+
+def test_working_tree_fails_on_unexpected_untracked():
+    result = evaluate_working_tree("?? random_file.py\n")
+    assert result["ok"] is False
+    assert "random_file.py" in result["unexpected_untracked"]
+    assert result["working_tree_check"] == "FAIL"
+
+
+def test_working_tree_fails_on_modified_tracked_file():
+    result = evaluate_working_tree(" M jobs/sync_quantconnect.py\n")
+    assert result["ok"] is False
+    assert result["tracked_status"] == "DIRTY"
+    assert any("jobs/sync_quantconnect.py" in item for item in result["tracked"])
+
+
+def test_working_tree_fails_on_added_tracked_file():
+    result = evaluate_working_tree("A  unexpected_tracked_file.py\n")
+    assert result["ok"] is False
+    assert any("unexpected_tracked_file.py" in item for item in result["tracked"])
+
+
+def test_working_tree_fails_when_known_files_plus_unexpected():
+    result = evaluate_working_tree(
+        "?? test_db.py\n?? update_dashboard.sh\n?? malicious.py\n"
+    )
+    assert result["ok"] is False
+    assert "malicious.py" in result["unexpected_untracked"]
+    assert "test_db.py" in result["allowed_untracked"]
+
+
+def test_working_tree_does_not_allow_nested_allowlist_paths():
+    result = evaluate_working_tree("?? extra/test_db.py\n")
+    assert result["ok"] is False
+    assert "extra/test_db.py" in result["unexpected_untracked"]
