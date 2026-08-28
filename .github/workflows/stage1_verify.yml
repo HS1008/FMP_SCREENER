@@ -1,6 +1,10 @@
 # Stage 1 production verification.
 #
-# Manually triggered. Uses the same GitHub Actions secrets as deploy.yml:
+# Triggers:
+#   - automatically after Deploy FMP Dashboard succeeds on main
+#   - optionally via workflow_dispatch (manual rerun)
+#
+# Uses the same GitHub Actions secrets as deploy.yml:
 #   DO_HOST, DO_USER, DO_SSH_KEY
 # Secrets are never printed.
 #
@@ -11,6 +15,7 @@
 #   - launch the 81-test Stage 1 suite
 #   - run FINAL_HOLDOUT
 #   - run 2023+ research experiments
+#   - listen for its own completion (no recursion)
 #
 # Next automation layer (NOT implemented here):
 #   Cursor → QuantConnect smoke test → this workflow
@@ -19,13 +24,36 @@
 name: Stage 1 Production Verification
 
 on:
+  workflow_run:
+    workflows:
+      - Deploy FMP Dashboard
+    types:
+      - completed
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   verify:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
 
     steps:
+      - name: Report trigger
+        run: |
+          echo "STAGE 1 PRODUCTION VERIFICATION TRIGGER"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "Trigger: manual workflow_dispatch"
+          else
+            echo "Trigger: automatic after Deploy FMP Dashboard"
+            echo "Deploy workflow run ID: ${{ github.event.workflow_run.id }}"
+            echo "Deploy conclusion: ${{ github.event.workflow_run.conclusion }}"
+            echo "Deploy head SHA: ${{ github.event.workflow_run.head_sha }}"
+            echo "Deploy branch: ${{ github.event.workflow_run.head_branch }}"
+          fi
+
       - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
