@@ -307,6 +307,10 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
     run_id = fields.get("research_run_id")
     if not run_id:
         return
+    from qc_research.parsing import is_smoke_test
+
+    if is_smoke_test(fields) or str(fields.get("research_test_type") or "").upper() == "SMOKE":
+        return
     holdout = bool(fields.get("research_is_holdout"))
     holdout_window = (fields.get("config_json") or {}).get("holdout") or {}
     conn.execute(
@@ -736,7 +740,7 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
     backtest_rows = conn.execute(
         text(
             """
-            SELECT research_run_id, status
+            SELECT research_run_id, status, research_test_type
             FROM backtests
             WHERE strategy_id = :strategy_id
               AND research_run_id IS NOT NULL
@@ -746,6 +750,8 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
     ).mappings()
     by_run: dict[str, list[str]] = {}
     for row in backtest_rows:
+        if str(row.get("research_test_type") or "").upper() == "SMOKE":
+            continue
         by_run.setdefault(row["research_run_id"], []).append(str(row.get("status") or ""))
     updated = []
     run_ids = set(runs) | set(by_run)

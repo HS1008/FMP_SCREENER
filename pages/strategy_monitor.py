@@ -2,10 +2,15 @@ import json
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from sqlalchemy import text
 
 from db.connection import engine
-from qc_research.monitor_ui import render_backtest_vs_paper, render_stage1_section
+from qc_research.monitor_ui import (
+    render_backtest_vs_paper,
+    render_smoke_section,
+    render_stage1_section,
+)
 
 
 st.set_page_config(
@@ -17,7 +22,19 @@ st.set_page_config(
 st.title("Strategy Monitor")
 st.caption(
     "QuantConnect strategy status, paper performance, "
-    "positions, execution, and backtest monitoring."
+    "positions, execution, and backtest monitoring. "
+    "This page refreshes about every 30 seconds so new smoke tests appear after sync."
+)
+
+components.html(
+    """
+    <script>
+      setTimeout(function() {
+        window.parent.location.reload();
+      }, 30000);
+    </script>
+    """,
+    height=0,
 )
 
 
@@ -650,6 +667,16 @@ else:
 
         with col_value:
             st.write(value)
+
+
+# =========================================================
+# SMOKE TESTS
+# =========================================================
+
+render_smoke_section(
+    backtests,
+    load_equity=load_backtest_equity,
+)
 
 
 # =========================================================

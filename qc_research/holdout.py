@@ -11,6 +11,7 @@ from datetime import date, datetime
 from typing import Any
 
 from qc_research.dates import parse_qc_datetime
+from qc_research.parsing import is_smoke_test
 
 
 PRISTINE = "Pristine"
@@ -132,6 +133,8 @@ def classify_rows(
     overlapping = []
     stage1_holdouts = []
     for row in rows:
+        if is_smoke_test(row):
+            continue
         if strategy_id and row.get("strategy_id") not in {None, strategy_id}:
             continue
         lineage = row.get("research_lineage_id") or row.get("strategy_id")

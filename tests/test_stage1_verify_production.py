@@ -192,6 +192,19 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     assert "-----BEGIN" not in workflow
 
 
+def test_deploy_installs_backtest_sync_cron_after_migrations():
+    deploy = _workflow_text("deploy.yml")
+    verify = _workflow_text("stage1_verify.yml")
+    assert "install_backtest_sync_cron.sh" in deploy
+    assert "python -m jobs.apply_migrations" in deploy
+    assert deploy.index("apply_migrations") < deploy.index("install_backtest_sync_cron")
+    assert deploy.index("install_backtest_sync_cron") < deploy.index("systemctl restart")
+    uncommented_verify = "\n".join(
+        line for line in verify.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "install_backtest_sync_cron" not in uncommented_verify
+
+
 def test_verify_workflow_runs_after_successful_main_deploy_only():
     workflow = _workflow_text("stage1_verify.yml")
     deploy = _workflow_text("deploy.yml")

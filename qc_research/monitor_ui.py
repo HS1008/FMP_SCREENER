@@ -16,6 +16,7 @@ from qc_research.aggregation import (
     legacy_backtests,
     research_runs,
     select_comparison_backtest,
+    smoke_backtests,
     stage1_backtests,
     walk_forward_aggregates,
 )
@@ -88,6 +89,92 @@ def _plotly_line(df, x, y, title):
         chart = df[[x, y]].copy()
         chart = chart.set_index(x)
         st.line_chart(chart, use_container_width=True)
+
+
+def render_smoke_section(backtests: pd.DataFrame, *, load_equity=None) -> None:
+    st.markdown("### Smoke Tests")
+    st.caption(
+        "Operational QuantConnect verification only. Smoke rows are excluded "
+        "from the Stage 1 81-count, IS robustness, validation, WFO, "
+        "PASS/WATCH/FAIL, and FINAL_HOLDOUT."
+    )
+    smoke = smoke_backtests(backtests)
+    if smoke is None or smoke.empty:
+        st.info("No smoke tests have been synced yet.")
+        return
+    display = smoke.copy()
+    if "created_at" in display.columns:
+        display = display.sort_values("created_at", ascending=False)
+    display["Parameters"] = (
+        display["parameters_json"].map(_params_text)
+        if "parameters_json" in display.columns
+        else "—"
+    )
+    columns = {
+        "created_at": "Timestamp",
+        "research_git_commit": "Commit",
+        "test_start": "Start",
+        "test_end": "End",
+        "Parameters": "Parameters",
+        "status": "QC Status",
+        "sharpe_ratio": "Sharpe",
+        "cagr": "CAGR",
+        "max_drawdown": "Max DD",
+        "net_profit": "Net Profit",
+        "backtest_id": "Backtest ID",
+    }
+    keep = [c for c in columns if c in display.columns]
+    table = display[keep].rename(columns=columns)
+    if "CAGR" in table.columns:
+        table["CAGR"] = display["cagr"].map(fmt_decimal_pct) if "cagr" in display.columns else table["CAGR"]
+    if "Max DD" in table.columns:
+        table["Max DD"] = (
+            display["max_drawdown"].map(fmt_decimal_pct)
+            if "max_drawdown" in display.columns
+            else table["Max DD"]
+        )
+    if "Net Profit" in table.columns:
+        table["Net Profit"] = (
+            display["net_profit"].map(fmt_decimal_pct)
+            if "net_profit" in display.columns
+            else table["Net Profit"]
+        )
+    if "Sharpe" in table.columns:
+        table["Sharpe"] = display["sharpe_ratio"].map(fmt_num) if "sharpe_ratio" in display.columns else table["Sharpe"]
+    if "Commit" in table.columns:
+        table["Commit"] = table["Commit"].astype(str).str[:12]
+    st.dataframe(table, use_container_width=True, hide_index=True)
+
+    ids = display["backtest_id"].astype(str).tolist() if "backtest_id" in display.columns else []
+    if not ids:
+        return
+    labels = [
+        "{0} ({1})".format(row.get("name") or "smoke", row.get("backtest_id"))
+        for _, row in display.iterrows()
+    ]
+    choice = st.selectbox("Selected smoke test", labels, key="smoke_test_select")
+    selected = display.iloc[labels.index(choice)]
+    st.write("QuantConnect backtest ID: `{0}`".format(selected.get("backtest_id")))
+    st.write("Git commit: `{0}`".format(selected.get("research_git_commit")))
+    st.write("Dates: {0} → {1}".format(selected.get("test_start"), selected.get("test_end")))
+    st.write("Parameters: " + _params_text(selected.get("parameters_json")))
+    st.json(
+        {
+            "Sharpe": fmt_num(selected.get("sharpe_ratio")),
+            "CAGR": fmt_decimal_pct(selected.get("cagr")),
+            "Max DD": fmt_decimal_pct(selected.get("max_drawdown")),
+            "Net Profit": fmt_decimal_pct(selected.get("net_profit")),
+            "Status": selected.get("status"),
+        }
+    )
+    equity = load_equity(selected.get("backtest_id")) if load_equity else pd.DataFrame()
+    if equity is None or equity.empty:
+        st.info("Equity curve not synced yet.")
+    else:
+        chart = equity.copy()
+        chart["equity"] = pd.to_numeric(chart["equity"], errors="coerce")
+        chart = chart.dropna(subset=["timestamp", "equity"]).set_index("timestamp")
+        st.line_chart(chart["equity"], use_container_width=True)
 
 
 def render_stage1_section(

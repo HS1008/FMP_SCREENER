@@ -50,6 +50,9 @@ jobs:
             echo "Applying database migrations..."
             python -m jobs.apply_migrations
 
+            echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
+            bash scripts/install_backtest_sync_cron.sh /root/FMP_SCREENER
+
             echo "Restarting Streamlit..."
             systemctl restart fmp-dashboard
 

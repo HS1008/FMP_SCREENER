@@ -424,6 +424,21 @@ def is_stage1_name(name: str | None) -> bool:
     return bool(name) and str(name).startswith("S1__")
 
 
+def is_smoke_test(row: dict[str, Any] | None) -> bool:
+    """True for operational smoke tests that must not affect Stage 1 assessment."""
+    if not row:
+        return False
+    test_type = str(row.get("research_test_type") or "").upper()
+    phase = str(row.get("research_phase") or "").upper()
+    name = str(row.get("name") or "")
+    nested = row.get("research_meta")
+    if isinstance(nested, str):
+        nested = _as_json(nested)
+    if isinstance(nested, dict) and nested.get("smoke") in {True, "true", "True", 1, "1"}:
+        return True
+    return test_type == "SMOKE" or phase == "SMOKE" or "__SMOKE__" in name
+
+
 def is_failed_status(status: str | None, payload: dict[str, Any] | None = None) -> bool:
     text = str(status or "").lower()
     if payload:
