@@ -17,6 +17,9 @@
 #   - run 2023+ research experiments
 #   - listen for its own completion (no recursion)
 #
+# Backtests-only sync waits on outputs/backtest_sync.flock (same lock as
+# the one-minute cron). Live-only sync does not take that lock.
+#
 # Next automation layer (NOT implemented here):
 #   Cursor → QuantConnect smoke test → this workflow
 #   → full Stage 1 orchestrator → result sync → Strategy Monitor
@@ -103,11 +106,13 @@ jobs:
             python -m jobs.apply_migrations
 
             echo "Syncing live/paper QuantConnect state (--live-only)..."
+            echo "Live-only sync does not take the backtest-sync lock."
             python -m jobs.sync_quantconnect --live-only
 
             echo "Syncing existing QuantConnect backtests (--backtests-only)..."
             echo "This does not create new QuantConnect backtests."
-            python -m jobs.sync_quantconnect --backtests-only
+            echo "Waiting up to 180s for outputs/backtest_sync.flock if the one-minute cron is running..."
+            flock -w 180 /root/FMP_SCREENER/outputs/backtest_sync.flock -c 'cd /root/FMP_SCREENER && python -m jobs.sync_quantconnect --backtests-only'
 
             python scripts/verify_stage1_production.py \
               --git-sha "$GIT_SHA" \

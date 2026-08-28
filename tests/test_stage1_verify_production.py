@@ -12,16 +12,27 @@ from scripts.verify_stage1_production import (
     redact,
     REQUIRED_BACKTEST_COLUMNS,
     REQUIRED_MIGRATION,
+    REQUIRED_RESEARCH_PROJECT_MIGRATION,
     REQUIRED_TABLES,
 )
 
 
 def test_schema_check_pass_and_fail():
-    assert check_schema(set(REQUIRED_TABLES), set(REQUIRED_BACKTEST_COLUMNS), {REQUIRED_MIGRATION}) == []
+    assert check_schema(
+        set(REQUIRED_TABLES),
+        set(REQUIRED_BACKTEST_COLUMNS),
+        {REQUIRED_MIGRATION, REQUIRED_RESEARCH_PROJECT_MIGRATION},
+    ) == []
     failures = check_schema({"backtests"}, set(), set())
     assert any("missing tables" in item for item in failures)
     assert any("backtests missing columns" in item for item in failures)
     assert any(REQUIRED_MIGRATION in item for item in failures)
+    missing_research = check_schema(
+        set(REQUIRED_TABLES),
+        set(REQUIRED_BACKTEST_COLUMNS),
+        {REQUIRED_MIGRATION},
+    )
+    assert any(REQUIRED_RESEARCH_PROJECT_MIGRATION in item for item in missing_research)
 
 
 def test_live_parser_qpv_holdings_pass():
@@ -192,6 +203,19 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     assert "-----BEGIN" not in workflow
 
 
+def test_deploy_installs_backtest_sync_cron_after_migrations():
+    deploy = _workflow_text("deploy.yml")
+    verify = _workflow_text("stage1_verify.yml")
+    assert "install_backtest_sync_cron.sh" in deploy
+    assert "python -m jobs.apply_migrations" in deploy
+    assert deploy.index("apply_migrations") < deploy.index("install_backtest_sync_cron")
+    assert deploy.index("install_backtest_sync_cron") < deploy.index("systemctl restart")
+    uncommented_verify = "\n".join(
+        line for line in verify.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "install_backtest_sync_cron" not in uncommented_verify
+
+
 def test_verify_workflow_runs_after_successful_main_deploy_only():
     workflow = _workflow_text("stage1_verify.yml")
     deploy = _workflow_text("deploy.yml")
@@ -282,3 +306,35 @@ def test_working_tree_does_not_allow_nested_allowlist_paths():
     result = evaluate_working_tree("?? extra/test_db.py\n")
     assert result["ok"] is False
     assert "extra/test_db.py" in result["unexpected_untracked"]
+
+
+def test_production_verification_and_cron_share_the_same_backtest_sync_lock():
+    from jobs.sync_quantconnect import (
+        BACKTEST_SYNC_LOCK_RELATIVE,
+        BACKTEST_SYNC_LOCK_WAIT_SECONDS,
+    )
+
+    verify = _workflow_text("stage1_verify.yml")
+    cron = (
+        Path(__file__).resolve().parent.parent
+        / "scripts"
+        / "install_backtest_sync_cron.sh"
+    ).read_text(encoding="utf-8")
+    assert BACKTEST_SYNC_LOCK_RELATIVE == "outputs/backtest_sync.flock"
+    assert BACKTEST_SYNC_LOCK_RELATIVE in verify
+    assert BACKTEST_SYNC_LOCK_RELATIVE in cron
+    assert "flock -w {0}".format(BACKTEST_SYNC_LOCK_WAIT_SECONDS) in verify
+    assert "flock -n" in cron
+    uncommented = "\n".join(
+        line for line in verify.splitlines() if not line.lstrip().startswith("#")
+    )
+    live_line = [
+        line for line in uncommented.splitlines() if "--live-only" in line
+    ][0]
+    backtest_lines = [
+        line for line in uncommented.splitlines() if "--backtests-only" in line
+    ]
+    assert "flock" not in live_line
+    assert any("flock -w" in line for line in backtest_lines) or "flock -w" in uncommented
+    assert "python -m jobs.sync_quantconnect --live-only" in uncommented
+    assert "python -m jobs.sync_quantconnect --backtests-only" in uncommented

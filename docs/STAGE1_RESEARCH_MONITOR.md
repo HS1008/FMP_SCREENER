@@ -7,6 +7,17 @@ QuantConnect remains the simulation engine. PostgreSQL is the system of
 record. Streamlit is the monitor. This app does **not** promote a
 strategy to paper or live based on research results.
 
+Research backtests come from the dedicated QuantConnect research project
+(`qc_research_project_name` / `qc_research_project_id`, for SPYTrend:
+`SPYTrendResearch`). Paper/live monitoring continues to use the execution
+project (`qc_project_id` / `qc_deployment_id`). A new research project does
+**not** restore holdout innocence; existing `EXPOSED_PRIOR_TO_STAGE1`
+rows remain valid.
+
+If `qc_research_project_id` is still NULL, `--backtests-only` looks up the
+exact research project name via `/projects/read` and stores the ID. It
+never falls back to the execution project.
+
 ## Database tables
 
 Migrations live in `db/migrations/` and are applied by:
@@ -98,15 +109,22 @@ winners, and keep `error_message` when QuantConnect provides one.
 
 ## One-minute research sync
 
-Keep the existing ~10-minute live QuantConnect cron intact.
+Keep the existing ~10-minute live QuantConnect cron intact. Deploy
+installs the one-minute backtests-only cron automatically. The installer
+is idempotent: re-deploying does not create a second cron line.
 
-Optional faster research ingest (not installed automatically):
+The cron is flock-protected (`flock -n` on `outputs/backtest_sync.flock`).
+A second one-minute invocation exits immediately if a sync is still
+running. Production verification uses the **same lock file** with
+`flock -w` so it waits briefly for the cron sync instead of writing
+PostgreSQL at the same time. Live-only verification does not take this
+lock.
 
 ```bash
-* * * * * cd /root/FMP_SCREENER && /root/FMP_SCREENER/venv/bin/python -m jobs.sync_quantconnect --backtests-only >> /root/FMP_SCREENER/outputs/backtest_sync.log 2>&1
+* * * * * flock -n /root/FMP_SCREENER/outputs/backtest_sync.flock -c 'cd /root/FMP_SCREENER && /root/FMP_SCREENER/venv/bin/python -m jobs.sync_quantconnect --backtests-only >> /root/FMP_SCREENER/outputs/backtest_sync.log 2>&1'
 ```
 
-Idempotent installer (run only after you approve a production cron change):
+Idempotent installer (also executed by deploy):
 
 ```bash
 bash scripts/install_backtest_sync_cron.sh

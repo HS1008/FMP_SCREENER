@@ -25,6 +25,25 @@ DEFAULT_THRESHOLDS = {
 COMPARISON_PRIORITY = ("FINAL_HOLDOUT", "VALIDATION", "BASELINE_DEV")
 
 
+def smoke_mask(df: pd.DataFrame) -> pd.Series:
+    if df is None or df.empty:
+        return pd.Series(dtype=bool)
+    mask = pd.Series(False, index=df.index)
+    if "research_test_type" in df.columns:
+        mask = mask | df["research_test_type"].fillna("").astype(str).str.upper().eq("SMOKE")
+    if "research_phase" in df.columns:
+        mask = mask | df["research_phase"].fillna("").astype(str).str.upper().eq("SMOKE")
+    if "name" in df.columns:
+        mask = mask | df["name"].fillna("").astype(str).str.contains("__SMOKE__", regex=False)
+    return mask
+
+
+def smoke_backtests(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    return df.loc[smoke_mask(df)].copy()
+
+
 def is_stage1(df: pd.DataFrame) -> pd.Series:
     if df is None or df.empty:
         return pd.Series(dtype=bool)
@@ -40,13 +59,15 @@ def legacy_backtests(df: pd.DataFrame) -> pd.DataFrame:
     mask = ~is_stage1(df)
     if "research_run_id" in df.columns:
         mask = mask & df["research_run_id"].isna()
+    mask = mask & ~smoke_mask(df)
     return df.loc[mask].copy()
 
 
 def stage1_backtests(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return df
-    return df.loc[is_stage1(df)].copy()
+    stage = df.loc[is_stage1(df)].copy()
+    return stage.loc[~smoke_mask(stage)].copy()
 
 
 def research_runs(df: pd.DataFrame) -> pd.DataFrame:
@@ -439,6 +460,8 @@ def assess_stage1(
     thresholds: dict[str, Any] | None = None,
     research_run: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if run_df is not None and not run_df.empty:
+        run_df = run_df.loc[~smoke_mask(run_df)].copy()
     thresholds = dict(DEFAULT_THRESHOLDS if not thresholds else {**DEFAULT_THRESHOLDS, **thresholds})
     baseline = _first_row(run_df, "BASELINE_DEV")
     validation = _first_row(run_df, "VALIDATION")

@@ -1,7 +1,18 @@
 #!/usr/bin/env bash
 # Idempotently install a one-minute QuantConnect *backtest* sync cron.
-# Does NOT modify the existing ~10-minute live QuantConnect sync.
-# Does NOT run unless you execute this script yourself.
+#
+# Deploy (`.github/workflows/deploy.yml`) runs this automatically after
+# migrations. Re-running is safe: an identical flock-protected line is
+# left unchanged.
+#
+# Behavior:
+#   - one-minute `--backtests-only` ingest
+#   - protected by `flock -n` on outputs/backtest_sync.flock
+#   - a second invocation exits immediately if a sync is still running
+#   - does NOT modify the existing ~10-minute live QuantConnect cadence
+#
+# Production verification uses the SAME lock file (with `flock -w`) so
+# cron and verifier never write PostgreSQL at the same time.
 set -euo pipefail
 
 ROOT="${1:-/root/FMP_SCREENER}"

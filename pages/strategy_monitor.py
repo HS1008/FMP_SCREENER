@@ -2,10 +2,15 @@ import json
 
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 from sqlalchemy import text
 
 from db.connection import engine
-from qc_research.monitor_ui import render_backtest_vs_paper, render_stage1_section
+from qc_research.monitor_ui import (
+    render_backtest_vs_paper,
+    render_smoke_section,
+    render_stage1_section,
+)
 
 
 st.set_page_config(
@@ -17,7 +22,19 @@ st.set_page_config(
 st.title("Strategy Monitor")
 st.caption(
     "QuantConnect strategy status, paper performance, "
-    "positions, execution, and backtest monitoring."
+    "positions, execution, and backtest monitoring. "
+    "This page refreshes about every 30 seconds so new smoke tests appear after sync."
+)
+
+components.html(
+    """
+    <script>
+      setTimeout(function() {
+        window.parent.location.reload();
+      }, 30000);
+    </script>
+    """,
+    height=0,
 )
 
 
@@ -35,6 +52,8 @@ def load_strategies():
             status,
             qc_project_id,
             qc_deployment_id,
+            qc_research_project_id,
+            qc_research_project_name,
             git_commit,
             rules_json,
             created_at,
@@ -464,8 +483,8 @@ with header_left:
 
     st.caption(
         f"{strategy['environment']}  •  "
-        f"QC Project {strategy['qc_project_id']}  •  "
-        f"Deployment {strategy['qc_deployment_id']}"
+        f"Research Project: {strategy.get('qc_research_project_name') or '—'}  •  "
+        f"Execution Project: {strategy['strategy_id']}"
     )
 
 with header_right:
@@ -653,6 +672,16 @@ else:
 
 
 # =========================================================
+# SMOKE TESTS
+# =========================================================
+
+render_smoke_section(
+    backtests,
+    load_equity=load_backtest_equity,
+)
+
+
+# =========================================================
 # STAGE 1 VALIDATION
 # =========================================================
 
@@ -778,8 +807,14 @@ with st.expander(
         "Environment":
             strategy["environment"],
 
-        "QuantConnect Project ID":
+        "QuantConnect Execution Project ID":
             strategy["qc_project_id"],
+
+        "QuantConnect Research Project":
+            strategy.get("qc_research_project_name") or "—",
+
+        "QuantConnect Research Project ID":
+            strategy.get("qc_research_project_id") or "not initialized",
 
         "QuantConnect Deployment ID":
             strategy["qc_deployment_id"],

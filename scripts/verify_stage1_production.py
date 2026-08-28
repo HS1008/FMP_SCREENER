@@ -29,6 +29,7 @@ from qc_research.holdout import (
 
 STRATEGY_ID = "SPYTrend"
 REQUIRED_MIGRATION = "001_stage1_research.sql"
+REQUIRED_RESEARCH_PROJECT_MIGRATION = "002_research_project.sql"
 HOLDOUT_START = date(2023, 1, 1)
 
 REQUIRED_TABLES = (
@@ -236,6 +237,10 @@ def check_schema(
         )
     if REQUIRED_MIGRATION not in migrations:
         failures.append("schema_migrations missing {0}".format(REQUIRED_MIGRATION))
+    if REQUIRED_RESEARCH_PROJECT_MIGRATION not in migrations:
+        failures.append(
+            "schema_migrations missing {0}".format(REQUIRED_RESEARCH_PROJECT_MIGRATION)
+        )
     return failures
 
 
