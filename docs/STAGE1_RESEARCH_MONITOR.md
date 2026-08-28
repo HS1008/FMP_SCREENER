@@ -52,13 +52,22 @@ re-read on later syncs. That is how historical SPYTrend full-history
 runs become `EXPOSED_PRIOR_TO_STAGE1`.
 
 `research_runs` is authoritative for progress (`expected_experiment_count`,
-`run_status`, completed/failed/skipped). Import an orchestrator
-`run_summary.json` so a locally skipped OOS test does not leave the
-monitor at 80/81 `IN_PROGRESS`:
+`run_status`, completed/failed/skipped). QuantConnect cannot represent a
+skipped experiment that never ran. `--backtests-only` therefore
+**automatically** imports every
+
+`stage1_results/<strategy_id>/<research_run_id>/run_summary.json`
+
+file in the working tree after the QC backtest list sync. Re-importing
+the same JSON is idempotent (`ON CONFLICT (research_run_id)`). An explicit
+path still works:
 
 ```bash
 python -m jobs.sync_quantconnect --backtests-only --import-run-summary path/to/run_summary.json
 ```
+
+After a skipped OOS (80 completed, 1 skipped) the monitor must show
+**INCOMPLETE**, never `80/81 IN_PROGRESS`.
 
 Canonical metric storage:
 
@@ -135,21 +144,22 @@ bash scripts/install_backtest_sync_cron.sh
 Strategy Monitor still shows Current Paper State, Paper Performance,
 Current Positions, Strategy Rules, Execution, and deployment metadata.
 
-**Stage 1 Validation** adds a research-run selector (default: latest run
-for the selected strategy) and tabs:
+**STAGE 1 RESEARCH RESULTS** is the phone-visible research section
+(smoke tests stay separate and are excluded from the 81-count). Tabs:
 
-1. **Summary** — baseline / validation / holdout KPIs, OOS/IS ratio,
-   robustness, WFO stats, PASS/WATCH/FAIL with the underlying checks.
-   Untouched holdout is shown as a success state, not missing data.
-   Repeated holdout access is a prominent warning.
-2. **Split Tests** — BASELINE_DEV, VALIDATION, FINAL_HOLDOUT only.
-3. **Parameter Robustness** — every `PARAM_SENS` backtest, Sharpe vs
-   `sma_period` when that primary parameter is numeric. The raw maximum
-   is not implied to be preferred.
-4. **Walk-Forward** — OOS KPIs and one row per `WFO_TEST`. Holdout WFO
-   is labelled separately. Training grids are under an expander.
-5. **All Backtests** — every Stage 1 backtest with filters, plus equity
-   curve for the selected id (`Equity curve not synced yet.` if missing).
+1. **Summary** — run status, PASS/WATCH/FAIL/INCOMPLETE, expected /
+   completed / failed / skipped, selected parameter, research vs
+   execution project, Git SHA, research date range.
+2. **Development / Validation** — Baseline, frozen IS parameter choice,
+   Validation (CAGR, Sharpe, Sortino, max drawdown, net profit, trades).
+3. **Walk-Forward** — one row per WFO window including skipped OOS.
+   Unstable parameter selection, OOS deterioration vs validation, failed
+   or skipped windows are highlighted. Training grids stay in an expander.
+4. **Equity Curves** — Baseline, Validation, and WFO OOS only. The 63
+   training curves are not rendered together.
+5. **Experiments** — filterable table of every Stage 1 experiment.
+6. **Audit / Safety** — SPYTrendResearch vs SPYTrend, execution untouched,
+   holdout / 2023+ / paper-live flags.
 
 **Backtest vs Paper** compares paper against, in order:
 

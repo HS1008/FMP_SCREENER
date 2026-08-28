@@ -1,4 +1,6 @@
 from datetime import date
+import json
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -8,9 +10,13 @@ from qc_research.aggregation import (
     IN_PROGRESS,
     INCOMPLETE,
     assess_stage1,
+    attach_skipped_experiments,
     holdout_access_count,
     legacy_backtests,
     parameter_robustness_summary,
+    parse_orchestrator_summary,
+    primary_equity_backtests,
+    research_date_range,
     research_runs,
     select_comparison_backtest,
     stage1_backtests,
@@ -27,8 +33,11 @@ from qc_research.parsing import (
 )
 from jobs.apply_migrations import pending_migration_files
 from jobs.stage1_backtests import (
+    apply_run_summary,
     compute_research_run_progress,
+    discover_run_summary_paths,
     hydrate_legacy_and_classify,
+    import_run_summaries,
     legacy_hydration_fields,
     merge_stage1_lightweight_metrics,
     needs_legacy_date_hydration,
@@ -1218,6 +1227,317 @@ def test_strategy_monitor_shows_research_and_execution_labels():
     assert "Execution Project:" in monitor
     assert "qc_research_project_name" in monitor
     assert "qc_research_project_id" in monitor
+    assert "orchestrator_summary_json" in monitor
+    ui = (
+        Path(__file__).resolve().parent.parent / "qc_research" / "monitor_ui.py"
+    ).read_text(encoding="utf-8")
+    assert "STAGE 1 RESEARCH RESULTS" in ui
+    assert "Audit / Safety" in ui
+    assert "Equity Curves" in ui
+
+
+class _RecordingConn:
+    def __init__(self):
+        self.params = []
+        self.sql = []
+
+    def execute(self, statement, params=None):
+        self.sql.append(str(statement))
+        self.params.append(params)
+
+        class _Result:
+            def mappings(self_inner):
+                return iter([])
+
+        return _Result()
+
+
+def _orchestrator_summary(**overrides):
+    payload = {
+        "research_run_id": "STAGE1_SPYTrend_156c40e7",
+        "strategy_id": "SPYTrend",
+        "source": "orchestrator",
+        "run_status": "COMPLETE",
+        "expected_experiment_count": 81,
+        "synced_experiment_count": 81,
+        "completed_count": 81,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "skipped_experiments": [],
+        "git_commit": "156c40e7b1ad8559",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_case1_complete_81_is_complete_not_in_progress():
+    statuses = ["Completed."] * 81
+    progress = compute_research_run_progress(
+        expected=81,
+        row_statuses=statuses,
+        orchestrator_summary=_orchestrator_summary(),
+    )
+    assert progress["run_status"] == COMPLETE
+    assert progress["completed_count"] == 81
+    assert progress["skipped_count"] == 0
+    rows = [
+        _monitor_backtest_row(
+            backtest_id="bt-{0}".format(i),
+            research_test_type="PARAM_SENS" if i else "BASELINE_DEV",
+            sharpe_ratio=0.5,
+        )
+        for i in range(81)
+    ]
+    result = assess_stage1(
+        pd.DataFrame(rows),
+        research_run=_monitor_research_run(
+            expected_experiment_count=81,
+            synced_experiment_count=81,
+            completed_count=81,
+            failed_count=0,
+            skipped_count=0,
+            run_status="COMPLETE",
+        ),
+    )
+    assert result["run_status"] == COMPLETE
+    assert result["label"] != IN_PROGRESS
+    assert result["label"] in {"PASS", "WATCH", "FAIL", COMPLETE}
+
+
+def test_case2_skipped_oos_is_incomplete_never_in_progress():
+    summary = _orchestrator_summary(
+        run_status="INCOMPLETE",
+        synced_experiment_count=80,
+        completed_count=80,
+        skipped_count=1,
+        skipped_experiments=[
+            {
+                "experiment_id": "e081",
+                "name": "S1__SPYTrend__r__WFO_TEST__Y2022__081",
+                "test_type": "WFO_TEST",
+                "window_id": "Y2022",
+                "error": "No valid training results",
+            }
+        ],
+    )
+    progress = compute_research_run_progress(
+        expected=81,
+        row_statuses=["Completed."] * 80,
+        orchestrator_summary=summary,
+    )
+    assert progress["run_status"] == INCOMPLETE
+    assert progress["run_status"] != IN_PROGRESS
+    assert progress["skipped_count"] == 1
+    df = pd.DataFrame(
+        [
+            _monitor_backtest_row(
+                backtest_id="bt-{0}".format(i),
+                research_test_type="WFO_TEST",
+            )
+            for i in range(80)
+        ]
+    )
+    merged = attach_skipped_experiments(df, summary)
+    assert (merged["status"].astype(str).str.lower() == "skipped").sum() == 1
+    finalized = assess_stage1(
+        merged,
+        research_run=_monitor_research_run(
+            synced_experiment_count=80,
+            completed_count=80,
+            skipped_count=1,
+            run_status="INCOMPLETE",
+            orchestrator_summary_json=summary,
+        ),
+    )
+    assert finalized["run_status"] == INCOMPLETE
+    assert finalized["label"] == INCOMPLETE
+    assert finalized["label"] != IN_PROGRESS
+
+
+def test_case3_failed_experiment_is_terminal_not_in_progress():
+    summary = _orchestrator_summary(
+        run_status="INCOMPLETE",
+        synced_experiment_count=81,
+        completed_count=80,
+        failed_count=1,
+        skipped_count=0,
+    )
+    progress = compute_research_run_progress(
+        expected=81,
+        row_statuses=["Completed."] * 80 + ["Runtime Error"],
+        orchestrator_summary=summary,
+    )
+    assert progress["run_status"] == INCOMPLETE
+    assert progress["run_status"] != IN_PROGRESS
+    assert progress["failed_count"] == 1
+    without_summary = compute_research_run_progress(
+        expected=81,
+        row_statuses=["Completed."] * 80 + ["Runtime Error"],
+    )
+    assert without_summary["run_status"] == INCOMPLETE
+    result = assess_stage1(
+        pd.DataFrame(
+            [
+                _monitor_backtest_row(backtest_id="ok-{0}".format(i))
+                for i in range(80)
+            ]
+            + [
+                _monitor_backtest_row(
+                    backtest_id="fail",
+                    status="Runtime Error",
+                )
+            ]
+        ),
+        research_run=_monitor_research_run(
+            completed_count=80,
+            failed_count=1,
+            skipped_count=0,
+            run_status="INCOMPLETE",
+        ),
+    )
+    assert result["run_status"] == INCOMPLETE
+    assert result["label"] != IN_PROGRESS
+
+
+def test_case4_summary_retry_is_idempotent(tmp_path):
+    payload = _orchestrator_summary(
+        run_status="INCOMPLETE",
+        completed_count=80,
+        skipped_count=1,
+        synced_experiment_count=80,
+    )
+    path = tmp_path / "stage1_results" / "SPYTrend" / payload["research_run_id"] / "run_summary.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    conn = _RecordingConn()
+    first = import_run_summaries(conn, [path])
+    second = import_run_summaries(conn, [path])
+    assert first[0]["research_run_id"] == second[0]["research_run_id"]
+    apply_params = [row for row in conn.params if row and "research_run_id" in row]
+    assert len(apply_params) >= 2
+    assert apply_params[0]["research_run_id"] == apply_params[1]["research_run_id"]
+    assert apply_params[0]["skipped_count"] == apply_params[1]["skipped_count"]
+    assert apply_params[0]["run_status"] == apply_params[1]["run_status"]
+    progress_a = compute_research_run_progress(
+        expected=81,
+        row_statuses=["Completed."] * 80,
+        orchestrator_summary=payload,
+    )
+    progress_b = compute_research_run_progress(
+        expected=81,
+        row_statuses=["Completed."] * 80,
+        orchestrator_summary=payload,
+    )
+    assert progress_a == progress_b
+    source = (
+        Path(__file__).resolve().parent.parent / "jobs" / "stage1_backtests.py"
+    ).read_text(encoding="utf-8")
+    assert "ON CONFLICT (research_run_id)" in source
+
+
+def test_case5_smoke_excluded_from_stage1_counts_and_equity():
+    smoke_row = _monitor_backtest_row(
+        backtest_id="smoke-1",
+        name="S1__SPYTrend__SMOKE-abc123de__SMOKE__DEV_SMOKE__001",
+        research_run_id="SMOKE_SPYTrend_abc123de",
+        research_test_type="SMOKE",
+        research_phase="SMOKE",
+        sharpe_ratio=9.9,
+    )
+    stage_rows = [
+        _monitor_backtest_row(
+            backtest_id="bt-{0}".format(i),
+            research_run_id="STAGE1_SPYTrend_156c40e7",
+            research_test_type="PARAM_SENS" if i else "BASELINE_DEV",
+            sharpe_ratio=0.4,
+        )
+        for i in range(81)
+    ]
+    df = pd.DataFrame(stage_rows + [smoke_row])
+    stage = stage1_backtests(df)
+    assert len(stage) == 81
+    assessment = assess_stage1(
+        df,
+        research_run=_monitor_research_run(
+            research_run_id="STAGE1_SPYTrend_156c40e7",
+            expected_experiment_count=81,
+            completed_count=81,
+            run_status="COMPLETE",
+        ),
+    )
+    assert assessment["progress"]["synced_experiment_count"] != 82
+    assert assessment["progress"]["completed_count"] <= 81
+    equity = primary_equity_backtests(stage)
+    assert "SMOKE" not in equity["research_test_type"].astype(str).tolist()
+    wfo = walk_forward_aggregates(df, include_holdout=False)
+    assert wfo["n_windows"] == 0 or "SMOKE" not in str(wfo)
+
+
+def test_case6_research_execution_separation_hard_fails_stage1_fallback():
+    from jobs.sync_quantconnect import resolve_research_project_id
+    from pathlib import Path
+
+    same = {
+        "strategy_id": "SPYTrend",
+        "qc_project_id": "111",
+        "qc_research_project_id": "111",
+        "qc_research_project_name": "SPYTrendResearch",
+    }
+    source = (
+        Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py"
+    ).read_text(encoding="utf-8")
+    assert "str(research_id) == str(execution_id)" in source
+    assert "Skipping research backtest sync rather than" in source
+    assert resolve_research_project_id(same, persist=False) == "111"
+
+
+def test_discover_and_attach_run_summary(tmp_path):
+    payload = _orchestrator_summary(
+        run_status="INCOMPLETE",
+        completed_count=80,
+        skipped_count=1,
+        skipped_experiments=[
+            {
+                "experiment_id": "e081",
+                "test_type": "WFO_TEST",
+                "window_id": "Y2022",
+                "name": "skipped-oos",
+                "error": "No valid training results",
+            }
+        ],
+    )
+    path = tmp_path / "stage1_results" / "SPYTrend" / payload["research_run_id"] / "run_summary.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    found = discover_run_summary_paths(tmp_path)
+    assert found == [path]
+    parsed = parse_orchestrator_summary({"orchestrator_summary_json": payload})
+    assert parsed["skipped_count"] == 1
+    start, end = research_date_range(
+        pd.DataFrame(
+            [
+                _monitor_backtest_row(test_start="2010-01-01", test_end="2018-12-31"),
+                _monitor_backtest_row(test_start="2019-01-01", test_end="2022-12-31"),
+            ]
+        )
+    )
+    assert start == "2010-01-01"
+    assert end == "2022-12-31"
+
+
+def test_backtests_only_imports_run_summary_after_qc_sync():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py"
+    ).read_text(encoding="utf-8")
+    assert "import_run_summaries" in source
+    assert "discover_run_summary_paths" in source
+    main_body = source.split("def main(", 1)[1]
+    assert main_body.index("for strategy in strategies") < main_body.index(
+        "imported = import_run_summaries"
+    )
+    assert "stage1_results" in source
 
 
 

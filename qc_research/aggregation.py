@@ -23,6 +23,8 @@ DEFAULT_THRESHOLDS = {
 }
 
 COMPARISON_PRIORITY = ("FINAL_HOLDOUT", "VALIDATION", "BASELINE_DEV")
+PRIMARY_EQUITY_TEST_TYPES = ("BASELINE_DEV", "VALIDATION", "WFO_TEST")
+EXPECTED_STAGE1_EXPERIMENTS = 81
 
 
 def smoke_mask(df: pd.DataFrame) -> pd.Series:
@@ -639,6 +641,7 @@ def _kpi(row: pd.Series | None) -> dict[str, Any] | None:
         "max_drawdown": _num(row, "max_drawdown"),
         "net_profit": _num(row, "net_profit"),
         "sortino": _num(row, "sortino_ratio"),
+        "trade_count": row.get("trade_count"),
         "backtest_id": row.get("backtest_id"),
         "name": row.get("name"),
         "start": row.get("test_start") or row.get("backtest_start"),
@@ -670,3 +673,99 @@ def parse_thresholds_from_row(row: Any) -> dict[str, Any] | None:
     if isinstance(raw, dict) and "min_validation_sharpe" in raw:
         return raw
     return None
+
+
+def parse_orchestrator_summary(research_run: dict[str, Any] | None) -> dict[str, Any]:
+    if not research_run:
+        return {}
+    raw = research_run.get("orchestrator_summary_json")
+    if isinstance(raw, dict):
+        return raw
+    return _parse_json_value(raw)
+
+
+def skipped_experiment_rows(summary: dict[str, Any] | None) -> list[dict[str, Any]]:
+    payload = summary or {}
+    rows = []
+    run_id = payload.get("research_run_id")
+    for item in payload.get("skipped_experiments") or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "backtest_id": None,
+                "name": item.get("name"),
+                "status": "skipped",
+                "research_suite_version": "S1",
+                "research_run_id": run_id,
+                "research_experiment_id": item.get("experiment_id"),
+                "research_test_type": item.get("test_type"),
+                "research_window_id": item.get("window_id"),
+                "research_phase": item.get("phase") or item.get("test_type"),
+                "error_message": item.get("error"),
+                "research_is_holdout": False,
+                "parameters_json": {},
+            }
+        )
+    return rows
+
+
+def attach_skipped_experiments(
+    run_df: pd.DataFrame | None,
+    summary: dict[str, Any] | None,
+) -> pd.DataFrame:
+    extra = skipped_experiment_rows(summary)
+    if run_df is None:
+        run_df = pd.DataFrame()
+    if not extra:
+        return run_df.copy() if run_df is not None else pd.DataFrame()
+    existing_ids = set()
+    if not run_df.empty and "research_experiment_id" in run_df.columns:
+        existing_ids = {
+            str(value)
+            for value in run_df["research_experiment_id"].dropna().astype(str).tolist()
+        }
+    new_rows = [
+        row
+        for row in extra
+        if not row.get("research_experiment_id")
+        or str(row.get("research_experiment_id")) not in existing_ids
+    ]
+    if not new_rows:
+        return run_df.copy()
+    return pd.concat([run_df, pd.DataFrame(new_rows)], ignore_index=True)
+
+
+def primary_equity_backtests(run_df: pd.DataFrame | None) -> pd.DataFrame:
+    if run_df is None or run_df.empty:
+        return pd.DataFrame()
+    if "research_test_type" not in run_df.columns:
+        return pd.DataFrame()
+    subset = run_df[run_df["research_test_type"].isin(PRIMARY_EQUITY_TEST_TYPES)].copy()
+    if "status" in subset.columns:
+        skipped = subset["status"].astype(str).str.lower().eq("skipped")
+        subset = subset[~skipped]
+    return subset
+
+
+def research_date_range(run_df: pd.DataFrame | None) -> tuple[str | None, str | None]:
+    if run_df is None or run_df.empty:
+        return None, None
+    starts = []
+    ends = []
+    for column in ("test_start", "backtest_start", "train_start"):
+        if column in run_df.columns:
+            starts.extend(str(value)[:10] for value in run_df[column].dropna().tolist())
+    for column in ("test_end", "backtest_end", "train_end"):
+        if column in run_df.columns:
+            ends.extend(str(value)[:10] for value in run_df[column].dropna().tolist())
+    starts = [value for value in starts if value and value != "NaT"]
+    ends = [value for value in ends if value and value != "NaT"]
+    return (min(starts) if starts else None, max(ends) if ends else None)
+
+
+def accessed_2023_or_later(run_df: pd.DataFrame | None) -> bool:
+    _start, end = research_date_range(run_df)
+    if not end:
+        return False
+    return end >= "2023-01-01"

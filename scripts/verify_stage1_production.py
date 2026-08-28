@@ -394,6 +394,7 @@ def format_report(
     working_tree_detail: dict[str, Any] | None = None,
     research: dict[str, Any] | None = None,
     smoke: dict[str, Any] | None = None,
+    stage1_run: dict[str, Any] | None = None,
 ) -> str:
     lines = [
         "STAGE 1 PRODUCTION VERIFICATION",
@@ -457,6 +458,31 @@ def format_report(
                 "",
             ]
         )
+    stage1_run = stage1_run or {}
+    lines.extend(
+        [
+            "Stage 1 run",
+            "  Present: {0}".format("YES" if stage1_run.get("present") else "NO"),
+            "  Run ID: {0}".format(stage1_run.get("research_run_id") or "—"),
+            "  run_status: {0}".format(stage1_run.get("run_status") or "—"),
+            "  expected/completed/failed/skipped: {0}/{1}/{2}/{3}".format(
+                stage1_run.get("expected_experiment_count")
+                if stage1_run.get("expected_experiment_count") is not None
+                else "—",
+                stage1_run.get("completed_count")
+                if stage1_run.get("completed_count") is not None
+                else "—",
+                stage1_run.get("failed_count")
+                if stage1_run.get("failed_count") is not None
+                else "—",
+                stage1_run.get("skipped_count")
+                if stage1_run.get("skipped_count") is not None
+                else "—",
+            ),
+            "  Check: {0}".format(stage1_run.get("status") or "SKIP"),
+            "",
+        ]
+    )
     lines.extend(["Overall:", "  {0}".format(overall)])
     return "\n".join(lines)
 
@@ -532,6 +558,97 @@ def load_spytrend_strategy(conn) -> dict[str, Any] | None:
         {"strategy_id": STRATEGY_ID},
     ).mappings().first()
     return dict(row) if row else None
+
+
+def load_spytrend_research_runs(conn) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        text(
+            """
+            SELECT
+                research_run_id,
+                strategy_id,
+                git_commit,
+                expected_experiment_count,
+                synced_experiment_count,
+                completed_count,
+                failed_count,
+                skipped_count,
+                run_status,
+                orchestrator_summary_json
+            FROM research_runs
+            WHERE strategy_id = :strategy_id
+            ORDER BY last_seen_at DESC NULLS LAST
+            """
+        ),
+        {"strategy_id": STRATEGY_ID},
+    ).mappings()
+    return [dict(row) for row in rows]
+
+
+def evaluate_stage1_run(
+    runs: list[dict[str, Any]] | None,
+    rows: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Validate a terminal STAGE1_* run when one exists.
+
+    Pre-launch production (SMOKE only) has no STAGE1_* row; that is SKIP,
+    not FAIL. After a Stage 1 suite and run_summary import, status must be
+    COMPLETE or INCOMPLETE — never stuck IN_PROGRESS.
+    """
+    result: dict[str, Any] = {
+        "status": "SKIP",
+        "present": False,
+        "research_run_id": None,
+        "run_status": None,
+        "expected_experiment_count": None,
+        "completed_count": None,
+        "failed_count": None,
+        "skipped_count": None,
+        "failures": [],
+    }
+    stage_runs = [
+        row
+        for row in runs or []
+        if str(row.get("research_run_id") or "").startswith("STAGE1_")
+    ]
+    if not stage_runs:
+        return result
+    run = stage_runs[0]
+    result["present"] = True
+    result["research_run_id"] = run.get("research_run_id")
+    result["run_status"] = run.get("run_status")
+    result["expected_experiment_count"] = run.get("expected_experiment_count")
+    result["completed_count"] = run.get("completed_count")
+    result["failed_count"] = run.get("failed_count")
+    result["skipped_count"] = run.get("skipped_count")
+    failures: list[str] = []
+    status = str(run.get("run_status") or "")
+    if status not in {"COMPLETE", "INCOMPLETE"}:
+        failures.append(
+            "Stage 1 run_status is {0}; expected COMPLETE or INCOMPLETE "
+            "after run_summary import".format(status or "missing")
+        )
+    expected = run.get("expected_experiment_count")
+    try:
+        expected_n = int(expected) if expected is not None else None
+    except (TypeError, ValueError):
+        expected_n = None
+    if expected_n != 81:
+        failures.append(
+            "Stage 1 expected_experiment_count is {0}, expected 81".format(expected)
+        )
+    run_id = str(run.get("research_run_id") or "")
+    smoke_mixed = [
+        row
+        for row in rows or []
+        if str(row.get("research_run_id") or "") == run_id
+        and str(row.get("research_test_type") or "").upper() == "SMOKE"
+    ]
+    if smoke_mixed:
+        failures.append("SMOKE backtests are mixed into the STAGE1 research run")
+    result["failures"] = failures
+    result["status"] = "PASS" if not failures else "FAIL"
+    return result
 
 
 def load_equity_points(conn, backtest_id: str) -> list[dict[str, Any]]:
@@ -778,6 +895,7 @@ def main(argv: list[str] | None = None) -> int:
     }
     research: dict[str, Any] = {"status": "FAIL"}
     smoke: dict[str, Any] = {"status": "FAIL", "count": 0}
+    stage1_run: dict[str, Any] = {"status": "SKIP", "present": False}
     tree = inspect_git_working_tree()
     failures.extend(tree.get("failures") or [])
     working_tree_label = (
@@ -813,6 +931,15 @@ def main(argv: list[str] | None = None) -> int:
             )
             failures.extend(research.get("failures") or [])
             failures.extend(smoke.get("failures") or [])
+            try:
+                run_rows = load_spytrend_research_runs(conn)
+            except Exception as exc:
+                failures.append(
+                    "research_runs query error: {0}".format(redact(str(exc)))
+                )
+                run_rows = []
+            stage1_run = evaluate_stage1_run(run_rows, rows)
+            failures.extend(stage1_run.get("failures") or [])
     except Exception as exc:
         failures.append("database verification error: {0}".format(redact(str(exc))))
 
@@ -836,6 +963,7 @@ def main(argv: list[str] | None = None) -> int:
         working_tree_detail=tree,
         research=research,
         smoke=smoke,
+        stage1_run=stage1_run,
     )
     print(report)
     if failures:
