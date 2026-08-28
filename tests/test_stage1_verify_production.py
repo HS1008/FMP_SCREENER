@@ -1,11 +1,14 @@
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 from qc_research.holdout import STATUS_EXPOSED_PRIOR_TO_STAGE1
 from scripts.verify_stage1_production import (
+    EXPECTED_RESEARCH_PROJECT_ID,
+    EXPECTED_RESEARCH_PROJECT_NAME,
     check_schema,
     evaluate_legacy_and_holdout,
     evaluate_live_parser,
+    evaluate_research_and_smoke,
     evaluate_working_tree,
     format_report,
     format_working_tree_report,
@@ -338,3 +341,79 @@ def test_production_verification_and_cron_share_the_same_backtest_sync_lock():
     assert any("flock -w" in line for line in backtest_lines) or "flock -w" in uncommented
     assert "python -m jobs.sync_quantconnect --live-only" in uncommented
     assert "python -m jobs.sync_quantconnect --backtests-only" in uncommented
+
+
+def _strategy(**kwargs):
+    row = {
+        "strategy_id": "SPYTrend",
+        "qc_project_id": "111",
+        "qc_research_project_id": EXPECTED_RESEARCH_PROJECT_ID,
+        "qc_research_project_name": EXPECTED_RESEARCH_PROJECT_NAME,
+    }
+    row.update(kwargs)
+    return row
+
+
+def _smoke_row(**kwargs):
+    row = {
+        "backtest_id": "3964761d8996893b047591df5d876d88",
+        "name": "S1__SPYTrend__SMOKE_SPYTrend_156c40e7_4d30f55e7f65__SMOKE__DEV_SMOKE__001",
+        "strategy_id": "SPYTrend",
+        "research_run_id": "SMOKE_SPYTrend_156c40e7_4d30f55e7f65",
+        "research_test_type": "SMOKE",
+        "research_is_holdout": False,
+        "backtest_start": date(2017, 1, 1),
+        "backtest_end": date(2018, 12, 31),
+    }
+    row.update(kwargs)
+    return row
+
+
+def test_research_and_smoke_ingest_pass():
+    points = [
+        {"timestamp": datetime(2017, 3, 1)},
+        {"timestamp": datetime(2018, 6, 15)},
+    ]
+    research, smoke = evaluate_research_and_smoke(
+        _strategy(), [_smoke_row()], points
+    )
+    assert research["status"] == "PASS"
+    assert research["project_id"] == EXPECTED_RESEARCH_PROJECT_ID
+    assert smoke["status"] == "PASS"
+    assert smoke["count"] == 1
+    assert smoke["equity_count"] == 2
+    assert smoke["equity_years"] == "2017-2018"
+    assert smoke["research_is_holdout"] is False
+
+
+def test_research_id_null_and_missing_smoke_fail():
+    research, smoke = evaluate_research_and_smoke(
+        _strategy(qc_research_project_id=None),
+        [{"research_test_type": "BASELINE_DEV"}],
+        [],
+    )
+    assert research["status"] == "FAIL"
+    assert smoke["status"] == "FAIL"
+    assert any("NULL" in item for item in research["failures"])
+    assert any("no SMOKE" in item for item in smoke["failures"])
+
+
+def test_research_id_must_not_match_execution_project():
+    research, smoke = evaluate_research_and_smoke(
+        _strategy(qc_research_project_id="111", qc_project_id="111"),
+        [_smoke_row()],
+        [{"timestamp": datetime(2017, 1, 3)}, {"timestamp": datetime(2018, 1, 3)}],
+    )
+    assert research["status"] == "FAIL"
+    assert any("fallback" in item for item in research["failures"])
+
+
+def test_smoke_equity_in_2026_fails():
+    research, smoke = evaluate_research_and_smoke(
+        _strategy(),
+        [_smoke_row()],
+        [{"timestamp": datetime(2026, 8, 28)}, {"timestamp": datetime(2026, 8, 29)}],
+    )
+    assert research["status"] == "PASS"
+    assert smoke["status"] == "FAIL"
+    assert any("2017-2018" in item for item in smoke["failures"])

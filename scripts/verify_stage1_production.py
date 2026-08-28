@@ -31,6 +31,10 @@ STRATEGY_ID = "SPYTrend"
 REQUIRED_MIGRATION = "001_stage1_research.sql"
 REQUIRED_RESEARCH_PROJECT_MIGRATION = "002_research_project.sql"
 HOLDOUT_START = date(2023, 1, 1)
+EXPECTED_RESEARCH_PROJECT_NAME = "SPYTrendResearch"
+EXPECTED_RESEARCH_PROJECT_ID = "35732039"
+EXPECTED_SMOKE_START = date(2017, 1, 1)
+EXPECTED_SMOKE_END = date(2018, 12, 31)
 
 REQUIRED_TABLES = (
     "backtests",
@@ -388,6 +392,8 @@ def format_report(
     backtests: dict[str, Any],
     overall: str,
     working_tree_detail: dict[str, Any] | None = None,
+    research: dict[str, Any] | None = None,
+    smoke: dict[str, Any] | None = None,
 ) -> str:
     lines = [
         "STAGE 1 PRODUCTION VERIFICATION",
@@ -425,10 +431,33 @@ def format_report(
             "Holdout",
             "  Status: {0}".format(backtests.get("holdout_status", "MISSING")),
             "",
-            "Overall:",
-            "  {0}".format(overall),
         ]
     )
+    research = research or {}
+    smoke = smoke or {}
+    if research or smoke:
+        lines.extend(
+            [
+                "Research project",
+                "  Name: {0}".format(research.get("name") or "—"),
+                "  ID: {0}".format(research.get("project_id") or "—"),
+                "  Discovery: {0}".format(research.get("status") or "—"),
+                "",
+                "Smoke ingest",
+                "  Rows: {0}".format(smoke.get("count", 0)),
+                "  Backtest ID: {0}".format(smoke.get("backtest_id") or "—"),
+                "  Dates: {0} → {1}".format(
+                    smoke.get("start") or "—", smoke.get("end") or "—"
+                ),
+                "  research_test_type: {0}".format(smoke.get("research_test_type") or "—"),
+                "  research_is_holdout: {0}".format(smoke.get("research_is_holdout")),
+                "  Equity points: {0}".format(smoke.get("equity_count", 0)),
+                "  Equity years: {0}".format(smoke.get("equity_years") or "—"),
+                "  Status: {0}".format(smoke.get("status") or "—"),
+                "",
+            ]
+        )
+    lines.extend(["Overall:", "  {0}".format(overall)])
     return "\n".join(lines)
 
 
@@ -474,6 +503,8 @@ def load_spytrend_backtests(conn) -> list[dict[str, Any]]:
                 name,
                 strategy_id,
                 research_run_id,
+                research_test_type,
+                research_is_holdout,
                 backtest_start,
                 backtest_end
             FROM backtests
@@ -483,6 +514,169 @@ def load_spytrend_backtests(conn) -> list[dict[str, Any]]:
         {"strategy_id": STRATEGY_ID},
     ).mappings()
     return [dict(row) for row in rows]
+
+
+def load_spytrend_strategy(conn) -> dict[str, Any] | None:
+    row = conn.execute(
+        text(
+            """
+            SELECT
+                strategy_id,
+                qc_project_id,
+                qc_research_project_id,
+                qc_research_project_name
+            FROM strategies
+            WHERE strategy_id = :strategy_id
+            """
+        ),
+        {"strategy_id": STRATEGY_ID},
+    ).mappings().first()
+    return dict(row) if row else None
+
+
+def load_equity_points(conn, backtest_id: str) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        text(
+            """
+            SELECT timestamp
+            FROM backtest_equity_points
+            WHERE backtest_id = :backtest_id
+            ORDER BY timestamp
+            """
+        ),
+        {"backtest_id": backtest_id},
+    ).mappings()
+    return [dict(row) for row in rows]
+
+
+def _as_date(value: Any) -> date | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value)[:10]
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def evaluate_research_and_smoke(
+    strategy: dict[str, Any] | None,
+    rows: list[dict[str, Any]],
+    equity_points: list[dict[str, Any]] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Check research project discovery and SMOKE ingest. Never uses execution ID."""
+    failures: list[str] = []
+    name = str((strategy or {}).get("qc_research_project_name") or "").strip()
+    project_id = (strategy or {}).get("qc_research_project_id")
+    project_id_text = str(project_id).strip() if project_id not in (None, "") else ""
+    execution_id = str((strategy or {}).get("qc_project_id") or "").strip()
+
+    research = {
+        "name": name or None,
+        "project_id": project_id_text or None,
+        "status": "FAIL",
+        "failures": [],
+    }
+    if name != EXPECTED_RESEARCH_PROJECT_NAME:
+        failures.append(
+            "qc_research_project_name is {0!r}, expected {1!r}".format(
+                name, EXPECTED_RESEARCH_PROJECT_NAME
+            )
+        )
+    if not project_id_text:
+        failures.append("qc_research_project_id is NULL; research project not discovered")
+    elif project_id_text != EXPECTED_RESEARCH_PROJECT_ID:
+        failures.append(
+            "qc_research_project_id is {0}, expected {1}".format(
+                project_id_text, EXPECTED_RESEARCH_PROJECT_ID
+            )
+        )
+    if project_id_text and execution_id and project_id_text == execution_id:
+        failures.append(
+            "qc_research_project_id matches execution qc_project_id; no fallback allowed"
+        )
+    if not failures:
+        research["status"] = "PASS"
+
+    smoke_rows = [
+        row
+        for row in rows or []
+        if str(row.get("research_test_type") or "").upper() == "SMOKE"
+    ]
+    smoke = {
+        "count": len(smoke_rows),
+        "backtest_id": None,
+        "start": None,
+        "end": None,
+        "research_test_type": None,
+        "research_is_holdout": None,
+        "equity_count": 0,
+        "equity_years": None,
+        "status": "FAIL",
+        "failures": [],
+    }
+    if not smoke_rows:
+        failures.append("no SMOKE backtest ingested for SPYTrend")
+    else:
+        row = smoke_rows[0]
+        start = _as_date(row.get("backtest_start"))
+        end = _as_date(row.get("backtest_end"))
+        holdout = row.get("research_is_holdout")
+        smoke.update(
+            {
+                "backtest_id": row.get("backtest_id"),
+                "start": start.isoformat() if start else None,
+                "end": end.isoformat() if end else None,
+                "research_test_type": row.get("research_test_type"),
+                "research_is_holdout": holdout,
+            }
+        )
+        if start != EXPECTED_SMOKE_START or end != EXPECTED_SMOKE_END:
+            failures.append(
+                "SMOKE dates are {0} → {1}, expected {2} → {3}".format(
+                    start, end, EXPECTED_SMOKE_START, EXPECTED_SMOKE_END
+                )
+            )
+        holdout_true = holdout in (True, "true", "t", "1", 1)
+        if holdout_true:
+            failures.append("SMOKE research_is_holdout must be false")
+
+        points = list(equity_points or [])
+        smoke["equity_count"] = len(points)
+        years = []
+        for point in points:
+            stamp = point.get("timestamp")
+            if isinstance(stamp, datetime):
+                years.append(stamp.year)
+            elif isinstance(stamp, date):
+                years.append(stamp.year)
+        if years:
+            smoke["equity_years"] = "{0}-{1}".format(min(years), max(years))
+        if len(points) <= 1:
+            failures.append(
+                "SMOKE equity curve has {0} points; expected > 1".format(len(points))
+            )
+        elif years and (min(years) < 2017 or max(years) > 2018):
+            failures.append(
+                "SMOKE equity timestamps are {0}, expected 2017-2018".format(
+                    smoke["equity_years"]
+                )
+            )
+
+    research_fail_keys = ("qc_research_project", "execution qc_project")
+    research["failures"] = [
+        item for item in failures if any(key in item for key in research_fail_keys)
+    ]
+    smoke["failures"] = [
+        item for item in failures if not any(key in item for key in research_fail_keys)
+    ]
+    research["status"] = "PASS" if not research["failures"] else "FAIL"
+    smoke["status"] = "PASS" if smoke_rows and not smoke["failures"] else "FAIL"
+    return research, smoke
 
 
 def load_holdout_exposures(conn) -> list[dict[str, Any]]:
@@ -582,6 +776,8 @@ def main(argv: list[str] | None = None) -> int:
         "holdout_status": "MISSING",
         "historical_count": 0,
     }
+    research: dict[str, Any] = {"status": "FAIL"}
+    smoke: dict[str, Any] = {"status": "FAIL", "count": 0}
     tree = inspect_git_working_tree()
     failures.extend(tree.get("failures") or [])
     working_tree_label = (
@@ -605,6 +801,18 @@ def main(argv: list[str] | None = None) -> int:
             exposures = load_holdout_exposures(conn)
             backtests = evaluate_legacy_and_holdout(rows, exposures)
             failures.extend(backtests.get("failures") or [])
+            strategy_row = load_spytrend_strategy(conn)
+            smoke_id = None
+            for row in rows:
+                if str(row.get("research_test_type") or "").upper() == "SMOKE":
+                    smoke_id = row.get("backtest_id")
+                    break
+            equity_points = load_equity_points(conn, str(smoke_id)) if smoke_id else []
+            research, smoke = evaluate_research_and_smoke(
+                strategy_row, rows, equity_points
+            )
+            failures.extend(research.get("failures") or [])
+            failures.extend(smoke.get("failures") or [])
     except Exception as exc:
         failures.append("database verification error: {0}".format(redact(str(exc))))
 
@@ -626,6 +834,8 @@ def main(argv: list[str] | None = None) -> int:
         backtests=backtests,
         overall=overall,
         working_tree_detail=tree,
+        research=research,
+        smoke=smoke,
     )
     print(report)
     if failures:
