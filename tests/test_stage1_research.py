@@ -864,6 +864,8 @@ def test_migration_failure_exits_nonzero_when_backtests_requested():
 def test_backtest_cron_installer_uses_nonblocking_flock():
     from pathlib import Path
 
+    from jobs.sync_quantconnect import BACKTEST_SYNC_LOCK_RELATIVE
+
     script = (
         Path(__file__).resolve().parent.parent
         / "scripts"
@@ -872,8 +874,11 @@ def test_backtest_cron_installer_uses_nonblocking_flock():
     text = script.read_text(encoding="utf-8")
     assert "flock -n" in text
     assert "--backtests-only" in text
+    assert BACKTEST_SYNC_LOCK_RELATIVE in text
     assert "live" in text.lower()
-    assert "not modified" in text.lower()
+    assert "Does NOT run unless you execute this script yourself." not in text
+    assert "Deploy" in text or "deploy" in text
+    assert "idempotent" in text.lower()
 
 
 def test_smoke_is_recognized_and_excluded_from_stage1_assessment():
@@ -1083,5 +1088,20 @@ def test_backtest_cron_installer_is_idempotent_and_preserves_live_cron(tmp_path)
     assert live_line in text
     assert text.count(live_line) == 1
     assert "* * * * *" in text
+
+
+def test_cron_docs_describe_automatic_flock_protected_install():
+    from pathlib import Path
+
+    from jobs.sync_quantconnect import BACKTEST_SYNC_LOCK_RELATIVE
+
+    docs = (
+        Path(__file__).resolve().parent.parent / "docs" / "STAGE1_RESEARCH_MONITOR.md"
+    ).read_text(encoding="utf-8")
+    assert "not installed automatically" not in docs
+    assert BACKTEST_SYNC_LOCK_RELATIVE in docs
+    assert "flock -n" in docs
+    assert "flock -w" in docs
+    assert "live QuantConnect cron intact" in docs
 
 

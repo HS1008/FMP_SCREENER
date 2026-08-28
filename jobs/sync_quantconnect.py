@@ -30,6 +30,11 @@ from qc_research.dates import chart_request_window
 from qc_research.parsing import is_stage1_name, parse_equity_chart
 
 
+# Shared lock for the one-minute backtests-only cron and production
+# verification. Live-only sync must not take this lock.
+BACKTEST_SYNC_LOCK_RELATIVE = "outputs/backtest_sync.flock"
+BACKTEST_SYNC_LOCK_WAIT_SECONDS = 180
+
 # =========================================================
 # CONFIG
 # =========================================================
