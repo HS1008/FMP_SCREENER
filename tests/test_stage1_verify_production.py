@@ -160,16 +160,15 @@ def test_redact_strips_password_urls_and_env_values(monkeypatch):
     assert "***" in text or "REDACTED" in text
 
 
+def _workflow_text(name: str) -> str:
+    return (
+        Path(__file__).resolve().parent.parent / ".github" / "workflows" / name
+    ).read_text(encoding="utf-8")
+
+
 def test_workflow_uses_existing_secrets_and_does_not_install_cron():
-    workflow = (
-        Path(__file__).resolve().parent.parent
-        / ".github"
-        / "workflows"
-        / "stage1_verify.yml"
-    ).read_text(encoding="utf-8")
-    deploy = (
-        Path(__file__).resolve().parent.parent / ".github" / "workflows" / "deploy.yml"
-    ).read_text(encoding="utf-8")
+    workflow = _workflow_text("stage1_verify.yml")
+    deploy = _workflow_text("deploy.yml")
     assert "workflow_dispatch" in workflow
     assert "secrets.DO_SSH_KEY" in workflow
     assert "secrets.DO_HOST" in workflow
@@ -189,3 +188,34 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     assert "lean cloud backtest" not in workflow
     assert "BEGIN OPENSSH" not in workflow
     assert "-----BEGIN" not in workflow
+
+
+def test_verify_workflow_runs_after_successful_main_deploy_only():
+    workflow = _workflow_text("stage1_verify.yml")
+    deploy = _workflow_text("deploy.yml")
+    deploy_name = None
+    for line in deploy.splitlines():
+        if line.startswith("name:"):
+            deploy_name = line.split(":", 1)[1].strip()
+            break
+    assert deploy_name == "Deploy FMP Dashboard"
+    assert "workflow_run:" in workflow
+    assert "Deploy FMP Dashboard" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "types:" in workflow
+    assert "completed" in workflow
+    assert "github.event_name == 'workflow_dispatch'" in workflow
+    assert "github.event.workflow_run.conclusion == 'success'" in workflow
+    assert "Trigger: automatic after Deploy FMP Dashboard" in workflow
+    assert "Trigger: manual workflow_dispatch" in workflow
+    assert "Deploy workflow run ID:" in workflow
+    # Recursion guard: verification listens only for the deploy workflow.
+    on_block = workflow.split("\non:", 1)[1].split("\njobs:", 1)[0]
+    assert "Deploy FMP Dashboard" in on_block
+    assert "- Stage 1 Production Verification" not in on_block
+    assert "branches:" in on_block
+    assert "- main" in on_block
+    uncommented = "\n".join(
+        line for line in workflow.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "systemctl restart" not in uncommented
