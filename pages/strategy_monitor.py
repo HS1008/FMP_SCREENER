@@ -307,7 +307,8 @@ def load_research_run(run_id):
                         run_status,
                         holdout_exposure_status,
                         holdout_start,
-                        holdout_end
+                        holdout_end,
+                        orchestrator_summary_json
                     FROM research_runs
                     WHERE research_run_id = :run_id
                 """),
@@ -690,6 +691,7 @@ render_stage1_section(
     backtests,
     load_equity=load_backtest_equity,
     load_run_row=load_research_run,
+    strategy_row=strategy,
 )
 
 

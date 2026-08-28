@@ -11,9 +11,10 @@ from sqlalchemy import text
 from db.connection import engine
 from jobs.stage1_backtests import (
     audit_holdout_exposures,
-    apply_run_summary,
+    discover_run_summary_paths,
     existing_backtest_map,
     equity_point_counts,
+    import_run_summaries,
     insert_equity_points,
     json_param,
     legacy_hydration_fields,
@@ -1718,7 +1719,8 @@ def parse_args(argv=None):
         help=(
             "Import an orchestrator run_summary.json so skipped/no-QC "
             "experiments update research_runs instead of leaving 80/81 "
-            "IN_PROGRESS."
+            "IN_PROGRESS. --backtests-only also auto-imports files under "
+            "stage1_results/**/run_summary.json."
         ),
     )
     return parser.parse_args(argv)
@@ -1755,23 +1757,6 @@ def main(argv=None):
         return blocked
     if migration_error and not sync_bts:
         print("WARNING: continuing --live-only without Stage 1 schema updates.")
-
-    if args.import_run_summary:
-        summary_path = args.import_run_summary
-        try:
-            import json as json_mod
-
-            with open(summary_path, encoding="utf-8") as handle:
-                payload = json_mod.load(handle)
-            with engine.begin() as conn:
-                apply_run_summary(conn, payload)
-                strategy_id = payload.get("strategy_id")
-                if strategy_id:
-                    refresh_research_run_progress(conn, strategy_id)
-            print("Imported orchestrator run summary: {0}".format(summary_path))
-        except Exception as exc:
-            print("ERROR: failed to import run summary {0}: {1}".format(summary_path, exc))
-            return 1
 
     strategies = get_strategies()
 
@@ -1999,6 +1984,27 @@ def main(argv=None):
             trade_count,
             backtest_count,
         )
+
+    if sync_bts:
+        from pathlib import Path
+
+        summary_paths = []
+        if args.import_run_summary:
+            summary_paths.append(Path(args.import_run_summary))
+        summary_paths.extend(discover_run_summary_paths())
+        if summary_paths:
+            try:
+                with engine.begin() as conn:
+                    imported = import_run_summaries(conn, summary_paths)
+                for row in imported:
+                    print(
+                        "Imported orchestrator run summary: {0} ({1})".format(
+                            row["path"], row.get("run_status") or "unknown"
+                        )
+                    )
+            except Exception as exc:
+                print("ERROR: failed to import run summary: {0}".format(exc))
+                return 1
 
     return 0
 

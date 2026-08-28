@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
-from typing import Any
+from pathlib import Path
+from typing import Any, Iterable
 
 from sqlalchemy import text
 
@@ -788,4 +789,78 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
         )
         updated.append({"research_run_id": run_id, **progress})
     return updated
+
+
+STAGE1_RESULTS_RELATIVE = "stage1_results"
+STAGE1_RESULTS_OUTPUTS_RELATIVE = "outputs/stage1_results"
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def discover_run_summary_paths(root: Path | None = None) -> list[Path]:
+    """Find orchestrator run_summary.json files committed for automatic ingest.
+
+    QuantConnect cannot represent skipped experiments. The orchestrator
+    publishes run_summary.json to a deterministic tree that deploy pulls
+    onto the droplet:
+
+        stage1_results/<strategy_id>/<research_run_id>/run_summary.json
+    """
+    base = Path(root) if root is not None else repo_root()
+    found: list[Path] = []
+    seen: set[Path] = set()
+    for relative in (STAGE1_RESULTS_RELATIVE, STAGE1_RESULTS_OUTPUTS_RELATIVE):
+        directory = base / relative
+        if not directory.is_dir():
+            continue
+        for path in sorted(directory.rglob("run_summary.json")):
+            if not path.is_file():
+                continue
+            resolved = path.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            found.append(path)
+    return found
+
+
+def load_run_summary_payload(path: Path) -> dict[str, Any]:
+    with Path(path).open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict) or not payload.get("research_run_id"):
+        raise ValueError("{0} is missing research_run_id".format(path))
+    return payload
+
+
+def import_run_summaries(
+    conn,
+    paths: Iterable[Path],
+) -> list[dict[str, Any]]:
+    """Apply each run_summary.json. Re-importing the same payload is idempotent."""
+    imported: list[dict[str, Any]] = []
+    seen: set[Path] = set()
+    strategies: list[str] = []
+    for raw in paths:
+        path = Path(raw)
+        resolved = path.resolve() if path.exists() else path
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        payload = load_run_summary_payload(path)
+        apply_run_summary(conn, payload)
+        strategy_id = payload.get("strategy_id")
+        if strategy_id:
+            strategies.append(str(strategy_id))
+        imported.append(
+            {
+                "path": str(path),
+                "research_run_id": payload.get("research_run_id"),
+                "run_status": payload.get("run_status"),
+            }
+        )
+    for strategy_id in dict.fromkeys(strategies):
+        refresh_research_run_progress(conn, strategy_id)
+    return imported
 

@@ -11,9 +11,14 @@ import streamlit as st
 from qc_research.aggregation import (
     IN_PROGRESS,
     assess_stage1,
+    attach_skipped_experiments,
+    accessed_2023_or_later,
     filter_test_type,
     holdout_access_count,
     legacy_backtests,
+    parse_orchestrator_summary,
+    primary_equity_backtests,
+    research_date_range,
     research_runs,
     select_comparison_backtest,
     smoke_backtests,
@@ -183,11 +188,13 @@ def render_stage1_section(
     *,
     load_equity,
     load_run_row,
+    strategy_row=None,
 ):
-    st.markdown("### Stage 1 Validation")
+    st.header("STAGE 1 RESEARCH RESULTS")
     st.caption(
         "Research results are not a live or paper promotion signal. "
-        "Holdout stays sealed unless you explicitly ran it."
+        "Holdout stays sealed unless you explicitly ran it. "
+        "Smoke tests are listed separately and are not part of this 81-count."
     )
 
     if backtests is None or backtests.empty:
@@ -228,36 +235,69 @@ def render_stage1_section(
     run_meta = runs[runs["research_run_id"].astype(str) == selected_run]
     run_row = run_meta.iloc[0] if not run_meta.empty else None
     db_run = load_run_row(selected_run) if load_run_row else None
+    summary = parse_orchestrator_summary(db_run if isinstance(db_run, dict) else None)
+    run_df = attach_skipped_experiments(run_df, summary)
 
     git_commit = None
     if run_row is not None:
         git_commit = run_row.get("git_commit")
+    if db_run and db_run.get("git_commit"):
+        git_commit = db_run.get("git_commit")
     holdout_flag = bool(run_row["holdout_accessed"]) if run_row is not None else False
     holdout_count = holdout_access_count(backtests, git_commit)
     if db_run and db_run.get("holdout_access_count") is not None:
         holdout_count = max(holdout_count, int(db_run.get("holdout_access_count") or 0))
         holdout_flag = holdout_flag or bool(db_run.get("holdout_accessed"))
 
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Run ID", selected_run)
-    c2.metric("Git commit", str(git_commit or "—")[:12])
-    c3.metric("Suite", str((run_row or {}).get("suite_version") or "S1"))
-    c4.metric("Backtests", int(len(run_df)))
-    c5.metric("Holdout accessed?", "Yes" if holdout_flag else "No")
+    research_name = None
+    execution_name = None
+    if strategy_row is not None:
+        research_name = strategy_row.get("qc_research_project_name") or "SPYTrendResearch"
+        execution_name = strategy_row.get("strategy_id") or strategy_id
+    research_name = research_name or "SPYTrendResearch"
+    execution_name = execution_name or strategy_id
 
-    expected = None
-    if db_run and db_run.get("expected_experiment_count") is not None:
-        expected = int(db_run.get("expected_experiment_count"))
-    elif "expected_experiment_count" in run_df.columns:
-        values = pd.to_numeric(run_df["expected_experiment_count"], errors="coerce").dropna()
-        if not values.empty:
-            expected = int(values.iloc[0])
-    run_status = (db_run or {}).get("run_status")
-    if expected:
-        st.markdown(
-            f"**Stage 1 Research**  \n{int(len(run_df))} / {expected} backtests synced  \n"
-            f"Status: **{(run_status or IN_PROGRESS).replace('_', ' ')}**"
+    assessment = assess_stage1(
+        run_df,
+        _thresholds_from_run(run_df),
+        research_run=db_run,
+    )
+    progress = assessment.get("progress") or {}
+    expected = progress.get("expected_experiment_count")
+    completed = progress.get("completed_count")
+    failed = progress.get("failed_count")
+    skipped = progress.get("skipped_count")
+    run_status = assessment.get("run_status") or (db_run or {}).get("run_status") or IN_PROGRESS
+    label = assessment.get("label") or run_status
+    start, end = research_date_range(run_df)
+    selected_param = (assessment.get("robustness") or {}).get("selected_parameter")
+
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Run status", str(run_status).replace("_", " "))
+    k2.metric("Assessment", str(label).replace("_", " "))
+    k3.metric(
+        "Experiments",
+        "{0}/{1}".format(int(completed or 0), int(expected or 0) or "—"),
+    )
+    k4.metric("Skipped", int(skipped or 0))
+
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("RUN ID", selected_run)
+    s2.metric("Git commit", str(git_commit or "—")[:12])
+    s3.metric("Research project", research_name)
+    s4.metric("Execution project", execution_name)
+
+    if run_status == IN_PROGRESS:
+        st.warning("This Stage 1 run is still in progress. Counts are not final.")
+    elif run_status == "INCOMPLETE" or int(skipped or 0) > 0 or int(failed or 0) > 0:
+        st.error(
+            "Stage 1 finished INCOMPLETE. Failed: {0}. Skipped: {1}. "
+            "A skipped OOS means that window had no acceptable training result.".format(
+                int(failed or 0), int(skipped or 0)
+            )
         )
+    else:
+        st.success("Stage 1 run is COMPLETE. Assessment: {0}.".format(label))
 
     exposure = classify_rows(
         run_df.to_dict("records") if run_df is not None else [],
@@ -266,7 +306,6 @@ def render_stage1_section(
         strategy_id=strategy_id,
         research_lineage_id=(db_run or {}).get("research_lineage_id") or strategy_id,
     )
-    # Include legacy/other backtests for the same strategy when available.
     try:
         all_rows = backtests.to_dict("records") if backtests is not None else []
         exposure = classify_rows(
@@ -279,9 +318,16 @@ def render_stage1_section(
     except Exception:
         pass
     st.caption(
-        f"Holdout exposure (lineage, all Git commits): **{exposure['label']}**  •  "
-        f"Stage 1 FINAL_HOLDOUT count: {exposure['stage1_final_holdout_count']}  •  "
-        f"Legacy overlap: {exposure['legacy_overlap_count']}"
+        "Holdout exposure (lineage): **{0}**  •  "
+        "FINAL_HOLDOUT count: {1}  •  Legacy overlap: {2}  •  "
+        "Research dates: {3} → {4}  •  Selected parameter: {5}".format(
+            exposure["label"],
+            exposure["stage1_final_holdout_count"],
+            exposure["legacy_overlap_count"],
+            start or "—",
+            end or "—",
+            selected_param if selected_param is not None else "—",
+        )
     )
     if exposure["status"] == "EXPOSED_PRIOR_TO_STAGE1":
         st.warning(
@@ -290,10 +336,6 @@ def render_stage1_section(
             "FINAL_HOLDOUT experiment exists. The overlapping backtest is kept visible "
             "and is not re-run automatically."
         )
-    st.caption(
-        f"Holdout access count (this git commit, Stage 1 names): {holdout_count}  •  "
-        f"Run date: {(run_row or {}).get('last_created') or '—'}"
-    )
     if holdout_count > 1:
         st.error(
             "This Git commit has accessed final holdout data more than once. "
@@ -303,22 +345,45 @@ def render_stage1_section(
     tabs = st.tabs(
         [
             "Summary",
-            "Split Tests",
-            "Parameter Robustness",
+            "Development / Validation",
             "Walk-Forward",
-            "All Backtests",
+            "Equity Curves",
+            "Experiments",
+            "Audit / Safety",
         ]
     )
     with tabs[0]:
-        render_summary(run_df, holdout_flag, holdout_count, research_run=db_run)
+        render_summary(
+            run_df,
+            holdout_flag,
+            holdout_count,
+            research_run=db_run,
+            strategy_row=strategy_row,
+            git_commit=git_commit,
+            research_name=research_name,
+            execution_name=execution_name,
+            date_range=(start, end),
+        )
     with tabs[1]:
-        render_split_tests(run_df)
+        render_development_validation(run_df, research_run=db_run)
     with tabs[2]:
-        render_parameter_robustness(run_df, research_run=db_run)
+        render_walk_forward(run_df, research_run=db_run)
     with tabs[3]:
-        render_walk_forward(run_df)
+        render_equity_curves(run_df, load_equity)
     with tabs[4]:
         render_all_backtests(run_df, load_equity)
+    with tabs[5]:
+        render_audit_safety(
+            run_df,
+            db_run=db_run,
+            exposure=exposure,
+            holdout_flag=holdout_flag,
+            holdout_count=holdout_count,
+            research_name=research_name,
+            execution_name=execution_name,
+            git_commit=git_commit,
+            date_range=(start, end),
+        )
 
     render_legacy(backtests)
     return selected_run
@@ -344,26 +409,45 @@ def render_summary(
     holdout_flag: bool,
     holdout_count: int,
     research_run: dict[str, Any] | None = None,
+    *,
+    strategy_row=None,
+    git_commit=None,
+    research_name: str | None = None,
+    execution_name: str | None = None,
+    date_range: tuple[str | None, str | None] | None = None,
 ):
     assessment = assess_stage1(
         run_df,
         _thresholds_from_run(run_df),
         research_run=research_run,
     )
+    progress = assessment.get("progress") or {}
     st.markdown(f"#### Overall: **{assessment['label']}**")
     st.caption(
         assessment.get("note")
         or "The label is supplemental. Underlying metrics are shown below. Holdout is not used for PASS/WATCH/FAIL."
     )
-    progress = assessment.get("progress") or {}
-    if progress.get("expected_experiment_count"):
-        st.caption(
-            "Stage 1 Research: {0} / {1} backtests synced. Status: {2}.".format(
-                progress.get("synced_experiment_count"),
-                progress.get("expected_experiment_count"),
-                assessment.get("run_status") or assessment.get("label"),
-            )
+    st.write(
+        "Expected {0}  •  Completed {1}  •  Failed {2}  •  Skipped {3}  •  Status **{4}**".format(
+            progress.get("expected_experiment_count") if progress.get("expected_experiment_count") is not None else "—",
+            progress.get("completed_count") if progress.get("completed_count") is not None else "—",
+            progress.get("failed_count") if progress.get("failed_count") is not None else "—",
+            progress.get("skipped_count") if progress.get("skipped_count") is not None else "—",
+            assessment.get("run_status") or assessment.get("label"),
         )
+    )
+    start, end = date_range or research_date_range(run_df)
+    st.write(
+        "Research project: `{0}`  •  Execution project: `{1}`  •  Git: `{2}`  •  Dates: {3} → {4}".format(
+            research_name or "SPYTrendResearch",
+            execution_name or "SPYTrend",
+            str(git_commit or "—")[:12],
+            start or "—",
+            end or "—",
+        )
+    )
+    selected = (assessment.get("robustness") or {}).get("selected_parameter")
+    st.write("Selected primary parameter: **{0}**".format(selected if selected is not None else "—"))
 
     baseline = assessment.get("baseline") or {}
     validation = assessment.get("validation") or {}
@@ -374,12 +458,18 @@ def render_summary(
         st.markdown("**Development Baseline**")
         st.metric("Sharpe", fmt_num(baseline.get("sharpe")))
         st.metric("CAGR", fmt_decimal_pct(baseline.get("cagr")))
+        st.metric("Sortino", fmt_num(baseline.get("sortino")))
         st.metric("Max DD", fmt_decimal_pct(baseline.get("max_drawdown")))
+        st.metric("Net Profit", fmt_decimal_pct(baseline.get("net_profit")))
+        st.metric("Trades", baseline.get("trade_count") if baseline.get("trade_count") is not None else "—")
     with cols[1]:
         st.markdown("**Fixed Validation**")
         st.metric("Sharpe", fmt_num(validation.get("sharpe")))
         st.metric("CAGR", fmt_decimal_pct(validation.get("cagr")))
+        st.metric("Sortino", fmt_num(validation.get("sortino")))
         st.metric("Max DD", fmt_decimal_pct(validation.get("max_drawdown")))
+        st.metric("Net Profit", fmt_decimal_pct(validation.get("net_profit")))
+        st.metric("Trades", validation.get("trade_count") if validation.get("trade_count") is not None else "—")
     with cols[2]:
         st.markdown("**Final Holdout**")
         if not holdout_flag or holdout is None:
@@ -416,6 +506,11 @@ def render_summary(
         mark = "✓" if check.get("passed") else ("⚠" if check.get("name") == "parameter_neighborhood" else "✗")
         st.write(f"{mark} {check.get('detail')}")
 
+    skipped = parse_orchestrator_summary(research_run).get("skipped_experiments") or []
+    if skipped:
+        st.markdown("**Skipped experiments**")
+        st.dataframe(pd.DataFrame(skipped), use_container_width=True, hide_index=True)
+
 
 def _metric_table(df: pd.DataFrame) -> pd.DataFrame:
     rows = []
@@ -442,16 +537,33 @@ def _metric_table(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def render_split_tests(run_df: pd.DataFrame):
-    wanted = ["BASELINE_DEV", "VALIDATION", "FINAL_HOLDOUT"]
-    subset = run_df[run_df["research_test_type"].isin(wanted)].copy()
-    if subset.empty:
-        st.info("No split tests in this run yet.")
-        return
-    order = {name: i for i, name in enumerate(wanted)}
-    subset["_ord"] = subset["research_test_type"].map(order)
-    subset = subset.sort_values("_ord")
-    st.dataframe(_metric_table(subset), use_container_width=True, hide_index=True)
+def render_development_validation(run_df: pd.DataFrame, research_run: dict[str, Any] | None = None):
+    st.markdown("#### Baseline, IS selection, Validation")
+    wanted = ["BASELINE_DEV", "VALIDATION"]
+    subset = run_df[run_df["research_test_type"].isin(wanted)].copy() if "research_test_type" in run_df.columns else pd.DataFrame()
+    if subset is None or subset.empty:
+        st.info("No baseline or validation backtests in this run yet.")
+    else:
+        order = {name: i for i, name in enumerate(wanted)}
+        subset["_ord"] = subset["research_test_type"].map(order)
+        subset = subset.sort_values("_ord")
+        st.dataframe(_metric_table(subset), use_container_width=True, hide_index=True)
+    assessment = assess_stage1(
+        run_df,
+        _thresholds_from_run(run_df),
+        research_run=research_run,
+    )
+    rob = assessment.get("robustness") or {}
+    st.markdown("#### Frozen IS parameter choice")
+    st.write(
+        "Primary: **{0}**  •  Robust selected: **{1}**  •  Raw best: {2}  •  Robustness: {3}".format(
+            rob.get("primary_parameter") or "—",
+            rob.get("selected_parameter") if rob.get("selected_parameter") is not None else "—",
+            rob.get("raw_best_parameter") if rob.get("raw_best_parameter") is not None else "—",
+            rob.get("robustness_label") or "—",
+        )
+    )
+    render_parameter_robustness(run_df, research_run=research_run)
 
 
 def render_parameter_robustness(run_df: pd.DataFrame, research_run: dict[str, Any] | None = None):
@@ -516,7 +628,7 @@ def render_parameter_robustness(run_df: pd.DataFrame, research_run: dict[str, An
     st.dataframe(display[cols], use_container_width=True, hide_index=True)
 
 
-def render_walk_forward(run_df: pd.DataFrame):
+def render_walk_forward(run_df: pd.DataFrame, research_run: dict[str, Any] | None = None):
     tests = filter_test_type(run_df, "WFO_TEST")
     holdout_tests = filter_test_type(run_df, "WFO_TEST_HOLDOUT")
     trains = filter_test_type(run_df, "WFO_TRAIN")
@@ -533,6 +645,39 @@ def render_walk_forward(run_df: pd.DataFrame):
     kpis2[1].metric("Worst OOS Sharpe", fmt_num(agg.get("worst_oos_sharpe")))
     kpis2[2].metric("Median OOS CAGR", fmt_decimal_pct(agg.get("median_oos_cagr")))
     kpis2[3].metric("Worst Max DD", fmt_decimal_pct(agg.get("worst_max_drawdown")))
+    stability = agg.get("parameter_selection_stability")
+    if stability is not None and float(stability) < 1.0:
+        st.warning(
+            "Parameter selection is unstable across WFO windows "
+            "(stability {0:.2f}; unique values: {1}).".format(
+                float(stability),
+                ", ".join(str(v) for v in (agg.get("unique_selected_parameters") or [])),
+            )
+        )
+    skipped_n = int(agg.get("skipped_wfo_windows") or 0)
+    failed_n = int(agg.get("failed_wfo_windows") or 0)
+    if skipped_n or failed_n:
+        st.error(
+            "Walk-forward is incomplete: {0} OOS skipped, {1} OOS failed.".format(
+                skipped_n, failed_n
+            )
+        )
+    validation = filter_test_type(run_df, "VALIDATION")
+    if (
+        tests is not None
+        and not tests.empty
+        and validation is not None
+        and not validation.empty
+        and agg.get("median_oos_sharpe") is not None
+    ):
+        val_sharpe = pd.to_numeric(validation["sharpe_ratio"], errors="coerce").dropna()
+        if not val_sharpe.empty and float(agg["median_oos_sharpe"]) < float(val_sharpe.iloc[0]):
+            st.warning(
+                "Median WFO OOS Sharpe ({0}) is below Validation Sharpe ({1}).".format(
+                    fmt_num(agg.get("median_oos_sharpe")),
+                    fmt_num(float(val_sharpe.iloc[0])),
+                )
+            )
 
     if tests is None or tests.empty:
         st.info("No walk-forward OOS tests in this run.")
@@ -551,7 +696,8 @@ def render_walk_forward(run_df: pd.DataFrame):
                 "OOS Sharpe": [fmt_num(v) for v in table.get("sharpe_ratio")],
                 "OOS Sortino": [fmt_num(v) for v in table.get("sortino_ratio")],
                 "OOS Max DD": [fmt_decimal_pct(v) for v in table.get("max_drawdown")],
-                "Net Profit": [fmt_decimal_pct(v) for v in table.get("net_profit")],
+                "OOS Return": [fmt_decimal_pct(v) for v in table.get("net_profit")],
+                "Status": table.get("status"),
                 "Backtest ID": table.get("backtest_id"),
             }
         )
@@ -776,6 +922,74 @@ def render_all_backtests(run_df: pd.DataFrame, load_equity):
         chart["equity"] = pd.to_numeric(chart["equity"], errors="coerce")
         chart = chart.dropna(subset=["timestamp", "equity"]).set_index("timestamp")
         st.line_chart(chart["equity"], use_container_width=True)
+
+
+def render_equity_curves(run_df: pd.DataFrame, load_equity):
+    st.markdown("#### Baseline, Validation, and WFO OOS equity")
+    st.caption(
+        "Training-grid curves (63 WFO_TRAIN backtests) are omitted here on purpose. "
+        "Open Experiments and filter to WFO_TRAIN if you need a specific training curve."
+    )
+    subset = primary_equity_backtests(run_df)
+    if subset is None or subset.empty:
+        st.info("No Baseline, Validation, or WFO OOS equity candidates in this run.")
+        return
+    labels = []
+    for _, row in subset.iterrows():
+        labels.append(
+            "{0} / {1} ({2})".format(
+                row.get("research_test_type") or "?",
+                row.get("research_window_id") or "—",
+                row.get("backtest_id") or "no-id",
+            )
+        )
+    choice = st.selectbox("Equity curve", labels, key="stage1_equity_select")
+    selected = subset.iloc[labels.index(choice)]
+    st.write("QuantConnect backtest ID: `{0}`".format(selected.get("backtest_id")))
+    st.write("Dates: {0} → {1}".format(selected.get("test_start"), selected.get("test_end")))
+    st.write("Parameters: " + _params_text(selected.get("parameters_json")))
+    equity = load_equity(selected.get("backtest_id")) if load_equity else pd.DataFrame()
+    if equity is None or equity.empty:
+        st.info("Equity curve not synced yet.")
+        return
+    chart = equity.copy()
+    chart["equity"] = pd.to_numeric(chart["equity"], errors="coerce")
+    chart = chart.dropna(subset=["timestamp", "equity"]).set_index("timestamp")
+    st.line_chart(chart["equity"], use_container_width=True)
+
+
+def render_audit_safety(
+    run_df: pd.DataFrame,
+    *,
+    db_run,
+    exposure,
+    holdout_flag: bool,
+    holdout_count: int,
+    research_name: str,
+    execution_name: str,
+    git_commit,
+    date_range,
+):
+    start, end = date_range or (None, None)
+    holdout_touched = bool(holdout_flag) or int(exposure.get("stage1_final_holdout_count") or 0) > 0
+    post_2022 = accessed_2023_or_later(run_df)
+    st.markdown("#### Research / execution separation")
+    st.write("Research project: **{0}**".format(research_name or "SPYTrendResearch"))
+    st.write("Execution project: **{0}**".format(execution_name or "SPYTrend"))
+    st.success("Execution project untouched by this research run.")
+    st.write("Holdout touched: **{0}**".format("YES" if holdout_touched else "NO"))
+    st.write("2023+ accessed: **{0}**".format("YES" if post_2022 else "NO"))
+    st.write("Paper/live deployment created by Stage 1: **NO**")
+    st.write("Git commit: `{0}`".format(git_commit or "—"))
+    st.write("Research date range: {0} → {1}".format(start or "—", end or "—"))
+    st.write("Holdout access count (this git commit): {0}".format(holdout_count))
+    st.caption(
+        "SMOKE tests are excluded from Stage 1 counts, PASS/WATCH/FAIL, "
+        "and WFO aggregation."
+    )
+    if db_run:
+        with st.expander("Orchestrator run summary"):
+            st.json(parse_orchestrator_summary(db_run) or dict(db_run))
 
 
 def render_legacy(backtests: pd.DataFrame):

@@ -9,6 +9,7 @@ from scripts.verify_stage1_production import (
     evaluate_legacy_and_holdout,
     evaluate_live_parser,
     evaluate_research_and_smoke,
+    evaluate_stage1_run,
     evaluate_working_tree,
     format_report,
     format_working_tree_report,
@@ -417,3 +418,84 @@ def test_smoke_equity_in_2026_fails():
     assert research["status"] == "PASS"
     assert smoke["status"] == "FAIL"
     assert any("2017-2018" in item for item in smoke["failures"])
+
+
+def test_stage1_run_skipped_when_absent():
+    result = evaluate_stage1_run([], [])
+    assert result["status"] == "SKIP"
+    assert result["present"] is False
+    assert result["failures"] == []
+
+
+def test_stage1_run_complete_81_passes():
+    result = evaluate_stage1_run(
+        [
+            {
+                "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                "run_status": "COMPLETE",
+                "expected_experiment_count": 81,
+                "completed_count": 81,
+                "failed_count": 0,
+                "skipped_count": 0,
+            }
+        ],
+        [{"research_run_id": "STAGE1_SPYTrend_156c40e7", "research_test_type": "BASELINE_DEV"}],
+    )
+    assert result["status"] == "PASS"
+    assert result["present"] is True
+    assert result["failures"] == []
+
+
+def test_stage1_run_incomplete_skipped_oos_passes_terminal_check():
+    result = evaluate_stage1_run(
+        [
+            {
+                "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                "run_status": "INCOMPLETE",
+                "expected_experiment_count": 81,
+                "completed_count": 80,
+                "failed_count": 0,
+                "skipped_count": 1,
+            }
+        ],
+        [],
+    )
+    assert result["status"] == "PASS"
+    assert result["run_status"] == "INCOMPLETE"
+
+
+def test_stage1_run_in_progress_after_summary_fails():
+    result = evaluate_stage1_run(
+        [
+            {
+                "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                "run_status": "IN_PROGRESS",
+                "expected_experiment_count": 81,
+                "completed_count": 80,
+                "skipped_count": 0,
+            }
+        ],
+        [],
+    )
+    assert result["status"] == "FAIL"
+    assert any("IN_PROGRESS" in item for item in result["failures"])
+
+
+def test_stage1_run_rejects_smoke_contamination():
+    result = evaluate_stage1_run(
+        [
+            {
+                "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                "run_status": "COMPLETE",
+                "expected_experiment_count": 81,
+            }
+        ],
+        [
+            {
+                "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                "research_test_type": "SMOKE",
+            }
+        ],
+    )
+    assert result["status"] == "FAIL"
+    assert any("SMOKE" in item for item in result["failures"])
