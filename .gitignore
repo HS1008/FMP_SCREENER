@@ -195,6 +195,7 @@ outputs/*.json
 
 outputs/
 *.json
+!stage1_results/**/run_summary.json
 *.csv
 !data/power_producer_watchlist.csv
 !data/power_market_hub_map.csv

@@ -1,0 +1,17 @@
+{
+  "research_run_id": "STAGE1_SPYTrend_c04553d8",
+  "strategy_id": "SPYTrend",
+  "source": "orchestrator",
+  "run_status": "COMPLETE",
+  "expected_experiment_count": 81,
+  "synced_experiment_count": 81,
+  "completed_count": 81,
+  "failed_count": 0,
+  "skipped_count": 0,
+  "skipped_experiments": [],
+  "git_commit": "f04dbfb1a936c753a42a1389d9181f7c22f551a3",
+  "config_fingerprint": "ae38eb0e1ff2e078",
+  "parent_research_run_id": null,
+  "source_research_run_id": null,
+  "finalized_at": "2026-08-28T18:20:21.809045+00:00"
+}
