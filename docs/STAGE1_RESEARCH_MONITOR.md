@@ -7,6 +7,17 @@ QuantConnect remains the simulation engine. PostgreSQL is the system of
 record. Streamlit is the monitor. This app does **not** promote a
 strategy to paper or live based on research results.
 
+Research backtests come from the dedicated QuantConnect research project
+(`qc_research_project_name` / `qc_research_project_id`, for SPYTrend:
+`SPYTrendResearch`). Paper/live monitoring continues to use the execution
+project (`qc_project_id` / `qc_deployment_id`). A new research project does
+**not** restore holdout innocence; existing `EXPOSED_PRIOR_TO_STAGE1`
+rows remain valid.
+
+If `qc_research_project_id` is still NULL, `--backtests-only` looks up the
+exact research project name via `/projects/read` and stores the ID. It
+never falls back to the execution project.
+
 ## Database tables
 
 Migrations live in `db/migrations/` and are applied by:

@@ -178,7 +178,9 @@ def get_strategies():
                     strategy_id,
                     name,
                     qc_project_id,
-                    qc_deployment_id
+                    qc_deployment_id,
+                    qc_research_project_id,
+                    qc_research_project_name
                 FROM strategies
                 WHERE qc_project_id IS NOT NULL
                 ORDER BY strategy_id
@@ -986,6 +988,106 @@ def sync_trades(
 
 
 # =========================================================
+# RESEARCH vs EXECUTION PROJECTS
+# =========================================================
+
+RESEARCH_PROJECT_NOT_BOOTSTRAPPED = (
+    "Dedicated research project {0} is not initialized. "
+    "Run the research-project bootstrap first."
+)
+
+
+def list_qc_projects():
+    result = qc_post("/projects/read", {})
+    projects = result.get("projects") or result.get("project") or []
+    if isinstance(projects, dict):
+        return [projects]
+    return list(projects)
+
+
+def exact_project_match(projects, name):
+    needle = str(name or "").strip().lower()
+    if not needle:
+        return None
+    matches = []
+    for row in projects or []:
+        if str(row.get("name") or "").strip().lower() == needle:
+            matches.append(row)
+    if len(matches) > 1:
+        raise RuntimeError(
+            "Ambiguous QuantConnect project name {0!r}".format(name)
+        )
+    return matches[0] if matches else None
+
+
+def project_id_from_row(row):
+    if not row:
+        return None
+    value = row.get("projectId") or row.get("id")
+    if value is None:
+        return None
+    return str(value)
+
+
+def store_research_project_id(strategy_id, project_id):
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                UPDATE strategies
+                SET
+                    qc_research_project_id = :project_id,
+                    updated_at = NOW()
+                WHERE strategy_id = :strategy_id
+                  AND qc_research_project_id IS NULL
+                """
+            ),
+            {
+                "strategy_id": strategy_id,
+                "project_id": str(project_id),
+            },
+        )
+
+
+def resolve_research_project_id(
+    strategy,
+    projects=None,
+    *,
+    persist=True,
+    fetch_projects=None,
+):
+    """Return the dedicated research project ID. Never falls back to execution."""
+    stored = strategy.get("qc_research_project_id")
+    if stored:
+        return str(stored)
+    name = str(strategy.get("qc_research_project_name") or "").strip()
+    if not name:
+        print(
+            "No qc_research_project_name configured for {0}.".format(
+                strategy.get("strategy_id")
+            )
+        )
+        return None
+    rows = projects
+    if rows is None:
+        getter = fetch_projects or list_qc_projects
+        rows = getter()
+    match = exact_project_match(rows, name)
+    if match is None:
+        print(RESEARCH_PROJECT_NOT_BOOTSTRAPPED.format(name))
+        return None
+    project_id = project_id_from_row(match)
+    if persist and project_id and strategy.get("strategy_id"):
+        store_research_project_id(strategy["strategy_id"], project_id)
+    return project_id
+
+
+def execution_project_id(strategy):
+    value = strategy.get("qc_project_id")
+    return str(value) if value else None
+
+
+# =========================================================
 # BACKTESTS
 # =========================================================
 
@@ -1705,13 +1807,26 @@ def main(argv=None):
 
         if sync_bts:
             try:
-                backtests_result = get_backtests(project_id)
-
-                backtest_count = sync_backtests(
-                    strategy_id,
-                    project_id,
-                    backtests_result,
-                )
+                research_id = resolve_research_project_id(strategy)
+                execution_id = execution_project_id(strategy)
+                if research_id and execution_id and str(research_id) == str(execution_id):
+                    print(
+                        "Research and execution QuantConnect projects must be "
+                        "separate. Skipping research backtest sync rather than "
+                        "falling back to the execution project."
+                    )
+                elif research_id:
+                    backtests_result = get_backtests(research_id)
+                    backtest_count = sync_backtests(
+                        strategy_id,
+                        research_id,
+                        backtests_result,
+                    )
+                else:
+                    print(
+                        "Skipping research backtest sync; dedicated research "
+                        "project is not initialized."
+                    )
 
             except Exception as exc:
                 print(

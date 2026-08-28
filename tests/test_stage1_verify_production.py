@@ -12,16 +12,27 @@ from scripts.verify_stage1_production import (
     redact,
     REQUIRED_BACKTEST_COLUMNS,
     REQUIRED_MIGRATION,
+    REQUIRED_RESEARCH_PROJECT_MIGRATION,
     REQUIRED_TABLES,
 )
 
 
 def test_schema_check_pass_and_fail():
-    assert check_schema(set(REQUIRED_TABLES), set(REQUIRED_BACKTEST_COLUMNS), {REQUIRED_MIGRATION}) == []
+    assert check_schema(
+        set(REQUIRED_TABLES),
+        set(REQUIRED_BACKTEST_COLUMNS),
+        {REQUIRED_MIGRATION, REQUIRED_RESEARCH_PROJECT_MIGRATION},
+    ) == []
     failures = check_schema({"backtests"}, set(), set())
     assert any("missing tables" in item for item in failures)
     assert any("backtests missing columns" in item for item in failures)
     assert any(REQUIRED_MIGRATION in item for item in failures)
+    missing_research = check_schema(
+        set(REQUIRED_TABLES),
+        set(REQUIRED_BACKTEST_COLUMNS),
+        {REQUIRED_MIGRATION},
+    )
+    assert any(REQUIRED_RESEARCH_PROJECT_MIGRATION in item for item in missing_research)
 
 
 def test_live_parser_qpv_holdings_pass():

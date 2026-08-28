@@ -52,6 +52,8 @@ def load_strategies():
             status,
             qc_project_id,
             qc_deployment_id,
+            qc_research_project_id,
+            qc_research_project_name,
             git_commit,
             rules_json,
             created_at,
@@ -481,8 +483,8 @@ with header_left:
 
     st.caption(
         f"{strategy['environment']}  •  "
-        f"QC Project {strategy['qc_project_id']}  •  "
-        f"Deployment {strategy['qc_deployment_id']}"
+        f"Research Project: {strategy.get('qc_research_project_name') or '—'}  •  "
+        f"Execution Project: {strategy['strategy_id']}"
     )
 
 with header_right:
@@ -805,8 +807,14 @@ with st.expander(
         "Environment":
             strategy["environment"],
 
-        "QuantConnect Project ID":
+        "QuantConnect Execution Project ID":
             strategy["qc_project_id"],
+
+        "QuantConnect Research Project":
+            strategy.get("qc_research_project_name") or "—",
+
+        "QuantConnect Research Project ID":
+            strategy.get("qc_research_project_id") or "not initialized",
 
         "QuantConnect Deployment ID":
             strategy["qc_deployment_id"],

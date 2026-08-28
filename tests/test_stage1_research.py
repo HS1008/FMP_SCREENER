@@ -1,3 +1,5 @@
+from datetime import date
+
 import pandas as pd
 import pytest
 
@@ -1103,5 +1105,119 @@ def test_cron_docs_describe_automatic_flock_protected_install():
     assert "flock -n" in docs
     assert "flock -w" in docs
     assert "live QuantConnect cron intact" in docs
+
+
+def test_research_project_migration_preserves_execution_and_history():
+    from pathlib import Path
+
+    sql = (
+        Path(__file__).resolve().parent.parent
+        / "db"
+        / "migrations"
+        / "002_research_project.sql"
+    ).read_text(encoding="utf-8")
+    assert "qc_research_project_id" in sql
+    assert "qc_research_project_name" in sql
+    assert "ADD COLUMN IF NOT EXISTS" in sql
+    assert "SPYTrendResearch" in sql
+    assert "SET qc_project_id" not in sql
+    assert "SET qc_deployment_id" not in sql
+    assert "DELETE FROM backtests" not in sql
+    assert "DELETE FROM holdout_exposures" not in sql
+    assert "DROP TABLE" not in sql
+
+
+def test_research_id_discovery_is_exact_name_and_never_falls_back():
+    from jobs.sync_quantconnect import (
+        RESEARCH_PROJECT_NOT_BOOTSTRAPPED,
+        exact_project_match,
+        execution_project_id,
+        resolve_research_project_id,
+    )
+
+    projects = [
+        {"name": "SPYTrend", "projectId": 111},
+        {"name": "SPYTrendResearch", "projectId": 222},
+    ]
+    assert exact_project_match(projects, "SPYTrendResearch")["projectId"] == 222
+    assert exact_project_match(projects, "SPYTrend")["projectId"] == 111
+    stored = {
+        "strategy_id": "SPYTrend",
+        "qc_project_id": "111",
+        "qc_research_project_id": "222",
+        "qc_research_project_name": "SPYTrendResearch",
+    }
+    assert execution_project_id(stored) == "111"
+    assert resolve_research_project_id(stored, persist=False) == "222"
+
+    missing = {
+        "strategy_id": "SPYTrend",
+        "qc_project_id": "111",
+        "qc_research_project_id": None,
+        "qc_research_project_name": "SPYTrendResearch",
+    }
+    discovered = resolve_research_project_id(missing, projects=projects, persist=False)
+    assert discovered == "222"
+    execution_only = [{"name": "SPYTrend", "projectId": 111}]
+    assert (
+        resolve_research_project_id(missing, projects=execution_only, persist=False)
+        is None
+    )
+    assert "SPYTrendResearch" in RESEARCH_PROJECT_NOT_BOOTSTRAPPED.format(
+        "SPYTrendResearch"
+    )
+
+
+def test_live_sync_source_stays_on_execution_project():
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py"
+    ).read_text(encoding="utf-8")
+    assert "resolve_research_project_id(strategy)" in source
+    assert "get_live_status(project_id)" in source
+    assert "get_live_portfolio(project_id)" in source
+    live_block = source.split("STATUS")[1].split("PORTFOLIO")[0]
+    assert "resolve_research_project_id" not in live_block
+
+
+def test_new_research_project_does_not_clear_prior_holdout_exposure():
+    from scripts.verify_stage1_production import evaluate_legacy_and_holdout
+    overlapping = [
+        {
+            "backtest_id": "legacy-full",
+            "strategy_id": "SPYTrend",
+            "research_run_id": None,
+            "qc_project_id": "111",
+            "backtest_start": date(2010, 1, 1),
+            "backtest_end": date(2026, 8, 25),
+        }
+    ]
+    present = evaluate_legacy_and_holdout(
+        overlapping,
+        [
+            {
+                "strategy_id": "SPYTrend",
+                "status": STATUS_EXPOSED_PRIOR_TO_STAGE1,
+                "backtest_id": "legacy-full",
+            }
+        ],
+    )
+    assert present["ok"] is True
+    assert present["holdout_status"] == STATUS_EXPOSED_PRIOR_TO_STAGE1
+    assert present["historical_count"] == 1
+
+
+def test_strategy_monitor_shows_research_and_execution_labels():
+    from pathlib import Path
+
+    monitor = (
+        Path(__file__).resolve().parent.parent / "pages" / "strategy_monitor.py"
+    ).read_text(encoding="utf-8")
+    assert "Research Project:" in monitor
+    assert "Execution Project:" in monitor
+    assert "qc_research_project_name" in monitor
+    assert "qc_research_project_id" in monitor
+
 
 
