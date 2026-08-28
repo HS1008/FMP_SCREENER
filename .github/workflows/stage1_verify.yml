@@ -1,0 +1,93 @@
+# Stage 1 production verification.
+#
+# Manually triggered. Uses the same GitHub Actions secrets as deploy.yml:
+#   DO_HOST, DO_USER, DO_SSH_KEY
+# Secrets are never printed.
+#
+# This workflow does NOT:
+#   - merge or deploy code
+#   - restart Streamlit
+#   - install scripts/install_backtest_sync_cron.sh
+#   - launch the 81-test Stage 1 suite
+#   - run FINAL_HOLDOUT
+#   - run 2023+ research experiments
+#
+# Next automation layer (NOT implemented here):
+#   Cursor → QuantConnect smoke test → this workflow
+#   → full Stage 1 orchestrator → result sync → Strategy Monitor
+
+name: Stage 1 Production Verification
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Verify Stage 1 production
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+            set -euo pipefail
+
+            cd /root/FMP_SCREENER
+
+            if [ ! -f scripts/verify_stage1_production.py ]; then
+              echo "FAIL: scripts/verify_stage1_production.py is not on the droplet."
+              echo "Merge this workflow to main and wait for the deploy job first."
+              exit 1
+            fi
+
+            if [ -n "$(git status --porcelain)" ]; then
+              echo "FAIL: working tree is dirty"
+              git status --porcelain
+              exit 1
+            fi
+
+            GIT_SHA="$(git rev-parse HEAD)"
+            echo "Git SHA: $GIT_SHA"
+            git log -1 --oneline
+
+            if ! systemctl is-active --quiet fmp-dashboard; then
+              echo "FAIL: fmp-dashboard is not active"
+              systemctl is-active fmp-dashboard || true
+              exit 1
+            fi
+
+            source /root/FMP_SCREENER/venv/bin/activate
+
+            python -c "import sqlalchemy, psycopg2; print('DB dependencies OK')"
+
+            echo "Applying database migrations (idempotent)..."
+            python -m jobs.apply_migrations
+
+            echo "Syncing live/paper QuantConnect state (--live-only)..."
+            python -m jobs.sync_quantconnect --live-only
+
+            echo "Syncing existing QuantConnect backtests (--backtests-only)..."
+            echo "This does not create new QuantConnect backtests."
+            python -m jobs.sync_quantconnect --backtests-only
+
+            python scripts/verify_stage1_production.py \
+              --git-sha "$GIT_SHA" \
+              --working-tree CLEAN \
+              --streamlit ACTIVE \
+              --migration PASS
+          EOF
