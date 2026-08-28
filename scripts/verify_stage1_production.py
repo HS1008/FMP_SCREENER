@@ -59,6 +59,15 @@ SECRET_ENV_NAMES = (
     "CHATGPT_API_TOKEN",
 )
 
+# Exact untracked paths allowed on the DigitalOcean checkout. Not globbed.
+# Do not delete these files; they are server/cron operational artifacts.
+ALLOWED_SERVER_ONLY_FILES = frozenset(
+    {
+        "test_db.py",
+        "update_dashboard.sh",
+    }
+)
+
 
 def redact(text: str) -> str:
     """Strip credential material from error strings before printing."""
@@ -75,6 +84,125 @@ def redact(text: str) -> str:
         flags=re.IGNORECASE | re.DOTALL,
     )
     return redacted
+
+
+def parse_git_status_porcelain(output: str) -> list[tuple[str, str]]:
+    """Parse ``git status --porcelain`` into (xy, path) pairs.
+
+    Does not read file contents. Rename destinations are the path used.
+    """
+    entries: list[tuple[str, str]] = []
+    for raw in (output or "").splitlines():
+        line = raw.rstrip("\n")
+        if not line:
+            continue
+        xy = line[:2]
+        rest = line[3:] if len(line) > 2 else ""
+        if " -> " in rest:
+            rest = rest.split(" -> ", 1)[1]
+        path = rest.strip().strip('"')
+        if path:
+            entries.append((xy, path))
+    return entries
+
+
+def evaluate_working_tree(porcelain: str) -> dict[str, Any]:
+    """Allow only known server-only untracked files; fail on any tracked drift."""
+    tracked: list[str] = []
+    allowed_untracked: list[str] = []
+    unexpected_untracked: list[str] = []
+    for xy, path in parse_git_status_porcelain(porcelain):
+        if xy == "!!":
+            continue
+        if xy == "??":
+            if path in ALLOWED_SERVER_ONLY_FILES:
+                allowed_untracked.append(path)
+            else:
+                unexpected_untracked.append(path)
+            continue
+        tracked.append("{0} {1}".format(xy, path))
+
+    failures: list[str] = []
+    if tracked:
+        failures.append(
+            "tracked working-tree changes: {0}".format("; ".join(tracked))
+        )
+    if unexpected_untracked:
+        failures.append(
+            "unexpected untracked files: {0}".format(
+                ", ".join(unexpected_untracked)
+            )
+        )
+    ok = not failures
+    return {
+        "ok": ok,
+        "tracked_status": "CLEAN" if not tracked else "DIRTY",
+        "tracked": tracked,
+        "allowed_untracked": allowed_untracked,
+        "unexpected_untracked": unexpected_untracked,
+        "working_tree_check": "PASS" if ok else "FAIL",
+        "failures": failures,
+    }
+
+
+def format_working_tree_report(result: dict[str, Any]) -> str:
+    known = list(result.get("allowed_untracked") or [])
+    unexpected = list(result.get("unexpected_untracked") or [])
+    lines = [
+        "Working tree tracked files: {0}".format(
+            result.get("tracked_status") or "DIRTY"
+        ),
+        "",
+        "Known server-only files:",
+    ]
+    if known:
+        for name in known:
+            lines.append("  {0}".format(name))
+    else:
+        lines.append("  NONE")
+    lines.append("")
+    if unexpected:
+        lines.append("Unexpected untracked files:")
+        for name in unexpected:
+            lines.append("  {0}".format(name))
+    else:
+        lines.append("Unexpected untracked files: NONE")
+    lines.extend(
+        [
+            "",
+            "Overall working-tree check:",
+            "{0}".format(result.get("working_tree_check") or "FAIL"),
+        ]
+    )
+    return "\n".join(lines)
+
+
+def inspect_git_working_tree(repo_root: Path | None = None) -> dict[str, Any]:
+    import subprocess
+
+    root = Path(repo_root or ROOT)
+    completed = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=str(root),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return {
+            "ok": False,
+            "tracked_status": "DIRTY",
+            "tracked": [],
+            "allowed_untracked": [],
+            "unexpected_untracked": [],
+            "working_tree_check": "FAIL",
+            "failures": [
+                "git status --porcelain failed: {0}".format(
+                    redact(completed.stderr or completed.stdout or "unknown error")
+                )
+            ],
+        }
+    return evaluate_working_tree(completed.stdout)
 
 
 def _as_date(value: Any) -> date | None:
@@ -254,6 +382,7 @@ def format_report(
     live: dict[str, Any],
     backtests: dict[str, Any],
     overall: str,
+    working_tree_detail: dict[str, Any] | None = None,
 ) -> str:
     lines = [
         "STAGE 1 PRODUCTION VERIFICATION",
@@ -263,31 +392,38 @@ def format_report(
         "  Working tree: {0}".format(working_tree),
         "  Streamlit: {0}".format(streamlit),
         "",
-        "Database",
-        "  Migration: {0}".format(migration),
-        "  Stage 1 schema: {0}".format(schema),
-        "",
-        "Paper monitoring",
-        "  SPYTrend status: {0}".format(live_status or "UNKNOWN"),
-        "  Equity: {0}".format(format_money(live.get("equity"))),
-        "  Cash: {0}".format(format_money(live.get("cash"))),
-        "  Holdings value: {0}".format(format_money(live.get("holdings_value"))),
-        "  Positions: {0}".format(live.get("position_count", 0)),
-        "  Equity parser: {0}".format(live.get("equity_parser", "FAIL")),
-        "  Positions parser: {0}".format(live.get("positions_parser", "FAIL")),
-        "",
-        "Backtests",
-        "  Legacy dates hydrated: {0}".format(backtests.get("dates_status", "FAIL")),
-        "  Historical backtests found: {0}".format(
-            backtests.get("historical_count", 0)
-        ),
-        "",
-        "Holdout",
-        "  Status: {0}".format(backtests.get("holdout_status", "MISSING")),
-        "",
-        "Overall:",
-        "  {0}".format(overall),
     ]
+    if working_tree_detail:
+        lines.extend(format_working_tree_report(working_tree_detail).splitlines())
+        lines.append("")
+    lines.extend(
+        [
+            "Database",
+            "  Migration: {0}".format(migration),
+            "  Stage 1 schema: {0}".format(schema),
+            "",
+            "Paper monitoring",
+            "  SPYTrend status: {0}".format(live_status or "UNKNOWN"),
+            "  Equity: {0}".format(format_money(live.get("equity"))),
+            "  Cash: {0}".format(format_money(live.get("cash"))),
+            "  Holdings value: {0}".format(format_money(live.get("holdings_value"))),
+            "  Positions: {0}".format(live.get("position_count", 0)),
+            "  Equity parser: {0}".format(live.get("equity_parser", "FAIL")),
+            "  Positions parser: {0}".format(live.get("positions_parser", "FAIL")),
+            "",
+            "Backtests",
+            "  Legacy dates hydrated: {0}".format(backtests.get("dates_status", "FAIL")),
+            "  Historical backtests found: {0}".format(
+                backtests.get("historical_count", 0)
+            ),
+            "",
+            "Holdout",
+            "  Status: {0}".format(backtests.get("holdout_status", "MISSING")),
+            "",
+            "Overall:",
+            "  {0}".format(overall),
+        ]
+    )
     return "\n".join(lines)
 
 
@@ -405,11 +541,29 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--working-tree", default=os.getenv("VERIFY_WORKING_TREE", "UNKNOWN"))
     parser.add_argument("--streamlit", default=os.getenv("VERIFY_STREAMLIT", "UNKNOWN"))
     parser.add_argument("--migration", default=os.getenv("VERIFY_MIGRATION", "PASS"))
+    parser.add_argument(
+        "--working-tree-only",
+        action="store_true",
+        help=(
+            "Inspect git status --porcelain with the server-file allowlist and "
+            "exit. Does not query PostgreSQL or QuantConnect."
+        ),
+    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    if args.working_tree_only:
+        tree = inspect_git_working_tree()
+        print(format_working_tree_report(tree))
+        if tree.get("failures"):
+            print()
+            print("Failures:")
+            for item in tree["failures"]:
+                print("  - {0}".format(redact(item)))
+        return 0 if tree.get("ok") else 1
+
     failures: list[str] = []
     schema_status = "FAIL"
     live_status = "UNKNOWN"
@@ -423,6 +577,13 @@ def main(argv: list[str] | None = None) -> int:
         "holdout_status": "MISSING",
         "historical_count": 0,
     }
+    tree = inspect_git_working_tree()
+    failures.extend(tree.get("failures") or [])
+    working_tree_label = (
+        "CLEAN"
+        if tree.get("ok") and not tree.get("allowed_untracked")
+        else ("CLEAN_WITH_SERVER_FILES" if tree.get("ok") else "DIRTY")
+    )
 
     try:
         from db.connection import engine
@@ -451,7 +612,7 @@ def main(argv: list[str] | None = None) -> int:
     overall = "PASS" if not failures else "FAIL"
     report = format_report(
         git_sha=args.git_sha,
-        working_tree=args.working_tree,
+        working_tree=args.working_tree if args.working_tree != "UNKNOWN" else working_tree_label,
         streamlit=args.streamlit,
         migration=args.migration,
         schema=schema_status,
@@ -459,6 +620,7 @@ def main(argv: list[str] | None = None) -> int:
         live=live,
         backtests=backtests,
         overall=overall,
+        working_tree_detail=tree,
     )
     print(report)
     if failures:
