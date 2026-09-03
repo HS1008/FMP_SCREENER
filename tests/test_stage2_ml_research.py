@@ -298,6 +298,65 @@ def test_cross_sectional_training_and_oos_artifacts_ingest():
     assert signal[0]["rank_ic"] is None
 
 
+def test_baseline_and_ml_oos_files_ingest_as_distinct_artifacts(tmp_path):
+    from qc_research.stage2_results_sync import (
+        KIND_BY_FILENAME,
+        discover_stage2_result_paths,
+        ingest_stage2_result_files,
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    assert KIND_BY_FILENAME["baseline_oos_diagnostics.json"] == "oos_diagnostics"
+    assert KIND_BY_FILENAME["oos_diagnostics.json"] == "oos_diagnostics"
+    window = (
+        tmp_path
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_abc"
+        / "2015"
+    )
+    window.mkdir(parents=True)
+    ml = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+        "experiment_id": "e002",
+        "backtest_id": "ml-bt",
+        "window_id": "2015",
+        "monthly_signal_diagnostics": [
+            {"timestamp": "2015-02-01T15:30:00", "scope": "month", "rank_ic": 0.11, "turnover": 0.2}
+        ],
+    }
+    baseline = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+        "experiment_id": "e003",
+        "backtest_id": "base-bt",
+        "window_id": "2015",
+        "monthly_signal_diagnostics": [
+            {"timestamp": "2015-02-01T15:30:00", "scope": "month", "rank_ic": 0.05, "turnover": 0.3}
+        ],
+    }
+    (window / "oos_diagnostics.json").write_text(json.dumps(ml), encoding="utf-8")
+    (window / "baseline_oos_diagnostics.json").write_text(json.dumps(baseline), encoding="utf-8")
+    paths = discover_stage2_result_paths(tmp_path)
+    assert {path.name for path in paths} == {"oos_diagnostics.json", "baseline_oos_diagnostics.json"}
+    conn = FakeConn()
+    result = ingest_stage2_result_files(conn, paths, root=tmp_path)
+    assert result["errors"] == []
+    assert result["ingested"] == 2
+    keys = {row.get("artifact_key") for row in conn.calls if row and row.get("artifact_key")}
+    assert any(key and key.endswith("oos_diagnostics.json") for key in keys)
+    assert any(key and key.endswith("baseline_oos_diagnostics.json") for key in keys)
+    backtests = {row.get("backtest_id") for row in conn.calls if row and row.get("backtest_id")}
+    assert backtests == {"ml-bt", "base-bt"}
+
+
 def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert "render_stage2_section" in MONITOR
     assert "from qc_research.ml_monitor_ui import render_stage2_section" in MONITOR
