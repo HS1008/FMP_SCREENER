@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -58,7 +59,11 @@ def test_migration_is_idempotent_and_additive():
     names = [path.name for path in files]
     assert "003_stage2_ml_research.sql" in names
     pending = pending_migration_files(files, {"001_stage1_research.sql", "002_research_project.sql"})
-    assert [path.name for path in pending] == ["003_stage2_ml_research.sql"]
+    assert [path.name for path in pending] == [
+        "003_stage2_ml_research.sql",
+        "004_stage2_artifact_transport.sql",
+    ]
+    assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})
     assert skipped == []
 
@@ -280,13 +285,117 @@ def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert MONITOR.count("run_every") == 1
     assert "window.parent.location.reload" not in MONITOR
     assert "jobs.sync_quantconnect --backtests-only" in CRON
-    assert "sync_stage2_object_store" in SYNC
+    assert "sync_stage2_results" in SYNC
+    assert "object_get" not in SYNC
+    assert "/object/get" not in SYNC
     assert "--live-only" in SYNC
     assert "ON CONFLICT" in STORE
-    assert SYNC.find("sync_stage2_object_store") < SYNC.find("Skipping backtest sync (--live-only)")
-    assert "object_store" not in SYNC[SYNC.find("Skipping backtest sync (--live-only)") :]
+    assert SYNC.find("sync_stage2_results") < SYNC.find("Skipping backtest sync (--live-only)")
+    assert "object_get(" not in STORE[STORE.find("def sync_stage2_object_store") :]
     live_001 = (ROOT / "db" / "migrations" / "001_stage1_research.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS research_runs" in live_001
     assert "CREATE TABLE IF NOT EXISTS backtests" in live_001
     assert "DROP TABLE research_runs" not in MIGRATION
     assert "DROP TABLE backtests" not in MIGRATION
+
+
+def _full_training_payload():
+    features = [
+        "MOM_12_1",
+        "MOM_6_1",
+        "RET_3M",
+        "REV_1M",
+        "MOM_ACCEL",
+        "VOL_252",
+        "MAXDD_252",
+        "MOMVOL",
+        "TREND_50_200",
+        "DIST_200",
+        "ABOVE_200",
+    ]
+    return {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc123de",
+        "strategy_id": "CrossSectionalFactorML",
+        "window_id": "SMOKE",
+        "candidate_trials": [
+            {"trial_id": "a=0.1", "selected": False, "median_rank_ic": 0.03, "hyperparameters": {"alpha": 0.1}},
+            {"trial_id": "a=1.0", "selected": False, "median_rank_ic": 0.036, "hyperparameters": {"alpha": 1.0}},
+            {"trial_id": "a=10.0", "selected": True, "median_rank_ic": 0.038, "hyperparameters": {"alpha": 10.0}},
+            {"trial_id": "a=100.0", "selected": False, "median_rank_ic": 0.037, "hyperparameters": {"alpha": 100.0}},
+            {"trial_id": "a=1000.0", "selected": False, "median_rank_ic": 0.021, "hyperparameters": {"alpha": 1000.0}},
+        ],
+        "feature_diagnostics": [
+            {"feature_name": name, "ridge_coefficient": 0.1, "coefficient_rank": index + 1}
+            for index, name in enumerate(features)
+        ],
+    }
+
+
+def test_stage2_results_tree_ingest_is_idempotent_and_keeps_null_rank_ic(tmp_path):
+    from qc_research.stage2_results_sync import (
+        discover_stage2_result_paths,
+        ingest_stage2_result_files,
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    root = tmp_path / "stage2_results" / "CrossSectionalFactorML" / "STAGE2_CrossSectionalFactorML_abc123de"
+    smoke = root / "SMOKE"
+    smoke.mkdir(parents=True)
+    training = _full_training_payload()
+    model = {
+        "model_id": "ridge-SMOKE-abc",
+        "run_id": "STAGE2_CrossSectionalFactorML_abc123de",
+        "outer_window_id": "SMOKE",
+        "strategy_id": "CrossSectionalFactorML",
+        "feature_set_id": "PRICE_TECH_V1",
+        "feature_set_hash": "64b6a92c52a207b18bb6df72a0872cd08a2f3084f33622f72e11b34d6b292e93",
+        "target_id": "SECTOR_REL_RANK_21D_V1",
+        "target_hash": "494299984781b88598fc90e153adfd32420715a83dc75699bfb5736dbb451ff3",
+        "model_family": "ridge",
+        "hyperparameters": {"alpha": 10.0},
+        "train_start": "2023-01-01",
+        "train_end": "2023-03-31",
+        "git_commit": "abc",
+        "config_fingerprint": "7684df2e9dff44fa",
+        "object_store_key": "stage2/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_abc123de/SMOKE/model.pkl",
+        "model_sha256": "a" * 64,
+        "created_at": "2023-03-31T00:00:00+00:00",
+    }
+    oos = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc123de",
+        "window_id": "SMOKE",
+        "monthly_signal_diagnostics": [
+            {"timestamp": "2023-01-03T15:30:00", "scope": "month", "rank_ic": 0.1, "turnover": 0.2},
+            {"timestamp": "2023-03-01T15:30:00", "scope": "month", "rank_ic": None, "turnover": 0.18},
+        ],
+    }
+    (smoke / "training_summary.json").write_text(json.dumps(training), encoding="utf-8")
+    (smoke / "model_metadata.json").write_text(json.dumps(model), encoding="utf-8")
+    (smoke / "oos_diagnostics.json").write_text(json.dumps(oos), encoding="utf-8")
+    paths = discover_stage2_result_paths(tmp_path)
+    assert len(paths) == 3
+    conn = FakeConn()
+    first = ingest_stage2_result_files(conn, paths, root=tmp_path)
+    second = ingest_stage2_result_files(conn, paths, root=tmp_path)
+    assert first["ingested"] == 3
+    assert second["ingested"] == 3
+    trial_ids = {row["trial_id"] for row in conn.calls if row and row.get("trial_id")}
+    assert trial_ids == {"a=0.1", "a=1.0", "a=10.0", "a=100.0", "a=1000.0"}
+    features = {row["feature_name"] for row in conn.calls if row and row.get("feature_name")}
+    assert len(features) == 11
+    rank_ics = [row["rank_ic"] for row in conn.calls if row and "rank_ic" in row and row.get("turnover") == 0.18]
+    assert rank_ics
+    assert all(value is None for value in rank_ics)
+    model_rows = [row for row in conn.calls if row and row.get("object_store_key")]
+    assert model_rows[0]["object_store_key"].endswith("/SMOKE/model.pkl")
+    transports = {row.get("transport") for row in conn.calls if row and row.get("transport")}
+    assert transports == {"github_stage2_results"}
+
