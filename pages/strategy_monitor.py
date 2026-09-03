@@ -13,6 +13,7 @@ from qc_research.monitor_ui import (
     render_smoke_section,
     render_stage1_section,
 )
+from qc_research.ml_monitor_ui import render_stage2_section
 
 
 logger = logging.getLogger(__name__)
@@ -793,6 +794,17 @@ def _render_live_monitor_body(
         load_equity=load_backtest_equity,
         load_run_row=load_research_run,
         strategy_row=strategy,
+    )
+
+
+    # =========================================================
+    # STAGE 2 ML RESEARCH (read-only PostgreSQL)
+    # =========================================================
+
+    render_stage2_section(
+        strategy_id,
+        backtests,
+        engine=engine,
     )
 
 

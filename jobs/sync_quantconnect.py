@@ -1807,6 +1807,26 @@ def main(argv=None):
                         research_id,
                         backtests_result,
                     )
+                    try:
+                        from qc_research.object_store_sync import sync_stage2_object_store
+
+                        store_summary = sync_stage2_object_store(
+                            engine,
+                            strategy_id=strategy_id,
+                            qc_post=qc_post,
+                        )
+                        if store_summary.get("runs"):
+                            print(
+                                "Stage 2 Object Store sync: "
+                                "{0} run(s), ingested={1}, skipped={2}, errors={3}".format(
+                                    store_summary.get("runs"),
+                                    store_summary.get("ingested"),
+                                    store_summary.get("skipped"),
+                                    len(store_summary.get("errors") or []),
+                                )
+                            )
+                    except Exception as store_exc:
+                        print("Stage 2 Object Store sync error: {0}".format(store_exc))
                 else:
                     print(
                         "Skipping research backtest sync; dedicated research "
