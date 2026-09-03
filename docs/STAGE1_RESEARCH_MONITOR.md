@@ -7,6 +7,11 @@ QuantConnect remains the simulation engine. PostgreSQL is the system of
 record. Streamlit is the monitor. This app does **not** promote a
 strategy to paper or live based on research results.
 
+Stage 2 ML research is a separate contract. See
+[`STAGE2_ML_RESEARCH.md`](STAGE2_ML_RESEARCH.md). It does not change
+Stage 1 aggregations, the 81-experiment SPYTrend suite, or this
+monitor's 30-second fragment refresh.
+
 Research backtests come from the dedicated QuantConnect research project
 (`qc_research_project_name` / `qc_research_project_id`, for SPYTrend:
 `SPYTrendResearch`). Paper/live monitoring continues to use the execution

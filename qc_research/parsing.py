@@ -424,6 +424,10 @@ def is_stage1_name(name: str | None) -> bool:
     return bool(name) and str(name).startswith("S1__")
 
 
+def is_stage2_name(name: str | None) -> bool:
+    return bool(name) and str(name).startswith("S2__")
+
+
 def is_smoke_test(row: dict[str, Any] | None) -> bool:
     """True for operational smoke tests that must not affect Stage 1 assessment."""
     if not row:
