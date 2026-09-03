@@ -221,6 +221,53 @@ def test_ingest_is_idempotent_on_fake_connection():
     assert {row["trial_id"] for row in trial_calls} == {"a=0.1", "a=10"}
 
 
+def test_cross_sectional_training_and_oos_artifacts_ingest():
+    conn = type("C", (), {"calls": [], "execute": lambda self, statement, params=None: self.calls.append(params)})()
+    # FakeConn-style
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    conn = FakeConn()
+    training = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+        "window_id": "2015",
+        "candidate_trials": [
+            {"trial_id": "a=0.1", "selected": False, "median_rank_ic": 0.03, "hyperparameters": {"alpha": 0.1}},
+            {"trial_id": "a=1", "selected": False, "median_rank_ic": 0.036, "hyperparameters": {"alpha": 1}},
+            {"trial_id": "a=10", "selected": False, "median_rank_ic": 0.038, "hyperparameters": {"alpha": 10}},
+            {"trial_id": "a=100", "selected": True, "median_rank_ic": 0.037, "hyperparameters": {"alpha": 100}},
+            {"trial_id": "a=1000", "selected": False, "median_rank_ic": 0.021, "hyperparameters": {"alpha": 1000}},
+        ],
+        "feature_diagnostics": [
+            {"feature_name": "MOM_12_1", "ridge_coefficient": 0.2, "coefficient_rank": 1}
+        ],
+    }
+    ingest_artifact(conn, key="k-train", kind="training_summary", payload=training)
+    assert {row["trial_id"] for row in conn.calls if row and row.get("trial_id")} == {
+        "a=0.1",
+        "a=1",
+        "a=10",
+        "a=100",
+        "a=1000",
+    }
+    oos = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+        "window_id": "2015",
+        "monthly_signal_diagnostics": [
+            {"timestamp": "2015-02-01T15:30:00", "scope": "month", "rank_ic": None, "turnover": 0.2}
+        ],
+    }
+    ingest_artifact(conn, key="k-oos", kind="oos_diagnostics", payload=oos)
+    signal = [row for row in conn.calls if row and row.get("turnover") == 0.2]
+    assert signal[0]["rank_ic"] is None
+
+
 def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert "render_stage2_section" in MONITOR
     assert "from qc_research.ml_monitor_ui import render_stage2_section" in MONITOR
