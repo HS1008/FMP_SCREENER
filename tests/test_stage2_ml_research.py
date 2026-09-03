@@ -23,6 +23,7 @@ from qc_research.object_store_sync import (
     ArtifactSyncError,
     identify_stage2_runs,
     ingest_artifact,
+    payload_for_hash,
     should_redownload,
     sha256_payload,
     validate_artifact,
@@ -128,6 +129,30 @@ def test_artifact_hash_mismatch_and_missing_not_zero():
         raised = True
     assert raised
     assert payload.get("median_rank_ic") is None
+
+
+def test_verify_hash_matches_qs_hash_then_attach_artifact_sha256():
+    """QuantConnect artifacts hash the body, then attach artifact_sha256."""
+    body = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_437cdbdc",
+        "run_status": "COMPLETE",
+        "window_id": "SMOKE",
+        "candidate_trials": [{"trial_id": "a=1000.0", "selected": True}],
+    }
+    digest = sha256_payload(body)
+    published = dict(body)
+    published["artifact_sha256"] = digest
+    assert payload_for_hash(published) == body
+    assert verify_hash(published, digest) == digest
+    wrapped = sha256_payload(published)
+    assert wrapped != digest
+    try:
+        verify_hash(published, wrapped)
+        raised = False
+    except ArtifactSyncError:
+        raised = True
+    assert raised
 
 
 def test_all_candidate_trials_are_visible_in_training_summary():
@@ -398,4 +423,71 @@ def test_stage2_results_tree_ingest_is_idempotent_and_keeps_null_rank_ic(tmp_pat
     assert model_rows[0]["object_store_key"].endswith("/SMOKE/model.pkl")
     transports = {row.get("transport") for row in conn.calls if row and row.get("transport")}
     assert transports == {"github_stage2_results"}
+
+
+def test_published_437cdbdc_smoke_json_ingests_without_object_store():
+    from qc_research.stage2_results_sync import (
+        discover_stage2_result_paths,
+        ingest_stage2_result_files,
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    published = (
+        ROOT
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_437cdbdc"
+    )
+    assert not list(published.rglob("*.pkl"))
+    paths = [
+        path
+        for path in discover_stage2_result_paths(ROOT)
+        if "STAGE2_CrossSectionalFactorML_437cdbdc" in path.as_posix()
+    ]
+    assert {path.name for path in paths} == {
+        "run_manifest.json",
+        "run_summary.json",
+        "training_summary.json",
+        "model_metadata.json",
+        "oos_diagnostics.json",
+    }
+    conn = FakeConn()
+    result = ingest_stage2_result_files(conn, paths, root=ROOT)
+    assert result["errors"] == []
+    assert result["ingested"] == 5
+    trial_ids = {row["trial_id"] for row in conn.calls if row and row.get("trial_id")}
+    assert trial_ids == {"a=0.1", "a=1.0", "a=10.0", "a=100.0", "a=1000.0"}
+    features = [row["feature_name"] for row in conn.calls if row and row.get("feature_name")]
+    assert features == [
+        "MOM_12_1",
+        "MOM_6_1",
+        "RET_3M",
+        "REV_1M",
+        "MOM_ACCEL",
+        "VOL_252",
+        "MAXDD_252",
+        "MOMVOL",
+        "TREND_50_200",
+        "DIST_200",
+        "ABOVE_200",
+    ]
+    models = [row for row in conn.calls if row and row.get("object_store_key")]
+    assert len(models) == 1
+    assert models[0]["object_store_key"] == (
+        "stage2/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_437cdbdc/SMOKE/model.pkl"
+    )
+    assert models[0]["model_sha256"] is None
+    artifacts = [row for row in conn.calls if row and row.get("artifact_key")]
+    assert len(artifacts) == 5
+    assert {row["transport"] for row in artifacts} == {"github_stage2_results"}
+    assert all("object_get" not in str(row) for row in conn.calls)
+    assert "object_get(" not in STORE[STORE.find("def ingest_artifact") :]
+    training = json.loads((published / "SMOKE" / "training_summary.json").read_text(encoding="utf-8"))
+    assert verify_hash(training, training["artifact_sha256"]) == training["artifact_sha256"]
 
