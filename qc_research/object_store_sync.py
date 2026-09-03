@@ -69,8 +69,14 @@ def validate_artifact(kind: str, payload: dict[str, Any] | None) -> dict[str, An
     return payload
 
 
+def payload_for_hash(payload: dict[str, Any]) -> dict[str, Any]:
+    """Hash the artifact body. artifact_sha256 is a digest, not an input."""
+    return {key: value for key, value in payload.items() if key != "artifact_sha256"}
+
+
 def verify_hash(payload: dict[str, Any], expected: str | None) -> str:
-    actual = sha256_payload(payload)
+    body = payload_for_hash(payload) if isinstance(payload, dict) else payload
+    actual = sha256_payload(body)
     if expected and actual != str(expected).strip():
         raise ArtifactSyncError(
             "SHA-256 mismatch: expected {0}, computed {1}".format(expected, actual)
@@ -166,15 +172,17 @@ def identify_stage2_runs(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 UPSERT_ARTIFACT_SQL = """
 INSERT INTO research_artifacts (
     artifact_key, research_run_id, research_experiment_id, artifact_type,
-    sha256, payload_json, created_at, synced_at
+    sha256, payload_json, created_at, synced_at, transport, logical_path
 ) VALUES (
     :artifact_key, :research_run_id, :research_experiment_id, :artifact_type,
-    :sha256, CAST(:payload_json AS JSONB), NOW(), NOW()
+    :sha256, CAST(:payload_json AS JSONB), NOW(), NOW(), :transport, :logical_path
 )
 ON CONFLICT (artifact_key) DO UPDATE SET
     sha256 = EXCLUDED.sha256,
     payload_json = EXCLUDED.payload_json,
-    synced_at = NOW()
+    synced_at = NOW(),
+    transport = EXCLUDED.transport,
+    logical_path = EXCLUDED.logical_path
 """
 
 UPSERT_TRIAL_SQL = """
@@ -269,7 +277,17 @@ def _json(value: Any) -> str | None:
     return canonical_dumps(value)
 
 
-def upsert_artifact(conn, *, key: str, run_id: str, kind: str, payload: dict[str, Any], sha: str) -> None:
+def upsert_artifact(
+    conn,
+    *,
+    key: str,
+    run_id: str,
+    kind: str,
+    payload: dict[str, Any],
+    sha: str,
+    transport: str | None = None,
+    logical_path: str | None = None,
+) -> None:
     conn.execute(
         text(UPSERT_ARTIFACT_SQL),
         {
@@ -279,6 +297,8 @@ def upsert_artifact(conn, *, key: str, run_id: str, kind: str, payload: dict[str
             "artifact_type": kind,
             "sha256": sha,
             "payload_json": canonical_dumps(payload),
+            "transport": transport,
+            "logical_path": logical_path or key,
         },
     )
 
@@ -475,6 +495,8 @@ def ingest_artifact(
     kind: str,
     payload: dict[str, Any],
     expected_hash: str | None = None,
+    transport: str | None = None,
+    logical_path: str | None = None,
 ) -> str:
     validate_artifact(kind, payload)
     sha = verify_hash(payload, expected_hash)
@@ -485,6 +507,8 @@ def ingest_artifact(
         kind=kind,
         payload=payload,
         sha=sha,
+        transport=transport,
+        logical_path=logical_path,
     )
     if kind == "training_summary":
         upsert_trials_from_training_summary(conn, payload)
@@ -498,6 +522,71 @@ def ingest_artifact(
     return sha
 
 
+def audit_stage2_model_objects(
+    engine,
+    *,
+    strategy_id: str,
+    qc_post: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+    store: ObjectStoreClient | None = None,
+) -> dict[str, Any]:
+    """Properties-only existence audit. Never downloads Object Store content."""
+    summary = {"runs": 0, "exists": 0, "missing": 0, "errors": []}
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT model_id, object_store_key, research_run_id, metadata_json
+                FROM ml_models
+                WHERE research_run_id LIKE :prefix
+                """
+            ),
+            {"prefix": "STAGE2_{0}_%".format(strategy_id)},
+        ).mappings().all()
+    if not rows:
+        return summary
+    client = store or ObjectStoreClient(qc_post)
+    with engine.begin() as conn:
+        for row in rows:
+            key = row.get("object_store_key")
+            if not key:
+                continue
+            try:
+                props = client.object_properties(str(key))
+                exists = bool(props) and props.get("success") is not False
+                if exists:
+                    summary["exists"] += 1
+                else:
+                    summary["missing"] += 1
+                meta = row.get("metadata_json")
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except ValueError:
+                        meta = {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta = dict(meta)
+                meta["model_object_exists"] = bool(exists)
+                conn.execute(
+                    text(
+                        """
+                        UPDATE ml_models
+                        SET metadata_json = CAST(:metadata_json AS JSONB)
+                        WHERE model_id = :model_id
+                        """
+                    ),
+                    {
+                        "model_id": row.get("model_id"),
+                        "metadata_json": canonical_dumps(meta),
+                    },
+                )
+            except Exception as exc:
+                summary["errors"].append("{0}: {1}".format(key, exc))
+                summary["missing"] += 1
+        summary["runs"] += 1
+    return summary
+
+
 def sync_stage2_object_store(
     engine,
     *,
@@ -505,68 +594,10 @@ def sync_stage2_object_store(
     qc_post: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     store: ObjectStoreClient | None = None,
 ) -> dict[str, Any]:
-    """Sync Stage 2 Object Store artifacts for one strategy. PostgreSQL only + QC reads."""
-    summary = {"runs": 0, "ingested": 0, "skipped": 0, "errors": []}
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT name, research_suite_version, research_run_id, research_window_id,
-                       strategy_id, research_kind
-                FROM backtests
-                WHERE strategy_id = :strategy_id
-                """
-            ),
-            {"strategy_id": strategy_id},
-        ).mappings().all()
-    runs = identify_stage2_runs(rows)
-    if not runs:
-        return summary
-    client = store or ObjectStoreClient(qc_post)
-    for run in runs:
-        run_id = run["research_run_id"]
-        keys = expected_keys_for_run(strategy_id, run_id, sorted(run["windows"]))
-        missing_required = False
-        with engine.begin() as conn:
-            for label, key in keys.items():
-                kind = label.split(":", 1)[0]
-                try:
-                    props = {}
-                    try:
-                        props = client.object_properties(key)
-                    except Exception:
-                        props = {}
-                    remote_hash = extract_remote_hash(props)
-                    existing = existing_artifact_hash(conn, key)
-                    if not should_redownload(existing, remote_hash) and existing:
-                        summary["skipped"] += 1
-                        continue
-                    response = client.object_get(key)
-                    payload = extract_object_payload(response)
-                    if payload is None:
-                        if kind in REQUIRED_RUN_ARTIFACTS:
-                            missing_required = True
-                            summary["errors"].append("missing {0}".format(key))
-                        continue
-                    provided_hash = payload.get("artifact_sha256")
-                    ingest_artifact(
-                        conn,
-                        key=key,
-                        kind=kind,
-                        payload=payload,
-                        expected_hash=provided_hash,
-                    )
-                    summary["ingested"] += 1
-                except ArtifactSyncError as exc:
-                    logger.exception("Stage 2 artifact %s failed validation", key)
-                    summary["errors"].append("{0}: {1}".format(key, exc))
-                    missing_required = True
-                except Exception as exc:
-                    logger.exception("Stage 2 artifact %s sync failed", key)
-                    summary["errors"].append("{0}: {1}".format(key, exc))
-                    if kind in REQUIRED_RUN_ARTIFACTS:
-                        missing_required = True
-            if missing_required:
-                mark_run_incomplete(conn, run_id, "; ".join(summary["errors"][-3:]))
-        summary["runs"] += 1
-    return summary
+    """Deprecated as an ingest path. Properties-only audit; never calls object_get."""
+    return audit_stage2_model_objects(
+        engine,
+        strategy_id=strategy_id,
+        qc_post=qc_post,
+        store=store,
+    )
