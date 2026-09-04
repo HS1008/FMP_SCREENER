@@ -29,6 +29,21 @@ KIND_BY_FILENAME = {
     "baseline_oos_diagnostics.json": "oos_diagnostics",
     "oos_aggregate.json": "oos_aggregate",
     "nonholdout_assessment.json": "nonholdout_assessment",
+    "strategy_spec.json": "strategy_spec",
+    "experiment_manifest.json": "experiment_manifest",
+    "assessment.json": "assessment",
+    "risk_diagnostics.json": "risk_diagnostics",
+    "parameter_sensitivity.json": "parameter_sensitivity",
+    "walk_forward.json": "walk_forward",
+    "trials.json": "trials",
+    "feature_diagnostics.json": "feature_diagnostics",
+    "selection_diagnostics.json": "selection_diagnostics",
+    "strategy_intent.json": "strategy_intent",
+    "search_space.json": "search_space",
+    "pair_diagnostics.json": "pair_diagnostics",
+    "fixed_income_risk.json": "fixed_income_risk",
+    "curve_diagnostics.json": "curve_diagnostics",
+    "futures_roll_diagnostics.json": "futures_roll_diagnostics",
 }
 
 

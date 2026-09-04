@@ -65,6 +65,7 @@ def test_migration_is_idempotent_and_additive():
     assert [path.name for path in pending] == [
         "003_stage2_ml_research.sql",
         "004_stage2_artifact_transport.sql",
+        "005_platform_research.sql",
     ]
     assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})

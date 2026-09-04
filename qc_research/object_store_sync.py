@@ -16,6 +16,7 @@ from sqlalchemy import text
 logger = logging.getLogger(__name__)
 
 SCHEMA_VERSION = "stage2_ml_v1"
+PLATFORM_SCHEMA_VERSIONS = {SCHEMA_VERSION, "platform_v1", "platform_artifact_v1"}
 REQUIRED_RUN_ARTIFACTS = ("run_manifest", "run_summary")
 
 KIND_REQUIRED_FIELDS = {
@@ -26,6 +27,24 @@ KIND_REQUIRED_FIELDS = {
     "model_metadata": ("model_id", "run_id", "model_sha256"),
     "oos_aggregate": ("schema_version", "research_run_id", "windows", "ml", "baseline", "holdout_excluded"),
     "nonholdout_assessment": ("schema_version", "research_run_id", "progress", "status", "economic_gate"),
+}
+
+PLATFORM_KINDS = {
+    "strategy_spec",
+    "experiment_manifest",
+    "assessment",
+    "risk_diagnostics",
+    "parameter_sensitivity",
+    "walk_forward",
+    "trials",
+    "feature_diagnostics",
+    "selection_diagnostics",
+    "strategy_intent",
+    "search_space",
+    "pair_diagnostics",
+    "fixed_income_risk",
+    "curve_diagnostics",
+    "futures_roll_diagnostics",
 }
 
 
@@ -61,6 +80,12 @@ def validate_artifact(kind: str, payload: dict[str, Any] | None) -> dict[str, An
     if not isinstance(payload, dict):
         raise ArtifactSyncError("{0} is not a JSON object".format(kind))
     version = payload.get("schema_version")
+    if kind in PLATFORM_KINDS:
+        if version not in PLATFORM_SCHEMA_VERSIONS:
+            raise ArtifactSyncError(
+                "{0} schema_version {1!r} not in {2}".format(kind, version, sorted(PLATFORM_SCHEMA_VERSIONS))
+            )
+        return payload
     if kind != "model_metadata" and version != SCHEMA_VERSION:
         raise ArtifactSyncError(
             "{0} schema_version {1!r} != {2}".format(kind, version, SCHEMA_VERSION)
@@ -610,6 +635,10 @@ def ingest_artifact(
         upsert_signals_from_oos(conn, payload)
     elif kind in {"run_manifest", "run_summary"}:
         update_run_metadata(conn, payload)
+    if kind in PLATFORM_KINDS:
+        from qc_research.platform_ingest import ingest_platform_payload
+
+        ingest_platform_payload(conn, kind=kind, payload=payload)
     return sha
 
 

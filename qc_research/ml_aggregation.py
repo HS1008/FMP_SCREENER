@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 
 from qc_research.aggregation import is_stage1, smoke_mask
+from qc_research.economic_gate import apply_economic_gates
 
 
 PASS = "PASS"
@@ -204,61 +205,12 @@ def assess_stage2(
         result["economic_gate"] = ECONOMIC_GATE_NOT_DEFINED
         result["reasons"] = ["thresholds_not_defined"]
         return result
-    result["economic_gate"] = ECONOMIC_GATE_APPLIED
-    failures = []
-    watches = []
-    evaluated = False
-    min_ic = gates.get("min_median_oos_rank_ic")
-    median_ic = metrics.get("median_rank_ic")
-    if min_ic is not None and median_ic is not None:
-        evaluated = True
-        if float(median_ic) < float(min_ic):
-            failures.append("median_oos_rank_ic")
-    min_pos = gates.get("min_positive_ic_fraction")
-    pos = metrics.get("positive_ic_fraction")
-    if min_pos is not None and pos is not None:
-        evaluated = True
-        if float(pos) < float(min_pos):
-            watches.append("positive_ic_fraction")
-    min_ic_frac = gates.get("min_windows_ml_ic_gt_baseline_fraction")
-    ic_frac = _as_float(metrics.get("windows_ml_ic_gt_baseline_fraction"))
-    if min_ic_frac is not None and ic_frac is not None:
-        evaluated = True
-        if ic_frac < float(min_ic_frac):
-            watches.append("windows_ml_ic_gt_baseline_fraction")
-    min_net_frac = gates.get("min_windows_ml_net_gt_baseline_fraction")
-    net_frac = _as_float(metrics.get("windows_ml_net_gt_baseline_fraction"))
-    if min_net_frac is not None and net_frac is not None:
-        evaluated = True
-        if net_frac < float(min_net_frac):
-            watches.append("windows_ml_net_gt_baseline_fraction")
-    min_risk = gates.get("min_ml_minus_baseline_risk_adjusted")
-    risk_delta = _as_float(
-        metrics.get("ml_minus_baseline_risk_adjusted")
-        if metrics.get("ml_minus_baseline_risk_adjusted") is not None
-        else metrics.get("sharpe_ratio_diff")
-    )
-    if min_risk is not None and risk_delta is not None:
-        evaluated = True
-        if risk_delta < float(min_risk):
-            failures.append("ml_minus_baseline_risk_adjusted")
-    unevaluated = [key for key in STAGE2_RESERVED_THRESHOLD_KEYS if key in gates]
-    result["unevaluated_threshold_keys"] = unevaluated
-    if failures:
-        result["status"] = FAIL
-        result["economic_status"] = FAIL
-        result["reasons"] = failures
-        return result
-    if watches:
-        result["status"] = WATCH
-        result["economic_status"] = WATCH
-        result["reasons"] = watches
-        return result
-    if evaluated:
-        result["status"] = PASS
-        result["economic_status"] = PASS
-        return result
-    result["status"] = COMPLETE
-    result["economic_status"] = None
-    result["reasons"] = ["thresholds_reserved_unevaluated"] if unevaluated else ["thresholds_not_evaluated"]
+    gate = apply_economic_gates(gates, metrics, supported_keys=STAGE2_THRESHOLD_KEYS)
+    result["economic_gate"] = gate["economic_gate"]
+    result["economic_status"] = gate["economic_status"]
+    result["unevaluated_threshold_keys"] = list(gate.get("unevaluated_threshold_keys") or [])
+    result["unknown_threshold_keys"] = list(gate.get("unknown_threshold_keys") or [])
+    result["reasons"] = list(gate.get("reasons") or [])
+    if gate.get("status"):
+        result["status"] = gate["status"]
     return result

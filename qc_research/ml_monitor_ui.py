@@ -46,6 +46,78 @@ def _as_payload(value: Any) -> dict[str, Any] | None:
     return None
 
 
+UNAVAILABLE = "Unavailable / Not applicable"
+
+
+def format_monitor_value(
+    value: Any,
+    *,
+    available: bool = True,
+    reconstructed: bool = False,
+    reconstructed_note: str | None = None,
+) -> Any:
+    if not available or value is None:
+        return UNAVAILABLE
+    if reconstructed:
+        return {
+            "value": value,
+            "source_label": reconstructed_note
+            or "monthly-sampled drawdown; not QuantConnect Max Drawdown",
+        }
+    return value
+
+
+def infer_research_labels(
+    *,
+    strategy_id: str,
+    run_summary: dict[str, Any] | None = None,
+    assessment: dict[str, Any] | None = None,
+) -> dict[str, str]:
+    summary = dict(run_summary or {})
+    assessment = dict(assessment or {})
+    mode = summary.get("research_mode") or assessment.get("research_mode")
+    asset = summary.get("asset_class") or assessment.get("asset_class")
+    family = summary.get("strategy_family_id") or assessment.get("strategy_family")
+    if not mode:
+        if strategy_id == "SPYTrend":
+            mode = "MANUAL"
+        elif strategy_id == "CrossSectionalFactorML" or summary.get("research_kind") == "stage2_ml":
+            mode = "ML_DISCOVERY"
+        else:
+            mode = "UNKNOWN"
+    if not asset:
+        if strategy_id == "SPYTrend":
+            asset = "ETF"
+        elif strategy_id == "CrossSectionalFactorML":
+            asset = "US_EQUITY"
+        else:
+            asset = "UNKNOWN"
+    if not family:
+        if strategy_id == "SPYTrend":
+            family = "TIME_SERIES_TREND"
+        elif strategy_id == "CrossSectionalFactorML":
+            family = "CROSS_SECTIONAL_FACTOR"
+        else:
+            family = "UNKNOWN"
+    mode_label = {"MANUAL": "Manual", "ML_DISCOVERY": "ML Discovery"}.get(str(mode), str(mode))
+    asset_label = {
+        "US_EQUITY": "Equity",
+        "ETF": "ETF",
+        "BOND_ETF": "Fixed Income Proxy",
+        "FUTURE": "Futures",
+        "TREASURY_FUTURE": "Futures",
+        "MULTI_ASSET": "Multi Asset",
+        "FIXED_INCOME_PROXY": "Fixed Income Proxy",
+    }.get(str(asset), str(asset))
+    return {
+        "research_mode": str(mode),
+        "research_mode_label": mode_label,
+        "asset_class": str(asset),
+        "asset_class_label": asset_label,
+        "strategy_family": str(family),
+    }
+
+
 def load_stage2_trials(engine, research_run_id: str) -> pd.DataFrame:
     return _read_sql(
         engine,
@@ -279,6 +351,14 @@ def build_stage2_monitor_view(
             "salvage": summary.get("salvage"),
         }
     )
+    source = dict(aggregate.get("metric_source") or {})
+    qc_runtime = dict(source.get("qc_runtime_statistics") or {})
+    reconstructed = qc_runtime.get("available") is False
+    labels = infer_research_labels(
+        strategy_id=strategy_id,
+        run_summary=summary,
+        assessment=resolved,
+    )
     return {
         "strategy_id": strategy_id,
         "research_run_id": selected_run,
@@ -298,11 +378,22 @@ def build_stage2_monitor_view(
         "stability": dict(aggregate.get("stability") or {}),
         "feature_stability": dict(aggregate.get("feature_stability") or {}),
         "cost": dict(aggregate.get("cost") or {}),
-        "metric_source": dict(aggregate.get("metric_source") or {}),
+        "metric_source": source,
         "windows": window_comparison_frame(aggregate),
         "feature_stability_table": feature_stability_frame(aggregate),
         "robustness_table": robustness_frame(aggregate),
         "show_section": True,
+        "research_mode": labels["research_mode"],
+        "research_mode_label": labels["research_mode_label"],
+        "asset_class": labels["asset_class"],
+        "asset_class_label": labels["asset_class_label"],
+        "strategy_family": labels["strategy_family"],
+        "max_drawdown_display": format_monitor_value(
+            (aggregate.get("ml") or {}).get("max_drawdown"),
+            available=(aggregate.get("ml") or {}).get("max_drawdown") is not None,
+            reconstructed=reconstructed,
+        ),
+        "qc_max_drawdown_available": bool(qc_runtime.get("available")),
     }
 
 
@@ -363,6 +454,13 @@ def render_stage2_section(
     if view is None:
         return
     st.write("Operational status: **{0}**".format(view["status"]))
+    st.caption(
+        "Research mode: {0} · Asset class: {1} · Family: {2}".format(
+            view.get("research_mode_label") or "Unavailable / Not applicable",
+            view.get("asset_class_label") or "Unavailable / Not applicable",
+            view.get("strategy_family") or "Unavailable / Not applicable",
+        )
+    )
     economic = view.get("economic_status") or view.get("economic_gate") or "NOT_DEFINED"
     st.write("Economic gate: **{0}**".format(economic))
     st.caption(
@@ -403,6 +501,8 @@ def render_stage2_section(
         r2.metric("Baseline Sharpe", view["baseline"].get("sharpe_ratio"))
         r3.metric("ML CAGR", view["ml"].get("cagr"))
         r4.metric("ML max drawdown", view["ml"].get("max_drawdown"))
+        if isinstance(view.get("max_drawdown_display"), dict):
+            st.caption(view["max_drawdown_display"].get("source_label"))
         s1, s2, s3, s4 = st.columns(4)
         s1.metric("ML Sortino", view["ml"].get("sortino_ratio"))
         s2.metric("Baseline Sortino", view["baseline"].get("sortino_ratio"))
@@ -411,6 +511,10 @@ def render_stage2_section(
         source = ((view.get("metric_source") or {}).get("qc_runtime_statistics") or {})
         if source.get("available") is False:
             st.caption(source.get("reason") or "")
+            st.caption(
+                "Max drawdown is monthly-sampled from reconstructed net returns; "
+                "it is not QuantConnect Max Drawdown."
+            )
     windows = view.get("windows")
     if windows is not None and not windows.empty:
         st.subheader("Outer OOS windows (ML vs baseline)")
@@ -451,6 +555,17 @@ def render_stage2_section(
         if not signals.empty:
             st.subheader("Rank IC history")
             st.dataframe(signals, use_container_width=True, hide_index=True)
+        pair = load_stage2_artifact_payload(engine, selected_run, "pair_diagnostics")
+        if pair:
+            st.subheader("Pair diagnostics")
+            st.write(pair)
+            if pair.get("selection_used_oos"):
+                st.error("Pair selection used OOS — invalid research.")
+        fi = load_stage2_artifact_payload(engine, selected_run, "fixed_income_risk")
+        if fi:
+            st.subheader("Fixed-income diagnostics")
+            st.write(fi)
+            st.caption("Unsupported cash-bond metrics are Unavailable / Not applicable, never zero-filled.")
     if holdout is not None and not holdout.empty:
         with st.expander("Stage 2 holdout (excluded from research gate)"):
             st.dataframe(holdout, use_container_width=True, hide_index=True)
