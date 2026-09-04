@@ -24,6 +24,8 @@ KIND_REQUIRED_FIELDS = {
     "training_summary": ("schema_version", "research_run_id", "window_id", "candidate_trials"),
     "oos_diagnostics": ("schema_version", "research_run_id", "window_id"),
     "model_metadata": ("model_id", "run_id", "model_sha256"),
+    "oos_aggregate": ("schema_version", "research_run_id", "windows", "ml", "baseline", "holdout_excluded"),
+    "nonholdout_assessment": ("schema_version", "research_run_id", "progress", "status", "economic_gate"),
 }
 
 
@@ -69,8 +71,14 @@ def validate_artifact(kind: str, payload: dict[str, Any] | None) -> dict[str, An
     return payload
 
 
+def payload_for_hash(payload: dict[str, Any]) -> dict[str, Any]:
+    """Hash the artifact body. artifact_sha256 is a digest, not an input."""
+    return {key: value for key, value in payload.items() if key != "artifact_sha256"}
+
+
 def verify_hash(payload: dict[str, Any], expected: str | None) -> str:
-    actual = sha256_payload(payload)
+    body = payload_for_hash(payload) if isinstance(payload, dict) else payload
+    actual = sha256_payload(body)
     if expected and actual != str(expected).strip():
         raise ArtifactSyncError(
             "SHA-256 mismatch: expected {0}, computed {1}".format(expected, actual)
@@ -166,15 +174,17 @@ def identify_stage2_runs(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]
 UPSERT_ARTIFACT_SQL = """
 INSERT INTO research_artifacts (
     artifact_key, research_run_id, research_experiment_id, artifact_type,
-    sha256, payload_json, created_at, synced_at
+    sha256, payload_json, created_at, synced_at, transport, logical_path
 ) VALUES (
     :artifact_key, :research_run_id, :research_experiment_id, :artifact_type,
-    :sha256, CAST(:payload_json AS JSONB), NOW(), NOW()
+    :sha256, CAST(:payload_json AS JSONB), NOW(), NOW(), :transport, :logical_path
 )
 ON CONFLICT (artifact_key) DO UPDATE SET
     sha256 = EXCLUDED.sha256,
     payload_json = EXCLUDED.payload_json,
-    synced_at = NOW()
+    synced_at = NOW(),
+    transport = EXCLUDED.transport,
+    logical_path = EXCLUDED.logical_path
 """
 
 UPSERT_TRIAL_SQL = """
@@ -269,7 +279,17 @@ def _json(value: Any) -> str | None:
     return canonical_dumps(value)
 
 
-def upsert_artifact(conn, *, key: str, run_id: str, kind: str, payload: dict[str, Any], sha: str) -> None:
+def upsert_artifact(
+    conn,
+    *,
+    key: str,
+    run_id: str,
+    kind: str,
+    payload: dict[str, Any],
+    sha: str,
+    transport: str | None = None,
+    logical_path: str | None = None,
+) -> None:
     conn.execute(
         text(UPSERT_ARTIFACT_SQL),
         {
@@ -279,6 +299,8 @@ def upsert_artifact(conn, *, key: str, run_id: str, kind: str, payload: dict[str
             "artifact_type": kind,
             "sha256": sha,
             "payload_json": canonical_dumps(payload),
+            "transport": transport,
+            "logical_path": logical_path or key,
         },
     )
 
@@ -395,26 +417,106 @@ def mark_run_incomplete(conn, run_id: str, warning: str) -> None:
 
 
 def update_run_metadata(conn, payload: dict[str, Any]) -> None:
+    """Insert or update a Stage 2 research_runs row from published JSON.
+
+    Does not mark holdout_accessed. Sealed holdout dates are metadata only.
+    """
+    run_id = payload.get("research_run_id") or payload.get("run_id")
+    if not run_id:
+        return
+    holdout = payload.get("holdout_spec") or payload.get("holdout") or {}
     conn.execute(
         text(
             """
-            UPDATE research_runs
-            SET research_kind = COALESCE(research_kind, 'stage2_ml'),
-                artifact_schema_version = :schema_version,
-                feature_set_id = COALESCE(:feature_set_id, feature_set_id),
-                feature_set_hash = COALESCE(:feature_set_hash, feature_set_hash),
-                target_id = COALESCE(:target_id, target_id),
-                target_hash = COALESCE(:target_hash, target_hash),
-                planned_internal_trials = COALESCE(:planned_internal_trials, planned_internal_trials),
-                completed_internal_trials = COALESCE(:completed_internal_trials, completed_internal_trials),
-                planned_cv_fits = COALESCE(:planned_cv_fits, planned_cv_fits),
-                completed_cv_fits = COALESCE(:completed_cv_fits, completed_cv_fits),
-                last_seen_at = NOW()
-            WHERE research_run_id = :run_id
+            INSERT INTO research_runs (
+                research_run_id,
+                strategy_id,
+                suite_version,
+                git_commit,
+                dirty,
+                first_seen_at,
+                last_seen_at,
+                holdout_accessed,
+                holdout_access_count,
+                research_kind,
+                artifact_schema_version,
+                feature_set_id,
+                feature_set_hash,
+                target_id,
+                target_hash,
+                planned_internal_trials,
+                completed_internal_trials,
+                planned_cv_fits,
+                completed_cv_fits,
+                expected_experiment_count,
+                completed_count,
+                failed_count,
+                skipped_count,
+                run_status,
+                holdout_start,
+                holdout_end,
+                research_lineage_id,
+                orchestrator_summary_json
+            ) VALUES (
+                :research_run_id,
+                :strategy_id,
+                'S2',
+                :git_commit,
+                :dirty,
+                NOW(),
+                NOW(),
+                FALSE,
+                0,
+                'stage2_ml',
+                :schema_version,
+                :feature_set_id,
+                :feature_set_hash,
+                :target_id,
+                :target_hash,
+                :planned_internal_trials,
+                :completed_internal_trials,
+                :planned_cv_fits,
+                :completed_cv_fits,
+                :expected_experiment_count,
+                :completed_count,
+                :failed_count,
+                :skipped_count,
+                :run_status,
+                CAST(:holdout_start AS DATE),
+                CAST(:holdout_end AS DATE),
+                :research_lineage_id,
+                CAST(:summary AS JSONB)
+            )
+            ON CONFLICT (research_run_id) DO UPDATE SET
+                last_seen_at = NOW(),
+                research_kind = 'stage2_ml',
+                artifact_schema_version = COALESCE(EXCLUDED.artifact_schema_version, research_runs.artifact_schema_version),
+                feature_set_id = COALESCE(EXCLUDED.feature_set_id, research_runs.feature_set_id),
+                feature_set_hash = COALESCE(EXCLUDED.feature_set_hash, research_runs.feature_set_hash),
+                target_id = COALESCE(EXCLUDED.target_id, research_runs.target_id),
+                target_hash = COALESCE(EXCLUDED.target_hash, research_runs.target_hash),
+                planned_internal_trials = COALESCE(EXCLUDED.planned_internal_trials, research_runs.planned_internal_trials),
+                completed_internal_trials = COALESCE(EXCLUDED.completed_internal_trials, research_runs.completed_internal_trials),
+                planned_cv_fits = COALESCE(EXCLUDED.planned_cv_fits, research_runs.planned_cv_fits),
+                completed_cv_fits = COALESCE(EXCLUDED.completed_cv_fits, research_runs.completed_cv_fits),
+                expected_experiment_count = COALESCE(EXCLUDED.expected_experiment_count, research_runs.expected_experiment_count),
+                completed_count = COALESCE(EXCLUDED.completed_count, research_runs.completed_count),
+                failed_count = COALESCE(EXCLUDED.failed_count, research_runs.failed_count),
+                skipped_count = COALESCE(EXCLUDED.skipped_count, research_runs.skipped_count),
+                run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status),
+                holdout_start = COALESCE(EXCLUDED.holdout_start, research_runs.holdout_start),
+                holdout_end = COALESCE(EXCLUDED.holdout_end, research_runs.holdout_end),
+                research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, research_runs.research_lineage_id),
+                orchestrator_summary_json = COALESCE(EXCLUDED.orchestrator_summary_json, research_runs.orchestrator_summary_json),
+                git_commit = COALESCE(EXCLUDED.git_commit, research_runs.git_commit),
+                dirty = COALESCE(EXCLUDED.dirty, research_runs.dirty)
             """
         ),
         {
-            "run_id": payload.get("research_run_id"),
+            "research_run_id": str(run_id),
+            "strategy_id": payload.get("strategy_id") or "",
+            "git_commit": payload.get("git_commit"),
+            "dirty": bool(payload.get("dirty")),
             "schema_version": payload.get("schema_version") or SCHEMA_VERSION,
             "feature_set_id": payload.get("feature_set_id"),
             "feature_set_hash": payload.get("feature_set_hash"),
@@ -424,6 +526,15 @@ def update_run_metadata(conn, payload: dict[str, Any]) -> None:
             "completed_internal_trials": payload.get("completed_internal_trials"),
             "planned_cv_fits": payload.get("expected_cv_fits"),
             "completed_cv_fits": payload.get("completed_cv_fits"),
+            "expected_experiment_count": payload.get("expected_qc_experiments"),
+            "completed_count": payload.get("completed_qc_experiments"),
+            "failed_count": payload.get("failed_qc_experiments"),
+            "skipped_count": payload.get("skipped_qc_experiments"),
+            "run_status": payload.get("run_status"),
+            "holdout_start": holdout.get("start"),
+            "holdout_end": holdout.get("end") if holdout.get("end") not in {None, "TODAY"} else None,
+            "research_lineage_id": payload.get("research_lineage_id") or payload.get("strategy_id"),
+            "summary": canonical_dumps(payload),
         },
     )
 
@@ -475,6 +586,8 @@ def ingest_artifact(
     kind: str,
     payload: dict[str, Any],
     expected_hash: str | None = None,
+    transport: str | None = None,
+    logical_path: str | None = None,
 ) -> str:
     validate_artifact(kind, payload)
     sha = verify_hash(payload, expected_hash)
@@ -485,6 +598,8 @@ def ingest_artifact(
         kind=kind,
         payload=payload,
         sha=sha,
+        transport=transport,
+        logical_path=logical_path,
     )
     if kind == "training_summary":
         upsert_trials_from_training_summary(conn, payload)
@@ -498,6 +613,71 @@ def ingest_artifact(
     return sha
 
 
+def audit_stage2_model_objects(
+    engine,
+    *,
+    strategy_id: str,
+    qc_post: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
+    store: ObjectStoreClient | None = None,
+) -> dict[str, Any]:
+    """Properties-only existence audit. Never downloads Object Store content."""
+    summary = {"runs": 0, "exists": 0, "missing": 0, "errors": []}
+    with engine.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT model_id, object_store_key, research_run_id, metadata_json
+                FROM ml_models
+                WHERE research_run_id LIKE :prefix
+                """
+            ),
+            {"prefix": "STAGE2_{0}_%".format(strategy_id)},
+        ).mappings().all()
+    if not rows:
+        return summary
+    client = store or ObjectStoreClient(qc_post)
+    with engine.begin() as conn:
+        for row in rows:
+            key = row.get("object_store_key")
+            if not key:
+                continue
+            try:
+                props = client.object_properties(str(key))
+                exists = bool(props) and props.get("success") is not False
+                if exists:
+                    summary["exists"] += 1
+                else:
+                    summary["missing"] += 1
+                meta = row.get("metadata_json")
+                if isinstance(meta, str):
+                    try:
+                        meta = json.loads(meta)
+                    except ValueError:
+                        meta = {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                meta = dict(meta)
+                meta["model_object_exists"] = bool(exists)
+                conn.execute(
+                    text(
+                        """
+                        UPDATE ml_models
+                        SET metadata_json = CAST(:metadata_json AS JSONB)
+                        WHERE model_id = :model_id
+                        """
+                    ),
+                    {
+                        "model_id": row.get("model_id"),
+                        "metadata_json": canonical_dumps(meta),
+                    },
+                )
+            except Exception as exc:
+                summary["errors"].append("{0}: {1}".format(key, exc))
+                summary["missing"] += 1
+        summary["runs"] += 1
+    return summary
+
+
 def sync_stage2_object_store(
     engine,
     *,
@@ -505,68 +685,10 @@ def sync_stage2_object_store(
     qc_post: Callable[[str, dict[str, Any]], dict[str, Any]] | None = None,
     store: ObjectStoreClient | None = None,
 ) -> dict[str, Any]:
-    """Sync Stage 2 Object Store artifacts for one strategy. PostgreSQL only + QC reads."""
-    summary = {"runs": 0, "ingested": 0, "skipped": 0, "errors": []}
-    with engine.connect() as conn:
-        rows = conn.execute(
-            text(
-                """
-                SELECT name, research_suite_version, research_run_id, research_window_id,
-                       strategy_id, research_kind
-                FROM backtests
-                WHERE strategy_id = :strategy_id
-                """
-            ),
-            {"strategy_id": strategy_id},
-        ).mappings().all()
-    runs = identify_stage2_runs(rows)
-    if not runs:
-        return summary
-    client = store or ObjectStoreClient(qc_post)
-    for run in runs:
-        run_id = run["research_run_id"]
-        keys = expected_keys_for_run(strategy_id, run_id, sorted(run["windows"]))
-        missing_required = False
-        with engine.begin() as conn:
-            for label, key in keys.items():
-                kind = label.split(":", 1)[0]
-                try:
-                    props = {}
-                    try:
-                        props = client.object_properties(key)
-                    except Exception:
-                        props = {}
-                    remote_hash = extract_remote_hash(props)
-                    existing = existing_artifact_hash(conn, key)
-                    if not should_redownload(existing, remote_hash) and existing:
-                        summary["skipped"] += 1
-                        continue
-                    response = client.object_get(key)
-                    payload = extract_object_payload(response)
-                    if payload is None:
-                        if kind in REQUIRED_RUN_ARTIFACTS:
-                            missing_required = True
-                            summary["errors"].append("missing {0}".format(key))
-                        continue
-                    provided_hash = payload.get("artifact_sha256")
-                    ingest_artifact(
-                        conn,
-                        key=key,
-                        kind=kind,
-                        payload=payload,
-                        expected_hash=provided_hash,
-                    )
-                    summary["ingested"] += 1
-                except ArtifactSyncError as exc:
-                    logger.exception("Stage 2 artifact %s failed validation", key)
-                    summary["errors"].append("{0}: {1}".format(key, exc))
-                    missing_required = True
-                except Exception as exc:
-                    logger.exception("Stage 2 artifact %s sync failed", key)
-                    summary["errors"].append("{0}: {1}".format(key, exc))
-                    if kind in REQUIRED_RUN_ARTIFACTS:
-                        missing_required = True
-            if missing_required:
-                mark_run_incomplete(conn, run_id, "; ".join(summary["errors"][-3:]))
-        summary["runs"] += 1
-    return summary
+    """Deprecated as an ingest path. Properties-only audit; never calls object_get."""
+    return audit_stage2_model_objects(
+        engine,
+        strategy_id=strategy_id,
+        qc_post=qc_post,
+        store=store,
+    )

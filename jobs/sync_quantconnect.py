@@ -1808,25 +1808,23 @@ def main(argv=None):
                         backtests_result,
                     )
                     try:
-                        from qc_research.object_store_sync import sync_stage2_object_store
+                        from qc_research.stage2_results_sync import sync_stage2_results
 
-                        store_summary = sync_stage2_object_store(
+                        store_summary = sync_stage2_results(
                             engine,
                             strategy_id=strategy_id,
-                            qc_post=qc_post,
                         )
-                        if store_summary.get("runs"):
+                        if store_summary.get("ingested") or store_summary.get("errors"):
                             print(
-                                "Stage 2 Object Store sync: "
-                                "{0} run(s), ingested={1}, skipped={2}, errors={3}".format(
-                                    store_summary.get("runs"),
+                                "Stage 2 results ingest: "
+                                "ingested={0}, skipped={1}, errors={2}".format(
                                     store_summary.get("ingested"),
                                     store_summary.get("skipped"),
                                     len(store_summary.get("errors") or []),
                                 )
                             )
                     except Exception as store_exc:
-                        print("Stage 2 Object Store sync error: {0}".format(store_exc))
+                        print("Stage 2 results ingest error: {0}".format(store_exc))
                 else:
                     print(
                         "Skipping research backtest sync; dedicated research "
