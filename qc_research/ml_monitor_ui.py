@@ -109,20 +109,211 @@ def infer_research_labels(
         "PAIR": "Pair",
         "BOND_ETF": "Bond ETF",
         "FUTURE": "Futures",
-        "TREASURY_FUTURE": "Futures",
+        "TREASURY_FUTURE": "Treasury Futures",
+        "RATE_FUTURE": "Rates Futures",
         "MULTI_ASSET": "Multi Asset",
         "FIXED_INCOME_PROXY": "Fixed Income Proxy",
     }.get(str(asset), str(asset))
+    provenance = str(summary.get("provenance") or assessment.get("provenance") or "")
+    state = str(summary.get("research_state") or assessment.get("research_state") or "")
     return {
         "research_mode": str(mode),
         "research_mode_label": mode_label,
         "asset_class": str(asset),
         "asset_class_label": asset_label,
         "strategy_family": str(family),
-        "research_state": str(summary.get("research_state") or assessment.get("research_state") or ""),
-        "artifact_provenance": str(summary.get("provenance") or assessment.get("provenance") or ""),
-        "economic_gate": str(assessment.get("economic_gate") or summary.get("economic_gate") or ""),
+        "research_state": state or UNAVAILABLE,
+        "artifact_provenance": provenance or UNAVAILABLE,
+        "economic_gate": str(assessment.get("economic_gate") or summary.get("economic_gate") or UNAVAILABLE),
+        "cost_model_id": str(summary.get("cost_model_id") or assessment.get("cost_model_id") or UNAVAILABLE),
+        "spec_hash": str(summary.get("config_fingerprint") or summary.get("strategy_spec_hash") or UNAVAILABLE),
+        "git_sha": str(summary.get("git_sha") or UNAVAILABLE),
+        "lineage": str(summary.get("research_lineage_id") or UNAVAILABLE),
+        "trial_count": summary.get("trial_count"),
     }
+
+
+def load_platform_run_ids(engine, strategy_id: str) -> list[str]:
+    rows = _read_sql(
+        engine,
+        """
+        SELECT DISTINCT research_run_id
+        FROM research_artifacts
+        WHERE research_run_id LIKE :prefix
+           OR research_run_id LIKE 'PLATFORM_%'
+        ORDER BY 1
+        """,
+        {"prefix": "%{0}%".format(strategy_id)},
+    )
+    if rows is None or rows.empty:
+        return []
+    return [str(value) for value in rows["research_run_id"].dropna().astype(str).tolist() if value]
+
+
+def build_platform_monitor_view(
+    *,
+    strategy_id: str,
+    selected_run: str | None,
+    run_summary: dict[str, Any] | None = None,
+    assessment: dict[str, Any] | None = None,
+    oos: dict[str, Any] | None = None,
+    spec: dict[str, Any] | None = None,
+    search_space: dict[str, Any] | None = None,
+    trials: dict[str, Any] | None = None,
+    pair: dict[str, Any] | None = None,
+    fixed_income: dict[str, Any] | None = None,
+    roll: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not selected_run:
+        return None
+    summary = dict(run_summary or {})
+    inner_summary = summary.get("payload") if isinstance(summary.get("payload"), dict) else summary
+    inner_assess = (assessment or {}).get("payload") if isinstance((assessment or {}).get("payload"), dict) else (assessment or {})
+    inner_oos = (oos or {}).get("payload") if isinstance((oos or {}).get("payload"), dict) else (oos or {})
+    inner_spec = (spec or {}).get("payload") if isinstance((spec or {}).get("payload"), dict) else (spec or {})
+    identity = dict(inner_spec.get("identity") or {})
+    merged_summary = {
+        **inner_summary,
+        "research_mode": inner_summary.get("research_mode") or identity.get("research_mode"),
+        "asset_class": inner_summary.get("asset_class") or identity.get("asset_class"),
+        "strategy_family_id": inner_summary.get("strategy_family_id") or identity.get("strategy_family_id"),
+        "research_state": inner_summary.get("research_state") or inner_assess.get("research_state"),
+        "provenance": summary.get("provenance") or inner_summary.get("provenance"),
+        "config_fingerprint": identity.get("config_fingerprint") or summary.get("config_fingerprint"),
+        "research_lineage_id": identity.get("research_lineage_id"),
+        "cost_model_id": (inner_spec.get("costs") or {}).get("cost_model_id"),
+        "trial_count": (trials or {}).get("payload", trials or {}).get("trial_count")
+        if isinstance(trials, dict)
+        else None,
+        "git_sha": identity.get("git_sha"),
+    }
+    if isinstance(trials, dict):
+        payload = trials.get("payload") if isinstance(trials.get("payload"), dict) else trials
+        merged_summary["trial_count"] = payload.get("trial_count")
+    labels = infer_research_labels(
+        strategy_id=strategy_id,
+        run_summary=merged_summary,
+        assessment=inner_assess,
+    )
+    sharpe = inner_oos.get("sharpe_ratio")
+    windows = inner_oos.get("windows")
+    return {
+        "strategy_id": strategy_id,
+        "research_run_id": selected_run,
+        "labels": labels,
+        "research_mode_label": labels["research_mode_label"],
+        "asset_class_label": labels["asset_class_label"],
+        "strategy_family": labels["strategy_family"],
+        "research_state": format_monitor_value(labels.get("research_state"), available=bool(labels.get("research_state") and labels.get("research_state") != UNAVAILABLE)),
+        "provenance": format_monitor_value(
+            labels.get("artifact_provenance"),
+            available=bool(labels.get("artifact_provenance") and labels.get("artifact_provenance") != UNAVAILABLE),
+            provenance=str(merged_summary.get("provenance") or ""),
+        ),
+        "economic_gate": format_monitor_value(labels.get("economic_gate"), available=labels.get("economic_gate") not in {None, "", UNAVAILABLE}),
+        "spec_hash": format_monitor_value(labels.get("spec_hash"), available=labels.get("spec_hash") not in {None, "", UNAVAILABLE}),
+        "git_sha": format_monitor_value(labels.get("git_sha"), available=labels.get("git_sha") not in {None, "", UNAVAILABLE}),
+        "lineage": format_monitor_value(labels.get("lineage"), available=labels.get("lineage") not in {None, "", UNAVAILABLE}),
+        "cost_model": format_monitor_value(labels.get("cost_model_id"), available=labels.get("cost_model_id") not in {None, "", UNAVAILABLE}),
+        "trial_count": format_monitor_value(merged_summary.get("trial_count"), available=merged_summary.get("trial_count") is not None),
+        "sharpe": format_monitor_value(sharpe, available=sharpe is not None, provenance=str(inner_oos.get("provenance") or merged_summary.get("provenance") or "")),
+        "oos_windows": windows if windows else UNAVAILABLE,
+        "search_space": search_space,
+        "pair": pair,
+        "fixed_income": fixed_income,
+        "roll": roll,
+        "trials": trials,
+    }
+
+
+def render_platform_section(strategy_id: str, *, engine=None) -> None:
+    """PostgreSQL-only view of MANUAL / ML_DISCOVERY platform runs."""
+    run_ids = load_platform_run_ids(engine, strategy_id)
+    if not run_ids:
+        return
+    st.header("PLATFORM RESEARCH")
+    st.caption(
+        "Read-only PostgreSQL view of generic MANUAL / ML_DISCOVERY runs. "
+        "This page does not call QuantConnect. Unavailable values are never shown as 0."
+    )
+    selected_run = st.selectbox(
+        "Platform research run",
+        run_ids,
+        key="strategy_monitor_platform_research_run",
+    )
+    if not selected_run:
+        return
+    run_summary = load_stage2_artifact_payload(engine, selected_run, "run_summary")
+    assessment = load_stage2_artifact_payload(engine, selected_run, "assessment")
+    oos = load_stage2_artifact_payload(engine, selected_run, "oos_aggregate")
+    spec = load_stage2_artifact_payload(engine, selected_run, "strategy_spec")
+    search_space = load_stage2_artifact_payload(engine, selected_run, "search_space")
+    trials = load_stage2_artifact_payload(engine, selected_run, "trials")
+    pair = load_stage2_artifact_payload(engine, selected_run, "pair_diagnostics")
+    fixed_income = load_stage2_artifact_payload(engine, selected_run, "fixed_income_diagnostics") or load_stage2_artifact_payload(
+        engine, selected_run, "fixed_income_risk"
+    )
+    roll = load_stage2_artifact_payload(engine, selected_run, "roll_diagnostics") or load_stage2_artifact_payload(
+        engine, selected_run, "futures_roll_diagnostics"
+    )
+    view = build_platform_monitor_view(
+        strategy_id=strategy_id,
+        selected_run=selected_run,
+        run_summary=run_summary,
+        assessment=assessment,
+        oos=oos,
+        spec=spec,
+        search_space=search_space,
+        trials=trials,
+        pair=pair,
+        fixed_income=fixed_income,
+        roll=roll,
+    )
+    if view is None:
+        return
+    st.caption(
+        "Mode: {0} · Asset: {1} · Family: {2} · State: {3} · Provenance: {4}".format(
+            view["research_mode_label"],
+            view["asset_class_label"],
+            view["strategy_family"],
+            view["research_state"],
+            view["provenance"],
+        )
+    )
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Economic gate", view["economic_gate"])
+    c2.metric("Spec hash", view["spec_hash"])
+    c3.metric("Trial count", view["trial_count"])
+    c4.metric("Cost model", view["cost_model"])
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Lineage", view["lineage"])
+    d2.metric("Git SHA", view["git_sha"])
+    d3.metric("OOS Sharpe", view["sharpe"])
+    if view.get("oos_windows") not in {None, UNAVAILABLE}:
+        st.subheader("OOS windows")
+        st.write(view["oos_windows"])
+    if view.get("search_space"):
+        st.subheader("Search space")
+        st.write(view["search_space"])
+    if view.get("trials"):
+        st.subheader("Trial ledger")
+        st.write(view["trials"])
+        payload = view["trials"].get("payload") if isinstance(view["trials"], dict) else None
+        if isinstance(payload, dict) and payload.get("provenance") == "SYNTHETIC_TEST_ONLY":
+            st.error("Synthetic trial ledger cannot be research evidence.")
+    if view.get("pair"):
+        st.subheader("Pair diagnostics")
+        st.write(view["pair"])
+        inner = view["pair"].get("payload") if isinstance(view["pair"], dict) else view["pair"]
+        if isinstance(inner, dict) and inner.get("selection_used_oos"):
+            st.error("Pair selection used OOS — invalid research.")
+    if view.get("fixed_income"):
+        st.subheader("Fixed-income / DV01 diagnostics")
+        st.write(view["fixed_income"])
+        st.caption("Unsupported cash-bond metrics are Unavailable / Not applicable, never zero-filled.")
+    if view.get("roll"):
+        st.subheader("Roll diagnostics")
+        st.write(view["roll"])
 
 
 def load_stage2_trials(engine, research_run_id: str) -> pd.DataFrame:

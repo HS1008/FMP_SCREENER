@@ -13,7 +13,7 @@ from qc_research.monitor_ui import (
     render_smoke_section,
     render_stage1_section,
 )
-from qc_research.ml_monitor_ui import render_stage2_section
+from qc_research.ml_monitor_ui import render_platform_section, render_stage2_section
 
 
 logger = logging.getLogger(__name__)
@@ -804,6 +804,16 @@ def _render_live_monitor_body(
     render_stage2_section(
         strategy_id,
         backtests,
+        engine=engine,
+    )
+
+
+    # =========================================================
+    # PLATFORM RESEARCH (MANUAL / ML_DISCOVERY)
+    # =========================================================
+
+    render_platform_section(
+        strategy_id,
         engine=engine,
     )
 

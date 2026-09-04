@@ -50,6 +50,19 @@ def test_monitor_labels_and_unavailable_metrics():
     assert labels["asset_class_label"] == "Equity"
     labels = infer_research_labels(strategy_id="SPYTrend")
     assert labels["research_mode_label"] == "Manual"
+    labels = infer_research_labels(strategy_id="ManualSmaQQQ", run_summary={"research_mode": "MANUAL", "asset_class": "ETF", "research_state": "HUMAN_REVIEW_REQUIRED"})
+    assert labels["research_mode_label"] == "Manual"
+    assert labels["research_state"] == "HUMAN_REVIEW_REQUIRED"
+    from qc_research.ml_monitor_ui import build_platform_monitor_view
+
+    view = build_platform_monitor_view(
+        strategy_id="ManualSmaQQQ",
+        selected_run="PLATFORM_QQQ",
+        run_summary={"schema_version": "platform_artifact_v1", "provenance": "UNAVAILABLE", "payload": {"research_mode": "MANUAL", "asset_class": "ETF"}},
+        oos={"payload": {"sharpe_ratio": None, "provenance": "UNAVAILABLE", "windows": []}},
+    )
+    assert view["sharpe"] == UNAVAILABLE
+    assert view["trial_count"] == UNAVAILABLE
     assert format_monitor_value(None) == UNAVAILABLE
     assert format_monitor_value(0, available=False) == UNAVAILABLE
     assert format_monitor_value(0.0, provenance="UNAVAILABLE") == UNAVAILABLE

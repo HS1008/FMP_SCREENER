@@ -82,6 +82,8 @@ def validate_artifact(kind: str, payload: dict[str, Any] | None) -> dict[str, An
     if not isinstance(payload, dict):
         raise ArtifactSyncError("{0} is not a JSON object".format(kind))
     version = payload.get("schema_version")
+    if version in {"platform_v1", "platform_artifact_v1"}:
+        return payload
     if kind in PLATFORM_KINDS:
         if version not in PLATFORM_SCHEMA_VERSIONS:
             raise ArtifactSyncError(
@@ -638,9 +640,10 @@ def ingest_artifact(
         upsert_model_from_metadata(conn, payload)
     elif kind == "oos_diagnostics":
         upsert_signals_from_oos(conn, payload)
-    elif kind in {"run_manifest", "run_summary"}:
+    if kind in {"run_manifest", "run_summary"}:
         update_run_metadata(conn, payload)
-    if kind in PLATFORM_KINDS:
+    platform_schema = str(payload.get("schema_version") or "") in {"platform_v1", "platform_artifact_v1"}
+    if kind in PLATFORM_KINDS or platform_schema:
         from qc_research.platform_ingest import ingest_platform_payload
 
         ingest_platform_payload(conn, kind=kind, payload=payload)

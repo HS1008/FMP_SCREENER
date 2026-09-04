@@ -121,6 +121,32 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
                     "source": inner.get("source") or "platform_artifact",
                 },
             )
+    elif kind == "oos_aggregate":
+        windows = inner.get("windows") or []
+        for index, window in enumerate(windows):
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO research_oos_windows (
+                        research_run_id, outer_window_id, oos_start, oos_end, metrics_json
+                    ) VALUES (
+                        :research_run_id, :outer_window_id, CAST(:oos_start AS DATE),
+                        CAST(:oos_end AS DATE), CAST(:metrics_json AS JSONB)
+                    )
+                    ON CONFLICT (research_run_id, outer_window_id) DO UPDATE SET
+                        oos_start = EXCLUDED.oos_start,
+                        oos_end = EXCLUDED.oos_end,
+                        metrics_json = EXCLUDED.metrics_json
+                    """
+                ),
+                {
+                    "research_run_id": run_id,
+                    "outer_window_id": str(window.get("window_id") or window.get("kind") or index),
+                    "oos_start": window.get("start") or window.get("oos_start"),
+                    "oos_end": window.get("end") or window.get("oos_end"),
+                    "metrics_json": canonical_dumps(window),
+                },
+            )
     elif kind == "strategy_spec":
         spec = inner if inner.get("identity") else payload
         identity = spec.get("identity") or {}

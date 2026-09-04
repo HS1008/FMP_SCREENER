@@ -371,7 +371,8 @@ def test_baseline_and_ml_oos_files_ingest_as_distinct_artifacts(tmp_path):
 
 def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert "render_stage2_section" in MONITOR
-    assert "from qc_research.ml_monitor_ui import render_stage2_section" in MONITOR
+    assert "render_platform_section" in MONITOR
+    assert "from qc_research.ml_monitor_ui import render_platform_section, render_stage2_section" in MONITOR
     assert "create_backtest" not in ML_UI
     assert "qc_post" not in ML_UI
     assert "/object/" not in ML_UI
