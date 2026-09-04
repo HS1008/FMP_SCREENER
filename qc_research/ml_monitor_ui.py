@@ -49,6 +49,15 @@ def _as_payload(value: Any) -> dict[str, Any] | None:
 UNAVAILABLE = "Unavailable / Not applicable"
 
 
+def classify_monitor_provenance(value: Any) -> str:
+    text = str(value or "").strip()
+    if text == "REAL_QC":
+        return "REAL_QC"
+    if text in {"LOCAL_TEST", "REAL_HISTORICAL_PRE_2025"}:
+        return "LOCAL_TEST"
+    return "UNAVAILABLE"
+
+
 def format_monitor_value(
     value: Any,
     *,
@@ -130,6 +139,11 @@ def infer_research_labels(
         "git_sha": str(summary.get("git_sha") or UNAVAILABLE),
         "lineage": str(summary.get("research_lineage_id") or UNAVAILABLE),
         "trial_count": summary.get("trial_count"),
+        "search_space_hash": str(summary.get("search_space_hash") or UNAVAILABLE),
+        "model_family": str(summary.get("model_family") or UNAVAILABLE),
+        "selected_candidate": str(summary.get("selected_candidate") or summary.get("selected_trial_id") or UNAVAILABLE),
+        "baseline_trial_id": str(summary.get("baseline_trial_id") or UNAVAILABLE),
+        "provenance_kind": classify_monitor_provenance(provenance),
     }
 
 
@@ -181,15 +195,23 @@ def build_platform_monitor_view(
         "provenance": summary.get("provenance") or inner_summary.get("provenance"),
         "config_fingerprint": identity.get("config_fingerprint") or summary.get("config_fingerprint"),
         "research_lineage_id": identity.get("research_lineage_id"),
-        "cost_model_id": (inner_spec.get("costs") or {}).get("cost_model_id"),
+        "cost_model_id": (inner_spec.get("costs") or {}).get("cost_model_id") or inner_summary.get("cost_model_id"),
         "trial_count": (trials or {}).get("payload", trials or {}).get("trial_count")
         if isinstance(trials, dict)
         else None,
         "git_sha": identity.get("git_sha"),
+        "search_space_hash": inner_summary.get("search_space_hash"),
+        "model_family": inner_summary.get("model_family"),
+        "selected_candidate": inner_summary.get("selected_candidate") or inner_summary.get("selected_trial_id"),
+        "baseline_trial_id": inner_summary.get("baseline_trial_id"),
     }
+    if isinstance(search_space, dict):
+        space_payload = search_space.get("payload") if isinstance(search_space.get("payload"), dict) else search_space
+        merged_summary["search_space_hash"] = merged_summary.get("search_space_hash") or space_payload.get("search_space_hash")
     if isinstance(trials, dict):
         payload = trials.get("payload") if isinstance(trials.get("payload"), dict) else trials
         merged_summary["trial_count"] = payload.get("trial_count")
+        merged_summary["selected_candidate"] = merged_summary.get("selected_candidate") or payload.get("selected_trial_id")
     labels = infer_research_labels(
         strategy_id=strategy_id,
         run_summary=merged_summary,
@@ -197,6 +219,7 @@ def build_platform_monitor_view(
     )
     sharpe = inner_oos.get("sharpe_ratio")
     windows = inner_oos.get("windows")
+    provenance_kind = labels.get("provenance_kind") or classify_monitor_provenance(merged_summary.get("provenance"))
     return {
         "strategy_id": strategy_id,
         "research_run_id": selected_run,
@@ -205,17 +228,18 @@ def build_platform_monitor_view(
         "asset_class_label": labels["asset_class_label"],
         "strategy_family": labels["strategy_family"],
         "research_state": format_monitor_value(labels.get("research_state"), available=bool(labels.get("research_state") and labels.get("research_state") != UNAVAILABLE)),
-        "provenance": format_monitor_value(
-            labels.get("artifact_provenance"),
-            available=bool(labels.get("artifact_provenance") and labels.get("artifact_provenance") != UNAVAILABLE),
-            provenance=str(merged_summary.get("provenance") or ""),
-        ),
+        "provenance": provenance_kind,
+        "provenance_kind": provenance_kind,
         "economic_gate": format_monitor_value(labels.get("economic_gate"), available=labels.get("economic_gate") not in {None, "", UNAVAILABLE}),
         "spec_hash": format_monitor_value(labels.get("spec_hash"), available=labels.get("spec_hash") not in {None, "", UNAVAILABLE}),
         "git_sha": format_monitor_value(labels.get("git_sha"), available=labels.get("git_sha") not in {None, "", UNAVAILABLE}),
         "lineage": format_monitor_value(labels.get("lineage"), available=labels.get("lineage") not in {None, "", UNAVAILABLE}),
         "cost_model": format_monitor_value(labels.get("cost_model_id"), available=labels.get("cost_model_id") not in {None, "", UNAVAILABLE}),
         "trial_count": format_monitor_value(merged_summary.get("trial_count"), available=merged_summary.get("trial_count") is not None),
+        "search_space_hash": format_monitor_value(labels.get("search_space_hash"), available=labels.get("search_space_hash") not in {None, "", UNAVAILABLE}),
+        "model_family": format_monitor_value(labels.get("model_family"), available=labels.get("model_family") not in {None, "", UNAVAILABLE}),
+        "selected_candidate": format_monitor_value(labels.get("selected_candidate"), available=labels.get("selected_candidate") not in {None, "", UNAVAILABLE}),
+        "baseline": format_monitor_value(labels.get("baseline_trial_id"), available=labels.get("baseline_trial_id") not in {None, "", UNAVAILABLE}),
         "sharpe": format_monitor_value(sharpe, available=sharpe is not None, provenance=str(inner_oos.get("provenance") or merged_summary.get("provenance") or "")),
         "oos_windows": windows if windows else UNAVAILABLE,
         "search_space": search_space,
@@ -285,10 +309,16 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     c2.metric("Spec hash", view["spec_hash"])
     c3.metric("Trial count", view["trial_count"])
     c4.metric("Cost model", view["cost_model"])
-    d1, d2, d3 = st.columns(3)
+    d1, d2, d3, d4 = st.columns(4)
     d1.metric("Lineage", view["lineage"])
     d2.metric("Git SHA", view["git_sha"])
     d3.metric("OOS Sharpe", view["sharpe"])
+    d4.metric("Provenance", view.get("provenance_kind") or view["provenance"])
+    e1, e2, e3, e4 = st.columns(4)
+    e1.metric("Search space", view.get("search_space_hash"))
+    e2.metric("Model family", view.get("model_family"))
+    e3.metric("Selected candidate", view.get("selected_candidate"))
+    e4.metric("Baseline", view.get("baseline"))
     if view.get("oos_windows") not in {None, UNAVAILABLE}:
         st.subheader("OOS windows")
         st.write(view["oos_windows"])
