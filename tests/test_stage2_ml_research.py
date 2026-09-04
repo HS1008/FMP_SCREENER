@@ -550,3 +550,73 @@ def test_published_437cdbdc_smoke_json_ingests_without_object_store():
     training = json.loads((published / "SMOKE" / "training_summary.json").read_text(encoding="utf-8"))
     assert verify_hash(training, training["artifact_sha256"]) == training["artifact_sha256"]
 
+
+def test_published_ebe7d1a4_window_json_ingests_without_object_store():
+    from qc_research.stage2_results_sync import (
+        discover_stage2_result_paths,
+        ingest_stage2_result_files,
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    published = (
+        ROOT
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_ebe7d1a4"
+    )
+    assert not list(published.rglob("*.pkl"))
+    paths = [
+        path
+        for path in discover_stage2_result_paths(ROOT)
+        if "STAGE2_CrossSectionalFactorML_ebe7d1a4" in path.as_posix()
+    ]
+    assert {path.name for path in paths} == {
+        "run_manifest.json",
+        "run_summary.json",
+        "training_summary.json",
+        "model_metadata.json",
+        "oos_diagnostics.json",
+        "baseline_oos_diagnostics.json",
+    }
+    conn = FakeConn()
+    result = ingest_stage2_result_files(conn, paths, root=ROOT)
+    assert result["errors"] == []
+    assert result["ingested"] == 6
+    trial_ids = {row["trial_id"] for row in conn.calls if row and row.get("trial_id")}
+    assert trial_ids == {"a=0.1", "a=1.0", "a=10.0", "a=100.0", "a=1000.0"}
+    features = [row["feature_name"] for row in conn.calls if row and row.get("feature_name")]
+    assert features == [
+        "MOM_12_1",
+        "MOM_6_1",
+        "RET_3M",
+        "REV_1M",
+        "MOM_ACCEL",
+        "VOL_252",
+        "MAXDD_252",
+        "MOMVOL",
+        "TREND_50_200",
+        "DIST_200",
+        "ABOVE_200",
+    ]
+    backtests = {row.get("backtest_id") for row in conn.calls if row and row.get("backtest_id")}
+    assert backtests == {
+        "047ffb600b710df277e81e5cdb3355e1",
+        "fdd6124b213c15d85010ce6ca963d586",
+    }
+    summary = json.loads((published / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["run_status"] == "COMPLETE"
+    assert summary["completed_internal_trials"] == 5
+    assert summary["completed_cv_fits"] == 15
+    training = json.loads((published / "2015" / "training_summary.json").read_text(encoding="utf-8"))
+    assert training["model_sha_status"] == "INTERNAL_VALIDATED_VALUE_NOT_EXPORTED"
+    assert verify_hash(training, training["artifact_sha256"]) == training["artifact_sha256"]
+    artifacts = [row for row in conn.calls if row and row.get("artifact_key")]
+    assert len(artifacts) == 6
+    assert {row["transport"] for row in artifacts} == {"github_stage2_results"}
+
