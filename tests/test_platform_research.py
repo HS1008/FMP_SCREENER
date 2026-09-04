@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from jobs.apply_migrations import MIGRATIONS_DIR, pending_migration_files
 from qc_research.economic_gate import apply_economic_gates
 from qc_research.ml_aggregation import COMPLETE, FAIL, PASS, assess_stage2
@@ -49,12 +51,29 @@ def test_monitor_labels_and_unavailable_metrics():
     labels = infer_research_labels(strategy_id="SPYTrend")
     assert labels["research_mode_label"] == "Manual"
     assert format_monitor_value(None) == UNAVAILABLE
+    assert format_monitor_value(0, available=False) == UNAVAILABLE
+    assert format_monitor_value(0.0, provenance="UNAVAILABLE") == UNAVAILABLE
     reconstructed = format_monitor_value(-0.2, reconstructed=True)
     assert reconstructed["source_label"].startswith("monthly-sampled")
     assert "QuantConnect Max Drawdown" in reconstructed["source_label"]
 
 
-def test_platform_artifact_ingest_is_idempotent():
+def test_synthetic_artifacts_are_rejected_from_ingest():
+    from qc_research.object_store_sync import ArtifactSyncError, ingest_artifact
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            raise AssertionError("synthetic ingest must not touch the database")
+
+    payload = {
+        "schema_version": "platform_artifact_v1",
+        "kind": "trials",
+        "provenance": "SYNTHETIC_TEST_ONLY",
+        "research_run_id": "FAKE",
+        "payload": {"candidates": [], "provenance": "SYNTHETIC_TEST_ONLY"},
+    }
+    with pytest.raises(ArtifactSyncError, match="SYNTHETIC_TEST_ONLY"):
+        ingest_artifact(FakeConn(), key="x", kind="trials", payload=payload)
     class FakeConn:
         def __init__(self):
             self.calls = []

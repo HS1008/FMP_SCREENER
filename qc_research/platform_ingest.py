@@ -109,7 +109,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
                     "diagnostics_json": canonical_dumps(inner),
                 },
             )
-    elif kind == "fixed_income_risk":
+    elif kind in {"fixed_income_risk", "fixed_income_diagnostics"}:
         for name, value in (inner.get("metrics") or {"gross_dv01": inner.get("gross_dv01")}).items():
             conn.execute(
                 text(UPSERT_FI),

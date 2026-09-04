@@ -55,7 +55,10 @@ def format_monitor_value(
     available: bool = True,
     reconstructed: bool = False,
     reconstructed_note: str | None = None,
+    provenance: str | None = None,
 ) -> Any:
+    if provenance in {"SYNTHETIC_TEST_ONLY", "UNAVAILABLE"}:
+        return UNAVAILABLE
     if not available or value is None:
         return UNAVAILABLE
     if reconstructed:
@@ -103,7 +106,8 @@ def infer_research_labels(
     asset_label = {
         "US_EQUITY": "Equity",
         "ETF": "ETF",
-        "BOND_ETF": "Fixed Income Proxy",
+        "PAIR": "Pair",
+        "BOND_ETF": "Bond ETF",
         "FUTURE": "Futures",
         "TREASURY_FUTURE": "Futures",
         "MULTI_ASSET": "Multi Asset",
@@ -115,6 +119,9 @@ def infer_research_labels(
         "asset_class": str(asset),
         "asset_class_label": asset_label,
         "strategy_family": str(family),
+        "research_state": str(summary.get("research_state") or assessment.get("research_state") or ""),
+        "artifact_provenance": str(summary.get("provenance") or assessment.get("provenance") or ""),
+        "economic_gate": str(assessment.get("economic_gate") or summary.get("economic_gate") or ""),
     }
 
 
@@ -455,10 +462,11 @@ def render_stage2_section(
         return
     st.write("Operational status: **{0}**".format(view["status"]))
     st.caption(
-        "Research mode: {0} · Asset class: {1} · Family: {2}".format(
+        "Research mode: {0} · Asset class: {1} · Family: {2} · Provenance: {3}".format(
             view.get("research_mode_label") or "Unavailable / Not applicable",
             view.get("asset_class_label") or "Unavailable / Not applicable",
             view.get("strategy_family") or "Unavailable / Not applicable",
+            (run_summary or {}).get("provenance") or "Unavailable / Not applicable",
         )
     )
     economic = view.get("economic_status") or view.get("economic_gate") or "NOT_DEFINED"

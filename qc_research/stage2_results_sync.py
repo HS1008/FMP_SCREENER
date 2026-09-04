@@ -42,8 +42,10 @@ KIND_BY_FILENAME = {
     "search_space.json": "search_space",
     "pair_diagnostics.json": "pair_diagnostics",
     "fixed_income_risk.json": "fixed_income_risk",
+    "fixed_income_diagnostics.json": "fixed_income_diagnostics",
     "curve_diagnostics.json": "curve_diagnostics",
     "futures_roll_diagnostics.json": "futures_roll_diagnostics",
+    "roll_diagnostics.json": "roll_diagnostics",
 }
 
 

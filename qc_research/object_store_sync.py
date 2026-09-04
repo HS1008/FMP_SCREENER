@@ -43,8 +43,10 @@ PLATFORM_KINDS = {
     "search_space",
     "pair_diagnostics",
     "fixed_income_risk",
+    "fixed_income_diagnostics",
     "curve_diagnostics",
     "futures_roll_diagnostics",
+    "roll_diagnostics",
 }
 
 
@@ -615,6 +617,9 @@ def ingest_artifact(
     logical_path: str | None = None,
 ) -> str:
     validate_artifact(kind, payload)
+    provenance = str(payload.get("provenance") or (payload.get("payload") or {}).get("provenance") or "")
+    if provenance == "SYNTHETIC_TEST_ONLY":
+        raise ArtifactSyncError("SYNTHETIC_TEST_ONLY artifacts cannot be ingested as research evidence")
     sha = verify_hash(payload, expected_hash)
     upsert_artifact(
         conn,
