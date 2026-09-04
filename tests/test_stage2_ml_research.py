@@ -11,6 +11,7 @@ from jobs.apply_migrations import MIGRATIONS_DIR, pending_migration_files
 from qc_research.aggregation import is_stage1, stage1_backtests
 from qc_research.aggregation import research_runs
 from qc_research.ml_aggregation import (
+    COMPLETE,
     INCOMPLETE,
     PASS,
     WATCH,
@@ -19,6 +20,7 @@ from qc_research.ml_aggregation import (
     stage2_backtests,
     stage2_research_rows,
 )
+from qc_research.ml_monitor_ui import build_stage2_monitor_view
 from qc_research.object_store_sync import (
     ArtifactSyncError,
     identify_stage2_runs,
@@ -199,6 +201,15 @@ def test_missing_required_artifact_is_incomplete():
     )
     assert watch["status"] == WATCH
     assert watch["label_uses_holdout"] is False
+    unlabeled = assess_stage2(
+        expected=31,
+        completed=31,
+        oos_metrics={"median_rank_ic": -0.01, "positive_ic_fraction": 0.46},
+    )
+    assert unlabeled["progress"] == COMPLETE
+    assert unlabeled["status"] == COMPLETE
+    assert unlabeled["status"] != PASS
+    assert unlabeled["economic_gate"] == "NOT_DEFINED"
 
 
 def test_redownload_skip_when_hash_matches():
@@ -365,6 +376,10 @@ def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert "/object/" not in ML_UI
     assert "sklearn" not in ML_UI
     assert "fit(" not in ML_UI
+    assert "Economic gate" in ML_UI
+    assert "original_suite_qc_creates" in ML_UI
+    assert "load_stage2_run_ids" in ML_UI
+    assert "build_stage2_monitor_view" in ML_UI
     assert "@st.fragment(run_every=LIVE_MONITOR_REFRESH)" in MONITOR
     assert MONITOR.count("run_every") == 1
     assert "window.parent.location.reload" not in MONITOR
@@ -707,12 +722,14 @@ def test_published_54a5543f_suite_json_ingests_without_object_store():
         "model_metadata.json",
         "oos_diagnostics.json",
         "baseline_oos_diagnostics.json",
+        "oos_aggregate.json",
+        "nonholdout_assessment.json",
     }
-    assert len(paths) == 44
+    assert len(paths) == 46
     conn = FakeConn()
     result = ingest_stage2_result_files(conn, paths, root=ROOT)
     assert result["errors"] == []
-    assert result["ingested"] == 44
+    assert result["ingested"] == 46
     trial_ids = {row["trial_id"] for row in conn.calls if row and row.get("trial_id")}
     assert trial_ids == {"a=0.1", "a=1.0", "a=10.0", "a=100.0", "a=1000.0"}
     features = [row["feature_name"] for row in conn.calls if row and row.get("feature_name")]
@@ -730,6 +747,14 @@ def test_published_54a5543f_suite_json_ingests_without_object_store():
     assert summary["ml_oos_count"] == 10
     assert summary["baseline_oos_count"] == 10
     assert summary["created_backtests"] == 0
+    assert summary["created_backtests_this_process"] == 0
+    assert summary["original_suite_qc_creates"] == 31
+    assert summary["salvage_qc_creates"] == 0
+    assert summary["salvage"] is True
+    assert summary["created_backtests"] != summary["original_suite_qc_creates"]
+    run_ids = {row.get("research_run_id") for row in conn.calls if row and row.get("research_run_id")}
+    assert "STAGE2_CrossSectionalFactorML_54a5543f" in run_ids
+    assert all(row.get("holdout_accessed") is not True for row in conn.calls if row)
     manifest = json.loads((published / "run_manifest.json").read_text(encoding="utf-8"))
     assert manifest["holdout_spec"]["start"] == "2025-01-01"
     assert "ML_FINAL_HOLDOUT" not in {
@@ -775,6 +800,33 @@ def test_published_54a5543f_suite_json_ingests_without_object_store():
     assert ml_ids == SUITE_ML_OOS_IDS
     assert baseline_ids == SUITE_BASELINE_OOS_IDS
     artifacts = [row for row in conn.calls if row and row.get("artifact_key")]
-    assert len(artifacts) == 44
+    assert len(artifacts) == 46
     assert {row["transport"] for row in artifacts} == {"github_stage2_results"}
+    aggregate = json.loads((published / "oos_aggregate.json").read_text(encoding="utf-8"))
+    assessment = json.loads((published / "nonholdout_assessment.json").read_text(encoding="utf-8"))
+    assert aggregate["holdout_excluded"] is True
+    assert aggregate["window_count"] == 10
+    assert aggregate["comparison"]["windows_compared_ic"] == 10
+    assert aggregate["comparison"]["windows_ml_ic_gt_baseline"] == 4
+    assert aggregate["comparison"]["windows_ml_net_gt_baseline"] == 3
+    assert aggregate["stability"]["parameter_selection_stability"] == 0.8
+    assert assessment["progress"] == COMPLETE
+    assert assessment["status"] == COMPLETE
+    assert assessment["economic_gate"] == "NOT_DEFINED"
+    assert assessment["label_uses_holdout"] is False
+    assert verify_hash(aggregate, aggregate["artifact_sha256"]) == aggregate["artifact_sha256"]
+    view = build_stage2_monitor_view(
+        strategy_id="CrossSectionalFactorML",
+        selected_run="STAGE2_CrossSectionalFactorML_54a5543f",
+        assessment=assessment,
+        aggregate=aggregate,
+        run_summary=summary,
+    )
+    assert view["show_section"] is True
+    assert view["status"] == COMPLETE
+    assert view["economic_gate"] == "NOT_DEFINED"
+    assert view["create_accounting"]["original_suite_qc_creates"] == 31
+    assert view["create_accounting"]["created_backtests_this_process"] == 0
+    assert len(view["windows"]) == 10
+    assert "2025" not in set(view["windows"]["window_id"].astype(str))
 

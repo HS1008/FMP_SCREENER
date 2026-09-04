@@ -24,6 +24,8 @@ KIND_REQUIRED_FIELDS = {
     "training_summary": ("schema_version", "research_run_id", "window_id", "candidate_trials"),
     "oos_diagnostics": ("schema_version", "research_run_id", "window_id"),
     "model_metadata": ("model_id", "run_id", "model_sha256"),
+    "oos_aggregate": ("schema_version", "research_run_id", "windows", "ml", "baseline", "holdout_excluded"),
+    "nonholdout_assessment": ("schema_version", "research_run_id", "progress", "status", "economic_gate"),
 }
 
 
@@ -415,26 +417,106 @@ def mark_run_incomplete(conn, run_id: str, warning: str) -> None:
 
 
 def update_run_metadata(conn, payload: dict[str, Any]) -> None:
+    """Insert or update a Stage 2 research_runs row from published JSON.
+
+    Does not mark holdout_accessed. Sealed holdout dates are metadata only.
+    """
+    run_id = payload.get("research_run_id") or payload.get("run_id")
+    if not run_id:
+        return
+    holdout = payload.get("holdout_spec") or payload.get("holdout") or {}
     conn.execute(
         text(
             """
-            UPDATE research_runs
-            SET research_kind = COALESCE(research_kind, 'stage2_ml'),
-                artifact_schema_version = :schema_version,
-                feature_set_id = COALESCE(:feature_set_id, feature_set_id),
-                feature_set_hash = COALESCE(:feature_set_hash, feature_set_hash),
-                target_id = COALESCE(:target_id, target_id),
-                target_hash = COALESCE(:target_hash, target_hash),
-                planned_internal_trials = COALESCE(:planned_internal_trials, planned_internal_trials),
-                completed_internal_trials = COALESCE(:completed_internal_trials, completed_internal_trials),
-                planned_cv_fits = COALESCE(:planned_cv_fits, planned_cv_fits),
-                completed_cv_fits = COALESCE(:completed_cv_fits, completed_cv_fits),
-                last_seen_at = NOW()
-            WHERE research_run_id = :run_id
+            INSERT INTO research_runs (
+                research_run_id,
+                strategy_id,
+                suite_version,
+                git_commit,
+                dirty,
+                first_seen_at,
+                last_seen_at,
+                holdout_accessed,
+                holdout_access_count,
+                research_kind,
+                artifact_schema_version,
+                feature_set_id,
+                feature_set_hash,
+                target_id,
+                target_hash,
+                planned_internal_trials,
+                completed_internal_trials,
+                planned_cv_fits,
+                completed_cv_fits,
+                expected_experiment_count,
+                completed_count,
+                failed_count,
+                skipped_count,
+                run_status,
+                holdout_start,
+                holdout_end,
+                research_lineage_id,
+                orchestrator_summary_json
+            ) VALUES (
+                :research_run_id,
+                :strategy_id,
+                'S2',
+                :git_commit,
+                :dirty,
+                NOW(),
+                NOW(),
+                FALSE,
+                0,
+                'stage2_ml',
+                :schema_version,
+                :feature_set_id,
+                :feature_set_hash,
+                :target_id,
+                :target_hash,
+                :planned_internal_trials,
+                :completed_internal_trials,
+                :planned_cv_fits,
+                :completed_cv_fits,
+                :expected_experiment_count,
+                :completed_count,
+                :failed_count,
+                :skipped_count,
+                :run_status,
+                CAST(:holdout_start AS DATE),
+                CAST(:holdout_end AS DATE),
+                :research_lineage_id,
+                CAST(:summary AS JSONB)
+            )
+            ON CONFLICT (research_run_id) DO UPDATE SET
+                last_seen_at = NOW(),
+                research_kind = 'stage2_ml',
+                artifact_schema_version = COALESCE(EXCLUDED.artifact_schema_version, research_runs.artifact_schema_version),
+                feature_set_id = COALESCE(EXCLUDED.feature_set_id, research_runs.feature_set_id),
+                feature_set_hash = COALESCE(EXCLUDED.feature_set_hash, research_runs.feature_set_hash),
+                target_id = COALESCE(EXCLUDED.target_id, research_runs.target_id),
+                target_hash = COALESCE(EXCLUDED.target_hash, research_runs.target_hash),
+                planned_internal_trials = COALESCE(EXCLUDED.planned_internal_trials, research_runs.planned_internal_trials),
+                completed_internal_trials = COALESCE(EXCLUDED.completed_internal_trials, research_runs.completed_internal_trials),
+                planned_cv_fits = COALESCE(EXCLUDED.planned_cv_fits, research_runs.planned_cv_fits),
+                completed_cv_fits = COALESCE(EXCLUDED.completed_cv_fits, research_runs.completed_cv_fits),
+                expected_experiment_count = COALESCE(EXCLUDED.expected_experiment_count, research_runs.expected_experiment_count),
+                completed_count = COALESCE(EXCLUDED.completed_count, research_runs.completed_count),
+                failed_count = COALESCE(EXCLUDED.failed_count, research_runs.failed_count),
+                skipped_count = COALESCE(EXCLUDED.skipped_count, research_runs.skipped_count),
+                run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status),
+                holdout_start = COALESCE(EXCLUDED.holdout_start, research_runs.holdout_start),
+                holdout_end = COALESCE(EXCLUDED.holdout_end, research_runs.holdout_end),
+                research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, research_runs.research_lineage_id),
+                orchestrator_summary_json = COALESCE(EXCLUDED.orchestrator_summary_json, research_runs.orchestrator_summary_json),
+                git_commit = COALESCE(EXCLUDED.git_commit, research_runs.git_commit),
+                dirty = COALESCE(EXCLUDED.dirty, research_runs.dirty)
             """
         ),
         {
-            "run_id": payload.get("research_run_id"),
+            "research_run_id": str(run_id),
+            "strategy_id": payload.get("strategy_id") or "",
+            "git_commit": payload.get("git_commit"),
+            "dirty": bool(payload.get("dirty")),
             "schema_version": payload.get("schema_version") or SCHEMA_VERSION,
             "feature_set_id": payload.get("feature_set_id"),
             "feature_set_hash": payload.get("feature_set_hash"),
@@ -444,6 +526,15 @@ def update_run_metadata(conn, payload: dict[str, Any]) -> None:
             "completed_internal_trials": payload.get("completed_internal_trials"),
             "planned_cv_fits": payload.get("expected_cv_fits"),
             "completed_cv_fits": payload.get("completed_cv_fits"),
+            "expected_experiment_count": payload.get("expected_qc_experiments"),
+            "completed_count": payload.get("completed_qc_experiments"),
+            "failed_count": payload.get("failed_qc_experiments"),
+            "skipped_count": payload.get("skipped_qc_experiments"),
+            "run_status": payload.get("run_status"),
+            "holdout_start": holdout.get("start"),
+            "holdout_end": holdout.get("end") if holdout.get("end") not in {None, "TODAY"} else None,
+            "research_lineage_id": payload.get("research_lineage_id") or payload.get("strategy_id"),
+            "summary": canonical_dumps(payload),
         },
     )
 

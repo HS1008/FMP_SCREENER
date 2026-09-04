@@ -10,5 +10,7 @@ This public tree is the copy DigitalOcean can ingest without a new secret:
     stage2_results/<strategy_id>/<research_run_id>/<window>/model_metadata.json
     stage2_results/<strategy_id>/<research_run_id>/<window>/oos_diagnostics.json
     stage2_results/<strategy_id>/<research_run_id>/<window>/baseline_oos_diagnostics.json
+    stage2_results/<strategy_id>/<research_run_id>/oos_aggregate.json
+    stage2_results/<strategy_id>/<research_run_id>/nonholdout_assessment.json
 
 JSON only. Never `model.pkl`.

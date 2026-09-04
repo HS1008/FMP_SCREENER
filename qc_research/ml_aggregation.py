@@ -15,6 +15,8 @@ FAIL = "FAIL"
 IN_PROGRESS = "IN_PROGRESS"
 COMPLETE = "COMPLETE"
 INCOMPLETE = "INCOMPLETE"
+ECONOMIC_GATE_APPLIED = "APPLIED"
+ECONOMIC_GATE_NOT_DEFINED = "NOT_DEFINED"
 
 STAGE2_SUITE_PREFIXES = ("S2",)
 HOLDOUT_TYPES = {
@@ -124,24 +126,45 @@ def assess_stage2(
         "progress": progress,
         "status": progress,
         "label_uses_holdout": False,
+        "economic_gate": None,
+        "economic_status": None,
+        "thresholds": {},
+        "oos_metrics": {},
+        "reasons": [],
     }
     if progress != COMPLETE:
         return result
-    gates = dict(thresholds or {})
+    gates = {
+        key: value
+        for key, value in dict(thresholds or {}).items()
+        if value is not None
+    }
     metrics = {
         key: value
         for key, value in dict(oos_metrics or {}).items()
         if "holdout" not in str(key).lower()
     }
+    result["thresholds"] = dict(gates)
+    result["oos_metrics"] = dict(metrics)
+    if not gates:
+        result["economic_gate"] = ECONOMIC_GATE_NOT_DEFINED
+        result["reasons"] = ["thresholds_not_defined"]
+        return result
+    result["economic_gate"] = ECONOMIC_GATE_APPLIED
     min_ic = gates.get("min_median_oos_rank_ic")
     median_ic = metrics.get("median_rank_ic")
     if min_ic is not None and median_ic is not None and float(median_ic) < float(min_ic):
         result["status"] = FAIL
+        result["economic_status"] = FAIL
+        result["reasons"] = ["median_oos_rank_ic"]
         return result
     min_pos = gates.get("min_positive_ic_fraction")
     pos = metrics.get("positive_ic_fraction")
     if min_pos is not None and pos is not None and float(pos) < float(min_pos):
         result["status"] = WATCH
+        result["economic_status"] = WATCH
+        result["reasons"] = ["positive_ic_fraction"]
         return result
     result["status"] = PASS
+    result["economic_status"] = PASS
     return result

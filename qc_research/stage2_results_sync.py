@@ -27,6 +27,8 @@ KIND_BY_FILENAME = {
     "model_metadata.json": "model_metadata",
     "oos_diagnostics.json": "oos_diagnostics",
     "baseline_oos_diagnostics.json": "oos_diagnostics",
+    "oos_aggregate.json": "oos_aggregate",
+    "nonholdout_assessment.json": "nonholdout_assessment",
 }
 
 
