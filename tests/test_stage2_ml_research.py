@@ -620,3 +620,161 @@ def test_published_ebe7d1a4_window_json_ingests_without_object_store():
     assert len(artifacts) == 6
     assert {row["transport"] for row in artifacts} == {"github_stage2_results"}
 
+
+FEATURE_ORDER = [
+    "MOM_12_1",
+    "MOM_6_1",
+    "RET_3M",
+    "REV_1M",
+    "MOM_ACCEL",
+    "VOL_252",
+    "MAXDD_252",
+    "MOMVOL",
+    "TREND_50_200",
+    "DIST_200",
+    "ABOVE_200",
+]
+
+SUITE_WINDOWS = [str(year) for year in range(2015, 2025)]
+
+SUITE_ML_OOS_IDS = {
+    "7dc2afca65a22195d4845bc4ecb3d465",
+    "b52cab304d315f90adf7b4394fbf07a8",
+    "7ffc048267c3dfed14bdb459e6b5fd60",
+    "0b282b778acfa7cd3d92305cd5eac977",
+    "c16f4d81253ceef0d97043b5503995ab",
+    "fd31976fc3d3e82ac6030b26ec92392a",
+    "992d2b2ae46d84ba07350a709fe47ef0",
+    "3bb3bdebb7866702a57d22469e84c329",
+    "2dcdbca495cde24088a859b3a9966009",
+    "2b8f3259f10b3e74434c24cdff6cf876",
+}
+
+SUITE_BASELINE_OOS_IDS = {
+    "0e1c882825814bac3c9da5a7df6749af",
+    "91a501cdaf1936eb6275bdd15ef645b7",
+    "666eab966b39f40fa4af50cc8a868eba",
+    "d09880c3c9aad420395e73dc1e3b08e9",
+    "740417baa6fddf0906d3f57bc225f5b1",
+    "ef38e7eff9170f86ddaf5a1d751e4903",
+    "84c91e5050c369aaff6e4e7cf43cb0e6",
+    "9d2c91bb7557f18ab5ac419feb49cef1",
+    "32ab578d19202cb84ba5c4975e4cf512",
+    "26edb0ee0d5a4806b3b09d397dfee114",
+}
+
+
+def test_published_54a5543f_suite_json_ingests_without_object_store():
+    from qc_research.stage2_results_sync import (
+        discover_stage2_result_paths,
+        ingest_stage2_result_files,
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    published = (
+        ROOT
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_54a5543f"
+    )
+    assert not list(published.rglob("*.pkl"))
+    required = [
+        "training_summary.json",
+        "model_metadata.json",
+        "oos_diagnostics.json",
+        "baseline_oos_diagnostics.json",
+    ]
+    for window in SUITE_WINDOWS:
+        for name in required:
+            assert (published / window / name).is_file()
+    assert (published / "FINAL_PREP" / "training_summary.json").is_file()
+    assert (published / "FINAL_PREP" / "model_metadata.json").is_file()
+    paths = [
+        path
+        for path in discover_stage2_result_paths(ROOT)
+        if "STAGE2_CrossSectionalFactorML_54a5543f" in path.as_posix()
+    ]
+    assert {path.name for path in paths} == {
+        "run_manifest.json",
+        "run_summary.json",
+        "training_summary.json",
+        "model_metadata.json",
+        "oos_diagnostics.json",
+        "baseline_oos_diagnostics.json",
+    }
+    assert len(paths) == 44
+    conn = FakeConn()
+    result = ingest_stage2_result_files(conn, paths, root=ROOT)
+    assert result["errors"] == []
+    assert result["ingested"] == 44
+    trial_ids = {row["trial_id"] for row in conn.calls if row and row.get("trial_id")}
+    assert trial_ids == {"a=0.1", "a=1.0", "a=10.0", "a=100.0", "a=1000.0"}
+    features = [row["feature_name"] for row in conn.calls if row and row.get("feature_name")]
+    assert len(features) == 11 * 11
+    assert all(features[index : index + 11] == FEATURE_ORDER for index in range(0, len(features), 11))
+    backtests = {row.get("backtest_id") for row in conn.calls if row and row.get("backtest_id")}
+    assert backtests == SUITE_ML_OOS_IDS | SUITE_BASELINE_OOS_IDS
+    assert SUITE_ML_OOS_IDS.isdisjoint(SUITE_BASELINE_OOS_IDS)
+    summary = json.loads((published / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["run_status"] == "COMPLETE"
+    assert summary["completed_qc_experiments"] == 31
+    assert summary["completed_internal_trials"] == 55
+    assert summary["completed_cv_fits"] == 165
+    assert summary["ml_train_count"] == 10
+    assert summary["ml_oos_count"] == 10
+    assert summary["baseline_oos_count"] == 10
+    assert summary["created_backtests"] == 0
+    manifest = json.loads((published / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["holdout_spec"]["start"] == "2025-01-01"
+    assert "ML_FINAL_HOLDOUT" not in {
+        item["test_type"] for item in manifest["outer_windows"]
+    }
+    baseline_2016 = json.loads(
+        (published / "2016" / "baseline_oos_diagnostics.json").read_text(encoding="utf-8")
+    )
+    assert baseline_2016["backtest_id"] == "91a501cdaf1936eb6275bdd15ef645b7"
+    months = [point["date"] for point in baseline_2016["monthly_signal_diagnostics"]]
+    assert months == [
+        "2016-01-01",
+        "2016-02-01",
+        "2016-03-01",
+        "2016-04-01",
+        "2016-05-01",
+        "2016-06-01",
+        "2016-07-01",
+        "2016-08-01",
+        "2016-09-01",
+        "2016-10-01",
+        "2016-11-01",
+        "2016-12-01",
+    ]
+    ml_ids = set()
+    baseline_ids = set()
+    for window in SUITE_WINDOWS:
+        oos = json.loads((published / window / "oos_diagnostics.json").read_text(encoding="utf-8"))
+        baseline = json.loads(
+            (published / window / "baseline_oos_diagnostics.json").read_text(encoding="utf-8")
+        )
+        training = json.loads(
+            (published / window / "training_summary.json").read_text(encoding="utf-8")
+        )
+        assert oos["backtest_id"] != baseline["backtest_id"]
+        assert len(oos["monthly_signal_diagnostics"]) == 12
+        assert len(baseline["monthly_signal_diagnostics"]) == 12
+        assert training["model_sha_status"] == "INTERNAL_VALIDATED_VALUE_NOT_EXPORTED"
+        assert training["model_sha256"] is None
+        assert verify_hash(training, training["artifact_sha256"]) == training["artifact_sha256"]
+        ml_ids.add(oos["backtest_id"])
+        baseline_ids.add(baseline["backtest_id"])
+    assert ml_ids == SUITE_ML_OOS_IDS
+    assert baseline_ids == SUITE_BASELINE_OOS_IDS
+    artifacts = [row for row in conn.calls if row and row.get("artifact_key")]
+    assert len(artifacts) == 44
+    assert {row["transport"] for row in artifacts} == {"github_stage2_results"}
+
