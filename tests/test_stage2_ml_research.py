@@ -814,6 +814,26 @@ def test_published_54a5543f_suite_json_ingests_without_object_store():
     assert assessment["status"] == COMPLETE
     assert assessment["economic_gate"] == "NOT_DEFINED"
     assert assessment["label_uses_holdout"] is False
+    assert assessment["research_experiment_count"] == 31
+    assert assessment["status"] == COMPLETE
+    assert "sharpe_ratio" in aggregate["ml"]
+    assert "max_drawdown" in aggregate["ml"]
+    assert aggregate["feature_stability"]["feature_order"] == [
+        "MOM_12_1",
+        "MOM_6_1",
+        "RET_3M",
+        "REV_1M",
+        "MOM_ACCEL",
+        "VOL_252",
+        "MAXDD_252",
+        "MOMVOL",
+        "TREND_50_200",
+        "DIST_200",
+        "ABOVE_200",
+    ]
+    assert [row["feature_name"] for row in aggregate["feature_stability"]["features"]] == aggregate[
+        "feature_stability"
+    ]["feature_order"]
     assert verify_hash(aggregate, aggregate["artifact_sha256"]) == aggregate["artifact_sha256"]
     view = build_stage2_monitor_view(
         strategy_id="CrossSectionalFactorML",
@@ -827,6 +847,21 @@ def test_published_54a5543f_suite_json_ingests_without_object_store():
     assert view["economic_gate"] == "NOT_DEFINED"
     assert view["create_accounting"]["original_suite_qc_creates"] == 31
     assert view["create_accounting"]["created_backtests_this_process"] == 0
+    assert view["research_experiment_count"] == 31
     assert len(view["windows"]) == 10
+    assert "ml_sharpe" in view["windows"].columns
+    assert list(view["feature_stability_table"]["feature_name"]) == [
+        "MOM_12_1",
+        "MOM_6_1",
+        "RET_3M",
+        "REV_1M",
+        "MOM_ACCEL",
+        "VOL_252",
+        "MAXDD_252",
+        "MOMVOL",
+        "TREND_50_200",
+        "DIST_200",
+        "ABOVE_200",
+    ]
     assert "2025" not in set(view["windows"]["window_id"].astype(str))
 

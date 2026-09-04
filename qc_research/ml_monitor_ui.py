@@ -14,7 +14,9 @@ from sqlalchemy import text
 
 from qc_research.ml_aggregation import (
     COMPLETE,
+    STAGE2_THRESHOLD_KEYS,
     assess_stage2,
+    nonholdout_research_experiment_count,
     stage2_backtests,
     stage2_holdout_rows,
     stage2_research_rows,
@@ -150,14 +152,78 @@ def window_comparison_frame(aggregate: dict[str, Any] | None) -> pd.DataFrame:
             {
                 "window_id": item.get("window_id"),
                 "selected_alpha": item.get("selected_alpha"),
+                "robustness_label": item.get("robustness_label"),
                 "ml_median_rank_ic": ml.get("median_rank_ic"),
                 "baseline_median_rank_ic": baseline.get("median_rank_ic"),
                 "median_rank_ic_diff": delta.get("median_rank_ic"),
                 "ml_compounded_net": ml.get("compounded_net_return"),
                 "baseline_compounded_net": baseline.get("compounded_net_return"),
                 "net_diff": delta.get("compounded_net_return"),
+                "ml_sharpe": ml.get("sharpe_ratio"),
+                "baseline_sharpe": baseline.get("sharpe_ratio"),
+                "sharpe_diff": delta.get("sharpe_ratio"),
+                "ml_sortino": ml.get("sortino_ratio"),
+                "baseline_sortino": baseline.get("sortino_ratio"),
+                "sortino_diff": delta.get("sortino_ratio"),
+                "ml_cagr": ml.get("cagr"),
+                "baseline_cagr": baseline.get("cagr"),
+                "cagr_diff": delta.get("cagr"),
+                "ml_max_drawdown": ml.get("max_drawdown"),
+                "baseline_max_drawdown": baseline.get("max_drawdown"),
+                "max_drawdown_diff": delta.get("max_drawdown"),
+                "ml_turnover": ml.get("annualized_turnover"),
+                "baseline_turnover": baseline.get("annualized_turnover"),
             }
         )
+    return pd.DataFrame(rows)
+
+
+def feature_stability_frame(aggregate: dict[str, Any] | None) -> pd.DataFrame:
+    payload = (aggregate or {}).get("feature_stability") or {}
+    rows = []
+    for item in payload.get("features") or []:
+        rows.append(
+            {
+                "feature_name": item.get("feature_name"),
+                "majority_sign": item.get("majority_sign"),
+                "sign_agreement_frequency": item.get("sign_agreement_frequency"),
+                "median_ridge_coefficient": item.get("median_ridge_coefficient"),
+                "median_normalized_magnitude": item.get("median_normalized_magnitude"),
+                "stdev_normalized_magnitude": item.get("stdev_normalized_magnitude"),
+                "median_coefficient_rank": item.get("median_coefficient_rank"),
+                "stdev_coefficient_rank": item.get("stdev_coefficient_rank"),
+                "median_normalized_magnitude_rank": item.get("median_normalized_magnitude_rank"),
+                "stdev_normalized_magnitude_rank": item.get("stdev_normalized_magnitude_rank"),
+                "mean_univariate_rank_ic": item.get("mean_univariate_rank_ic"),
+                "median_univariate_rank_ic": item.get("median_univariate_rank_ic"),
+                "positive_ic_fraction": item.get("positive_ic_fraction"),
+            }
+        )
+    frame = pd.DataFrame(rows)
+    order = payload.get("feature_order") or []
+    if not frame.empty and order:
+        frame["_order"] = frame["feature_name"].map({name: index for index, name in enumerate(order)})
+        frame = frame.sort_values("_order", kind="stable").drop(columns=["_order"])
+    return frame
+
+
+def robustness_frame(aggregate: dict[str, Any] | None) -> pd.DataFrame:
+    stability = (aggregate or {}).get("stability") or {}
+    counts = dict(stability.get("robustness_label_counts") or {})
+    frequency = dict(stability.get("robustness_label_frequency") or {})
+    rows = []
+    for label in ("STABLE_PLATEAU", "ISOLATED_PEAK", "WEAK_SIGNAL"):
+        rows.append(
+            {
+                "robustness_label": label,
+                "count": counts.get(label, 0),
+                "frequency": frequency.get(label),
+            }
+        )
+    for label, count in counts.items():
+        if label in {"STABLE_PLATEAU", "ISOLATED_PEAK", "WEAK_SIGNAL"}:
+            continue
+        rows.append({"robustness_label": label, "count": count, "frequency": frequency.get(label)})
     return pd.DataFrame(rows)
 
 
@@ -199,6 +265,8 @@ def build_stage2_monitor_view(
             skipped=int(summary.get("skipped_qc_experiments") or 0),
             oos_metrics=oos_metrics,
             holdout_rows=holdout_rows,
+            run_summary=summary,
+            research_experiment_count=nonholdout_research_experiment_count(summary, research_rows),
         )
     accounting = (
         aggregate.get("create_accounting")
@@ -222,12 +290,18 @@ def build_stage2_monitor_view(
         "holdout_excluded": True,
         "reasons": list(resolved.get("reasons") or []),
         "create_accounting": dict(accounting or {}),
+        "research_experiment_count": resolved.get("research_experiment_count"),
+        "supported_threshold_keys": list(resolved.get("supported_threshold_keys") or STAGE2_THRESHOLD_KEYS),
         "ml": dict(aggregate.get("ml") or {}),
         "baseline": dict(aggregate.get("baseline") or {}),
         "comparison": dict(aggregate.get("comparison") or {}),
         "stability": dict(aggregate.get("stability") or {}),
+        "feature_stability": dict(aggregate.get("feature_stability") or {}),
         "cost": dict(aggregate.get("cost") or {}),
+        "metric_source": dict(aggregate.get("metric_source") or {}),
         "windows": window_comparison_frame(aggregate),
+        "feature_stability_table": feature_stability_frame(aggregate),
+        "robustness_table": robustness_frame(aggregate),
         "show_section": True,
     }
 
@@ -296,7 +370,7 @@ def render_stage2_section(
         "Economic PASS/WATCH/FAIL is applied only when Stage 2 thresholds are defined."
     )
     accounting = view.get("create_accounting") or {}
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     c1.metric("Original suite QC creates", accounting.get("original_suite_qc_creates") if accounting.get("original_suite_qc_creates") is not None else "—")
     c2.metric(
         "Creates this process",
@@ -307,6 +381,10 @@ def render_stage2_section(
         else "—",
     )
     c3.metric("Salvage", "yes" if accounting.get("salvage") else "no")
+    c4.metric(
+        "Non-holdout experiments",
+        view.get("research_experiment_count") if view.get("research_experiment_count") is not None else "—",
+    )
     if view.get("ml"):
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("ML median Rank IC", view["ml"].get("median_rank_ic"))
@@ -320,13 +398,40 @@ def render_stage2_section(
         )
         stability = (view.get("stability") or {}).get("parameter_selection_stability")
         m4.metric("Alpha stability", stability)
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("ML Sharpe (stitched net)", view["ml"].get("sharpe_ratio"))
+        r2.metric("Baseline Sharpe", view["baseline"].get("sharpe_ratio"))
+        r3.metric("ML CAGR", view["ml"].get("cagr"))
+        r4.metric("ML max drawdown", view["ml"].get("max_drawdown"))
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("ML Sortino", view["ml"].get("sortino_ratio"))
+        s2.metric("Baseline Sortino", view["baseline"].get("sortino_ratio"))
+        s3.metric("Sharpe ML-baseline", (view.get("comparison") or {}).get("sharpe_ratio_diff"))
+        s4.metric("CAGR ML-baseline", (view.get("comparison") or {}).get("cagr_diff"))
+        source = ((view.get("metric_source") or {}).get("qc_runtime_statistics") or {})
+        if source.get("available") is False:
+            st.caption(source.get("reason") or "")
     windows = view.get("windows")
     if windows is not None and not windows.empty:
         st.subheader("Outer OOS windows (ML vs baseline)")
         st.dataframe(windows, use_container_width=True, hide_index=True)
+    robustness = view.get("robustness_table")
+    if robustness is not None and not robustness.empty:
+        st.subheader("Parameter robustness")
+        st.dataframe(robustness, use_container_width=True, hide_index=True)
+        st.write("Selected-alpha distribution", (view.get("stability") or {}).get("selected_alpha_distribution"))
+    features = view.get("feature_stability_table")
+    if features is not None and not features.empty:
+        st.subheader("Feature stability (PRICE_TECH_V1 order)")
+        st.dataframe(features, use_container_width=True, hide_index=True)
     if view.get("cost"):
-        st.subheader("Cost / slippage stress")
+        st.subheader("Cost / slippage stress (5 / 10 / 20 bps)")
         st.write(view["cost"])
+    st.caption(
+        "Supported Stage 2 threshold keys (unassigned on V1): {0}".format(
+            ", ".join(view.get("supported_threshold_keys") or [])
+        )
+    )
     if run_research is not None and not run_research.empty:
         st.dataframe(run_research, use_container_width=True, hide_index=True)
     if selected_run and engine is not None:
