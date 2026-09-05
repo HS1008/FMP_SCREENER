@@ -14,6 +14,12 @@ It is not an economic PASS. Do not retune it from OOS.
 `478351b0cf8954bb2c1be4e5d066c2f0`). Cost model is `US_FUTURES_TICKS_V1`.
 `data_read_used` is false. Negative short-window Sharpe is not an economic PASS.
 
+`ml_ridge_transport.json` is the Ridge-fixed learned-model transport proof
+(`db10b77fb65ff64fe764c25025a5ff52` / `448701c68fe33bd31e8069f2202a1d8f` /
+`9f5f3ab464c7e77ef51854f2f3b0ac73`). Ridge was fixed by design, not selected
+from OOS. `data_read_used` is false. OOS Sharpe 2.134 vs baseline 2.297 is not
+an economic PASS and must not retune the search space.
+
 Ingest when `DATABASE_URL` is available:
 
 ```

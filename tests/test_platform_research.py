@@ -462,6 +462,71 @@ def test_vendored_zn_cloud_train_smoke_wraps_futures_cost_model():
     assert view["economic_pass"] is None
 
 
+def test_vendored_ridge_transport_smoke_wraps_without_object_store(tmp_path, monkeypatch):
+    from qc_research.ingest_platform_artifacts import main as ingest_main
+    from qc_research.ml_monitor_ui import build_platform_monitor_view
+    from qc_research.platform_ingest import (
+        DEFAULT_ARTIFACT_ROOT,
+        ingest_platform_files,
+        monitor_view_from_artifacts,
+        verify_monitor_view,
+        wrap_smoke_record,
+    )
+
+    smoke = DEFAULT_ARTIFACT_ROOT / "ml_ridge_transport.json"
+    assert smoke.is_file()
+    record = json.loads(smoke.read_text(encoding="utf-8"))
+    assert record["family"] == "ml_ridge_transport"
+    assert record["train_backtest_id"] == "db10b77fb65ff64fe764c25025a5ff52"
+    assert record["winner_backtest_id"] == "448701c68fe33bd31e8069f2202a1d8f"
+    assert record["baseline_backtest_id"] == "9f5f3ab464c7e77ef51854f2f3b0ac73"
+    assert record["data_read_used"] is False
+    assert record["training_layer"] == "qc_cloud"
+    assert record["fixed_model_family"] == "ridge"
+    assert record["selected_candidate"] == "ridge::lb20_a10"
+    assert record["oos_used_for_selection"] is False
+    assert record["economic_gate"] == "NOT_DEFINED"
+    assert ".pkl" not in str(record.get("object_store_key") or "")
+    wrapped = wrap_smoke_record(record)
+    view = verify_monitor_view(monitor_view_from_artifacts(wrapped))
+    assert view["provenance_kind"] == "REAL_QC"
+    assert view["economic_pass"] is None
+    assert view["train_backtest_id"] == "db10b77fb65ff64fe764c25025a5ff52"
+    assert view["object_store_key"].startswith("platform/TIME_SERIES_TREND/")
+    built = build_platform_monitor_view(
+        strategy_id=record["strategy_id"],
+        selected_run=record["run_id"],
+        run_summary=wrapped[0][1],
+        oos=wrapped[1][1],
+    )
+    assert built["data_read_used"] == "no"
+    assert built["training_layer"] == "qc_cloud"
+    assert built["economic_pass"] is None
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+
+    conn = FakeConn()
+    first = ingest_platform_files(conn, [smoke], root=DEFAULT_ARTIFACT_ROOT)
+    second = ingest_platform_files(conn, [smoke], root=DEFAULT_ARTIFACT_ROOT)
+    assert first["ingested"] == 2
+    assert second["ingested"] == 2
+    assert not first["errors"]
+    joined = " ".join(call[0] for call in conn.calls)
+    assert "objectstore" not in joined.lower()
+    assert "object_store" not in joined.lower() or "object_store_key" in joined.lower()
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("DB_NAME", raising=False)
+    monkeypatch.delenv("DB_USER", raising=False)
+    assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
+
+
 def test_economic_pass_is_null_for_not_defined_and_watch():
     assert economic_pass_from_gate("NOT_DEFINED") is None
     assert economic_pass_from_gate("WATCH") is None
