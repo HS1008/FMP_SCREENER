@@ -12,6 +12,11 @@ PostgreSQL + Strategy Monitor half of the multi-asset research platform.
 
 See quant-strategies `research/PLATFORM.md` for the full architecture.
 
+Local QuantConnect `/data/read` dataset download is optional and is not
+required for normal cloud ML research. Ingest never downloads Object Store
+model binaries. Provenance labels: `REAL_QC`, `LOCAL_LICENSED`, `LOCAL_TEST`,
+`UNAVAILABLE`.
+
 ## Deployable ingest
 
 When `DATABASE_URL` or `DB_HOST`/`DB_NAME`/`DB_USER` is available in an authorized

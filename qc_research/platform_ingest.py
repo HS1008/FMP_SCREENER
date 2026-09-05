@@ -176,6 +176,20 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
                     "metrics_json": canonical_dumps(window),
                 },
             )
+    elif kind == "experiment_manifest":
+        experiments = inner.get("experiments") or []
+        if not experiments:
+            experiments = [inner.get("experiment_id") or "platform"]
+        for index, item in enumerate(experiments):
+            experiment_id = item if isinstance(item, str) else str((item or {}).get("experiment_id") or index)
+            conn.execute(
+                text(UPSERT_EXPERIMENT),
+                {
+                    "research_run_id": run_id,
+                    "experiment_id": experiment_id,
+                    "metadata_json": canonical_dumps(item if isinstance(item, dict) else inner),
+                },
+            )
     elif kind == "strategy_spec":
         spec = inner if inner.get("identity") else payload
         identity = spec.get("identity") or {}
@@ -192,6 +206,19 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
                 "git_sha": identity.get("git_sha"),
             },
         )
+    if kind in {"run_summary", "run_manifest"} and run_id:
+        conn.execute(
+            text(UPDATE_PLATFORM_RUN),
+            {
+                "research_run_id": run_id,
+                "research_mode": inner.get("research_mode") or payload.get("research_mode"),
+                "asset_class": inner.get("asset_class") or payload.get("asset_class"),
+                "strategy_family_id": inner.get("strategy_family_id") or payload.get("strategy_family_id"),
+                "strategy_spec_hash": inner.get("strategy_spec_hash")
+                or inner.get("config_fingerprint")
+                or payload.get("config_fingerprint"),
+            },
+        )
 
 
 SKIP_NO_DATABASE = (
@@ -202,10 +229,30 @@ DEFAULT_ARTIFACT_ROOT = Path(__file__).resolve().parents[1] / "qc_research" / "p
 SMOKE_FAMILY_HINTS = {
     "ml_discovery",
     "ml_treasury_futures",
+    "ml_cloud_train",
     "manual_equity",
     "pairs",
     "treasury_futures",
 }
+
+UPSERT_EXPERIMENT = """
+INSERT INTO research_experiments (
+    research_run_id, experiment_id, metadata_json
+) VALUES (
+    :research_run_id, :experiment_id, CAST(:metadata_json AS JSONB)
+)
+ON CONFLICT (research_run_id, experiment_id) DO UPDATE SET
+    metadata_json = EXCLUDED.metadata_json
+"""
+
+UPDATE_PLATFORM_RUN = """
+UPDATE research_runs SET
+    research_mode = COALESCE(:research_mode, research_mode),
+    asset_class = COALESCE(:asset_class, asset_class),
+    strategy_family_id = COALESCE(:strategy_family_id, strategy_family_id),
+    strategy_spec_hash = COALESCE(:strategy_spec_hash, strategy_spec_hash)
+WHERE research_run_id = :research_run_id
+"""
 
 
 def repo_root() -> Path:
@@ -297,7 +344,11 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
         "baseline_trial_id": record.get("baseline_trial_id"),
         "search_space_hash": record.get("search_space_hash"),
         "feature_schema_hash": record.get("feature_schema_hash"),
-        "history_provider": record.get("history_provider"),
+        "history_provider": record.get("history_provider") or "qc_cloud",
+        "training_layer": record.get("training_layer") or "qc_cloud",
+        "data_read_used": bool(record.get("data_read_used")),
+        "object_store_key": record.get("object_store_key"),
+        "train_backtest_id": record.get("train_backtest_id"),
         "winner_backtest_id": record.get("winner_backtest_id") or record.get("backtest_id"),
         "baseline_backtest_id": record.get("baseline_backtest_id"),
         "economic_gate": record.get("economic_gate") or "NOT_DEFINED",

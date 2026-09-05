@@ -73,6 +73,7 @@ def test_monitor_labels_and_unavailable_metrics():
     assert format_monitor_value(0, available=False) == UNAVAILABLE
     assert format_monitor_value(0.0, provenance="UNAVAILABLE") == UNAVAILABLE
     assert classify_monitor_provenance("LOCAL_TEST") == "LOCAL_TEST"
+    assert classify_monitor_provenance("LOCAL_LICENSED") == "LOCAL_LICENSED"
     assert classify_monitor_provenance("REAL_QC") == "REAL_QC"
     assert classify_monitor_provenance("UNAVAILABLE") == "UNAVAILABLE"
     assert classify_monitor_provenance(None) == "UNAVAILABLE"
@@ -106,6 +107,31 @@ def test_monitor_labels_and_unavailable_metrics():
     assert ml_view["selected_candidate"] == "ridge::lb20_vol0"
     assert ml_view["baseline"] == "deterministic::lb20_vol0"
     assert ml_view["search_space_hash"] == "abcd1234abcd1234"
+    licensed = classify_monitor_provenance("LOCAL_LICENSED")
+    assert licensed == "LOCAL_LICENSED"
+
+
+def test_experiment_manifest_ingests_without_object_store():
+    from qc_research.platform_ingest import ingest_platform_payload
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+
+    conn = FakeConn()
+    ingest_platform_payload(
+        conn,
+        kind="experiment_manifest",
+        payload={
+            "research_run_id": "PLATFORM_CLOUD_TRAIN",
+            "payload": {"experiments": ["ML_TRAIN", "ML_OOS_TEST", "FIXED_BASELINE_OOS"]},
+        },
+    )
+    assert any("research_experiments" in sql.lower() for sql, _ in conn.calls)
+    assert {row[1]["experiment_id"] for row in conn.calls} == {"ML_TRAIN", "ML_OOS_TEST", "FIXED_BASELINE_OOS"}
     reconstructed = format_monitor_value(-0.2, reconstructed=True)
     assert reconstructed["source_label"].startswith("monthly-sampled")
     assert "QuantConnect Max Drawdown" in reconstructed["source_label"]

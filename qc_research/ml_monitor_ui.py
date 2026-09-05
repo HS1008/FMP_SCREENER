@@ -53,6 +53,8 @@ def classify_monitor_provenance(value: Any) -> str:
     text = str(value or "").strip()
     if text == "REAL_QC":
         return "REAL_QC"
+    if text == "LOCAL_LICENSED":
+        return "LOCAL_LICENSED"
     if text in {"LOCAL_TEST", "REAL_HISTORICAL_PRE_2025"}:
         return "LOCAL_TEST"
     return "UNAVAILABLE"
@@ -206,6 +208,10 @@ def build_platform_monitor_view(
         "selected_candidate": inner_summary.get("selected_candidate") or inner_summary.get("selected_trial_id"),
         "baseline_trial_id": inner_summary.get("baseline_trial_id"),
         "history_provider": inner_summary.get("history_provider"),
+        "training_layer": inner_summary.get("training_layer"),
+        "data_read_used": inner_summary.get("data_read_used"),
+        "object_store_key": inner_summary.get("object_store_key"),
+        "train_backtest_id": inner_summary.get("train_backtest_id"),
         "feature_schema_hash": inner_summary.get("feature_schema_hash"),
         "winner_backtest_id": inner_summary.get("winner_backtest_id"),
         "baseline_backtest_id": inner_summary.get("baseline_backtest_id"),
@@ -278,6 +284,18 @@ def build_platform_monitor_view(
         "intercept_only": format_monitor_value(intercept_only, available=intercept_only is not None),
         "intercept_only_flag": intercept_only if isinstance(intercept_only, bool) else None,
         "economic_pass": False if str(labels.get("economic_gate") or "") == "NOT_DEFINED" else None,
+        "training_layer": format_monitor_value(
+            merged_summary.get("training_layer"),
+            available=merged_summary.get("training_layer") not in {None, ""},
+        ),
+        "train_backtest_id": format_monitor_value(
+            merged_summary.get("train_backtest_id"),
+            available=merged_summary.get("train_backtest_id") not in {None, ""},
+        ),
+        "object_store_key": format_monitor_value(
+            merged_summary.get("object_store_key"),
+            available=merged_summary.get("object_store_key") not in {None, ""},
+        ),
     }
 
 
@@ -357,6 +375,11 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     f2.metric("Feature schema", view.get("feature_schema_hash"))
     f3.metric("Winner QC id", view.get("winner_backtest_id"))
     f4.metric("Baseline QC id", view.get("baseline_backtest_id"))
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Training layer", view.get("training_layer"))
+    g2.metric("Train QC id", view.get("train_backtest_id"))
+    g3.metric("Object Store key", view.get("object_store_key"))
+    g4.metric("Data download used", "no")
     if view.get("intercept_only_flag") is True:
         st.warning(
             "Winner is intercept-only. This is infrastructure evidence; economic_gate stays NOT_DEFINED."
