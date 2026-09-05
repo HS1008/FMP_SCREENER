@@ -272,6 +272,7 @@ SMOKE_FAMILY_HINTS = {
     "ml_cloud_train",
     "ml_cloud_train_futures",
     "ml_ridge_transport",
+    "cross_sectional_pit",
     "manual_equity",
     "pairs",
     "treasury_futures",
@@ -412,7 +413,7 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
             if str(record.get("family") or "") in {"ml_cloud_train_futures", "ml_treasury_futures", "treasury_futures"}
             else "ETF"
             if str(record.get("family") or "")
-            in {"ml_discovery", "ml_cloud_train", "ml_ridge_transport", "manual_equity"}
+            in {"ml_discovery", "ml_cloud_train", "ml_ridge_transport", "cross_sectional_pit", "manual_equity"}
             else None
         ),
         "strategy_family_id": record.get("strategy_family_id") or record.get("research_lineage_id"),

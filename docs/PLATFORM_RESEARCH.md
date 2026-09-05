@@ -31,3 +31,8 @@ python -m qc_research.ingest_platform_artifacts --verify-monitor
 are unset, the command and `ingest_platform_research.yml` workflow skip with
 exit 0. Do not invent a database URL. Unit tests use FakeConn.
 
+Live ingest is an environment gate. When `DATABASE_URL` (or `DB_HOST` +
+`DB_NAME` + `DB_USER`) is available in an authorized environment, run exactly
+one already-proven REAL_QC artifact → Postgres → Strategy Monitor round-trip
+before merge review. Missing credentials are not a code failure.
+
