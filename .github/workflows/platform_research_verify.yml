@@ -1,0 +1,68 @@
+# Platform Research production acceptance.
+#
+# Triggers after Deploy FMP Dashboard succeeds on main, or via workflow_dispatch.
+# Uses the same authorized DigitalOcean SSH secrets as deploy.yml.
+# Secrets are never printed. Does not create QuantConnect jobs.
+#
+# The official already-ingested TLTDurationMomentum V0 record is the
+# production fixture. This is not a per-strategy workflow.
+
+name: Platform Research Production Verification
+
+on:
+  workflow_run:
+    workflows:
+      - Deploy FMP Dashboard
+    types:
+      - completed
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  verify:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Verify official TLT record on Strategy Monitor
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+            set -euo pipefail
+            cd /root/FMP_SCREENER
+            source /root/FMP_SCREENER/venv/bin/activate
+            set -a
+            # shellcheck disable=SC1091
+            source /root/FMP_SCREENER/.env
+            set +a
+
+            echo "PLATFORM RESEARCH PRODUCTION VERIFICATION"
+            echo "Git SHA: $(git rev-parse HEAD)"
+            git log -1 --oneline
+            echo "This does not create QuantConnect jobs."
+
+            if ! systemctl is-active --quiet fmp-dashboard; then
+              echo "FAIL: fmp-dashboard is not active"
+              systemctl is-active fmp-dashboard || true
+              exit 1
+            fi
+
+            python -m qc_research.verify_tlt_monitor --live
+            python -m qc_research.verify_tlt_monitor --live --apptest
+          EOF

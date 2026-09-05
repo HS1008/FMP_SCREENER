@@ -579,6 +579,11 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
     if not selected:
         selected = next((row.get("selected_trial_id") for row in windows if row.get("selected_trial_id")), None)
     baseline = record.get("baseline_trial_id")
+    if not baseline:
+        baseline = next((row.get("baseline_trial_id") for row in windows if row.get("baseline_trial_id")), None)
+    model_family = record.get("model_family")
+    if not model_family and selected and "::" in str(selected):
+        model_family = str(selected).split("::", 1)[0]
     summary = {
         "research_run_id": run_id,
         "strategy_id": strategy_id,
@@ -600,7 +605,7 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
         "holdout_locked": lifecycle["holdout_locked"],
         "thresholds_defined": bool(record.get("thresholds_defined")),
         "window_count": len(windows),
-        "model_family": record.get("model_family"),
+        "model_family": model_family,
         "selected_candidate": selected,
         "selected_trial_id": selected,
         "baseline_trial_id": baseline,

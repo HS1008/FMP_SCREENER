@@ -22,6 +22,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--live", action="store_true", help="Require live PostgreSQL query-back")
     parser.add_argument("--apptest", action="store_true", help="Render Strategy Monitor via Streamlit AppTest")
     parser.add_argument(
+        "--apptest-preview",
+        action="store_true",
+        help="Render the artifact-only Platform Research preview (no PostgreSQL)",
+    )
+    parser.add_argument(
         "--root",
         default=str(ROOT / "qc_research" / "platform_artifacts" / "tlt_duration_momentum.json"),
         help="Official TLT V0 JSON",
@@ -93,6 +98,35 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
         report["apptest_ok"] = True
         report["monitor_metrics"] = labels
+    if ns.apptest_preview:
+        from streamlit.testing.v1 import AppTest
+
+        preview = AppTest.from_file(str(ROOT / "qc_research" / "preview_platform_monitor.py"), default_timeout=45)
+        preview.run()
+        if preview.exception:
+            raise RuntimeError(preview.exception)
+        labels = [str(getattr(metric, "label", "") or "") for metric in preview.metric]
+        values = [str(getattr(metric, "value", "") or "") for metric in preview.metric]
+        joined = " ".join(labels)
+        joined_values = " ".join(values)
+        for needle in (
+            "Research status",
+            "Economic gate",
+            "Promotion gate",
+            "Holdout status",
+            "WFO window count",
+            "Selected model",
+            "Baseline",
+        ):
+            if needle not in joined:
+                print("Platform preview missing metric {0}: {1}".format(needle, labels))
+                return 1
+        for needle in ("COMPLETE", "NOT_DEFINED", "HUMAN_REVIEW_REQUIRED", "LOCKED"):
+            if needle not in joined_values:
+                print("Platform preview missing value {0}: {1}".format(needle, values))
+                return 1
+        report["preview_apptest_ok"] = True
+        report["preview_metrics"] = labels
     print(json.dumps(report, indent=2, default=str))
     return 0
 

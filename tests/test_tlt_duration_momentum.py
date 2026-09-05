@@ -143,6 +143,7 @@ def test_tlt_labels_and_cli_dry_run(monkeypatch):
     from qc_research.verify_tlt_monitor import main as verify_main
 
     assert verify_main(["--dry-run", "--root", str(_tlt_path())]) == 0
+    assert verify_main(["--dry-run", "--apptest-preview", "--root", str(_tlt_path())]) == 0
 
 
 def test_platform_section_treats_oos_window_lists_as_present():
@@ -228,6 +229,33 @@ def test_generic_canonical_artifact_needs_no_tlt_ui():
     assert view["economic_gate"] == "NOT_DEFINED"
     assert view["window_count"] == 1
     assert view["selected_candidate"] == "ridge::lb60_a1"
+    window_only = {
+        "strategy_id": "FutureBondTrendWindowOnly",
+        "research_lineage_id": "LINEAGE_FUTURE_BOND_TREND_WINDOW_ONLY_V0",
+        "research_kind": "platform_research",
+        "research_mode": "ML_DISCOVERY",
+        "strategy_family_id": "FIXED_INCOME_TREND",
+        "asset_class": "BOND_ETF",
+        "research_status": "COMPLETE",
+        "promotion_gate": "HUMAN_REVIEW_REQUIRED",
+        "holdout_status": "LOCKED",
+        "economic_gate": "NOT_DEFINED",
+        "holdout_locked": True,
+        "provenance": "REAL_QC",
+        "official_windows": [
+            {
+                "window_id": "W2019",
+                "oos_start": "2019-01-02",
+                "oos_end": "2019-12-31",
+                "selected_trial_id": "elasticnet::lb90_a0p1",
+                "baseline_trial_id": "deterministic::sma90_long_cash",
+            }
+        ],
+    }
+    window_view = monitor_view_from_artifacts(wrap_canonical_platform_record(window_only))
+    assert window_view["selected_candidate"] == "elasticnet::lb90_a0p1"
+    assert window_view["baseline"] == "deterministic::sma90_long_cash"
+    assert str(window_view["model_family"]).lower() == "elasticnet"
     source = (DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
     assert 'if str(view.get("strategy_id") or "") == "TLTDurationMomentum"' not in source
     monitor = (DEFAULT_ARTIFACT_ROOT.parent.parent / "pages" / "strategy_monitor.py").read_text(encoding="utf-8")
@@ -266,6 +294,12 @@ def test_generic_ingest_workflow_is_event_driven():
     assert "DO_SSH_KEY" in workflow
     assert "push:" not in tlt
     assert "superseded" in tlt.lower()
+    verify = (
+        DEFAULT_ARTIFACT_ROOT.parent.parent / ".github" / "workflows" / "platform_research_verify.yml"
+    ).read_text(encoding="utf-8")
+    assert "verify_tlt_monitor --live" in verify
+    assert "Does not create QuantConnect jobs" in verify
+    assert "DO_SSH_KEY" in verify
     from qc_research.fetch_remote_artifact import github_raw_url
 
     assert github_raw_url("hs1008/quant-strategies", "abc", "research/platform_smokes/x.json").endswith(

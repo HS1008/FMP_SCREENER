@@ -56,6 +56,11 @@ python -m qc_research.ingest_platform_artifacts --verify-monitor --canonical-onl
 are unset, local CLI ingest skips with exit 0. Do not invent a database URL.
 Unit tests use FakeConn.
 
+Production acceptance uses the already-ingested official TLTDurationMomentum
+record. After each main deploy, `platform_research_verify.yml` query-backs
+PostgreSQL and AppTests Strategy Monitor. It does not create QuantConnect
+jobs and does not change economic numbers.
+
 TLTDurationMomentum V0 uses the official 10-window artifact
 `qc_research/platform_artifacts/tlt_duration_momentum.json`. Ingest wraps it
 into `run_summary` / `oos_aggregate` / `trials` / `experiment_manifest` with
