@@ -11,3 +11,18 @@ PostgreSQL + Strategy Monitor half of the multi-asset research platform.
 - Reconstructed max drawdown is labeled monthly-sampled, not QuantConnect Max Drawdown.
 
 See quant-strategies `research/PLATFORM.md` for the full architecture.
+
+## Deployable ingest
+
+When `DATABASE_URL` or `DB_HOST`/`DB_NAME`/`DB_USER` is available in an authorized
+environment, ingest the already-proven REAL_QC artifacts and verify the
+Strategy Monitor read model:
+
+```
+python -m qc_research.ingest_platform_artifacts --verify-monitor
+```
+
+`--dry-run` validates and wraps smoke records without PostgreSQL. If credentials
+are unset, the command and `ingest_platform_research.yml` workflow skip with
+exit 0. Do not invent a database URL. Unit tests use FakeConn.
+

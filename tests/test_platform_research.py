@@ -303,3 +303,50 @@ def test_licensed_ml_discovery_real_qc_artifacts_ingest_without_live_postgres(mo
     monkeypatch.delenv("DB_USER", raising=False)
     with pytest.raises(IngestEnvironmentError, match="DATABASE_URL"):
         require_live_postgres_ingest()
+
+
+def test_vendored_licensed_smoke_wraps_and_ingests_idempotently(tmp_path, monkeypatch):
+    from qc_research.ingest_platform_artifacts import main as ingest_main
+    from qc_research.platform_ingest import (
+        DEFAULT_ARTIFACT_ROOT,
+        ingest_platform_files,
+        monitor_view_from_artifacts,
+        normalize_platform_file,
+        verify_monitor_view,
+        wrap_smoke_record,
+    )
+
+    smoke = DEFAULT_ARTIFACT_ROOT / "ml_discovery_qqq.json"
+    assert smoke.is_file()
+    record = json.loads(smoke.read_text(encoding="utf-8"))
+    assert record["winner_backtest_id"] == "ed9f39b897d569d90edd0939626e7286"
+    assert record["economic_gate"] == "NOT_DEFINED"
+    wrapped = wrap_smoke_record(record)
+    assert [kind for kind, _ in wrapped] == ["run_summary", "oos_aggregate"]
+    view = verify_monitor_view(monitor_view_from_artifacts(wrapped))
+    assert view["provenance_kind"] == "REAL_QC"
+    assert view["intercept_only_flag"] is True
+    assert view["economic_pass"] is False
+    assert view["winner_backtest_id"] == "ed9f39b897d569d90edd0939626e7286"
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+
+    conn = FakeConn()
+    first = ingest_platform_files(conn, [smoke], root=DEFAULT_ARTIFACT_ROOT)
+    second = ingest_platform_files(conn, [smoke], root=DEFAULT_ARTIFACT_ROOT)
+    assert first["ingested"] == 2
+    assert second["ingested"] == 2
+    assert not first["errors"]
+    assert normalize_platform_file(smoke)
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("DB_NAME", raising=False)
+    monkeypatch.delenv("DB_USER", raising=False)
+    assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
+    assert ingest_main(["--root", str(smoke), "--verify-monitor"]) == 0
