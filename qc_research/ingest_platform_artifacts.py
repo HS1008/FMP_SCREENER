@@ -48,9 +48,14 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Build the Strategy Monitor read model from ingested / wrapped payloads",
     )
+    parser.add_argument(
+        "--canonical-only",
+        action="store_true",
+        help="Skip infrastructure smoke records when ingesting a directory",
+    )
     ns = parser.parse_args(argv)
     root = Path(ns.root)
-    paths = discover_platform_files(root)
+    paths = discover_platform_files(root, canonical_only=bool(ns.canonical_only))
     if not paths:
         print("No platform artifacts found under {0}".format(root))
         return 1

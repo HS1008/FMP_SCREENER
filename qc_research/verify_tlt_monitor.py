@@ -80,7 +80,14 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(at.exception)
         labels = [str(getattr(metric, "label", "") or "") for metric in at.metric]
         joined = " ".join(labels)
-        for needle in ("Economic gate", "OOS window count", "Holdout accessed"):
+        for needle in (
+            "Economic gate",
+            "OOS window count",
+            "Holdout accessed",
+            "Research status",
+            "Promotion gate",
+            "Holdout status",
+        ):
             if needle not in joined:
                 print("Strategy Monitor missing metric {0}: {1}".format(needle, labels))
                 return 1

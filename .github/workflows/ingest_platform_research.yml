@@ -1,12 +1,26 @@
 name: Ingest platform research artifacts
 
 on:
+  repository_dispatch:
+    types: [platform-research-ingest]
   workflow_dispatch:
     inputs:
       root:
-        description: Artifact directory or JSON file
+        description: Artifact directory or JSON file on the FMP checkout
         type: string
         default: qc_research/platform_artifacts
+      source_repo:
+        description: Optional source repo (owner/name) for a remote artifact
+        type: string
+        required: false
+      source_ref:
+        description: Optional source git ref
+        type: string
+        required: false
+      artifact_path:
+        description: Optional path inside the source repo
+        type: string
+        required: false
       dry_run:
         description: Validate only; do not write PostgreSQL
         type: boolean
@@ -17,16 +31,19 @@ permissions:
 
 jobs:
   ingest:
-    name: Ingest proven REAL_QC platform artifacts
+    name: Authorized DigitalOcean ingest
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
-      DATABASE_URL: ${{ secrets.DATABASE_URL }}
-      DB_HOST: ${{ secrets.DB_HOST }}
-      DB_PORT: ${{ secrets.DB_PORT }}
-      DB_NAME: ${{ secrets.DB_NAME }}
-      DB_USER: ${{ secrets.DB_USER }}
-      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      SOURCE_REPO: ${{ github.event.client_payload.source_repo || github.event.inputs.source_repo }}
+      SOURCE_REF: ${{ github.event.client_payload.source_ref || github.event.inputs.source_ref }}
+      ARTIFACT_PATH: ${{ github.event.client_payload.artifact_path || github.event.inputs.artifact_path }}
+      LOCAL_ROOT: ${{ github.event.inputs.root || 'qc_research/platform_artifacts' }}
+      DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+      STRATEGY_ID: ${{ github.event.client_payload.strategy_id }}
+      QS_READ_TOKEN: ${{ secrets.QS_READ_TOKEN }}
+      CROSS_REPO_DISPATCH_TOKEN: ${{ secrets.CROSS_REPO_DISPATCH_TOKEN }}
+      GH_PAT: ${{ secrets.GH_PAT }}
       PYTHONUNBUFFERED: "1"
     steps:
       - uses: actions/checkout@v4
@@ -34,18 +51,80 @@ jobs:
           fetch-depth: 1
 
       - uses: actions/setup-python@v5
+        if: env.DRY_RUN == 'true'
         with:
           python-version: "3.11"
 
       - name: Install requirements
+        if: env.DRY_RUN == 'true'
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Ingest or skip without inventing credentials
+      - name: Fetch remote artifact when dispatched
+        id: fetch
         run: |
-          ARGS=(--root "${{ github.event.inputs.root }}" --verify-monitor)
-          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
-            ARGS+=(--dry-run)
+          set -euo pipefail
+          DEST_DIR="qc_research/platform_artifacts/incoming"
+          mkdir -p "$DEST_DIR"
+          TARGET="$LOCAL_ROOT"
+          if [ -n "${ARTIFACT_PATH:-}" ]; then
+            DEST="$DEST_DIR/$(basename "$ARTIFACT_PATH")"
+            LOCAL_CANDIDATE="qc_research/platform_artifacts/$(basename "$ARTIFACT_PATH")"
+            if python -m qc_research.fetch_remote_artifact \
+              --repo "${SOURCE_REPO:-hs1008/quant-strategies}" \
+              --ref "${SOURCE_REF:-}" \
+              --path "$ARTIFACT_PATH" \
+              --dest "$DEST"; then
+              TARGET="$DEST"
+            elif [ -f "$LOCAL_CANDIDATE" ]; then
+              echo "Remote fetch skipped; using committed FMP copy $LOCAL_CANDIDATE"
+              TARGET="$LOCAL_CANDIDATE"
+            else
+              echo "FAIL: remote artifact unavailable and no local copy of $ARTIFACT_PATH"
+              exit 1
+            fi
+          fi
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "Resolved ingest target: $TARGET"
+
+      - name: Dry-run validate
+        if: env.DRY_RUN == 'true'
+        run: |
+          ARGS=(--root "${{ steps.fetch.outputs.target }}" --dry-run --verify-monitor)
+          if [ -d "${{ steps.fetch.outputs.target }}" ]; then
+            ARGS+=(--canonical-only)
           fi
           python -m qc_research.ingest_platform_artifacts "${ARGS[@]}"
+
+      - name: Configure SSH
+        if: env.DRY_RUN != 'true'
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Copy ingest tree to droplet
+        if: env.DRY_RUN != 'true'
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" 'rm -rf /tmp/fmp-platform-ingest && mkdir -p /tmp/fmp-platform-ingest'
+          tar --exclude .git --exclude __pycache__ --exclude .pytest_cache -czf - . \
+            | ssh "$DO_USER@$DO_HOST" 'tar xzf - -C /tmp/fmp-platform-ingest'
+
+      - name: Ingest and verify on authorized DB host
+        if: env.DRY_RUN != 'true'
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+          TARGET: ${{ steps.fetch.outputs.target }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            "STRATEGY_ID='${STRATEGY_ID:-}' bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/${TARGET}"

@@ -46,10 +46,25 @@ def test_migration_005_is_additive_and_pending():
     assert "CREATE TABLE IF NOT EXISTS research_trials" in sql
     assert "CREATE TABLE IF NOT EXISTS research_pair_diagnostics" in sql
     files = sorted(MIGRATIONS_DIR.glob("*.sql"))
-    pending = pending_migration_files(files, {path.name for path in files if path.name != "005_platform_research.sql"})
-    assert [path.name for path in pending] == ["005_platform_research.sql"]
+    pending = pending_migration_files(
+        files,
+        {path.name for path in files if path.name not in {"005_platform_research.sql", "006_platform_lifecycle.sql"}},
+    )
+    assert [path.name for path in pending] == [
+        "005_platform_research.sql",
+        "006_platform_lifecycle.sql",
+    ]
     skipped = pending_migration_files(files, {path.name for path in files})
     assert skipped == []
+
+
+def test_migration_006_is_additive_lifecycle_columns():
+    sql = (MIGRATIONS_DIR / "006_platform_lifecycle.sql").read_text(encoding="utf-8")
+    assert "DROP" not in sql
+    assert "RENAME" not in sql
+    assert "ADD COLUMN IF NOT EXISTS promotion_gate" in sql
+    assert "ADD COLUMN IF NOT EXISTS holdout_status" in sql
+    assert "ADD COLUMN IF NOT EXISTS economic_gate" in sql
 
 
 def test_monitor_labels_and_unavailable_metrics():

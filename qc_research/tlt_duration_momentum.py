@@ -23,7 +23,9 @@ ECONOMIC_GATE = "NOT_DEFINED"
 SELECTED_TRIAL = "elasticnet::lb120_a0p1_l10p5"
 BASELINE_TRIAL = "deterministic::sma120_long_cash"
 MODEL_FAMILY = "elasticnet"
-RESEARCH_STATE = "HUMAN_REVIEW_REQUIRED"
+RESEARCH_STATE = "COMPLETE"
+PROMOTION_GATE = "HUMAN_REVIEW_REQUIRED"
+HOLDOUT_STATUS = "LOCKED"
 FINGERPRINT = "d8f43c83ddec8d70"
 SEARCH_SPACE_HASH = "1c609a682653ee90"
 FEATURE_SCHEMA_HASH = "122b102a7a402e2c"
@@ -188,8 +190,12 @@ def wrap_tlt_duration_momentum_record(record: dict[str, Any]) -> list[tuple[str,
         "strategy_family_id": FAMILY_ID,
         "asset_class": record.get("asset_class") or ASSET_CLASS,
         "symbol": SYMBOL,
-        "run_status": record.get("state") or RESEARCH_STATE,
-        "research_state": record.get("state") or RESEARCH_STATE,
+        "run_status": record.get("research_status") or RESEARCH_STATE,
+        "research_status": record.get("research_status") or RESEARCH_STATE,
+        "research_state": record.get("research_status") or RESEARCH_STATE,
+        "promotion_gate": record.get("promotion_gate") or PROMOTION_GATE,
+        "holdout_status": record.get("holdout_status") or HOLDOUT_STATUS,
+        "thesis": record.get("thesis"),
         "economic_gate": record.get("economic_gate") or ECONOMIC_GATE,
         "economic_pass": None,
         "holdout_accessed": False,
@@ -226,6 +232,11 @@ def wrap_tlt_duration_momentum_record(record: dict[str, Any]) -> list[tuple[str,
         "observation_provenance": record.get("observation_provenance") or "REAL_HISTORICAL_PRE_2025",
         "qc_creates_official": record.get("qc_creates_official") or 30,
         "project_id": record.get("project_id") or int(PROJECT_ID),
+        "project_name": PROJECT_NAME,
+        "ml_metrics": ml_mean,
+        "baseline_metrics": means.get("baseline") if isinstance(means.get("baseline"), dict) else {},
+        "ml_minus_baseline": means.get("ml_minus_baseline") if isinstance(means.get("ml_minus_baseline"), dict) else {},
+        "selected_model_stability": aggregate.get("selected_model_stability"),
         "note": record.get("note"),
     }
     oos = {
@@ -238,6 +249,9 @@ def wrap_tlt_duration_momentum_record(record: dict[str, Any]) -> list[tuple[str,
         "holdout_accessed": False,
         "latest_oos_end": windows[-1].get("oos_end") or windows[-1].get("end"),
         "provenance": provenance,
+        "ml": ml_mean,
+        "baseline": means.get("baseline") if isinstance(means.get("baseline"), dict) else {},
+        "ml_minus_baseline": means.get("ml_minus_baseline") if isinstance(means.get("ml_minus_baseline"), dict) else {},
         "aggregate": means,
         "selected_model_stability": aggregate.get("selected_model_stability"),
         "positive_return_consistency": aggregate.get("positive_return_consistency"),
@@ -330,34 +344,9 @@ def register_tlt_monitor_strategy(conn) -> None:
 
 
 def platform_oos_window_frame(windows: list[dict[str, Any]] | None):
-    import pandas as pd
+    from qc_research.ml_monitor_ui import platform_oos_window_frame as generic_frame
 
-    rows = []
-    for item in windows or []:
-        ml = item.get("ml") if isinstance(item.get("ml"), dict) else {}
-        baseline = item.get("baseline") if isinstance(item.get("baseline"), dict) else {}
-        delta = item.get("ml_minus_baseline") if isinstance(item.get("ml_minus_baseline"), dict) else {}
-        rows.append(
-            {
-                "window_id": item.get("window_id"),
-                "oos_start": item.get("oos_start") or item.get("start"),
-                "oos_end": item.get("oos_end") or item.get("end"),
-                "regime": item.get("regime"),
-                "selected_trial_id": item.get("selected_trial_id") or SELECTED_TRIAL,
-                "train_backtest_id": item.get("train_backtest_id"),
-                "winner_backtest_id": item.get("winner_backtest_id"),
-                "baseline_backtest_id": item.get("baseline_backtest_id"),
-                "ml_sharpe": ml.get("sharpe_ratio"),
-                "baseline_sharpe": baseline.get("sharpe_ratio"),
-                "sharpe_diff": delta.get("sharpe_ratio"),
-                "ml_cagr": ml.get("cagr"),
-                "baseline_cagr": baseline.get("cagr"),
-                "ml_max_drawdown": ml.get("max_drawdown"),
-                "ml_trades": ml.get("trade_count"),
-                "baseline_trades": baseline.get("trade_count"),
-            }
-        )
-    return pd.DataFrame(rows)
+    return generic_frame(windows, selected_trial_fallback=SELECTED_TRIAL)
 
 
 def assert_tlt_identity(payload: dict[str, Any]) -> None:
@@ -529,8 +518,12 @@ def verify_tlt_monitor_view(view: dict[str, Any] | None) -> dict[str, Any]:
         raise ValueError("monitor economic_gate is {0}".format(checked.get("economic_gate")))
     if checked.get("economic_pass") is not None:
         raise ValueError("monitor economic_pass must be NULL")
-    if str(checked.get("research_state") or "") != RESEARCH_STATE:
-        raise ValueError("monitor state is {0}".format(checked.get("research_state")))
+    if str(checked.get("research_status") or checked.get("research_state") or "") != RESEARCH_STATE:
+        raise ValueError("monitor research_status is {0}".format(checked.get("research_status") or checked.get("research_state")))
+    if str(checked.get("promotion_gate") or "") != PROMOTION_GATE:
+        raise ValueError("monitor promotion_gate is {0}".format(checked.get("promotion_gate")))
+    if str(checked.get("holdout_status") or "") != HOLDOUT_STATUS:
+        raise ValueError("monitor holdout_status is {0}".format(checked.get("holdout_status")))
     if str(checked.get("strategy_family") or "") != FAMILY_ID:
         raise ValueError("monitor family is {0}".format(checked.get("strategy_family")))
     if str(checked.get("asset_class_label") or "") not in {ASSET_CLASS, "Bond ETF"}:

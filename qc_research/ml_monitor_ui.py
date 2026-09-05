@@ -119,44 +119,60 @@ def format_monitor_value(
     return value
 
 
+def _unwrap_monitor_payload(value: dict[str, Any] | None) -> dict[str, Any]:
+    raw = dict(value or {})
+    nested = raw.get("payload")
+    if isinstance(nested, dict):
+        merged = dict(nested)
+        for key, item in raw.items():
+            if key == "payload":
+                continue
+            if item not in {None, ""}:
+                merged[key] = item
+        return merged
+    return raw
+
+
 def infer_research_labels(
     *,
     strategy_id: str,
     run_summary: dict[str, Any] | None = None,
     assessment: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    summary = dict(run_summary or {})
-    assessment = dict(assessment or {})
+    summary = _unwrap_monitor_payload(run_summary)
+    assessment = _unwrap_monitor_payload(assessment)
     mode = summary.get("research_mode") or assessment.get("research_mode")
     asset = summary.get("asset_class") or assessment.get("asset_class")
-    family = summary.get("strategy_family_id") or assessment.get("strategy_family")
-    if not mode:
-        if strategy_id == "SPYTrend":
-            mode = "MANUAL"
-        elif strategy_id == "TLTDurationMomentum":
-            mode = "ML_DISCOVERY"
-        elif strategy_id == "CrossSectionalFactorML" or summary.get("research_kind") == "stage2_ml":
-            mode = "ML_DISCOVERY"
-        else:
-            mode = "UNKNOWN"
-    if not asset:
-        if strategy_id == "SPYTrend":
-            asset = "ETF"
-        elif strategy_id == "TLTDurationMomentum":
-            asset = "BOND_ETF"
-        elif strategy_id == "CrossSectionalFactorML":
-            asset = "US_EQUITY"
-        else:
-            asset = "UNKNOWN"
-    if not family:
-        if strategy_id == "SPYTrend":
-            family = "TIME_SERIES_TREND"
-        elif strategy_id == "TLTDurationMomentum":
-            family = "FIXED_INCOME_TREND"
-        elif strategy_id == "CrossSectionalFactorML":
-            family = "CROSS_SECTIONAL_FACTOR"
-        else:
-            family = "UNKNOWN"
+    family = (
+        summary.get("strategy_family_id")
+        or assessment.get("strategy_family")
+        or summary.get("strategy_family")
+        or summary.get("family")
+    )
+    # Optional helpers for pre-platform rows that never published labels.
+    helpers = {
+        "SPYTrend": {
+            "research_mode": "MANUAL",
+            "asset_class": "ETF",
+            "strategy_family": "TIME_SERIES_TREND",
+        },
+        "CrossSectionalFactorML": {
+            "research_mode": "ML_DISCOVERY",
+            "asset_class": "US_EQUITY",
+            "strategy_family": "CROSS_SECTIONAL_FACTOR",
+        },
+        "TLTDurationMomentum": {
+            "research_mode": "ML_DISCOVERY",
+            "asset_class": "BOND_ETF",
+            "strategy_family": "FIXED_INCOME_TREND",
+        },
+    }
+    helper = helpers.get(strategy_id) or {}
+    if not mode and summary.get("research_kind") == "stage2_ml":
+        mode = "ML_DISCOVERY"
+    mode = mode or helper.get("research_mode") or "UNKNOWN"
+    asset = asset or helper.get("asset_class") or "UNKNOWN"
+    family = family or helper.get("strategy_family") or "UNKNOWN"
     mode_label = {"MANUAL": "Manual", "ML_DISCOVERY": "ML Discovery"}.get(str(mode), str(mode))
     asset_label = {
         "US_EQUITY": "Equity",
@@ -170,7 +186,16 @@ def infer_research_labels(
         "FIXED_INCOME_PROXY": "Fixed Income Proxy",
     }.get(str(asset), str(asset))
     provenance = str(summary.get("provenance") or assessment.get("provenance") or "")
-    state = str(summary.get("research_state") or assessment.get("research_state") or "")
+    from qc_research.lifecycle import normalize_research_lifecycle
+
+    lifecycle = normalize_research_lifecycle({**assessment, **summary})
+    state = str(
+        lifecycle.get("research_status")
+        or summary.get("research_status")
+        or summary.get("research_state")
+        or assessment.get("research_state")
+        or ""
+    )
     return {
         "research_mode": str(mode),
         "research_mode_label": mode_label,
@@ -178,8 +203,17 @@ def infer_research_labels(
         "asset_class_label": asset_label,
         "strategy_family": str(family),
         "research_state": state or UNAVAILABLE,
+        "research_status": lifecycle.get("research_status") or state or UNAVAILABLE,
+        "promotion_gate": lifecycle.get("promotion_gate") or UNAVAILABLE,
+        "holdout_status": lifecycle.get("holdout_status") or UNAVAILABLE,
+        "thesis": str(summary.get("thesis") or assessment.get("thesis") or UNAVAILABLE),
         "artifact_provenance": provenance or UNAVAILABLE,
-        "economic_gate": str(assessment.get("economic_gate") or summary.get("economic_gate") or UNAVAILABLE),
+        "economic_gate": str(
+            lifecycle.get("economic_gate")
+            or assessment.get("economic_gate")
+            or summary.get("economic_gate")
+            or UNAVAILABLE
+        ),
         "cost_model_id": str(summary.get("cost_model_id") or assessment.get("cost_model_id") or UNAVAILABLE),
         "spec_hash": str(summary.get("config_fingerprint") or summary.get("strategy_spec_hash") or UNAVAILABLE),
         "git_sha": str(summary.get("git_sha") or UNAVAILABLE),
@@ -196,9 +230,23 @@ def infer_research_labels(
 def load_platform_run_ids(engine, strategy_id: str) -> list[str]:
     if not strategy_id:
         return []
+    lineage_rows = _read_sql(
+        engine,
+        """
+        SELECT research_lineage_id
+        FROM research_runs
+        WHERE strategy_id = :strategy_id
+          AND research_kind = 'platform_research'
+        ORDER BY last_seen_at DESC NULLS LAST
+        LIMIT 1
+        """,
+        {"strategy_id": strategy_id},
+    )
     lineage = strategy_id
-    if strategy_id == "TLTDurationMomentum":
-        lineage = "LINEAGE_TLT_DURATION_MOMENTUM_V0"
+    if lineage_rows is not None and not lineage_rows.empty:
+        value = lineage_rows.iloc[0].get("research_lineage_id")
+        if value:
+            lineage = str(value)
     rows = _read_sql(
         engine,
         PLATFORM_RUN_IDS_SQL,
@@ -241,7 +289,18 @@ def build_platform_monitor_view(
         "research_mode": inner_summary.get("research_mode") or identity.get("research_mode"),
         "asset_class": inner_summary.get("asset_class") or identity.get("asset_class"),
         "strategy_family_id": inner_summary.get("strategy_family_id") or identity.get("strategy_family_id"),
+        "research_kind": inner_summary.get("research_kind") or identity.get("research_kind") or "platform_research",
         "research_state": inner_summary.get("research_state") or inner_assess.get("research_state"),
+        "research_status": inner_summary.get("research_status") or inner_summary.get("run_status"),
+        "promotion_gate": inner_summary.get("promotion_gate") or inner_assess.get("promotion_gate"),
+        "holdout_status": inner_summary.get("holdout_status"),
+        "thesis": inner_summary.get("thesis") or inner_spec.get("thesis") or identity.get("thesis"),
+        "symbol": inner_summary.get("symbol") or identity.get("symbol"),
+        "official_windows": inner_summary.get("official_windows") or inner_oos.get("windows") or [],
+        "window_count": inner_summary.get("window_count") or inner_oos.get("window_count"),
+        "holdout_locked": inner_summary.get("holdout_locked"),
+        "holdout_accessed": inner_summary.get("holdout_accessed"),
+        "cloud_validated": inner_summary.get("cloud_validated"),
         "provenance": summary.get("provenance") or inner_summary.get("provenance"),
         "config_fingerprint": identity.get("config_fingerprint")
         or inner_summary.get("config_fingerprint")
@@ -249,6 +308,8 @@ def build_platform_monitor_view(
         or summary.get("config_fingerprint"),
         "research_lineage_id": identity.get("research_lineage_id") or inner_summary.get("research_lineage_id"),
         "cost_model_id": (inner_spec.get("costs") or {}).get("cost_model_id") or inner_summary.get("cost_model_id"),
+        "fill_assumptions": inner_summary.get("fill_assumptions") or inner_spec.get("fill_assumptions"),
+        "signal_timing": inner_summary.get("signal_timing") or inner_spec.get("signal_timing"),
         "trial_count": (trials or {}).get("payload", trials or {}).get("trial_count")
         if isinstance(trials, dict)
         else None,
@@ -266,6 +327,12 @@ def build_platform_monitor_view(
         "winner_backtest_id": inner_summary.get("winner_backtest_id"),
         "baseline_backtest_id": inner_summary.get("baseline_backtest_id"),
         "economic_gate": inner_summary.get("economic_gate") or inner_assess.get("economic_gate"),
+        "ml_metrics": inner_summary.get("ml_metrics") or inner_oos.get("ml") or {},
+        "baseline_metrics": inner_summary.get("baseline_metrics") or inner_oos.get("baseline") or {},
+        "ml_minus_baseline": inner_summary.get("ml_minus_baseline") or inner_oos.get("ml_minus_baseline") or {},
+        "robustness": inner_summary.get("robustness")
+        or inner_summary.get("selected_model_stability")
+        or inner_oos.get("selected_model_stability"),
     }
     inner_model = (model_metadata or {}).get("payload") if isinstance((model_metadata or {}).get("payload"), dict) else (model_metadata or {})
     intercept_only = inner_model.get("intercept_only")
@@ -286,16 +353,31 @@ def build_platform_monitor_view(
         assessment=inner_assess,
     )
     sharpe = inner_oos.get("sharpe_ratio")
-    windows = inner_oos.get("windows")
+    windows = inner_oos.get("windows") or merged_summary.get("official_windows")
     provenance_kind = labels.get("provenance_kind") or classify_monitor_provenance(merged_summary.get("provenance"))
+    ml_metrics = dict(merged_summary.get("ml_metrics") or inner_oos.get("ml") or {})
+    baseline_metrics = dict(merged_summary.get("baseline_metrics") or inner_oos.get("baseline") or {})
+    delta_metrics = dict(merged_summary.get("ml_minus_baseline") or inner_oos.get("ml_minus_baseline") or {})
+    robustness = merged_summary.get("robustness") or inner_oos.get("selected_model_stability")
+    window_count = (
+        inner_oos.get("window_count")
+        or merged_summary.get("window_count")
+        or (len(windows) if isinstance(windows, list) else None)
+    )
     return {
         "strategy_id": strategy_id,
         "research_run_id": selected_run,
         "labels": labels,
+        "research_mode": labels["research_mode"],
         "research_mode_label": labels["research_mode_label"],
+        "asset_class": labels["asset_class"],
         "asset_class_label": labels["asset_class_label"],
         "strategy_family": labels["strategy_family"],
-        "research_state": format_monitor_value(labels.get("research_state"), available=bool(labels.get("research_state") and labels.get("research_state") != UNAVAILABLE)),
+        "research_state": format_monitor_value(labels.get("research_status") or labels.get("research_state"), available=bool((labels.get("research_status") or labels.get("research_state")) not in {None, "", UNAVAILABLE})),
+        "research_status": labels.get("research_status") or labels.get("research_state") or UNAVAILABLE,
+        "promotion_gate": labels.get("promotion_gate") or UNAVAILABLE,
+        "holdout_status": labels.get("holdout_status") or UNAVAILABLE,
+        "thesis": labels.get("thesis") or UNAVAILABLE,
         "provenance": provenance_kind,
         "provenance_kind": provenance_kind,
         "economic_gate": format_monitor_value(labels.get("economic_gate"), available=labels.get("economic_gate") not in {None, "", UNAVAILABLE}),
@@ -303,12 +385,30 @@ def build_platform_monitor_view(
         "git_sha": format_monitor_value(labels.get("git_sha"), available=labels.get("git_sha") not in {None, "", UNAVAILABLE}),
         "lineage": format_monitor_value(labels.get("lineage"), available=labels.get("lineage") not in {None, "", UNAVAILABLE}),
         "cost_model": format_monitor_value(labels.get("cost_model_id"), available=labels.get("cost_model_id") not in {None, "", UNAVAILABLE}),
+        "fill_assumptions": format_monitor_value(
+            merged_summary.get("fill_assumptions"),
+            available=merged_summary.get("fill_assumptions") not in {None, ""},
+        ),
+        "signal_timing": format_monitor_value(
+            merged_summary.get("signal_timing"),
+            available=merged_summary.get("signal_timing") not in {None, ""},
+        ),
         "trial_count": format_monitor_value(merged_summary.get("trial_count"), available=merged_summary.get("trial_count") is not None),
         "search_space_hash": format_monitor_value(labels.get("search_space_hash"), available=labels.get("search_space_hash") not in {None, "", UNAVAILABLE}),
         "model_family": format_monitor_value(labels.get("model_family"), available=labels.get("model_family") not in {None, "", UNAVAILABLE}),
         "selected_candidate": format_monitor_value(labels.get("selected_candidate"), available=labels.get("selected_candidate") not in {None, "", UNAVAILABLE}),
         "baseline": format_monitor_value(labels.get("baseline_trial_id"), available=labels.get("baseline_trial_id") not in {None, "", UNAVAILABLE}),
         "sharpe": format_monitor_value(sharpe, available=sharpe is not None, provenance=str(inner_oos.get("provenance") or merged_summary.get("provenance") or "")),
+        "ml_metrics": ml_metrics,
+        "baseline_metrics": baseline_metrics,
+        "ml_minus_baseline": delta_metrics,
+        "ml_sharpe": format_monitor_value(ml_metrics.get("sharpe_ratio"), available=ml_metrics.get("sharpe_ratio") is not None),
+        "baseline_sharpe": format_monitor_value(baseline_metrics.get("sharpe_ratio"), available=baseline_metrics.get("sharpe_ratio") is not None),
+        "sharpe_diff": format_monitor_value(delta_metrics.get("sharpe_ratio"), available=delta_metrics.get("sharpe_ratio") is not None),
+        "ml_cagr": format_monitor_value(ml_metrics.get("cagr"), available=ml_metrics.get("cagr") is not None),
+        "baseline_cagr": format_monitor_value(baseline_metrics.get("cagr"), available=baseline_metrics.get("cagr") is not None),
+        "cagr_diff": format_monitor_value(delta_metrics.get("cagr"), available=delta_metrics.get("cagr") is not None),
+        "robustness": robustness if robustness else UNAVAILABLE,
         "oos_windows": windows if windows else UNAVAILABLE,
         "search_space": search_space,
         "pair": pair,
@@ -351,22 +451,187 @@ def build_platform_monitor_view(
             available=merged_summary.get("data_read_used") not in {None, ""},
         ),
         "research_kind": format_monitor_value(
-            inner_summary.get("research_kind") or "platform_research",
+            merged_summary.get("research_kind") or "platform_research",
             available=True,
         ),
         "symbol": format_monitor_value(
-            inner_summary.get("symbol"),
-            available=inner_summary.get("symbol") not in {None, ""},
+            merged_summary.get("symbol"),
+            available=merged_summary.get("symbol") not in {None, ""},
         ),
-        "window_count": format_monitor_value(
-            inner_oos.get("window_count") or (len(windows) if isinstance(windows, list) else None),
-            available=(inner_oos.get("window_count") or (len(windows) if isinstance(windows, list) else None))
-            is not None,
-        ),
-        "holdout_accessed": False if inner_summary.get("holdout_accessed") in {None, False, 0, "false"} else True,
-        "holdout_locked": bool(inner_summary.get("holdout_locked")) if inner_summary.get("holdout_locked") is not None else None,
-        "official_windows": inner_summary.get("official_windows") or [],
+        "window_count": format_monitor_value(window_count, available=window_count is not None),
+        "holdout_accessed": False if merged_summary.get("holdout_accessed") in {None, False, 0, "false"} else True,
+        "holdout_locked": bool(merged_summary.get("holdout_locked")) if merged_summary.get("holdout_locked") is not None else labels.get("holdout_status") == "LOCKED",
+        "official_windows": merged_summary.get("official_windows") or [],
     }
+
+
+def platform_oos_window_frame(windows: list[dict[str, Any]] | None, *, selected_trial_fallback: str | None = None):
+    rows = []
+    for item in windows or []:
+        if not isinstance(item, dict):
+            continue
+        ml = item.get("ml") if isinstance(item.get("ml"), dict) else {}
+        baseline = item.get("baseline") if isinstance(item.get("baseline"), dict) else {}
+        delta = item.get("ml_minus_baseline") if isinstance(item.get("ml_minus_baseline"), dict) else {}
+        rows.append(
+            {
+                "window_id": item.get("window_id") or item.get("kind"),
+                "oos_start": item.get("oos_start") or item.get("start"),
+                "oos_end": item.get("oos_end") or item.get("end"),
+                "regime": item.get("regime"),
+                "selected_trial_id": item.get("selected_trial_id") or selected_trial_fallback,
+                "train_backtest_id": item.get("train_backtest_id"),
+                "winner_backtest_id": item.get("winner_backtest_id"),
+                "baseline_backtest_id": item.get("baseline_backtest_id"),
+                "ml_sharpe": ml.get("sharpe_ratio"),
+                "baseline_sharpe": baseline.get("sharpe_ratio"),
+                "sharpe_diff": delta.get("sharpe_ratio"),
+                "ml_cagr": ml.get("cagr"),
+                "baseline_cagr": baseline.get("cagr"),
+                "ml_max_drawdown": ml.get("max_drawdown"),
+                "ml_trades": ml.get("trade_count"),
+                "baseline_trades": baseline.get("trade_count"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def official_qc_id_frame(windows: list[dict[str, Any]] | None):
+    rows = []
+    for item in windows or []:
+        if not isinstance(item, dict):
+            continue
+        rows.append(
+            {
+                "window_id": item.get("window_id") or item.get("kind"),
+                "contract_hash": item.get("contract_hash"),
+                "train_backtest_id": item.get("train_backtest_id"),
+                "winner_backtest_id": item.get("winner_backtest_id"),
+                "baseline_backtest_id": item.get("baseline_backtest_id"),
+                "selected_trial_id": item.get("selected_trial_id"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def render_platform_view(view: dict[str, Any]) -> None:
+    """Render a built platform monitor view. No QuantConnect. No training."""
+    st.caption(
+        "Mode: {0} · Asset: {1} · Family: {2} · Research status: {3} · Provenance: {4}".format(
+            view.get("research_mode_label"),
+            view.get("asset_class_label"),
+            view.get("strategy_family"),
+            view.get("research_status") or view.get("research_state"),
+            view.get("provenance"),
+        )
+    )
+    thesis = view.get("thesis")
+    if thesis and thesis != UNAVAILABLE:
+        st.markdown("**Thesis**")
+        st.write(thesis)
+    a1, a2, a3, a4 = st.columns(4)
+    a1.metric("Research mode", view.get("research_mode_label"))
+    a2.metric("Family", view.get("strategy_family"))
+    a3.metric("Asset", view.get("asset_class_label"))
+    a4.metric("Research status", view.get("research_status") or view.get("research_state"))
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("Provenance", view.get("provenance_kind") or view.get("provenance"))
+    b2.metric("Economic gate", view.get("economic_gate"))
+    b3.metric("Promotion gate", view.get("promotion_gate"))
+    b4.metric("Holdout status", view.get("holdout_status"))
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("WFO window count", view.get("window_count"))
+    c2.metric("Selected model", view.get("selected_candidate"))
+    c3.metric("Baseline", view.get("baseline"))
+    c4.metric("Model family", view.get("model_family"))
+    d1, d2, d3, d4 = st.columns(4)
+    d1.metric("ML Sharpe", view.get("ml_sharpe") if view.get("ml_sharpe") is not None else view.get("sharpe"))
+    d2.metric("Baseline Sharpe", view.get("baseline_sharpe"))
+    d3.metric("ML-minus-baseline Sharpe", view.get("sharpe_diff"))
+    d4.metric("ML CAGR", view.get("ml_cagr"))
+    e1, e2, e3, e4 = st.columns(4)
+    e1.metric("Search space", view.get("search_space_hash"))
+    e2.metric("Trial count", view.get("trial_count"))
+    e3.metric("Cost model", view.get("cost_model"))
+    e4.metric("Spec hash", view.get("spec_hash"))
+    f1, f2, f3, f4 = st.columns(4)
+    f1.metric("Lineage", view.get("lineage"))
+    f2.metric("Git SHA", view.get("git_sha"))
+    f3.metric("Winner QC id", view.get("winner_backtest_id"))
+    f4.metric("Baseline QC id", view.get("baseline_backtest_id"))
+    g1, g2, g3, g4 = st.columns(4)
+    g1.metric("Research kind", view.get("research_kind"))
+    g2.metric("Symbol", view.get("symbol"))
+    g3.metric("OOS window count", view.get("window_count"))
+    g4.metric("Holdout accessed", "no" if not view.get("holdout_accessed") else "yes")
+    h1, h2, h3, h4 = st.columns(4)
+    h1.metric("History provider", view.get("history_provider"))
+    h2.metric("Feature schema", view.get("feature_schema_hash"))
+    h3.metric("Fill assumptions", view.get("fill_assumptions"))
+    h4.metric("Signal timing", view.get("signal_timing"))
+    i1, i2, i3, i4 = st.columns(4)
+    i1.metric("Training layer", view.get("training_layer"))
+    i2.metric("Train QC id", view.get("train_backtest_id"))
+    i3.metric("Object Store key", view.get("object_store_key"))
+    i4.metric("Data download used", view.get("data_read_used"))
+    if view.get("provenance") == "LOCAL_LICENSED":
+        st.info("Provenance is LOCAL_LICENSED optional local Lean data. This is not CLOUD_VALIDATED.")
+    if view.get("intercept_only_flag") is True:
+        st.warning(
+            "Winner is intercept-only. This is infrastructure evidence; economic_gate stays NOT_DEFINED."
+        )
+    st.caption(
+        "Research results stay visible regardless of promotion_gate. "
+        "HUMAN_REVIEW_REQUIRED is the promotion gate, not the research terminal. "
+        "2025+ / final holdout, paper, live, IBKR, and model promotion stay locked."
+    )
+    oos_windows = view.get("oos_windows")
+    if oos_windows is not None and oos_windows != UNAVAILABLE:
+        st.subheader("OOS windows")
+        frame = platform_oos_window_frame(oos_windows, selected_trial_fallback=str(view.get("selected_candidate") or "") or None)
+        if not frame.empty:
+            st.dataframe(frame, use_container_width=True, hide_index=True)
+        else:
+            st.write(oos_windows)
+        st.caption("Non-holdout windows only. 2025+ / final holdout remain sealed.")
+    qc_rows = view.get("official_windows") or (oos_windows if isinstance(oos_windows, list) else [])
+    qc_frame = official_qc_id_frame(qc_rows if isinstance(qc_rows, list) else [])
+    if not qc_frame.empty:
+        st.subheader("Official QC IDs")
+        st.dataframe(qc_frame, use_container_width=True, hide_index=True)
+    if view.get("robustness") not in {None, UNAVAILABLE, {}}:
+        st.subheader("Robustness")
+        st.write(view["robustness"])
+    st.subheader("Costs")
+    st.write(
+        {
+            "cost_model_id": view.get("cost_model"),
+            "fill_assumptions": view.get("fill_assumptions"),
+            "signal_timing": view.get("signal_timing"),
+        }
+    )
+    if view.get("search_space"):
+        st.subheader("Search space / trial diagnostics")
+        st.write(view["search_space"])
+    if view.get("trials"):
+        st.subheader("Trial ledger")
+        st.write(view["trials"])
+        payload = view["trials"].get("payload") if isinstance(view["trials"], dict) else None
+        if isinstance(payload, dict) and payload.get("provenance") == "SYNTHETIC_TEST_ONLY":
+            st.error("Synthetic trial ledger cannot be research evidence.")
+    if view.get("pair"):
+        st.subheader("Pair diagnostics")
+        st.write(view["pair"])
+        inner = view["pair"].get("payload") if isinstance(view["pair"], dict) else view["pair"]
+        if isinstance(inner, dict) and inner.get("selection_used_oos"):
+            st.error("Pair selection used OOS — invalid research.")
+    if view.get("fixed_income"):
+        st.subheader("Fixed-income / DV01 diagnostics")
+        st.write(view["fixed_income"])
+        st.caption("Unsupported cash-bond metrics are Unavailable / Not applicable, never zero-filled.")
+    if view.get("roll"):
+        st.subheader("Roll diagnostics")
+        st.write(view["roll"])
 
 
 def render_platform_section(strategy_id: str, *, engine=None) -> None:
@@ -416,94 +681,7 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     )
     if view is None:
         return
-    st.caption(
-        "Mode: {0} · Asset: {1} · Family: {2} · State: {3} · Provenance: {4}".format(
-            view["research_mode_label"],
-            view["asset_class_label"],
-            view["strategy_family"],
-            view["research_state"],
-            view["provenance"],
-        )
-    )
-    if str(view.get("strategy_id") or "") == "TLTDurationMomentum":
-        st.caption(
-            "TLT / BOND_ETF · {0} OOS windows · ElasticNet {1} · baseline {2} · "
-            "economic_gate=NOT_DEFINED · holdout locked (no 2025+)".format(
-                view.get("window_count"),
-                view.get("selected_candidate"),
-                view.get("baseline"),
-            )
-        )
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Economic gate", view["economic_gate"])
-    c2.metric("Spec hash", view["spec_hash"])
-    c3.metric("Trial count", view["trial_count"])
-    c4.metric("Cost model", view["cost_model"])
-    d1, d2, d3, d4 = st.columns(4)
-    d1.metric("Lineage", view["lineage"])
-    d2.metric("Git SHA", view["git_sha"])
-    d3.metric("OOS Sharpe", view["sharpe"])
-    d4.metric("Provenance", view.get("provenance_kind") or view["provenance"])
-    e1, e2, e3, e4 = st.columns(4)
-    e1.metric("Search space", view.get("search_space_hash"))
-    e2.metric("Model family", view.get("model_family"))
-    e3.metric("Selected candidate", view.get("selected_candidate"))
-    e4.metric("Baseline", view.get("baseline"))
-    f1, f2, f3, f4 = st.columns(4)
-    f1.metric("History provider", view.get("history_provider"))
-    f2.metric("Feature schema", view.get("feature_schema_hash"))
-    f3.metric("Winner QC id", view.get("winner_backtest_id"))
-    f4.metric("Baseline QC id", view.get("baseline_backtest_id"))
-    g1, g2, g3, g4 = st.columns(4)
-    g1.metric("Training layer", view.get("training_layer"))
-    g2.metric("Train QC id", view.get("train_backtest_id"))
-    g3.metric("Object Store key", view.get("object_store_key"))
-    g4.metric("Data download used", view.get("data_read_used"))
-    h1, h2, h3, h4 = st.columns(4)
-    h1.metric("Research kind", view.get("research_kind"))
-    h2.metric("Symbol", view.get("symbol"))
-    h3.metric("OOS window count", view.get("window_count"))
-    h4.metric("Holdout accessed", "no" if not view.get("holdout_accessed") else "yes")
-    if view.get("provenance") == "LOCAL_LICENSED":
-        st.info("Provenance is LOCAL_LICENSED optional local Lean data. This is not CLOUD_VALIDATED.")
-    if view.get("intercept_only_flag") is True:
-        st.warning(
-            "Winner is intercept-only. This is infrastructure evidence; economic_gate stays NOT_DEFINED."
-        )
-    oos_windows = view.get("oos_windows")
-    if oos_windows is not None and oos_windows != UNAVAILABLE:
-        st.subheader("OOS windows")
-        if str(view.get("strategy_id") or "") == "TLTDurationMomentum":
-            from qc_research.tlt_duration_momentum import platform_oos_window_frame
-
-            frame = platform_oos_window_frame(view["oos_windows"])
-            if not frame.empty:
-                st.dataframe(frame, use_container_width=True, hide_index=True)
-            st.caption("Non-holdout 2015–2024 only. 2025+ / final holdout remain sealed.")
-        else:
-            st.write(view["oos_windows"])
-    if view.get("search_space"):
-        st.subheader("Search space")
-        st.write(view["search_space"])
-    if view.get("trials"):
-        st.subheader("Trial ledger")
-        st.write(view["trials"])
-        payload = view["trials"].get("payload") if isinstance(view["trials"], dict) else None
-        if isinstance(payload, dict) and payload.get("provenance") == "SYNTHETIC_TEST_ONLY":
-            st.error("Synthetic trial ledger cannot be research evidence.")
-    if view.get("pair"):
-        st.subheader("Pair diagnostics")
-        st.write(view["pair"])
-        inner = view["pair"].get("payload") if isinstance(view["pair"], dict) else view["pair"]
-        if isinstance(inner, dict) and inner.get("selection_used_oos"):
-            st.error("Pair selection used OOS — invalid research.")
-    if view.get("fixed_income"):
-        st.subheader("Fixed-income / DV01 diagnostics")
-        st.write(view["fixed_income"])
-        st.caption("Unsupported cash-bond metrics are Unavailable / Not applicable, never zero-filled.")
-    if view.get("roll"):
-        st.subheader("Roll diagnostics")
-        st.write(view["roll"])
+    render_platform_view(view)
 
 
 def load_stage2_trials(engine, research_run_id: str) -> pd.DataFrame:

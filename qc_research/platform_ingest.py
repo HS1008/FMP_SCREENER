@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from sqlalchemy import text
 
@@ -148,7 +148,10 @@ def platform_run_identity(payload: dict[str, Any]) -> dict[str, Any]:
         or payload.get("config_fingerprint")
         or identity.get("config_fingerprint")
         or identity.get("strategy_spec_hash"),
-        "run_status": inner.get("run_status") or payload.get("run_status"),
+        "run_status": inner.get("run_status") or payload.get("run_status") or inner.get("research_status"),
+        "promotion_gate": inner.get("promotion_gate") or payload.get("promotion_gate"),
+        "holdout_status": inner.get("holdout_status") or payload.get("holdout_status"),
+        "economic_gate": inner.get("economic_gate") or payload.get("economic_gate"),
     }
 
 
@@ -259,10 +262,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
         identity = platform_run_identity(payload)
         if identity["strategy_id"]:
             conn.execute(text(UPSERT_PLATFORM_RUN), identity)
-        if identity["strategy_id"] == "TLTDurationMomentum":
-            from qc_research.tlt_duration_momentum import register_tlt_monitor_strategy
-
-            register_tlt_monitor_strategy(conn)
+            register_platform_monitor_strategy(conn, identity)
 
 
 SKIP_NO_DATABASE = (
@@ -304,6 +304,9 @@ INSERT INTO research_runs (
     strategy_spec_hash,
     research_lineage_id,
     run_status,
+    promotion_gate,
+    holdout_status,
+    economic_gate,
     holdout_accessed,
     holdout_access_count
 ) VALUES (
@@ -316,6 +319,9 @@ INSERT INTO research_runs (
     :strategy_spec_hash,
     :research_lineage_id,
     :run_status,
+    :promotion_gate,
+    :holdout_status,
+    :economic_gate,
     FALSE,
     0
 )
@@ -328,8 +334,46 @@ ON CONFLICT (research_run_id) DO UPDATE SET
     strategy_family_id = COALESCE(EXCLUDED.strategy_family_id, research_runs.strategy_family_id),
     strategy_spec_hash = COALESCE(EXCLUDED.strategy_spec_hash, research_runs.strategy_spec_hash),
     research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, research_runs.research_lineage_id),
-    run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status)
+    run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status),
+    promotion_gate = COALESCE(EXCLUDED.promotion_gate, research_runs.promotion_gate),
+    holdout_status = COALESCE(EXCLUDED.holdout_status, research_runs.holdout_status),
+    economic_gate = COALESCE(EXCLUDED.economic_gate, research_runs.economic_gate)
 """
+
+REGISTER_STRATEGY_SQL = """
+INSERT INTO strategies (
+    strategy_id, name, environment, status,
+    qc_research_project_id, qc_research_project_name
+) VALUES (
+    :strategy_id, :name, :environment, :status,
+    :qc_research_project_id, :qc_research_project_name
+)
+ON CONFLICT (strategy_id) DO UPDATE SET
+    name = EXCLUDED.name,
+    environment = COALESCE(NULLIF(EXCLUDED.environment, ''), strategies.environment),
+    status = COALESCE(EXCLUDED.status, strategies.status),
+    qc_research_project_id = COALESCE(EXCLUDED.qc_research_project_id, strategies.qc_research_project_id),
+    qc_research_project_name = COALESCE(EXCLUDED.qc_research_project_name, strategies.qc_research_project_name)
+"""
+
+
+def register_platform_monitor_strategy(conn, identity: Mapping[str, Any] | None = None) -> None:
+    """Idempotent research-only Strategy Monitor row from a canonical artifact."""
+    row = dict(identity or {})
+    strategy_id = str(row.get("strategy_id") or "")
+    if not strategy_id:
+        return
+    conn.execute(
+        text(REGISTER_STRATEGY_SQL),
+        {
+            "strategy_id": strategy_id,
+            "name": row.get("name") or strategy_id,
+            "environment": "research",
+            "status": row.get("run_status") or "COMPLETE",
+            "qc_research_project_id": str(row.get("project_id") or "36108691"),
+            "qc_research_project_name": row.get("project_name") or "PlatformResearch",
+        },
+    )
 
 
 def repo_root() -> Path:
@@ -377,7 +421,7 @@ def is_smoke_record(payload: dict[str, Any]) -> bool:
 
     if is_platform_artifact(payload):
         return False
-    if is_tlt_duration_momentum_record(payload):
+    if is_tlt_duration_momentum_record(payload) or is_canonical_platform_record(payload):
         return False
     if payload.get("winner_backtest_id") or payload.get("baseline_backtest_id"):
         return True
@@ -403,9 +447,12 @@ def _hashed_envelope(kind: str, run_id: str, inner: dict[str, Any], **meta: Any)
 
 def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """Turn a platform smoke runner JSON into hashed Monitor artifacts."""
+    from qc_research.lifecycle import normalize_research_lifecycle
+
     run_id = str(record.get("run_id") or record.get("research_run_id") or "")
     if not run_id:
         raise ValueError("smoke record is missing run_id")
+    lifecycle = normalize_research_lifecycle(record)
     strategy_id = str(record.get("strategy_id") or run_id)
     provenance = str(record.get("provenance") or "REAL_QC")
     metrics = dict(record.get("metrics") or {})
@@ -414,7 +461,10 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
     end = record.get("end_date") or "2019-06-28"
     summary = {
         "research_run_id": run_id,
-        "run_status": record.get("cloud_state") or record.get("state") or "CLOUD_VALIDATED",
+        "run_status": lifecycle.get("research_status") or record.get("cloud_state") or record.get("state") or "CLOUD_VALIDATED",
+        "research_status": lifecycle.get("research_status"),
+        "promotion_gate": lifecycle.get("promotion_gate"),
+        "holdout_status": lifecycle.get("holdout_status"),
         "research_mode": record.get("research_mode") or "ML_DISCOVERY",
         "asset_class": record.get("asset_class")
         or (
@@ -483,13 +533,226 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
     ]
 
 
-def discover_platform_files(root: Path | None = None) -> list[Path]:
+def is_canonical_platform_record(payload: dict[str, Any]) -> bool:
+    """A self-describing research artifact, not a hashed Monitor envelope."""
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("schema_version") or "") in {"platform_artifact_v1", "platform_v1", "stage2_ml_v1"}:
+        return False
+    strategy = str(payload.get("strategy_id") or "")
+    if not strategy:
+        return False
+    windows = payload.get("official_windows") or (payload.get("aggregate") or {}).get("windows")
+    return isinstance(windows, list) and bool(windows)
+
+
+def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """Turn any complete platform research JSON into hashed Monitor artifacts."""
+    from qc_research.lifecycle import normalize_research_lifecycle
+
+    strategy_id = str(record.get("strategy_id") or "")
+    if not strategy_id:
+        raise ValueError("canonical platform artifact is missing strategy_id")
+    lineage = str(record.get("research_lineage_id") or strategy_id)
+    run_id = str(
+        record.get("research_run_id")
+        or record.get("run_id")
+        or "PLATFORM_{0}_V0".format(strategy_id)
+    )
+    lifecycle = normalize_research_lifecycle(record)
+    provenance = str(record.get("provenance") or "REAL_QC")
+    aggregate = record.get("aggregate") if isinstance(record.get("aggregate"), dict) else {}
+    windows = list(aggregate.get("windows") or record.get("official_windows") or [])
+    if not windows:
+        raise ValueError("canonical platform artifact {0} has no OOS windows".format(strategy_id))
+    for window in windows:
+        end = str(window.get("oos_end") or window.get("end") or "")
+        if end.startswith("2025"):
+            raise ValueError("{0} window {1} touches sealed 2025+ holdout".format(strategy_id, window.get("window_id")))
+        window.setdefault("start", window.get("oos_start"))
+        window.setdefault("end", window.get("oos_end"))
+    means = aggregate.get("aggregate") if isinstance(aggregate.get("aggregate"), dict) else {}
+    ml_mean = means.get("ml") if isinstance(means.get("ml"), dict) else {}
+    baseline_mean = means.get("baseline") if isinstance(means.get("baseline"), dict) else {}
+    delta_mean = means.get("ml_minus_baseline") if isinstance(means.get("ml_minus_baseline"), dict) else {}
+    selected = record.get("selected_trial_id") or record.get("selected_candidate")
+    if not selected:
+        selected = next((row.get("selected_trial_id") for row in windows if row.get("selected_trial_id")), None)
+    baseline = record.get("baseline_trial_id")
+    summary = {
+        "research_run_id": run_id,
+        "strategy_id": strategy_id,
+        "research_lineage_id": lineage,
+        "research_kind": record.get("research_kind") or "platform_research",
+        "research_mode": record.get("research_mode") or "ML_DISCOVERY",
+        "strategy_family_id": record.get("strategy_family_id") or record.get("family"),
+        "asset_class": record.get("asset_class"),
+        "symbol": record.get("symbol"),
+        "thesis": record.get("thesis") or record.get("original_user_thesis"),
+        "run_status": lifecycle["research_status"],
+        "research_status": lifecycle["research_status"],
+        "research_state": lifecycle["research_status"],
+        "promotion_gate": lifecycle["promotion_gate"],
+        "holdout_status": lifecycle["holdout_status"],
+        "economic_gate": lifecycle["economic_gate"] or record.get("economic_gate") or "NOT_DEFINED",
+        "economic_pass": None,
+        "holdout_accessed": False,
+        "holdout_locked": lifecycle["holdout_locked"],
+        "thresholds_defined": bool(record.get("thresholds_defined")),
+        "window_count": len(windows),
+        "model_family": record.get("model_family"),
+        "selected_candidate": selected,
+        "selected_trial_id": selected,
+        "baseline_trial_id": baseline,
+        "search_space_hash": record.get("search_space_hash"),
+        "feature_schema_hash": record.get("feature_schema_hash"),
+        "config_fingerprint": record.get("fingerprint") or record.get("config_fingerprint"),
+        "strategy_spec_hash": record.get("fingerprint") or record.get("strategy_spec_hash"),
+        "cost_model_id": record.get("cost_model_id"),
+        "adapter_id": record.get("adapter_id"),
+        "fill_assumptions": record.get("fill_assumptions"),
+        "signal_timing": record.get("signal_timing"),
+        "history_provider": record.get("history_provider") or "qc_cloud",
+        "training_layer": record.get("training_layer") or "qc_cloud",
+        "data_read_used": bool(record.get("data_read_used")),
+        "official_windows": [
+            {
+                "window_id": window.get("window_id"),
+                "contract_hash": window.get("contract_hash"),
+                "train_backtest_id": window.get("train_backtest_id"),
+                "winner_backtest_id": window.get("winner_backtest_id"),
+                "baseline_backtest_id": window.get("baseline_backtest_id"),
+                "selected_trial_id": window.get("selected_trial_id") or selected,
+            }
+            for window in windows
+        ],
+        "ml_metrics": ml_mean,
+        "baseline_metrics": baseline_mean,
+        "ml_minus_baseline": delta_mean,
+        "selected_model_stability": aggregate.get("selected_model_stability"),
+        "robustness": aggregate.get("selected_model_stability") or record.get("robustness"),
+        "project_id": record.get("project_id") or 36108691,
+        "project_name": record.get("project_name") or "PlatformResearch",
+        "provenance": provenance,
+        "observation_provenance": record.get("observation_provenance") or "REAL_HISTORICAL_PRE_2025",
+        "qc_creates_official": record.get("qc_creates_official") or record.get("qc_creates"),
+        "note": record.get("note"),
+    }
+    oos = {
+        "research_run_id": run_id,
+        "strategy_id": strategy_id,
+        "windows": windows,
+        "window_count": len(windows),
+        "sharpe_ratio": ml_mean.get("sharpe_ratio"),
+        "baseline_sharpe_ratio": baseline_mean.get("sharpe_ratio"),
+        "ml": ml_mean,
+        "baseline": baseline_mean,
+        "ml_minus_baseline": delta_mean,
+        "holdout_excluded": True,
+        "holdout_accessed": False,
+        "latest_oos_end": windows[-1].get("oos_end") or windows[-1].get("end"),
+        "provenance": provenance,
+        "aggregate": means,
+        "selected_model_stability": aggregate.get("selected_model_stability"),
+        "positive_return_consistency": aggregate.get("positive_return_consistency"),
+        "regime_dependence": aggregate.get("regime_dependence"),
+    }
+    trial_rows = []
+    if selected:
+        trial_rows.append(
+            {
+                "trial_id": selected,
+                "model_family": record.get("model_family"),
+                "rejected": False,
+            }
+        )
+    if baseline and baseline != selected:
+        trial_rows.append({"trial_id": baseline, "model_family": "deterministic", "rejected": False})
+    trials = {
+        "research_run_id": run_id,
+        "strategy_id": strategy_id,
+        "selected_trial_id": selected,
+        "trial_count": len(trial_rows) or record.get("trial_count"),
+        "candidates": trial_rows,
+        "search_space_hash": record.get("search_space_hash"),
+        "provenance": provenance,
+    }
+    experiments = {
+        "research_run_id": run_id,
+        "strategy_id": strategy_id,
+        "experiments": [
+            {
+                "experiment_id": window.get("window_id"),
+                "contract_hash": window.get("contract_hash"),
+                "train_backtest_id": window.get("train_backtest_id"),
+                "winner_backtest_id": window.get("winner_backtest_id"),
+                "baseline_backtest_id": window.get("baseline_backtest_id"),
+                "selected_trial_id": window.get("selected_trial_id") or selected,
+                "oos_start": window.get("oos_start") or window.get("start"),
+                "oos_end": window.get("oos_end") or window.get("end"),
+            }
+            for window in windows
+        ],
+        "provenance": provenance,
+    }
+    return [
+        (
+            "run_summary",
+            _hashed_envelope(
+                "run_summary",
+                run_id,
+                summary,
+                strategy_id=strategy_id,
+                provenance=provenance,
+                research_mode=summary["research_mode"],
+            ),
+        ),
+        (
+            "oos_aggregate",
+            _hashed_envelope("oos_aggregate", run_id, oos, strategy_id=strategy_id, provenance=provenance),
+        ),
+        (
+            "trials",
+            _hashed_envelope("trials", run_id, trials, strategy_id=strategy_id, provenance=provenance),
+        ),
+        (
+            "experiment_manifest",
+            _hashed_envelope(
+                "experiment_manifest",
+                run_id,
+                experiments,
+                strategy_id=strategy_id,
+                provenance=provenance,
+            ),
+        ),
+    ]
+
+
+def is_live_canonical_file(path: Path) -> bool:
+    """True for official / self-describing research records, not infra smokes."""
+    try:
+        payload = load_json_object(path)
+    except (OSError, ValueError):
+        return False
+    from qc_research.tlt_duration_momentum import is_tlt_duration_momentum_record
+
+    if is_tlt_duration_momentum_record(payload) or is_canonical_platform_record(payload):
+        return True
+    if is_platform_artifact(payload) and str(payload.get("provenance") or "") == "REAL_QC":
+        return True
+    return False
+
+
+def discover_platform_files(root: Path | None = None, *, canonical_only: bool = False) -> list[Path]:
     base = Path(root) if root is not None else DEFAULT_ARTIFACT_ROOT
     if base.is_file() and base.suffix == ".json":
         return [base]
     if not base.is_dir():
         return []
-    return sorted(path for path in base.rglob("*.json") if path.is_file() and path.name != "README.md")
+    paths = sorted(path for path in base.rglob("*.json") if path.is_file() and path.name != "README.md")
+    if not canonical_only:
+        return paths
+    return [path for path in paths if is_live_canonical_file(path)]
 
 
 def load_json_object(path: Path) -> dict[str, Any]:
@@ -508,6 +771,11 @@ def normalize_platform_file(path: Path) -> list[tuple[str, dict[str, Any]]]:
     payload = load_json_object(path)
     if is_tlt_duration_momentum_record(payload):
         wrapped = wrap_tlt_duration_momentum_record(payload)
+        for kind, artifact in wrapped:
+            validate_artifact(kind, artifact)
+        return wrapped
+    if is_canonical_platform_record(payload):
+        wrapped = wrap_canonical_platform_record(payload)
         for kind, artifact in wrapped:
             validate_artifact(kind, artifact)
         return wrapped

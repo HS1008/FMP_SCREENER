@@ -22,8 +22,9 @@ an economic PASS and must not retune the search space.
 
 `tlt_duration_momentum.json` is the official TLTDurationMomentum V0
 non-holdout 2015–2024 WFO record (`LINEAGE_TLT_DURATION_MOMENTUM_V0`,
-10 windows × 3 QC roles). `economic_gate` stays `NOT_DEFINED`.
-`economic_pass` stays NULL. Holdout is locked. Do not retune V0.
+10 windows × 3 QC roles). `research_status=COMPLETE`.
+`economic_gate` stays `NOT_DEFINED`. `promotion_gate=HUMAN_REVIEW_REQUIRED`.
+`holdout_status=LOCKED`. `economic_pass` stays NULL. Do not retune V0.
 
 Ingest when `DATABASE_URL` is available:
 

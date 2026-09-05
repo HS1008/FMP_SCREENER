@@ -1,9 +1,10 @@
-name: Ingest TLTDurationMomentum V0
+# Superseded by ingest_platform_research.yml.
+# One generic event-driven ingest path covers every platform strategy.
+# Keep this file as a manual override that forwards to the generic live script.
+
+name: Ingest TLTDurationMomentum V0 (superseded)
 
 on:
-  push:
-    branches:
-      - cursor/platform-multi-asset-research-674b
   workflow_dispatch:
 
 permissions:
@@ -11,9 +12,12 @@ permissions:
 
 jobs:
   ingest-live:
-    name: Live Postgres ingest and Monitor query-back
+    name: Forward official TLT artifact to generic ingest
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: "1"
+      STRATEGY_ID: TLTDurationMomentum
     steps:
       - uses: actions/checkout@v4
         with:
@@ -35,13 +39,14 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" 'rm -rf /tmp/fmp-tlt-ingest && mkdir -p /tmp/fmp-tlt-ingest'
+          ssh "$DO_USER@$DO_HOST" 'rm -rf /tmp/fmp-platform-ingest && mkdir -p /tmp/fmp-platform-ingest'
           tar --exclude .git --exclude __pycache__ --exclude .pytest_cache -czf - . \
-            | ssh "$DO_USER@$DO_HOST" 'tar xzf - -C /tmp/fmp-tlt-ingest'
+            | ssh "$DO_USER@$DO_HOST" 'tar xzf - -C /tmp/fmp-platform-ingest'
 
-      - name: Ingest and verify on authorized DB host
+      - name: Ingest official TLT V0 through the generic path
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" 'bash /tmp/fmp-tlt-ingest/scripts/ingest_tlt_live.sh /tmp/fmp-tlt-ingest'
+          ssh "$DO_USER@$DO_HOST" \
+            'STRATEGY_ID=TLTDurationMomentum bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/qc_research/platform_artifacts/tlt_duration_momentum.json'

@@ -61,6 +61,9 @@ def test_official_tlt_artifact_wraps_ten_windows_and_identity():
     assert summary["asset_class"] == "BOND_ETF"
     assert summary["symbol"] == "TLT"
     assert summary["economic_gate"] == "NOT_DEFINED"
+    assert summary["research_status"] == "COMPLETE"
+    assert summary["promotion_gate"] == "HUMAN_REVIEW_REQUIRED"
+    assert summary["holdout_status"] == "LOCKED"
     assert summary["economic_pass"] is None
     assert summary["holdout_accessed"] is False
     assert summary["selected_candidate"] == SELECTED_TRIAL
@@ -76,6 +79,9 @@ def test_official_tlt_artifact_wraps_ten_windows_and_identity():
     assert view["provenance_kind"] == "REAL_QC"
     assert view["economic_pass"] is None
     assert view["window_count"] == 10
+    assert view["research_status"] == "COMPLETE"
+    assert view["promotion_gate"] == "HUMAN_REVIEW_REQUIRED"
+    assert view["holdout_status"] == "LOCKED"
     assert view["holdout_accessed"] is False
     frame = platform_oos_window_frame(view["oos_windows"])
     assert list(frame["window_id"]) == list(WINDOW_IDS)
@@ -151,3 +157,115 @@ def test_generic_smoke_wrap_is_unchanged():
     wrapped = wrap_smoke_record(smoke)
     assert [kind for kind, _ in wrapped] == ["run_summary", "oos_aggregate"]
     assert len(wrapped[1][1]["payload"]["windows"]) == 2
+
+
+def test_generic_canonical_artifact_needs_no_tlt_ui():
+    from qc_research.platform_ingest import wrap_canonical_platform_record
+
+    record = {
+        "strategy_id": "FutureBondTrend",
+        "research_lineage_id": "LINEAGE_FUTURE_BOND_TREND_V0",
+        "research_kind": "platform_research",
+        "research_mode": "ML_DISCOVERY",
+        "strategy_family_id": "FIXED_INCOME_TREND",
+        "asset_class": "BOND_ETF",
+        "symbol": "IEF",
+        "thesis": "Generic canonical artifact must render without TLT-specific UI.",
+        "research_status": "COMPLETE",
+        "promotion_gate": "HUMAN_REVIEW_REQUIRED",
+        "holdout_status": "LOCKED",
+        "economic_gate": "NOT_DEFINED",
+        "holdout_locked": True,
+        "model_family": "ridge",
+        "selected_trial_id": "ridge::lb60_a1",
+        "baseline_trial_id": "deterministic::sma60_long_cash",
+        "search_space_hash": "abcd1234abcd1234",
+        "provenance": "REAL_QC",
+        "official_windows": [
+            {
+                "window_id": "W2019",
+                "oos_start": "2019-01-02",
+                "oos_end": "2019-12-31",
+                "train_backtest_id": "train-ief",
+                "winner_backtest_id": "win-ief",
+                "baseline_backtest_id": "base-ief",
+                "selected_trial_id": "ridge::lb60_a1",
+                "ml": {"sharpe_ratio": 0.2, "cagr": 0.01},
+                "baseline": {"sharpe_ratio": 0.1, "cagr": 0.005},
+                "ml_minus_baseline": {"sharpe_ratio": 0.1},
+            }
+        ],
+        "aggregate": {
+            "windows": [
+                {
+                    "window_id": "W2019",
+                    "oos_start": "2019-01-02",
+                    "oos_end": "2019-12-31",
+                    "train_backtest_id": "train-ief",
+                    "winner_backtest_id": "win-ief",
+                    "baseline_backtest_id": "base-ief",
+                    "selected_trial_id": "ridge::lb60_a1",
+                    "ml": {"sharpe_ratio": 0.2, "cagr": 0.01},
+                    "baseline": {"sharpe_ratio": 0.1, "cagr": 0.005},
+                    "ml_minus_baseline": {"sharpe_ratio": 0.1},
+                }
+            ],
+            "aggregate": {
+                "ml": {"sharpe_ratio": 0.2, "cagr": 0.01},
+                "baseline": {"sharpe_ratio": 0.1, "cagr": 0.005},
+                "ml_minus_baseline": {"sharpe_ratio": 0.1},
+            },
+        },
+    }
+    wrapped = wrap_canonical_platform_record(record)
+    view = monitor_view_from_artifacts(wrapped)
+    assert view["strategy_id"] == "FutureBondTrend"
+    assert view["research_status"] == "COMPLETE"
+    assert view["promotion_gate"] == "HUMAN_REVIEW_REQUIRED"
+    assert view["holdout_status"] == "LOCKED"
+    assert view["economic_gate"] == "NOT_DEFINED"
+    assert view["window_count"] == 1
+    assert view["selected_candidate"] == "ridge::lb60_a1"
+    source = (DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
+    assert 'if str(view.get("strategy_id") or "") == "TLTDurationMomentum"' not in source
+    monitor = (DEFAULT_ARTIFACT_ROOT.parent.parent / "pages" / "strategy_monitor.py").read_text(encoding="utf-8")
+    body = monitor.split("def _render_live_monitor_body")[1]
+    assert body.index("render_platform_section") < body.index("_render_paper_and_execution")
+
+
+def test_legacy_human_review_required_is_not_research_terminal():
+    from qc_research.lifecycle import normalize_research_lifecycle
+
+    legacy = normalize_research_lifecycle(
+        {
+            "state": "HUMAN_REVIEW_REQUIRED",
+            "economic_gate": "NOT_DEFINED",
+            "holdout_locked": True,
+            "window_count": 10,
+            "official_windows": [{"window_id": "W2015"}],
+        }
+    )
+    assert legacy["research_status"] == "COMPLETE"
+    assert legacy["economic_gate"] == "NOT_DEFINED"
+    assert legacy["promotion_gate"] == "HUMAN_REVIEW_REQUIRED"
+    assert legacy["holdout_status"] == "LOCKED"
+
+
+def test_generic_ingest_workflow_is_event_driven():
+    workflow = (
+        DEFAULT_ARTIFACT_ROOT.parent.parent / ".github" / "workflows" / "ingest_platform_research.yml"
+    ).read_text(encoding="utf-8")
+    tlt = (
+        DEFAULT_ARTIFACT_ROOT.parent.parent / ".github" / "workflows" / "ingest_tlt_duration_momentum.yml"
+    ).read_text(encoding="utf-8")
+    assert "platform-research-ingest" in workflow
+    assert "repository_dispatch" in workflow
+    assert "ingest_platform_live.sh" in workflow
+    assert "DO_SSH_KEY" in workflow
+    assert "push:" not in tlt
+    assert "superseded" in tlt.lower()
+    from qc_research.fetch_remote_artifact import github_raw_url
+
+    assert github_raw_url("hs1008/quant-strategies", "abc", "research/platform_smokes/x.json").endswith(
+        "research/platform_smokes/x.json"
+    )
