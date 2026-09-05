@@ -196,6 +196,8 @@ outputs/*.json
 outputs/
 *.json
 !stage1_results/**/run_summary.json
+!stage2_results/**/*.json
+!qc_research/platform_artifacts/**/*.json
 *.csv
 !data/power_producer_watchlist.csv
 !data/power_market_hub_map.csv

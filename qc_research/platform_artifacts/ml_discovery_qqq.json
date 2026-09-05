@@ -1,0 +1,120 @@
+{
+  "family": "ml_discovery",
+  "family_validation": "ml_discovery",
+  "strategy_id": "QQQTrendDiscovery",
+  "research_mode": "ML_DISCOVERY",
+  "run_id": "PLATFORM_QQQTrendDiscovery_20260905T043946Z",
+  "state": "HUMAN_REVIEW_REQUIRED",
+  "cloud_state": "CLOUD_VALIDATED",
+  "cloud_validated": true,
+  "research_complete": true,
+  "qc_creates": 2,
+  "winner_backtest_id": "ed9f39b897d569d90edd0939626e7286",
+  "baseline_backtest_id": "faeb37c893642e17912921dc23992e0c",
+  "backtest_id": "ed9f39b897d569d90edd0939626e7286",
+  "project_id": 36108691,
+  "compile_id": "1e552d7c42c6ad805490b9709d7bfc5b-68ef6a59359fcf5993cef41e42c62448",
+  "human_gate": false,
+  "provenance": "REAL_QC",
+  "history_provider": "quantconnect",
+  "observation_provenance": "REAL_HISTORICAL_PRE_2025",
+  "fixture_used": false,
+  "start_date": "2019-01-02",
+  "end_date": "2019-06-28",
+  "train_start": "2017-01-03",
+  "train_end": "2018-12-31",
+  "inner_folds": 3,
+  "embargo_trading_days": 5,
+  "max_model_trials": 6,
+  "trial_count": 6,
+  "cv_fit_count": 18,
+  "search_space_hash": "bc3bfda82b448e1b",
+  "feature_set_id": "TS_RET_SMA_VOL_V0",
+  "feature_schema": ["ret_1", "sma_gap", "vol"],
+  "feature_schema_hash": "122b102a7a402e2c",
+  "config_fingerprint": "2c050ec047fd7f23",
+  "selected_candidate": "elasticnet::lb20_vol0",
+  "model_family": "elasticnet",
+  "sklearn_class": "ElasticNet",
+  "model_transport": "PARAMETRIC_JSON",
+  "exported_binary": false,
+  "baseline_trial_id": "deterministic::lb20_vol0",
+  "oos_used_for_selection": false,
+  "identical_oos_windows": true,
+  "winner_ml_role": "winner",
+  "baseline_ml_role": "baseline",
+  "winner_fill_count": 1,
+  "baseline_fill_count": 5,
+  "cost_model_id": "ETF_BPS_V1",
+  "economic_gate": "NOT_DEFINED",
+  "semantic_status": "SEMANTIC_COMPLETE",
+  "ci_run_id": 33945145187,
+  "ci_commit": "2cd20b6ce29b8c4670526c4210d5d823783f6163",
+  "winner_checkpoints": {
+    "CHECK_UNIVERSE": "PASS",
+    "CHECK_SIGNAL": "PASS",
+    "CHECK_PORTFOLIO": "PASS",
+    "CHECK_COST_MODEL": "PASS",
+    "CHECK_ORDER_GENERATION": "PASS",
+    "CHECK_DIAGNOSTICS": "PASS"
+  },
+  "baseline_checkpoints": {
+    "CHECK_UNIVERSE": "PASS",
+    "CHECK_SIGNAL": "PASS",
+    "CHECK_PORTFOLIO": "PASS",
+    "CHECK_COST_MODEL": "PASS",
+    "CHECK_ORDER_GENERATION": "PASS",
+    "CHECK_DIAGNOSTICS": "PASS"
+  },
+  "metrics": {
+    "sharpe_ratio": 2.284,
+    "sortino_ratio": 2.654,
+    "cagr": 0.51491,
+    "max_drawdown": -0.10800000000000001,
+    "net_profit": 0.22401,
+    "trade_count": 1,
+    "psr": 0.78286
+  },
+  "baseline_metrics": {
+    "sharpe_ratio": 2.099,
+    "sortino_ratio": 2.135,
+    "cagr": 0.34602,
+    "max_drawdown": -0.03,
+    "net_profit": 0.15558,
+    "trade_count": 5,
+    "psr": 0.7610399999999999
+  },
+  "fitted_model": {
+    "intercept": 0.010723243613547087,
+    "coef": [0.0, 0.0, 0.0],
+    "intercept_only": true,
+    "fit_on": "train_only"
+  },
+  "note": "Infrastructure evidence for generic ML_DISCOVERY on licensed QuantConnect history. Winner ElasticNet refit is intercept-only (all coefs 0); QC ML_PRED equals the intercept and the OOS path is economically a QQQ overlay that stayed long (1 fill). That is not an economic PASS. economic_gate remains NOT_DEFINED. FEATURE_SCHEMA_HASH is in artifacts (122b102a7a402e2c) but was dropped from winner runtimeStatistics (custom-stat cap). No fixture fallback. No model binary published. Preserved MANUAL/pairs/ZN QC IDs were not rerun.",
+  "attempts": [
+    {
+      "n": 1,
+      "commit": "a780a2c0bb9256cbf7417c774e24a82aef9e7292",
+      "qc_creates": 0,
+      "reason": "stdlib platform shadowed by research.platform"
+    },
+    {
+      "n": 2,
+      "commit": "8cf6d15fee5aeb3e8e7283edd53693f32135cefe",
+      "qc_creates": 0,
+      "reason": "empty {} posted to /organizations/read"
+    },
+    {
+      "n": 3,
+      "commit": "bb581c325a518de60e2aa8372c86b443be3622dd",
+      "qc_creates": 0,
+      "reason": "QC_DATA_LICENSE on /data/read"
+    },
+    {
+      "n": 4,
+      "commit": "2cd20b6ce29b8c4670526c4210d5d823783f6163",
+      "qc_creates": 2,
+      "reason": "licensed /data/read; winner+baseline OOS CLOUD_VALIDATED"
+    }
+  ]
+}
