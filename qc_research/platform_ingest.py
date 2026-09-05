@@ -5,11 +5,31 @@ Does not download Object Store objects. Does not launch QuantConnect.
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from sqlalchemy import text
 
 from qc_research.object_store_sync import canonical_dumps
+
+
+class IngestEnvironmentError(RuntimeError):
+    """Live PostgreSQL ingest is blocked until DATABASE_URL / DB_* are set."""
+
+
+def live_postgres_configured() -> bool:
+    if os.environ.get("DATABASE_URL"):
+        return True
+    return bool(os.environ.get("DB_HOST") and os.environ.get("DB_NAME") and os.environ.get("DB_USER"))
+
+
+def require_live_postgres_ingest() -> None:
+    """Human environment gate. Unit tests may use FakeConn without this."""
+    if not live_postgres_configured():
+        raise IngestEnvironmentError(
+            "DATABASE_URL / DB_* unset. Live Strategy Monitor ingest is a human environment gate. "
+            "Do not invent a database. Unit tests may ingest through FakeConn."
+        )
 
 
 UPSERT_TRIAL = """

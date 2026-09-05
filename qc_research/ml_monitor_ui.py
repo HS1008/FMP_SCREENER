@@ -177,6 +177,7 @@ def build_platform_monitor_view(
     pair: dict[str, Any] | None = None,
     fixed_income: dict[str, Any] | None = None,
     roll: dict[str, Any] | None = None,
+    model_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not selected_run:
         return None
@@ -204,7 +205,18 @@ def build_platform_monitor_view(
         "model_family": inner_summary.get("model_family"),
         "selected_candidate": inner_summary.get("selected_candidate") or inner_summary.get("selected_trial_id"),
         "baseline_trial_id": inner_summary.get("baseline_trial_id"),
+        "history_provider": inner_summary.get("history_provider"),
+        "feature_schema_hash": inner_summary.get("feature_schema_hash"),
+        "winner_backtest_id": inner_summary.get("winner_backtest_id"),
+        "baseline_backtest_id": inner_summary.get("baseline_backtest_id"),
+        "economic_gate": inner_summary.get("economic_gate") or inner_assess.get("economic_gate"),
     }
+    inner_model = (model_metadata or {}).get("payload") if isinstance((model_metadata or {}).get("payload"), dict) else (model_metadata or {})
+    intercept_only = inner_model.get("intercept_only")
+    if intercept_only is None:
+        intercept_only = (inner_model.get("fitted_model") or {}).get("intercept_only")
+    if intercept_only is None:
+        intercept_only = inner_summary.get("intercept_only")
     if isinstance(search_space, dict):
         space_payload = search_space.get("payload") if isinstance(search_space.get("payload"), dict) else search_space
         merged_summary["search_space_hash"] = merged_summary.get("search_space_hash") or space_payload.get("search_space_hash")
@@ -247,6 +259,25 @@ def build_platform_monitor_view(
         "fixed_income": fixed_income,
         "roll": roll,
         "trials": trials,
+        "history_provider": format_monitor_value(
+            merged_summary.get("history_provider"),
+            available=merged_summary.get("history_provider") not in {None, ""},
+        ),
+        "feature_schema_hash": format_monitor_value(
+            merged_summary.get("feature_schema_hash"),
+            available=merged_summary.get("feature_schema_hash") not in {None, ""},
+        ),
+        "winner_backtest_id": format_monitor_value(
+            merged_summary.get("winner_backtest_id"),
+            available=merged_summary.get("winner_backtest_id") not in {None, ""},
+        ),
+        "baseline_backtest_id": format_monitor_value(
+            merged_summary.get("baseline_backtest_id"),
+            available=merged_summary.get("baseline_backtest_id") not in {None, ""},
+        ),
+        "intercept_only": format_monitor_value(intercept_only, available=intercept_only is not None),
+        "intercept_only_flag": intercept_only if isinstance(intercept_only, bool) else None,
+        "economic_pass": False if str(labels.get("economic_gate") or "") == "NOT_DEFINED" else None,
     }
 
 
@@ -273,6 +304,7 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     spec = load_stage2_artifact_payload(engine, selected_run, "strategy_spec")
     search_space = load_stage2_artifact_payload(engine, selected_run, "search_space")
     trials = load_stage2_artifact_payload(engine, selected_run, "trials")
+    model_metadata = load_stage2_artifact_payload(engine, selected_run, "model_metadata")
     pair = load_stage2_artifact_payload(engine, selected_run, "pair_diagnostics")
     fixed_income = load_stage2_artifact_payload(engine, selected_run, "fixed_income_diagnostics") or load_stage2_artifact_payload(
         engine, selected_run, "fixed_income_risk"
@@ -292,6 +324,7 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
         pair=pair,
         fixed_income=fixed_income,
         roll=roll,
+        model_metadata=model_metadata,
     )
     if view is None:
         return
@@ -319,6 +352,15 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     e2.metric("Model family", view.get("model_family"))
     e3.metric("Selected candidate", view.get("selected_candidate"))
     e4.metric("Baseline", view.get("baseline"))
+    f1, f2, f3, f4 = st.columns(4)
+    f1.metric("History provider", view.get("history_provider"))
+    f2.metric("Feature schema", view.get("feature_schema_hash"))
+    f3.metric("Winner QC id", view.get("winner_backtest_id"))
+    f4.metric("Baseline QC id", view.get("baseline_backtest_id"))
+    if view.get("intercept_only_flag") is True:
+        st.warning(
+            "Winner is intercept-only. This is infrastructure evidence; economic_gate stays NOT_DEFINED."
+        )
     if view.get("oos_windows") not in {None, UNAVAILABLE}:
         st.subheader("OOS windows")
         st.write(view["oos_windows"])

@@ -9,7 +9,13 @@ import pytest
 from jobs.apply_migrations import MIGRATIONS_DIR, pending_migration_files
 from qc_research.economic_gate import apply_economic_gates
 from qc_research.ml_aggregation import COMPLETE, FAIL, PASS, assess_stage2
-from qc_research.ml_monitor_ui import UNAVAILABLE, classify_monitor_provenance, format_monitor_value, infer_research_labels
+from qc_research.ml_monitor_ui import (
+    UNAVAILABLE,
+    build_platform_monitor_view,
+    classify_monitor_provenance,
+    format_monitor_value,
+    infer_research_labels,
+)
 from qc_research.object_store_sync import PLATFORM_KINDS, ingest_artifact, validate_artifact
 from qc_research.stage2_results_sync import KIND_BY_FILENAME
 
@@ -191,3 +197,109 @@ def test_local_test_and_real_qc_platform_artifacts_can_be_ingested():
     assert conn.calls
     assert local["provenance"] == "LOCAL_TEST"
     assert real["provenance"] == "REAL_QC"
+
+
+def test_licensed_ml_discovery_real_qc_artifacts_ingest_without_live_postgres(monkeypatch):
+    from qc_research.object_store_sync import ingest_artifact, payload_for_hash, sha256_payload
+    from qc_research.platform_ingest import IngestEnvironmentError, require_live_postgres_ingest
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+
+    run_id = "PLATFORM_QQQTrendDiscovery_20260905T043946Z"
+    winner_id = "ed9f39b897d569d90edd0939626e7286"
+    baseline_id = "faeb37c893642e17912921dc23992e0c"
+
+    def _artifact(kind: str, extra: dict) -> dict:
+        payload = {
+            "schema_version": "platform_artifact_v1",
+            "kind": kind,
+            "provenance": "REAL_QC",
+            "research_run_id": run_id,
+            "payload": {
+                "research_run_id": run_id,
+                "provenance": "REAL_QC",
+                **extra,
+            },
+        }
+        payload["artifact_sha256"] = sha256_payload(payload_for_hash(payload))
+        return payload
+
+    conn = FakeConn()
+    summary = _artifact(
+        "run_summary",
+        {
+            "research_mode": "ML_DISCOVERY",
+            "asset_class": "ETF",
+            "strategy_family_id": "TIME_SERIES_TREND",
+            "research_state": "CLOUD_VALIDATED",
+            "run_status": "CLOUD_VALIDATED",
+            "trial_count": 6,
+            "model_family": "elasticnet",
+            "selected_candidate": "elasticnet::lb20_vol0",
+            "baseline_trial_id": "deterministic::lb20_vol0",
+            "search_space_hash": "bc3bfda82b448e1b",
+            "feature_schema_hash": "122b102a7a402e2c",
+            "history_provider": "quantconnect",
+            "winner_backtest_id": winner_id,
+            "baseline_backtest_id": baseline_id,
+            "economic_gate": "NOT_DEFINED",
+            "cost_model_id": "ETF_BPS_V1",
+            "intercept_only": True,
+        },
+    )
+    oos = _artifact(
+        "oos_aggregate",
+        {
+            "windows": [
+                {"kind": "winner", "start": "2019-01-02", "end": "2019-06-28", "sharpe_ratio": 2.284},
+                {"kind": "baseline", "start": "2019-01-02", "end": "2019-06-28", "sharpe_ratio": 2.099},
+            ],
+            "sharpe_ratio": 2.284,
+            "baseline_sharpe_ratio": 2.099,
+            "identical_oos_windows": True,
+        },
+    )
+    ingest_artifact(conn, key="ml-summary", kind="run_summary", payload=summary)
+    ingest_artifact(conn, key="ml-oos", kind="oos_aggregate", payload=oos)
+    assert conn.calls
+    assert summary["payload"]["winner_backtest_id"] == winner_id
+    assert summary["payload"]["economic_gate"] == "NOT_DEFINED"
+
+    view = build_platform_monitor_view(
+        strategy_id="QQQTrendDiscovery",
+        selected_run=run_id,
+        run_summary=summary,
+        oos=oos,
+        model_metadata={
+            "schema_version": "platform_artifact_v1",
+            "provenance": "REAL_QC",
+            "payload": {
+                "intercept_only": True,
+                "fitted_model": {"coef": [0.0, 0.0, 0.0], "intercept_only": True},
+                "exported_binary": False,
+                "transport": "MODEL_TRANSPORT_PARAMETRIC_JSON",
+            },
+        },
+    )
+    assert view["provenance_kind"] == "REAL_QC"
+    assert view["model_family"] == "elasticnet"
+    assert view["winner_backtest_id"] == winner_id
+    assert view["baseline_backtest_id"] == baseline_id
+    assert view["history_provider"] == "quantconnect"
+    assert view["feature_schema_hash"] == "122b102a7a402e2c"
+    assert view["intercept_only_flag"] is True
+    assert view["economic_gate"] == "NOT_DEFINED"
+    assert view["economic_pass"] is False
+    assert view["sharpe"] == 2.284
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("DB_NAME", raising=False)
+    monkeypatch.delenv("DB_USER", raising=False)
+    with pytest.raises(IngestEnvironmentError, match="DATABASE_URL"):
+        require_live_postgres_ingest()
