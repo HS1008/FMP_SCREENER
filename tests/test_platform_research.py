@@ -435,3 +435,26 @@ def test_vendored_ml_cloud_train_smoke_ingests_without_object_store(tmp_path, mo
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
     assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
+
+
+def test_vendored_zn_cloud_train_smoke_wraps_futures_cost_model():
+    from qc_research.ml_monitor_ui import build_platform_monitor_view
+    from qc_research.platform_ingest import DEFAULT_ARTIFACT_ROOT, wrap_smoke_record
+
+    smoke = DEFAULT_ARTIFACT_ROOT / "ml_cloud_train_zn.json"
+    record = json.loads(smoke.read_text(encoding="utf-8"))
+    assert record["family"] == "ml_cloud_train_futures"
+    assert record["data_read_used"] is False
+    assert record["cost_model_id"] == "US_FUTURES_TICKS_V1"
+    assert record["train_backtest_id"] == "e50648ec34036c247420a07d8cd5fb76"
+    wrapped = wrap_smoke_record(record)
+    view = build_platform_monitor_view(
+        strategy_id=record["strategy_id"],
+        selected_run=record["run_id"],
+        run_summary=wrapped[0][1],
+        oos=wrapped[1][1],
+    )
+    assert view["data_read_used"] == "no"
+    assert view["training_layer"] == "qc_cloud"
+    assert view["object_store_key"].startswith("platform/TREASURY_FUTURES_TREND/")
+    assert view["economic_pass"] is False

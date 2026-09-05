@@ -9,6 +9,11 @@ It is not an economic PASS. Do not retune it from OOS.
 `3bbb5deee1950c77c793fdf9e47e77a9`). Training ran inside QuantConnect Cloud.
 `data_read_used` is false. It is not an economic PASS.
 
+`ml_cloud_train_zn.json` is the ZN AddFuture cloud ML_TRAIN infrastructure proof
+(`e50648ec34036c247420a07d8cd5fb76` / `d84daf842ce013f1aa9a9b1010e4ebbd` /
+`478351b0cf8954bb2c1be4e5d066c2f0`). Cost model is `US_FUTURES_TICKS_V1`.
+`data_read_used` is false. Negative short-window Sharpe is not an economic PASS.
+
 Ingest when `DATABASE_URL` is available:
 
 ```
