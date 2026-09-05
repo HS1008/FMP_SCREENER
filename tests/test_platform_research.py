@@ -376,3 +376,62 @@ def test_vendored_licensed_smoke_wraps_and_ingests_idempotently(tmp_path, monkey
     monkeypatch.delenv("DB_USER", raising=False)
     assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
     assert ingest_main(["--root", str(smoke), "--verify-monitor"]) == 0
+
+
+def test_vendored_ml_cloud_train_smoke_ingests_without_object_store(tmp_path, monkeypatch):
+    from qc_research.ingest_platform_artifacts import main as ingest_main
+    from qc_research.ml_monitor_ui import build_platform_monitor_view
+    from qc_research.platform_ingest import (
+        DEFAULT_ARTIFACT_ROOT,
+        ingest_platform_files,
+        monitor_view_from_artifacts,
+        verify_monitor_view,
+        wrap_smoke_record,
+    )
+
+    smoke = DEFAULT_ARTIFACT_ROOT / "ml_cloud_train_qqq.json"
+    assert smoke.is_file()
+    record = json.loads(smoke.read_text(encoding="utf-8"))
+    assert record["train_backtest_id"] == "a63cb5082b1089599a2519fe0fdfb324"
+    assert record["winner_backtest_id"] == "8394f03405ed86095bf9527d65f9b4b0"
+    assert record["baseline_backtest_id"] == "3bbb5deee1950c77c793fdf9e47e77a9"
+    assert record["data_read_used"] is False
+    assert record["training_layer"] == "qc_cloud"
+    assert ".pkl" not in str(record.get("object_store_key") or "")
+    wrapped = wrap_smoke_record(record)
+    view = verify_monitor_view(monitor_view_from_artifacts(wrapped))
+    assert view["provenance_kind"] == "REAL_QC"
+    assert view["economic_pass"] is False
+    assert view["train_backtest_id"] == "a63cb5082b1089599a2519fe0fdfb324"
+    assert view["object_store_key"].startswith("platform/")
+    built = build_platform_monitor_view(
+        strategy_id=record["strategy_id"],
+        selected_run=record["run_id"],
+        run_summary=wrapped[0][1],
+        oos=wrapped[1][1],
+    )
+    assert built["data_read_used"] == "no"
+    assert built["training_layer"] == "qc_cloud"
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+
+    conn = FakeConn()
+    first = ingest_platform_files(conn, [smoke], root=DEFAULT_ARTIFACT_ROOT)
+    second = ingest_platform_files(conn, [smoke], root=DEFAULT_ARTIFACT_ROOT)
+    assert first["ingested"] == 2
+    assert second["ingested"] == 2
+    assert not first["errors"]
+    joined = " ".join(call[0] for call in conn.calls)
+    assert "objectstore" not in joined.lower()
+    assert "object_store" not in joined.lower() or "object_store_key" in joined.lower()
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("DB_NAME", raising=False)
+    monkeypatch.delenv("DB_USER", raising=False)
+    assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0

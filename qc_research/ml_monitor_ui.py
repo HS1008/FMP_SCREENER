@@ -49,6 +49,14 @@ def _as_payload(value: Any) -> dict[str, Any] | None:
 UNAVAILABLE = "Unavailable / Not applicable"
 
 
+def _data_read_label(value: Any) -> str | None:
+    if value in {True, "true", "1", 1, "yes"}:
+        return "yes"
+    if value in {False, "false", "0", 0, "no"}:
+        return "no"
+    return None
+
+
 def classify_monitor_provenance(value: Any) -> str:
     text = str(value or "").strip()
     if text == "REAL_QC":
@@ -296,6 +304,10 @@ def build_platform_monitor_view(
             merged_summary.get("object_store_key"),
             available=merged_summary.get("object_store_key") not in {None, ""},
         ),
+        "data_read_used": format_monitor_value(
+            _data_read_label(merged_summary.get("data_read_used")),
+            available=merged_summary.get("data_read_used") not in {None, ""},
+        ),
     }
 
 
@@ -306,7 +318,7 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
         return
     st.header("PLATFORM RESEARCH")
     st.caption(
-        "Read-only PostgreSQL view of generic MANUAL / ML_DISCOVERY runs. "
+        "Read-only PostgreSQL view of MANUAL / ML_DISCOVERY / ML_TRAIN runs. "
         "This page does not call QuantConnect. Unavailable values are never shown as 0."
     )
     selected_run = st.selectbox(
@@ -379,7 +391,9 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     g1.metric("Training layer", view.get("training_layer"))
     g2.metric("Train QC id", view.get("train_backtest_id"))
     g3.metric("Object Store key", view.get("object_store_key"))
-    g4.metric("Data download used", "no")
+    g4.metric("Data download used", view.get("data_read_used"))
+    if view.get("provenance") == "LOCAL_LICENSED":
+        st.info("Provenance is LOCAL_LICENSED optional local Lean data. This is not CLOUD_VALIDATED.")
     if view.get("intercept_only_flag") is True:
         st.warning(
             "Winner is intercept-only. This is infrastructure evidence; economic_gate stays NOT_DEFINED."

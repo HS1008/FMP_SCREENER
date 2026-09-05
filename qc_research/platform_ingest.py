@@ -230,6 +230,7 @@ SMOKE_FAMILY_HINTS = {
     "ml_discovery",
     "ml_treasury_futures",
     "ml_cloud_train",
+    "ml_cloud_train_futures",
     "manual_equity",
     "pairs",
     "treasury_futures",
@@ -335,8 +336,16 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
         "research_run_id": run_id,
         "run_status": record.get("cloud_state") or record.get("state") or "CLOUD_VALIDATED",
         "research_mode": record.get("research_mode") or "ML_DISCOVERY",
-        "asset_class": record.get("asset_class") or ("ETF" if record.get("family") == "ml_discovery" else None),
-        "strategy_family_id": record.get("strategy_family_id"),
+        "asset_class": record.get("asset_class")
+        or (
+            "TREASURY_FUTURE"
+            if str(record.get("family") or "") in {"ml_cloud_train_futures", "ml_treasury_futures", "treasury_futures"}
+            else "ETF"
+            if str(record.get("family") or "") in {"ml_discovery", "ml_cloud_train", "manual_equity"}
+            else None
+        ),
+        "strategy_family_id": record.get("strategy_family_id") or record.get("research_lineage_id"),
+        "research_lineage_id": record.get("research_lineage_id"),
         "research_state": record.get("cloud_state") or record.get("state"),
         "trial_count": record.get("trial_count"),
         "model_family": record.get("model_family"),
