@@ -26,6 +26,15 @@ from qc_research.platform_ingest import (
 )
 
 
+def _verify_views(normalized: list[tuple[str, dict]]) -> dict:
+    view = verify_monitor_view(monitor_view_from_artifacts(normalized))
+    if view.get("strategy_id") == "TLTDurationMomentum":
+        from qc_research.tlt_duration_momentum import verify_tlt_monitor_view
+
+        view = verify_tlt_monitor_view(view)
+    return view
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Ingest proven platform research artifacts")
     parser.add_argument(
@@ -60,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
     print("Prepared {0} artifact(s) from {1} file(s)".format(len(normalized), len(paths)))
     if ns.dry_run:
         if ns.verify_monitor:
-            view = verify_monitor_view(monitor_view_from_artifacts(normalized))
+            view = _verify_views(normalized)
             print(
                 "Monitor dry-run ok strategy={0} run={1} provenance={2} intercept_only={3}".format(
                     view.get("strategy_id"),
@@ -74,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
     if not live_postgres_configured():
         print(SKIP_NO_DATABASE)
         if ns.verify_monitor:
-            view = verify_monitor_view(monitor_view_from_artifacts(normalized))
+            view = _verify_views(normalized)
             print(
                 "Monitor payload verified without live PostgreSQL strategy={0} run={1}".format(
                     view.get("strategy_id"),
@@ -90,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     if summary["errors"]:
         return 1
     if ns.verify_monitor:
-        view = verify_monitor_view(monitor_view_from_artifacts(normalized))
+        view = _verify_views(normalized)
         print(
             "Monitor verified strategy={0} run={1} provenance={2} winner={3}".format(
                 view.get("strategy_id"),

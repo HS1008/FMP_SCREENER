@@ -41,7 +41,7 @@ st.caption(
 # =========================================================
 
 def load_strategies():
-    return pd.read_sql(
+    registered = pd.read_sql(
         """
         SELECT
             strategy_id,
@@ -61,6 +61,41 @@ def load_strategies():
         """,
         engine,
     )
+    try:
+        extra = pd.read_sql(
+            """
+            SELECT DISTINCT
+                strategy_id,
+                strategy_id AS name,
+                'research' AS environment,
+                COALESCE(run_status, 'HUMAN_REVIEW_REQUIRED') AS status,
+                NULL::varchar AS qc_project_id,
+                NULL::varchar AS qc_deployment_id,
+                NULL::varchar AS qc_research_project_id,
+                NULL::varchar AS qc_research_project_name,
+                NULL::varchar AS git_commit,
+                NULL::jsonb AS rules_json,
+                first_seen_at AS created_at,
+                last_seen_at AS updated_at
+            FROM research_runs
+            WHERE research_kind = 'platform_research'
+              AND strategy_id IS NOT NULL
+              AND strategy_id <> ''
+            ORDER BY strategy_id
+            """,
+            engine,
+        )
+    except Exception:
+        extra = pd.DataFrame()
+    if extra is None or extra.empty:
+        return registered
+    if registered is None or registered.empty:
+        return extra
+    have = set(registered["strategy_id"].astype(str))
+    add = extra[~extra["strategy_id"].astype(str).isin(have)]
+    if add.empty:
+        return registered
+    return pd.concat([registered, add], ignore_index=True)
 
 
 def load_strategy_by_id(strategy_id):

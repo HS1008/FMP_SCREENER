@@ -259,6 +259,10 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
         identity = platform_run_identity(payload)
         if identity["strategy_id"]:
             conn.execute(text(UPSERT_PLATFORM_RUN), identity)
+        if identity["strategy_id"] == "TLTDurationMomentum":
+            from qc_research.tlt_duration_momentum import register_tlt_monitor_strategy
+
+            register_tlt_monitor_strategy(conn)
 
 
 SKIP_NO_DATABASE = (
@@ -276,6 +280,7 @@ SMOKE_FAMILY_HINTS = {
     "manual_equity",
     "pairs",
     "treasury_futures",
+    "tlt_duration_momentum",
 }
 
 UPSERT_EXPERIMENT = """
@@ -368,7 +373,11 @@ def is_platform_artifact(payload: dict[str, Any]) -> bool:
 
 
 def is_smoke_record(payload: dict[str, Any]) -> bool:
+    from qc_research.tlt_duration_momentum import is_tlt_duration_momentum_record
+
     if is_platform_artifact(payload):
+        return False
+    if is_tlt_duration_momentum_record(payload):
         return False
     if payload.get("winner_backtest_id") or payload.get("baseline_backtest_id"):
         return True
@@ -491,7 +500,17 @@ def load_json_object(path: Path) -> dict[str, Any]:
 
 
 def normalize_platform_file(path: Path) -> list[tuple[str, dict[str, Any]]]:
+    from qc_research.tlt_duration_momentum import (
+        is_tlt_duration_momentum_record,
+        wrap_tlt_duration_momentum_record,
+    )
+
     payload = load_json_object(path)
+    if is_tlt_duration_momentum_record(payload):
+        wrapped = wrap_tlt_duration_momentum_record(payload)
+        for kind, artifact in wrapped:
+            validate_artifact(kind, artifact)
+        return wrapped
     if is_platform_artifact(payload):
         kind = str(payload.get("kind") or path.stem)
         validate_artifact(kind, payload)
@@ -551,6 +570,7 @@ def monitor_view_from_artifacts(artifacts: list[tuple[str, dict[str, Any]]]) -> 
         run_summary=summary,
         oos=by_kind.get("oos_aggregate"),
         model_metadata=by_kind.get("model_metadata"),
+        trials=by_kind.get("trials"),
     )
 
 

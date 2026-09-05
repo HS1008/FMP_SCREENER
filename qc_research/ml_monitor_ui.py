@@ -133,6 +133,8 @@ def infer_research_labels(
     if not mode:
         if strategy_id == "SPYTrend":
             mode = "MANUAL"
+        elif strategy_id == "TLTDurationMomentum":
+            mode = "ML_DISCOVERY"
         elif strategy_id == "CrossSectionalFactorML" or summary.get("research_kind") == "stage2_ml":
             mode = "ML_DISCOVERY"
         else:
@@ -140,6 +142,8 @@ def infer_research_labels(
     if not asset:
         if strategy_id == "SPYTrend":
             asset = "ETF"
+        elif strategy_id == "TLTDurationMomentum":
+            asset = "BOND_ETF"
         elif strategy_id == "CrossSectionalFactorML":
             asset = "US_EQUITY"
         else:
@@ -147,6 +151,8 @@ def infer_research_labels(
     if not family:
         if strategy_id == "SPYTrend":
             family = "TIME_SERIES_TREND"
+        elif strategy_id == "TLTDurationMomentum":
+            family = "FIXED_INCOME_TREND"
         elif strategy_id == "CrossSectionalFactorML":
             family = "CROSS_SECTIONAL_FACTOR"
         else:
@@ -190,12 +196,15 @@ def infer_research_labels(
 def load_platform_run_ids(engine, strategy_id: str) -> list[str]:
     if not strategy_id:
         return []
+    lineage = strategy_id
+    if strategy_id == "TLTDurationMomentum":
+        lineage = "LINEAGE_TLT_DURATION_MOMENTUM_V0"
     rows = _read_sql(
         engine,
         PLATFORM_RUN_IDS_SQL,
         {
             "strategy_id": strategy_id,
-            "lineage": strategy_id,
+            "lineage": lineage,
             "run_prefix": "PLATFORM_{0}_%".format(strategy_id),
         },
     )
@@ -234,8 +243,11 @@ def build_platform_monitor_view(
         "strategy_family_id": inner_summary.get("strategy_family_id") or identity.get("strategy_family_id"),
         "research_state": inner_summary.get("research_state") or inner_assess.get("research_state"),
         "provenance": summary.get("provenance") or inner_summary.get("provenance"),
-        "config_fingerprint": identity.get("config_fingerprint") or summary.get("config_fingerprint"),
-        "research_lineage_id": identity.get("research_lineage_id"),
+        "config_fingerprint": identity.get("config_fingerprint")
+        or inner_summary.get("config_fingerprint")
+        or inner_summary.get("strategy_spec_hash")
+        or summary.get("config_fingerprint"),
+        "research_lineage_id": identity.get("research_lineage_id") or inner_summary.get("research_lineage_id"),
         "cost_model_id": (inner_spec.get("costs") or {}).get("cost_model_id") or inner_summary.get("cost_model_id"),
         "trial_count": (trials or {}).get("payload", trials or {}).get("trial_count")
         if isinstance(trials, dict)
@@ -338,6 +350,22 @@ def build_platform_monitor_view(
             _data_read_label(merged_summary.get("data_read_used")),
             available=merged_summary.get("data_read_used") not in {None, ""},
         ),
+        "research_kind": format_monitor_value(
+            inner_summary.get("research_kind") or "platform_research",
+            available=True,
+        ),
+        "symbol": format_monitor_value(
+            inner_summary.get("symbol"),
+            available=inner_summary.get("symbol") not in {None, ""},
+        ),
+        "window_count": format_monitor_value(
+            inner_oos.get("window_count") or (len(windows) if isinstance(windows, list) else None),
+            available=(inner_oos.get("window_count") or (len(windows) if isinstance(windows, list) else None))
+            is not None,
+        ),
+        "holdout_accessed": False if inner_summary.get("holdout_accessed") in {None, False, 0, "false"} else True,
+        "holdout_locked": bool(inner_summary.get("holdout_locked")) if inner_summary.get("holdout_locked") is not None else None,
+        "official_windows": inner_summary.get("official_windows") or [],
     }
 
 
@@ -397,6 +425,15 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
             view["provenance"],
         )
     )
+    if str(view.get("strategy_id") or "") == "TLTDurationMomentum":
+        st.caption(
+            "TLT / BOND_ETF · {0} OOS windows · ElasticNet {1} · baseline {2} · "
+            "economic_gate=NOT_DEFINED · holdout locked (no 2025+)".format(
+                view.get("window_count"),
+                view.get("selected_candidate"),
+                view.get("baseline"),
+            )
+        )
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Economic gate", view["economic_gate"])
     c2.metric("Spec hash", view["spec_hash"])
@@ -422,6 +459,11 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     g2.metric("Train QC id", view.get("train_backtest_id"))
     g3.metric("Object Store key", view.get("object_store_key"))
     g4.metric("Data download used", view.get("data_read_used"))
+    h1, h2, h3, h4 = st.columns(4)
+    h1.metric("Research kind", view.get("research_kind"))
+    h2.metric("Symbol", view.get("symbol"))
+    h3.metric("OOS window count", view.get("window_count"))
+    h4.metric("Holdout accessed", "no" if not view.get("holdout_accessed") else "yes")
     if view.get("provenance") == "LOCAL_LICENSED":
         st.info("Provenance is LOCAL_LICENSED optional local Lean data. This is not CLOUD_VALIDATED.")
     if view.get("intercept_only_flag") is True:
@@ -430,7 +472,15 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
         )
     if view.get("oos_windows") not in {None, UNAVAILABLE}:
         st.subheader("OOS windows")
-        st.write(view["oos_windows"])
+        if str(view.get("strategy_id") or "") == "TLTDurationMomentum":
+            from qc_research.tlt_duration_momentum import platform_oos_window_frame
+
+            frame = platform_oos_window_frame(view["oos_windows"])
+            if not frame.empty:
+                st.dataframe(frame, use_container_width=True, hide_index=True)
+            st.caption("Non-holdout 2015–2024 only. 2025+ / final holdout remain sealed.")
+        else:
+            st.write(view["oos_windows"])
     if view.get("search_space"):
         st.subheader("Search space")
         st.write(view["search_space"])

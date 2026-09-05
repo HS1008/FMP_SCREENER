@@ -20,6 +20,11 @@ It is not an economic PASS. Do not retune it from OOS.
 from OOS. `data_read_used` is false. OOS Sharpe 2.134 vs baseline 2.297 is not
 an economic PASS and must not retune the search space.
 
+`tlt_duration_momentum.json` is the official TLTDurationMomentum V0
+non-holdout 2015–2024 WFO record (`LINEAGE_TLT_DURATION_MOMENTUM_V0`,
+10 windows × 3 QC roles). `economic_gate` stays `NOT_DEFINED`.
+`economic_pass` stays NULL. Holdout is locked. Do not retune V0.
+
 Ingest when `DATABASE_URL` is available:
 
 ```

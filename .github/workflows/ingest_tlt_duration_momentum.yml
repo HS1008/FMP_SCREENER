@@ -1,0 +1,47 @@
+name: Ingest TLTDurationMomentum V0
+
+on:
+  push:
+    branches:
+      - cursor/platform-multi-asset-research-674b
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ingest-live:
+    name: Live Postgres ingest and Monitor query-back
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Copy ingest tree to droplet
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" 'rm -rf /tmp/fmp-tlt-ingest && mkdir -p /tmp/fmp-tlt-ingest'
+          tar --exclude .git --exclude __pycache__ --exclude .pytest_cache -czf - . \
+            | ssh "$DO_USER@$DO_HOST" 'tar xzf - -C /tmp/fmp-tlt-ingest'
+
+      - name: Ingest and verify on authorized DB host
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" 'bash /tmp/fmp-tlt-ingest/scripts/ingest_tlt_live.sh /tmp/fmp-tlt-ingest'

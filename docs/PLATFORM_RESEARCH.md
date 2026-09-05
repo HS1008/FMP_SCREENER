@@ -36,3 +36,10 @@ Live ingest is an environment gate. When `DATABASE_URL` (or `DB_HOST` +
 one already-proven REAL_QC artifact → Postgres → Strategy Monitor round-trip
 before merge review. Missing credentials are not a code failure.
 
+TLTDurationMomentum V0 uses the official 10-window artifact
+`qc_research/platform_artifacts/tlt_duration_momentum.json`. Ingest wraps it
+into `run_summary` / `oos_aggregate` / `trials` / `experiment_manifest` with
+`research_kind=platform_research`, `economic_gate=NOT_DEFINED`,
+`economic_pass=NULL`, and `holdout_accessed=false`. Do not launch QuantConnect
+and do not alter the frozen TLT V0 IDs.
+
