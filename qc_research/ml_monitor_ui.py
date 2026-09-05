@@ -608,7 +608,7 @@ def render_platform_view(view: dict[str, Any]) -> None:
         st.subheader("Official QC IDs")
         st.dataframe(qc_frame, use_container_width=True, hide_index=True)
     robustness = view.get("robustness")
-    if robustness not in {None, UNAVAILABLE} and robustness != {}:
+    if robustness is not None and robustness != UNAVAILABLE and robustness != {}:
         st.subheader("Robustness")
         st.write(robustness)
     st.subheader("Costs")
