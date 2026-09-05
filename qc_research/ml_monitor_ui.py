@@ -470,7 +470,8 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
         st.warning(
             "Winner is intercept-only. This is infrastructure evidence; economic_gate stays NOT_DEFINED."
         )
-    if view.get("oos_windows") not in {None, UNAVAILABLE}:
+    oos_windows = view.get("oos_windows")
+    if oos_windows is not None and oos_windows != UNAVAILABLE:
         st.subheader("OOS windows")
         if str(view.get("strategy_id") or "") == "TLTDurationMomentum":
             from qc_research.tlt_duration_momentum import platform_oos_window_frame
