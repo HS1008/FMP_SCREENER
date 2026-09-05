@@ -359,6 +359,14 @@ def build_platform_monitor_view(
     baseline_metrics = dict(merged_summary.get("baseline_metrics") or inner_oos.get("baseline") or {})
     delta_metrics = dict(merged_summary.get("ml_minus_baseline") or inner_oos.get("ml_minus_baseline") or {})
     robustness = merged_summary.get("robustness") or inner_oos.get("selected_model_stability")
+    official_windows = list(merged_summary.get("official_windows") or [])
+    if isinstance(windows, list) and windows:
+        last_window = windows[-1] if isinstance(windows[-1], dict) else {}
+        for key in ("winner_backtest_id", "baseline_backtest_id", "train_backtest_id"):
+            if not merged_summary.get(key):
+                merged_summary[key] = last_window.get(key)
+        if not official_windows:
+            official_windows = windows
     window_count = (
         inner_oos.get("window_count")
         or merged_summary.get("window_count")
@@ -461,7 +469,7 @@ def build_platform_monitor_view(
         "window_count": format_monitor_value(window_count, available=window_count is not None),
         "holdout_accessed": False if merged_summary.get("holdout_accessed") in {None, False, 0, "false"} else True,
         "holdout_locked": bool(merged_summary.get("holdout_locked")) if merged_summary.get("holdout_locked") is not None else labels.get("holdout_status") == "LOCKED",
-        "official_windows": merged_summary.get("official_windows") or [],
+        "official_windows": official_windows,
     }
 
 
@@ -599,9 +607,10 @@ def render_platform_view(view: dict[str, Any]) -> None:
     if not qc_frame.empty:
         st.subheader("Official QC IDs")
         st.dataframe(qc_frame, use_container_width=True, hide_index=True)
-    if view.get("robustness") not in {None, UNAVAILABLE, {}}:
+    robustness = view.get("robustness")
+    if robustness not in {None, UNAVAILABLE} and robustness != {}:
         st.subheader("Robustness")
-        st.write(view["robustness"])
+        st.write(robustness)
     st.subheader("Costs")
     st.write(
         {
