@@ -1,0 +1,727 @@
+{
+  "family": "tlt_duration_momentum",
+  "strategy_id": "TLTDurationMomentum",
+  "research_lineage_id": "LINEAGE_TLT_DURATION_MOMENTUM_V0",
+  "fingerprint": "d8f43c83ddec8d70",
+  "search_space_hash": "1c609a682653ee90",
+  "feature_schema_hash": "122b102a7a402e2c",
+  "adapter_id": "SINGLE_ASSET_TIME_SERIES",
+  "cost_model_id": "BOND_ETF_V1",
+  "asset_class": "BOND_ETF",
+  "fill_assumptions": "next_open_or_moc",
+  "signal_timing": "decision_close_next_session",
+  "prospective_approval": "PROSPECTIVE_APPROVED",
+  "approval_scope": "full_outer_plan",
+  "research_kind": "platform_research",
+  "research_mode": "ML_DISCOVERY",
+  "strategy_family_id": "FIXED_INCOME_TREND",
+  "symbol": "TLT",
+  "thesis": "Long-duration Treasury ETF market-price time-series momentum on TLT. Not cash Treasuries, not ZN, not DV01-neutral.",
+  "economic_gate": "NOT_DEFINED",
+  "thresholds_defined": false,
+  "holdout_locked": true,
+  "research_status": "COMPLETE",
+  "promotion_gate": "HUMAN_REVIEW_REQUIRED",
+  "holdout_status": "LOCKED",
+  "state": "COMPLETE",
+  "semantic_status": "SEMANTIC_COMPLETE",
+  "cloud_validated": true,
+  "window_count": 10,
+  "qc_creates_official": 30,
+  "project_id": 36108691,
+  "provenance": "REAL_QC",
+  "training_layer": "qc_cloud",
+  "data_read_used": false,
+  "observation_provenance": "REAL_HISTORICAL_PRE_2025",
+  "official_windows": [
+    {
+      "window_id": "W2015",
+      "contract_hash": "d620d9cea168c0d70716f1f0210279559b07e9f6d75d4cf13dbcc6a3554db4d3",
+      "train_backtest_id": "42444d596c9116f1320203e896fbf0fe",
+      "winner_backtest_id": "60ab8a7760249476e360d9b6a53ec06f",
+      "baseline_backtest_id": "a8cb56a48a94485ed9eaf6d8fdd01c7f",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33987354660
+    },
+    {
+      "window_id": "W2016",
+      "contract_hash": "cd5fb01a3a158ca1eb1f6f3a7ba2540f733382923173db9a8fa154e0fb61007c",
+      "train_backtest_id": "7312409bc89e60438047dda355ffb754",
+      "winner_backtest_id": "56430c837aa342c5f7d02bc082d18d2b",
+      "baseline_backtest_id": "d1e66b1a2f1a826f76b46b1e2935ee69",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33987354660
+    },
+    {
+      "window_id": "W2017",
+      "contract_hash": "3826543849d6c65cfed762de4e38d1293ee778da8e3d3b526e62c6dc4e95fe9a",
+      "train_backtest_id": "427ac73ca9246ad90cd44ddb75471a1f",
+      "winner_backtest_id": "faaa52dc9fe8cdd7b67474152de75330",
+      "baseline_backtest_id": "44edeba1d2b0f6619b86c67f78c4cdbe",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33987354660
+    },
+    {
+      "window_id": "W2018",
+      "contract_hash": "76c82c3c8e295144566a6a2b76e3b93c7fadf210ac039ec5789b81339d07ebc9",
+      "train_backtest_id": "8c6a742cb81aad1120e927c643c7a656",
+      "winner_backtest_id": "afb66ac6453df7f2e4fdd73906a220ec",
+      "baseline_backtest_id": "e9b7e6e16c671a984a2974168385aca9",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33987354660
+    },
+    {
+      "window_id": "W2019",
+      "contract_hash": "77a7100d902a76637e6e93989919f73c9b2ae215b59d3c759dcf4d553ed0227a",
+      "train_backtest_id": "c33b078914e4187a588de7c30f013a5c",
+      "winner_backtest_id": "bbb18bc4afafeb0eea14b231262a1df2",
+      "baseline_backtest_id": "9bceb14ec61d649d026a63f163a01efd",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33987354660
+    },
+    {
+      "window_id": "W2020",
+      "contract_hash": "75c2ccaaf5312da1b052f5362b87ad4581e7b9a2803cb0c5d7bd066dc1665260",
+      "train_backtest_id": "00f7fc452ad05b507f3bbac8c836945f",
+      "winner_backtest_id": "c1ed0e0c8797d25585cdbcb543fa0414",
+      "baseline_backtest_id": "b439e09be4128ac9cc8272b9b432696d",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33987354660
+    },
+    {
+      "window_id": "W2021",
+      "contract_hash": "6612316b212d1ff06eddb299efc08b3e49acf36fa86dd524e91a74ce0d8e2beb",
+      "train_backtest_id": "8ba24d8329dc5e6af4b3853b5d9546a6",
+      "winner_backtest_id": "0a35d6bdca65588428c1738c6ac245b7",
+      "baseline_backtest_id": "3b909b82b0bf57f7c0ff31bd86b20d5f",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33987354660
+    },
+    {
+      "window_id": "W2022",
+      "contract_hash": "c76388ef5812455b4b33aeea4d40f055d2c1885e7affa44b053be5b8f521fa9b",
+      "train_backtest_id": "2aaa06ba4621b36c2811b80f8652260c",
+      "winner_backtest_id": "55cb101bbdacdf1f22f33e785078c817",
+      "baseline_backtest_id": "8c2ed6eb24cb06432ed0ade119a3e238",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33987354660
+    },
+    {
+      "window_id": "W2023",
+      "contract_hash": "196e7a81cb5fb8a55c6b4cd2d9d487fa60b59d7be0facc517eabd4dd4ee0a0ca",
+      "train_backtest_id": "59c3e50f0d093df4dc2dee9e281184b9",
+      "winner_backtest_id": "bd577838e79abe2ee68c149c2646bb4d",
+      "baseline_backtest_id": "4a3d97a5d6cce83383e21c3f489ffd74",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33987354660
+    },
+    {
+      "window_id": "W2024",
+      "contract_hash": "8b5e0a4668877de657b36a90ed1d4ca1a9d04861da5584824f6288aa91d44c90",
+      "train_backtest_id": "377b2e086b8121fbe7dc3d28d8a1fe7b",
+      "winner_backtest_id": "7817e46209101c701ca93342a4c67059",
+      "baseline_backtest_id": "0c658059909cfef950c3ac2cf433ecff",
+      "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "semantic_status": "SEMANTIC_COMPLETE",
+      "source_run": 33988228566
+    }
+  ],
+  "ci_runs": {
+    "w2015_w2023": 33987354660,
+    "w2024": 33988228566
+  },
+  "aggregate": {
+    "window_count": 10,
+    "economic_gate": "NOT_DEFINED",
+    "thresholds_defined": false,
+    "holdout_locked": true,
+    "research_status": "COMPLETE",
+    "promotion_gate": "HUMAN_REVIEW_REQUIRED",
+    "holdout_status": "LOCKED",
+    "state": "COMPLETE",
+    "note": "Full non-holdout suite only. Not an economic PASS/FAIL. Do not retune the frozen search space from these numbers.",
+    "windows": [
+      {
+        "window_id": "W2015",
+        "train_start": "2010-01-02",
+        "train_end": "2014-12-31",
+        "oos_start": "2015-01-02",
+        "oos_end": "2015-12-31",
+        "contract_hash": "d620d9cea168c0d70716f1f0210279559b07e9f6d75d4cf13dbcc6a3554db4d3",
+        "regime": "post_taper",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": -0.292,
+          "sortino_ratio": -0.382,
+          "cagr": -0.054130000000000005,
+          "max_drawdown": -0.159,
+          "trade_count": 1.0,
+          "turnover": null,
+          "cost_drag": 5.33,
+          "net_profit": -0.05393
+        },
+        "baseline": {
+          "sharpe_ratio": -0.568,
+          "sortino_ratio": -0.57,
+          "cagr": -0.07361,
+          "max_drawdown": -0.128,
+          "trade_count": 16.0,
+          "turnover": null,
+          "cost_drag": 85.14999999999999,
+          "net_profit": -0.07335
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": 0.27599999999999997,
+          "sortino_ratio": 0.18799999999999994,
+          "cagr": 0.01947999999999999,
+          "max_drawdown": -0.031,
+          "trade_count": -15.0,
+          "turnover": null,
+          "cost_drag": -79.82,
+          "net_profit": 0.01942
+        },
+        "ml_positive_sharpe": false,
+        "ml_beats_baseline_sharpe": true
+      },
+      {
+        "window_id": "W2016",
+        "train_start": "2011-01-02",
+        "train_end": "2015-12-31",
+        "oos_start": "2016-01-02",
+        "oos_end": "2016-12-31",
+        "contract_hash": "cd5fb01a3a158ca1eb1f6f3a7ba2540f733382923173db9a8fa154e0fb61007c",
+        "regime": "post_taper",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": -0.06,
+          "sortino_ratio": -0.073,
+          "cagr": -0.00319,
+          "max_drawdown": -0.18,
+          "trade_count": 1.0,
+          "turnover": null,
+          "cost_drag": 5.555,
+          "net_profit": -0.00318
+        },
+        "baseline": {
+          "sharpe_ratio": 0.561,
+          "sortino_ratio": 0.741,
+          "cagr": 0.08228999999999999,
+          "max_drawdown": -0.08900000000000001,
+          "trade_count": 8.0,
+          "turnover": null,
+          "cost_drag": 43.73,
+          "net_profit": 0.08198
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": -0.621,
+          "sortino_ratio": -0.814,
+          "cagr": -0.08547999999999999,
+          "max_drawdown": -0.09099999999999998,
+          "trade_count": -7.0,
+          "turnover": null,
+          "cost_drag": -38.175,
+          "net_profit": -0.08516
+        },
+        "ml_positive_sharpe": false,
+        "ml_beats_baseline_sharpe": false
+      },
+      {
+        "window_id": "W2017",
+        "train_start": "2012-01-02",
+        "train_end": "2016-12-31",
+        "oos_start": "2017-01-02",
+        "oos_end": "2017-12-31",
+        "contract_hash": "3826543849d6c65cfed762de4e38d1293ee778da8e3d3b526e62c6dc4e95fe9a",
+        "regime": "low_vol",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": 0.523,
+          "sortino_ratio": 0.704,
+          "cagr": 0.08002000000000001,
+          "max_drawdown": -0.051,
+          "trade_count": 1.0,
+          "turnover": null,
+          "cost_drag": 5.46,
+          "net_profit": 0.07926
+        },
+        "baseline": {
+          "sharpe_ratio": -0.179,
+          "sortino_ratio": -0.19,
+          "cagr": 0.00381,
+          "max_drawdown": -0.07,
+          "trade_count": 13.0,
+          "turnover": null,
+          "cost_drag": 68.565,
+          "net_profit": 0.00378
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": 0.702,
+          "sortino_ratio": 0.8939999999999999,
+          "cagr": 0.07621000000000001,
+          "max_drawdown": 0.01900000000000001,
+          "trade_count": -12.0,
+          "turnover": null,
+          "cost_drag": -63.105,
+          "net_profit": 0.07547999999999999
+        },
+        "ml_positive_sharpe": true,
+        "ml_beats_baseline_sharpe": true
+      },
+      {
+        "window_id": "W2018",
+        "train_start": "2013-01-02",
+        "train_end": "2017-12-31",
+        "oos_start": "2018-01-02",
+        "oos_end": "2018-12-31",
+        "contract_hash": "76c82c3c8e295144566a6a2b76e3b93c7fadf210ac039ec5789b81339d07ebc9",
+        "regime": "vol_shock",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": -0.345,
+          "sortino_ratio": -0.459,
+          "cagr": -0.00726,
+          "max_drawdown": -0.091,
+          "trade_count": 1.0,
+          "turnover": null,
+          "cost_drag": 5.075,
+          "net_profit": -0.00724
+        },
+        "baseline": {
+          "sharpe_ratio": -1.091,
+          "sortino_ratio": -0.782,
+          "cagr": -0.027290000000000002,
+          "max_drawdown": -0.064,
+          "trade_count": 15.0,
+          "turnover": null,
+          "cost_drag": 75.345,
+          "net_profit": -0.02719
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": 0.746,
+          "sortino_ratio": 0.323,
+          "cagr": 0.020030000000000003,
+          "max_drawdown": -0.026999999999999996,
+          "trade_count": -14.0,
+          "turnover": null,
+          "cost_drag": -70.27,
+          "net_profit": 0.01995
+        },
+        "ml_positive_sharpe": false,
+        "ml_beats_baseline_sharpe": true
+      },
+      {
+        "window_id": "W2019",
+        "train_start": "2014-01-02",
+        "train_end": "2018-12-31",
+        "oos_start": "2019-01-02",
+        "oos_end": "2019-12-31",
+        "contract_hash": "77a7100d902a76637e6e93989919f73c9b2ae215b59d3c759dcf4d553ed0227a",
+        "regime": "late_cycle_cut",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": 0.667,
+          "sortino_ratio": 0.86,
+          "cagr": 0.12924,
+          "max_drawdown": -0.08199999999999999,
+          "trade_count": 1.0,
+          "turnover": null,
+          "cost_drag": 5.04,
+          "net_profit": 0.12874
+        },
+        "baseline": {
+          "sharpe_ratio": 0.597,
+          "sortino_ratio": 0.76,
+          "cagr": 0.11819,
+          "max_drawdown": -0.084,
+          "trade_count": 6.0,
+          "turnover": null,
+          "cost_drag": 30.040000000000006,
+          "net_profit": 0.11774
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": 0.07000000000000006,
+          "sortino_ratio": 0.09999999999999998,
+          "cagr": 0.01104999999999999,
+          "max_drawdown": 0.0020000000000000157,
+          "trade_count": -5.0,
+          "turnover": null,
+          "cost_drag": -25.000000000000007,
+          "net_profit": 0.010999999999999996
+        },
+        "ml_positive_sharpe": true,
+        "ml_beats_baseline_sharpe": true
+      },
+      {
+        "window_id": "W2020",
+        "train_start": "2015-01-02",
+        "train_end": "2019-12-31",
+        "oos_start": "2020-01-02",
+        "oos_end": "2020-12-31",
+        "contract_hash": "75c2ccaaf5312da1b052f5362b87ad4581e7b9a2803cb0c5d7bd066dc1665260",
+        "regime": "covid",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": 0.613,
+          "sortino_ratio": 0.697,
+          "cagr": 0.14574,
+          "max_drawdown": -0.158,
+          "trade_count": 1.0,
+          "turnover": null,
+          "cost_drag": 4.385,
+          "net_profit": 0.1456
+        },
+        "baseline": {
+          "sharpe_ratio": 0.458,
+          "sortino_ratio": 0.496,
+          "cagr": 0.10343999999999999,
+          "max_drawdown": -0.157,
+          "trade_count": 15.0,
+          "turnover": null,
+          "cost_drag": 64.36,
+          "net_profit": 0.10334
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": 0.15499999999999997,
+          "sortino_ratio": 0.20099999999999996,
+          "cagr": 0.04230000000000002,
+          "max_drawdown": -0.0010000000000000009,
+          "trade_count": -14.0,
+          "turnover": null,
+          "cost_drag": -59.975,
+          "net_profit": 0.042260000000000006
+        },
+        "ml_positive_sharpe": true,
+        "ml_beats_baseline_sharpe": true
+      },
+      {
+        "window_id": "W2021",
+        "train_start": "2016-01-02",
+        "train_end": "2020-12-31",
+        "oos_start": "2021-01-02",
+        "oos_end": "2021-12-31",
+        "contract_hash": "6612316b212d1ff06eddb299efc08b3e49acf36fa86dd524e91a74ce0d8e2beb",
+        "regime": "reflation",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": -0.105,
+          "sortino_ratio": -0.159,
+          "cagr": -0.022109999999999998,
+          "max_drawdown": -0.125,
+          "trade_count": 1.0,
+          "turnover": null,
+          "cost_drag": 3.84,
+          "net_profit": -0.022029999999999998
+        },
+        "baseline": {
+          "sharpe_ratio": -0.353,
+          "sortino_ratio": -0.354,
+          "cagr": -0.04134,
+          "max_drawdown": -0.114,
+          "trade_count": 13.0,
+          "turnover": null,
+          "cost_drag": 47.63000000000001,
+          "net_profit": -0.04119
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": 0.248,
+          "sortino_ratio": 0.19499999999999998,
+          "cagr": 0.019230000000000004,
+          "max_drawdown": -0.010999999999999996,
+          "trade_count": -12.0,
+          "turnover": null,
+          "cost_drag": -43.790000000000006,
+          "net_profit": 0.01916
+        },
+        "ml_positive_sharpe": false,
+        "ml_beats_baseline_sharpe": true
+      },
+      {
+        "window_id": "W2022",
+        "train_start": "2017-01-02",
+        "train_end": "2021-12-31",
+        "oos_start": "2022-01-02",
+        "oos_end": "2022-12-31",
+        "contract_hash": "c76388ef5812455b4b33aeea4d40f055d2c1885e7affa44b053be5b8f521fa9b",
+        "regime": "hiking_duration_selloff",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": -1.32,
+          "sortino_ratio": -2.005,
+          "cagr": -0.29508,
+          "max_drawdown": -0.349,
+          "trade_count": 1.0,
+          "turnover": null,
+          "cost_drag": 4.115,
+          "net_profit": -0.29350000000000004
+        },
+        "baseline": {
+          "sharpe_ratio": -0.684,
+          "sortino_ratio": -0.276,
+          "cagr": -0.01229,
+          "max_drawdown": -0.045,
+          "trade_count": 6.0,
+          "turnover": null,
+          "cost_drag": 32.7,
+          "net_profit": -0.01222
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": -0.636,
+          "sortino_ratio": -1.7289999999999999,
+          "cagr": -0.28279,
+          "max_drawdown": -0.304,
+          "trade_count": -5.0,
+          "turnover": null,
+          "cost_drag": -28.585,
+          "net_profit": -0.28128000000000003
+        },
+        "ml_positive_sharpe": false,
+        "ml_beats_baseline_sharpe": false
+      },
+      {
+        "window_id": "W2023",
+        "train_start": "2018-01-02",
+        "train_end": "2022-12-31",
+        "oos_start": "2023-01-02",
+        "oos_end": "2023-12-31",
+        "contract_hash": "196e7a81cb5fb8a55c6b4cd2d9d487fa60b59d7be0facc517eabd4dd4ee0a0ca",
+        "regime": "pause_banking_stress",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": 0.0,
+          "sortino_ratio": 0.0,
+          "cagr": 0.0,
+          "max_drawdown": 0.0,
+          "trade_count": 0.0,
+          "turnover": null,
+          "cost_drag": 0.0,
+          "net_profit": 0.0
+        },
+        "baseline": {
+          "sharpe_ratio": -0.522,
+          "sortino_ratio": -0.518,
+          "cagr": 0.00241,
+          "max_drawdown": -0.085,
+          "trade_count": 17.0,
+          "turnover": null,
+          "cost_drag": 90.97500000000001,
+          "net_profit": 0.0023899999999999998
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": 0.522,
+          "sortino_ratio": 0.518,
+          "cagr": -0.00241,
+          "max_drawdown": 0.085,
+          "trade_count": -17.0,
+          "turnover": null,
+          "cost_drag": -90.97500000000001,
+          "net_profit": -0.0023899999999999998
+        },
+        "ml_positive_sharpe": false,
+        "ml_beats_baseline_sharpe": true
+      },
+      {
+        "window_id": "W2024",
+        "train_start": "2019-01-02",
+        "train_end": "2023-12-31",
+        "oos_start": "2024-01-02",
+        "oos_end": "2024-12-31",
+        "contract_hash": "8b5e0a4668877de657b36a90ed1d4ca1a9d04861da5584824f6288aa91d44c90",
+        "regime": "cut_cycle",
+        "selected_trial_id": "elasticnet::lb120_a0p1_l10p5",
+        "model_family": "elasticnet",
+        "alpha": 0.1,
+        "robustness_label": "STABLE_PLATEAU",
+        "ml": {
+          "sharpe_ratio": 0.0,
+          "sortino_ratio": 0.0,
+          "cagr": 0.0,
+          "max_drawdown": 0.0,
+          "trade_count": 0.0,
+          "turnover": null,
+          "cost_drag": 0.0,
+          "net_profit": 0.0
+        },
+        "baseline": {
+          "sharpe_ratio": -1.415,
+          "sortino_ratio": -1.474,
+          "cagr": -0.11123,
+          "max_drawdown": -0.125,
+          "trade_count": 14.0,
+          "turnover": null,
+          "cost_drag": 76.44,
+          "net_profit": -0.11114
+        },
+        "ml_minus_baseline": {
+          "sharpe_ratio": 1.415,
+          "sortino_ratio": 1.474,
+          "cagr": 0.11123,
+          "max_drawdown": 0.125,
+          "trade_count": -14.0,
+          "turnover": null,
+          "cost_drag": -76.44,
+          "net_profit": 0.11114
+        },
+        "ml_positive_sharpe": false,
+        "ml_beats_baseline_sharpe": true
+      }
+    ],
+    "aggregate": {
+      "ml": {
+        "sharpe_ratio": -0.0319,
+        "sortino_ratio": -0.08170000000000001,
+        "cagr": -0.002677,
+        "max_drawdown": -0.11950000000000001,
+        "trade_count": 0.8,
+        "turnover": null,
+        "cost_drag": 3.88,
+        "net_profit": -0.0026280000000000036
+      },
+      "baseline": {
+        "sharpe_ratio": -0.3196,
+        "sortino_ratio": -0.21669999999999998,
+        "cagr": 0.004437999999999999,
+        "max_drawdown": -0.0961,
+        "trade_count": 12.3,
+        "turnover": null,
+        "cost_drag": 61.493500000000004,
+        "net_profit": 0.0044139999999999995
+      },
+      "ml_minus_baseline": {
+        "sharpe_ratio": 0.28769999999999996,
+        "sortino_ratio": 0.13499999999999998,
+        "cagr": -0.007114999999999996,
+        "max_drawdown": -0.023399999999999994,
+        "trade_count": -11.5,
+        "turnover": null,
+        "cost_drag": -57.6135,
+        "net_profit": -0.007042000000000004
+      }
+    },
+    "selected_model_stability": {
+      "unique_trial_ids": [
+        "elasticnet::lb120_a0p1_l10p5"
+      ],
+      "unique_model_families": [
+        "elasticnet"
+      ],
+      "unique_alphas": [
+        0.1
+      ],
+      "selection_changed": false,
+      "family_changed": false,
+      "alpha_changed": false,
+      "robustness_labels": [
+        "STABLE_PLATEAU",
+        "STABLE_PLATEAU",
+        "STABLE_PLATEAU",
+        "STABLE_PLATEAU",
+        "STABLE_PLATEAU",
+        "STABLE_PLATEAU",
+        "STABLE_PLATEAU",
+        "STABLE_PLATEAU",
+        "STABLE_PLATEAU",
+        "STABLE_PLATEAU"
+      ]
+    },
+    "coefficient_stability": {
+      "windows_with_coefficients": 0,
+      "mean_sign_agreement": null
+    },
+    "positive_return_consistency": {
+      "positive_sharpe_windows": 3,
+      "nonpositive_sharpe_windows": 7,
+      "unknown_sharpe_windows": 0,
+      "ml_beats_baseline_sharpe_windows": 8,
+      "fraction_positive_sharpe": 0.3
+    },
+    "regime_dependence": [
+      {
+        "window_id": "W2015",
+        "regime": "post_taper",
+        "ml_minus_baseline_sharpe": 0.27599999999999997
+      },
+      {
+        "window_id": "W2016",
+        "regime": "post_taper",
+        "ml_minus_baseline_sharpe": -0.621
+      },
+      {
+        "window_id": "W2017",
+        "regime": "low_vol",
+        "ml_minus_baseline_sharpe": 0.702
+      },
+      {
+        "window_id": "W2018",
+        "regime": "vol_shock",
+        "ml_minus_baseline_sharpe": 0.746
+      },
+      {
+        "window_id": "W2019",
+        "regime": "late_cycle_cut",
+        "ml_minus_baseline_sharpe": 0.07000000000000006
+      },
+      {
+        "window_id": "W2020",
+        "regime": "covid",
+        "ml_minus_baseline_sharpe": 0.15499999999999997
+      },
+      {
+        "window_id": "W2021",
+        "regime": "reflation",
+        "ml_minus_baseline_sharpe": 0.248
+      },
+      {
+        "window_id": "W2022",
+        "regime": "hiking_duration_selloff",
+        "ml_minus_baseline_sharpe": -0.636
+      },
+      {
+        "window_id": "W2023",
+        "regime": "pause_banking_stress",
+        "ml_minus_baseline_sharpe": 0.522
+      },
+      {
+        "window_id": "W2024",
+        "regime": "cut_cycle",
+        "ml_minus_baseline_sharpe": 1.415
+      }
+    ]
+  },
+  "note": "Full non-holdout 2015\u20132024 sequential WFO. 10 windows \u00d7 3 roles = 30 official QC backtests. Not an economic PASS/FAIL. Do not retune the frozen TLT V0 search space. Do not define economic thresholds from this file. Do not unlock 2025+ / final holdout. Coefficients were not exported (Object Store internal only). W2023 and W2024 ML books were flat (0 fills) while the SMA baseline traded."
+}

@@ -13,7 +13,11 @@ from qc_research.monitor_ui import (
     render_smoke_section,
     render_stage1_section,
 )
-from qc_research.ml_monitor_ui import render_stage2_section
+from qc_research.ml_monitor_ui import (
+    load_platform_run_ids,
+    render_platform_section,
+    render_stage2_section,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +45,7 @@ st.caption(
 # =========================================================
 
 def load_strategies():
-    return pd.read_sql(
+    registered = pd.read_sql(
         """
         SELECT
             strategy_id,
@@ -61,6 +65,45 @@ def load_strategies():
         """,
         engine,
     )
+    try:
+        extra = pd.read_sql(
+            """
+            SELECT DISTINCT
+                strategy_id,
+                strategy_id AS name,
+                'research' AS environment,
+                CASE
+                    WHEN COALESCE(run_status, '') IN ('', 'HUMAN_REVIEW_REQUIRED', 'RESEARCH_COMPLETE')
+                    THEN 'COMPLETE'
+                    ELSE run_status
+                END AS status,
+                NULL::varchar AS qc_project_id,
+                NULL::varchar AS qc_deployment_id,
+                NULL::varchar AS qc_research_project_id,
+                NULL::varchar AS qc_research_project_name,
+                NULL::varchar AS git_commit,
+                NULL::jsonb AS rules_json,
+                first_seen_at AS created_at,
+                last_seen_at AS updated_at
+            FROM research_runs
+            WHERE research_kind = 'platform_research'
+              AND strategy_id IS NOT NULL
+              AND strategy_id <> ''
+            ORDER BY strategy_id
+            """,
+            engine,
+        )
+    except Exception:
+        extra = pd.DataFrame()
+    if extra is None or extra.empty:
+        return registered
+    if registered is None or registered.empty:
+        return extra
+    have = set(registered["strategy_id"].astype(str))
+    add = extra[~extra["strategy_id"].astype(str).isin(have)]
+    if add.empty:
+        return registered
+    return pd.concat([registered, add], ignore_index=True)
 
 
 def load_strategy_by_id(strategy_id):
@@ -472,6 +515,30 @@ def status_badge(status):
     return f"⚫ {status_text}"
 
 
+def has_execution_deployment(strategy, snapshot=None, history=None, positions=None, orders=None, trades=None):
+    """True only when a paper/live deployment actually exists."""
+    if strategy is None:
+        return False
+    if strategy.get("qc_deployment_id") or strategy.get("qc_project_id"):
+        return True
+    environment = str(strategy.get("environment") or "").strip().lower()
+    if environment in {"paper", "live", "trading"}:
+        return True
+    if snapshot:
+        return True
+    for frame in (history, positions, orders, trades):
+        if frame is not None and getattr(frame, "empty", True) is False:
+            return True
+    return False
+
+
+def strategy_has_platform_research(strategy_id):
+    try:
+        return bool(load_platform_run_ids(engine, strategy_id))
+    except Exception:
+        return False
+
+
 def _query_live_monitor_data(strategy_id, fallback_strategy):
     """PostgreSQL reads only. Never calls QuantConnect or launches backtests."""
     latest = load_strategy_by_id(strategy_id)
@@ -562,40 +629,7 @@ def render_live_strategy_monitor_manual(strategy_id, strategy):
     _render_live_strategy_monitor(strategy_id, strategy)
 
 
-def _render_live_monitor_body(
-    strategy_id,
-    strategy,
-    snapshot,
-    history,
-    positions,
-    orders,
-    trades,
-    backtests,
-):
-    # Existing Strategy Monitor body. Invoked only from the live fragment.
-
-
-    # =========================================================
-    # HEADER
-    # =========================================================
-
-    header_left, header_right = st.columns([4, 1])
-
-    with header_left:
-        st.subheader(strategy["name"])
-
-        st.caption(
-            f"{strategy['environment']}  •  "
-            f"Research Project: {strategy.get('qc_research_project_name') or '—'}  •  "
-            f"Execution Project: {strategy['strategy_id']}"
-        )
-
-    with header_right:
-        st.markdown(
-            f"### {status_badge(strategy['status'])}"
-        )
-
-
+def _render_paper_and_execution(snapshot, history, positions, orders, trades, backtests):
     # =========================================================
     # CURRENT PAPER STATE
     # =========================================================
@@ -742,73 +776,6 @@ def _render_live_monitor_body(
 
 
     # =========================================================
-    # STRATEGY RULESET
-    # =========================================================
-
-    st.markdown("### Strategy Rules")
-
-    rules = parse_rules(
-        strategy["rules_json"]
-    )
-
-    if not rules:
-
-        st.info(
-            "No structured rules stored for this strategy."
-        )
-
-    else:
-
-        for key, value in rules.items():
-
-            col_rule, col_value = st.columns(
-                [1, 3]
-            )
-
-            with col_rule:
-                st.markdown(
-                    f"**{key.replace('_', ' ').title()}**"
-                )
-
-            with col_value:
-                st.write(value)
-
-
-    # =========================================================
-    # SMOKE TESTS
-    # =========================================================
-
-    render_smoke_section(
-        backtests,
-        load_equity=load_backtest_equity,
-    )
-
-
-    # =========================================================
-    # STAGE 1 VALIDATION
-    # =========================================================
-
-    render_stage1_section(
-        strategy_id,
-        backtests,
-        load_equity=load_backtest_equity,
-        load_run_row=load_research_run,
-        strategy_row=strategy,
-    )
-
-
-    # =========================================================
-    # STAGE 2 ML RESEARCH (read-only PostgreSQL)
-    # =========================================================
-
-    render_stage2_section(
-        strategy_id,
-        backtests,
-        engine=engine,
-    )
-
-
-    # =========================================================
     # BACKTEST VS PAPER
     # =========================================================
 
@@ -905,6 +872,153 @@ def _render_live_monitor_body(
                 use_container_width=True,
                 hide_index=True,
             )
+
+
+def _render_live_monitor_body(
+    strategy_id,
+    strategy,
+    snapshot,
+    history,
+    positions,
+    orders,
+    trades,
+    backtests,
+):
+    # Existing Strategy Monitor body. Invoked only from the live fragment.
+
+
+    # =========================================================
+    # HEADER
+    # =========================================================
+
+    show_execution = has_execution_deployment(
+        strategy,
+        snapshot=snapshot,
+        history=history,
+        positions=positions,
+        orders=orders,
+        trades=trades,
+    )
+    show_platform = strategy_has_platform_research(strategy_id)
+
+    header_left, header_right = st.columns([4, 1])
+
+    with header_left:
+        st.subheader(strategy["name"])
+
+        if show_execution:
+            st.caption(
+                f"{strategy['environment']}  •  "
+                f"Research Project: {strategy.get('qc_research_project_name') or '—'}  •  "
+                f"Execution Project: {strategy['strategy_id']}"
+            )
+        else:
+            st.caption(
+                f"{strategy['environment']}  •  "
+                f"Research Project: {strategy.get('qc_research_project_name') or '—'}  •  "
+                "paper/live not deployed"
+            )
+
+    with header_right:
+        st.markdown(
+            f"### {status_badge(strategy['status'])}"
+        )
+
+
+    # =========================================================
+    # PLATFORM RESEARCH (primary when research_kind=platform_research)
+    # =========================================================
+
+    if show_platform:
+        render_platform_section(
+            strategy_id,
+            engine=engine,
+        )
+
+
+    # =========================================================
+    # STAGE 2 ML RESEARCH (read-only PostgreSQL)
+    # =========================================================
+
+    render_stage2_section(
+        strategy_id,
+        backtests,
+        engine=engine,
+    )
+
+
+    # =========================================================
+    # STAGE 1 VALIDATION
+    # =========================================================
+
+    render_stage1_section(
+        strategy_id,
+        backtests,
+        load_equity=load_backtest_equity,
+        load_run_row=load_research_run,
+        strategy_row=strategy,
+    )
+
+
+    # =========================================================
+    # SMOKE TESTS
+    # =========================================================
+
+    render_smoke_section(
+        backtests,
+        load_equity=load_backtest_equity,
+    )
+
+
+    # =========================================================
+    # STRATEGY RULESET
+    # =========================================================
+
+    st.markdown("### Strategy Rules")
+
+    rules = parse_rules(
+        strategy["rules_json"]
+    )
+
+    if not rules:
+
+        st.info(
+            "No structured rules stored for this strategy."
+        )
+
+    else:
+
+        for key, value in rules.items():
+
+            col_rule, col_value = st.columns(
+                [1, 3]
+            )
+
+            with col_rule:
+                st.markdown(
+                    f"**{key.replace('_', ' ').title()}**"
+                )
+
+            with col_value:
+                st.write(value)
+
+
+    if show_execution:
+        _render_paper_and_execution(
+            snapshot,
+            history,
+            positions,
+            orders,
+            trades,
+            backtests,
+        )
+    else:
+        with st.expander("Paper / live (not deployed)", expanded=False):
+            st.caption(
+                "Paper, live, IBKR/orders, and execution stay hidden until a human "
+                "authorizes those gates. Research results above do not require promotion."
+            )
+            st.info("No live paper snapshot available yet.")
 
 
     # =========================================================

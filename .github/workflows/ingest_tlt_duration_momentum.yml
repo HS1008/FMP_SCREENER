@@ -1,0 +1,52 @@
+# Superseded by ingest_platform_research.yml.
+# One generic event-driven ingest path covers every platform strategy.
+# Keep this file as a manual override that forwards to the generic live script.
+
+name: Ingest TLTDurationMomentum V0 (superseded)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ingest-live:
+    name: Forward official TLT artifact to generic ingest
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONUNBUFFERED: "1"
+      STRATEGY_ID: TLTDurationMomentum
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_HOST: ${{ secrets.DO_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Copy ingest tree to droplet
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" 'rm -rf /tmp/fmp-platform-ingest && mkdir -p /tmp/fmp-platform-ingest'
+          tar --exclude .git --exclude __pycache__ --exclude .pytest_cache -czf - . \
+            | ssh "$DO_USER@$DO_HOST" 'tar xzf - -C /tmp/fmp-platform-ingest'
+
+      - name: Ingest official TLT V0 through the generic path
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            'STRATEGY_ID=TLTDurationMomentum bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/qc_research/platform_artifacts/tlt_duration_momentum.json'
