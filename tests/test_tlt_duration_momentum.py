@@ -149,6 +149,7 @@ def test_platform_section_treats_oos_window_lists_as_present():
     source = (DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
     assert 'oos_windows") not in {None, UNAVAILABLE}' not in source
     assert "oos_windows is not None and oos_windows != UNAVAILABLE" in source
+    assert "not in {None, UNAVAILABLE, {}}" not in source
 
 
 def test_generic_smoke_wrap_is_unchanged():
