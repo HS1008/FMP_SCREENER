@@ -150,6 +150,7 @@ def test_platform_section_treats_oos_window_lists_as_present():
     assert 'oos_windows") not in {None, UNAVAILABLE}' not in source
     assert "oos_windows is not None and oos_windows != UNAVAILABLE" in source
     assert "not in {None, UNAVAILABLE, {}}" not in source
+    assert "if robustness is not None and robustness != UNAVAILABLE and robustness != {}:" in source
 
 
 def test_generic_smoke_wrap_is_unchanged():
