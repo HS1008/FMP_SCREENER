@@ -11,8 +11,10 @@ from qc_research.economic_gate import apply_economic_gates
 from qc_research.ml_aggregation import COMPLETE, FAIL, PASS, assess_stage2
 from qc_research.ml_monitor_ui import (
     UNAVAILABLE,
+    PLATFORM_RUN_IDS_SQL,
     build_platform_monitor_view,
     classify_monitor_provenance,
+    economic_pass_from_gate,
     format_monitor_value,
     infer_research_labels,
 )
@@ -320,7 +322,7 @@ def test_licensed_ml_discovery_real_qc_artifacts_ingest_without_live_postgres(mo
     assert view["feature_schema_hash"] == "122b102a7a402e2c"
     assert view["intercept_only_flag"] is True
     assert view["economic_gate"] == "NOT_DEFINED"
-    assert view["economic_pass"] is False
+    assert view["economic_pass"] is None
     assert view["sharpe"] == 2.284
 
     monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -352,7 +354,7 @@ def test_vendored_licensed_smoke_wraps_and_ingests_idempotently(tmp_path, monkey
     view = verify_monitor_view(monitor_view_from_artifacts(wrapped))
     assert view["provenance_kind"] == "REAL_QC"
     assert view["intercept_only_flag"] is True
-    assert view["economic_pass"] is False
+    assert view["economic_pass"] is None
     assert view["winner_backtest_id"] == "ed9f39b897d569d90edd0939626e7286"
 
     class FakeConn:
@@ -401,7 +403,7 @@ def test_vendored_ml_cloud_train_smoke_ingests_without_object_store(tmp_path, mo
     wrapped = wrap_smoke_record(record)
     view = verify_monitor_view(monitor_view_from_artifacts(wrapped))
     assert view["provenance_kind"] == "REAL_QC"
-    assert view["economic_pass"] is False
+    assert view["economic_pass"] is None
     assert view["train_backtest_id"] == "a63cb5082b1089599a2519fe0fdfb324"
     assert view["object_store_key"].startswith("platform/")
     built = build_platform_monitor_view(
@@ -457,4 +459,84 @@ def test_vendored_zn_cloud_train_smoke_wraps_futures_cost_model():
     assert view["data_read_used"] == "no"
     assert view["training_layer"] == "qc_cloud"
     assert view["object_store_key"].startswith("platform/TREASURY_FUTURES_TREND/")
-    assert view["economic_pass"] is False
+    assert view["economic_pass"] is None
+
+
+def test_economic_pass_is_null_for_not_defined_and_watch():
+    assert economic_pass_from_gate("NOT_DEFINED") is None
+    assert economic_pass_from_gate("WATCH") is None
+    assert economic_pass_from_gate(UNAVAILABLE) is None
+    assert economic_pass_from_gate(None) is None
+    assert economic_pass_from_gate("PASS") is True
+    assert economic_pass_from_gate("FAIL") is False
+    watch_view = build_platform_monitor_view(
+        strategy_id="QQQRidgeTransportInfra",
+        selected_run="PLATFORM_QQQRidgeTransportInfra_test",
+        run_summary={
+            "schema_version": "platform_artifact_v1",
+            "provenance": "REAL_QC",
+            "payload": {"research_mode": "ML_DISCOVERY", "asset_class": "ETF", "economic_gate": "WATCH"},
+        },
+        oos={"payload": {"sharpe_ratio": 0.1, "provenance": "REAL_QC", "windows": [{"kind": "winner"}]}},
+    )
+    assert watch_view["economic_pass"] is None
+    fail_view = build_platform_monitor_view(
+        strategy_id="QQQRidgeTransportInfra",
+        selected_run="PLATFORM_QQQRidgeTransportInfra_test",
+        run_summary={
+            "schema_version": "platform_artifact_v1",
+            "provenance": "REAL_QC",
+            "payload": {"research_mode": "ML_DISCOVERY", "asset_class": "ETF", "economic_gate": "FAIL"},
+        },
+        oos={"payload": {"sharpe_ratio": -1.0, "provenance": "REAL_QC", "windows": [{"kind": "winner"}]}},
+    )
+    assert fail_view["economic_pass"] is False
+
+
+def test_platform_run_query_is_strategy_scoped_not_global_platform_prefix():
+    assert "LIKE 'PLATFORM_%'" not in PLATFORM_RUN_IDS_SQL
+    assert "stage2_ml" in PLATFORM_RUN_IDS_SQL
+    assert "r.strategy_id = :strategy_id" in PLATFORM_RUN_IDS_SQL
+    assert "run_prefix" in PLATFORM_RUN_IDS_SQL
+    assert "payload_json->>'strategy_id'" in PLATFORM_RUN_IDS_SQL
+
+
+def test_platform_run_summary_upserts_generic_identity_not_stage2(monkeypatch):
+    from qc_research.object_store_sync import ingest_artifact, payload_for_hash, sha256_payload
+    from qc_research.platform_ingest import UPSERT_PLATFORM_RUN, platform_run_identity
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+
+    payload = {
+        "schema_version": "platform_artifact_v1",
+        "kind": "run_summary",
+        "provenance": "REAL_QC",
+        "research_run_id": "PLATFORM_QQQRidgeTransportInfra_20260905T000000Z",
+        "strategy_id": "QQQRidgeTransportInfra",
+        "payload": {
+            "research_run_id": "PLATFORM_QQQRidgeTransportInfra_20260905T000000Z",
+            "strategy_id": "QQQRidgeTransportInfra",
+            "research_lineage_id": "LINEAGE_QQQ_RIDGE_TRANSPORT_V0",
+            "research_mode": "ML_DISCOVERY",
+            "asset_class": "ETF",
+            "run_status": "CLOUD_VALIDATED",
+            "economic_gate": "NOT_DEFINED",
+        },
+    }
+    payload["artifact_sha256"] = sha256_payload(payload_for_hash(payload))
+    conn = FakeConn()
+    ingest_artifact(conn, key="ridge-summary", kind="run_summary", payload=payload)
+    joined = " ".join(sql for sql, _ in conn.calls)
+    assert "stage2_ml" not in joined
+    assert "platform_research" in joined
+    assert "INSERT INTO research_runs" in joined
+    identity = platform_run_identity(payload)
+    assert identity["strategy_id"] == "QQQRidgeTransportInfra"
+    assert identity["research_lineage_id"] == "LINEAGE_QQQ_RIDGE_TRANSPORT_V0"
+    assert "platform_research" in UPSERT_PLATFORM_RUN
+    assert "ON CONFLICT (research_run_id)" in UPSERT_PLATFORM_RUN

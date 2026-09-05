@@ -640,10 +640,11 @@ def ingest_artifact(
         upsert_model_from_metadata(conn, payload)
     elif kind == "oos_diagnostics":
         upsert_signals_from_oos(conn, payload)
-    if kind in {"run_manifest", "run_summary"}:
-        update_run_metadata(conn, payload)
     platform_schema = str(payload.get("schema_version") or "") in {"platform_v1", "platform_artifact_v1"}
-    if kind in PLATFORM_KINDS or platform_schema:
+    is_platform = kind in PLATFORM_KINDS or platform_schema
+    if kind in {"run_manifest", "run_summary"} and not is_platform:
+        update_run_metadata(conn, payload)
+    if is_platform:
         from qc_research.platform_ingest import ingest_platform_payload
 
         ingest_platform_payload(conn, kind=kind, payload=payload)

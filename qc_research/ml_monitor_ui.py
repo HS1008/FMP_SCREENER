@@ -48,6 +48,36 @@ def _as_payload(value: Any) -> dict[str, Any] | None:
 
 UNAVAILABLE = "Unavailable / Not applicable"
 
+PLATFORM_RUN_IDS_SQL = """
+        SELECT DISTINCT a.research_run_id
+        FROM research_artifacts a
+        LEFT JOIN research_runs r ON r.research_run_id = a.research_run_id
+        WHERE COALESCE(r.research_kind, '') IS DISTINCT FROM 'stage2_ml'
+          AND (
+                r.strategy_id = :strategy_id
+             OR r.research_lineage_id = :strategy_id
+             OR r.research_lineage_id = :lineage
+             OR a.payload_json->>'strategy_id' = :strategy_id
+             OR a.payload_json->'payload'->>'strategy_id' = :strategy_id
+             OR a.payload_json->'identity'->>'strategy_id' = :strategy_id
+             OR a.payload_json->'payload'->'identity'->>'strategy_id' = :strategy_id
+             OR a.payload_json->>'research_lineage_id' = :strategy_id
+             OR a.payload_json->'payload'->>'research_lineage_id' = :strategy_id
+             OR a.research_run_id LIKE :run_prefix
+          )
+        ORDER BY 1
+        """
+
+
+def economic_pass_from_gate(gate: Any) -> bool | None:
+    """PASS is True, FAIL is False, NOT_DEFINED/WATCH/unknown are NULL."""
+    text = str(gate or "").strip().upper()
+    if text == "PASS":
+        return True
+    if text == "FAIL":
+        return False
+    return None
+
 
 def _data_read_label(value: Any) -> str | None:
     if value in {True, "true", "1", 1, "yes"}:
@@ -158,16 +188,16 @@ def infer_research_labels(
 
 
 def load_platform_run_ids(engine, strategy_id: str) -> list[str]:
+    if not strategy_id:
+        return []
     rows = _read_sql(
         engine,
-        """
-        SELECT DISTINCT research_run_id
-        FROM research_artifacts
-        WHERE research_run_id LIKE :prefix
-           OR research_run_id LIKE 'PLATFORM_%'
-        ORDER BY 1
-        """,
-        {"prefix": "%{0}%".format(strategy_id)},
+        PLATFORM_RUN_IDS_SQL,
+        {
+            "strategy_id": strategy_id,
+            "lineage": strategy_id,
+            "run_prefix": "PLATFORM_{0}_%".format(strategy_id),
+        },
     )
     if rows is None or rows.empty:
         return []
@@ -291,7 +321,7 @@ def build_platform_monitor_view(
         ),
         "intercept_only": format_monitor_value(intercept_only, available=intercept_only is not None),
         "intercept_only_flag": intercept_only if isinstance(intercept_only, bool) else None,
-        "economic_pass": False if str(labels.get("economic_gate") or "") == "NOT_DEFINED" else None,
+        "economic_pass": economic_pass_from_gate(labels.get("economic_gate")),
         "training_layer": format_monitor_value(
             merged_summary.get("training_layer"),
             available=merged_summary.get("training_layer") not in {None, ""},

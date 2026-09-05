@@ -103,6 +103,55 @@ def _inner(payload: dict[str, Any]) -> dict[str, Any]:
     return inner if isinstance(inner, dict) else payload
 
 
+def _strategy_id_from_run(run_id: str) -> str:
+    text = str(run_id or "")
+    if text.startswith("PLATFORM_"):
+        rest = text[len("PLATFORM_") :]
+        if "_" in rest:
+            head, tail = rest.rsplit("_", 1)
+            if tail[:8].isdigit():
+                return head
+            return rest
+        return rest
+    return text
+
+
+def platform_run_identity(payload: dict[str, Any]) -> dict[str, Any]:
+    inner = _inner(payload)
+    identity = dict(inner.get("identity") or payload.get("identity") or {})
+    run_id = str(payload.get("research_run_id") or inner.get("research_run_id") or "")
+    strategy_id = str(
+        payload.get("strategy_id")
+        or inner.get("strategy_id")
+        or identity.get("strategy_id")
+        or _strategy_id_from_run(run_id)
+        or ""
+    )
+    lineage = str(
+        inner.get("research_lineage_id")
+        or identity.get("research_lineage_id")
+        or payload.get("research_lineage_id")
+        or strategy_id
+    )
+    return {
+        "research_run_id": run_id,
+        "strategy_id": strategy_id,
+        "research_lineage_id": lineage,
+        "research_mode": inner.get("research_mode") or payload.get("research_mode") or identity.get("research_mode"),
+        "asset_class": inner.get("asset_class") or payload.get("asset_class") or identity.get("asset_class"),
+        "strategy_family_id": inner.get("strategy_family_id")
+        or payload.get("strategy_family_id")
+        or identity.get("strategy_family_id")
+        or identity.get("strategy_family"),
+        "strategy_spec_hash": inner.get("strategy_spec_hash")
+        or inner.get("config_fingerprint")
+        or payload.get("config_fingerprint")
+        or identity.get("config_fingerprint")
+        or identity.get("strategy_spec_hash"),
+        "run_status": inner.get("run_status") or payload.get("run_status"),
+    }
+
+
 def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None:
     inner = _inner(payload)
     run_id = str(payload.get("research_run_id") or inner.get("research_run_id") or "")
@@ -207,18 +256,9 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
             },
         )
     if kind in {"run_summary", "run_manifest"} and run_id:
-        conn.execute(
-            text(UPDATE_PLATFORM_RUN),
-            {
-                "research_run_id": run_id,
-                "research_mode": inner.get("research_mode") or payload.get("research_mode"),
-                "asset_class": inner.get("asset_class") or payload.get("asset_class"),
-                "strategy_family_id": inner.get("strategy_family_id") or payload.get("strategy_family_id"),
-                "strategy_spec_hash": inner.get("strategy_spec_hash")
-                or inner.get("config_fingerprint")
-                or payload.get("config_fingerprint"),
-            },
-        )
+        identity = platform_run_identity(payload)
+        if identity["strategy_id"]:
+            conn.execute(text(UPSERT_PLATFORM_RUN), identity)
 
 
 SKIP_NO_DATABASE = (
@@ -231,6 +271,7 @@ SMOKE_FAMILY_HINTS = {
     "ml_treasury_futures",
     "ml_cloud_train",
     "ml_cloud_train_futures",
+    "ml_ridge_transport",
     "manual_equity",
     "pairs",
     "treasury_futures",
@@ -246,13 +287,42 @@ ON CONFLICT (research_run_id, experiment_id) DO UPDATE SET
     metadata_json = EXCLUDED.metadata_json
 """
 
-UPDATE_PLATFORM_RUN = """
-UPDATE research_runs SET
-    research_mode = COALESCE(:research_mode, research_mode),
-    asset_class = COALESCE(:asset_class, asset_class),
-    strategy_family_id = COALESCE(:strategy_family_id, strategy_family_id),
-    strategy_spec_hash = COALESCE(:strategy_spec_hash, strategy_spec_hash)
-WHERE research_run_id = :research_run_id
+UPSERT_PLATFORM_RUN = """
+INSERT INTO research_runs (
+    research_run_id,
+    strategy_id,
+    research_kind,
+    research_mode,
+    asset_class,
+    strategy_family_id,
+    strategy_spec_hash,
+    research_lineage_id,
+    run_status,
+    holdout_accessed,
+    holdout_access_count
+) VALUES (
+    :research_run_id,
+    :strategy_id,
+    'platform_research',
+    :research_mode,
+    :asset_class,
+    :strategy_family_id,
+    :strategy_spec_hash,
+    :research_lineage_id,
+    :run_status,
+    FALSE,
+    0
+)
+ON CONFLICT (research_run_id) DO UPDATE SET
+    last_seen_at = NOW(),
+    strategy_id = COALESCE(NULLIF(EXCLUDED.strategy_id, ''), research_runs.strategy_id),
+    research_kind = 'platform_research',
+    research_mode = COALESCE(EXCLUDED.research_mode, research_runs.research_mode),
+    asset_class = COALESCE(EXCLUDED.asset_class, research_runs.asset_class),
+    strategy_family_id = COALESCE(EXCLUDED.strategy_family_id, research_runs.strategy_family_id),
+    strategy_spec_hash = COALESCE(EXCLUDED.strategy_spec_hash, research_runs.strategy_spec_hash),
+    research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, research_runs.research_lineage_id),
+    run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status)
 """
 
 
@@ -341,7 +411,8 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
             "TREASURY_FUTURE"
             if str(record.get("family") or "") in {"ml_cloud_train_futures", "ml_treasury_futures", "treasury_futures"}
             else "ETF"
-            if str(record.get("family") or "") in {"ml_discovery", "ml_cloud_train", "manual_equity"}
+            if str(record.get("family") or "")
+            in {"ml_discovery", "ml_cloud_train", "ml_ridge_transport", "manual_equity"}
             else None
         ),
         "strategy_family_id": record.get("strategy_family_id") or record.get("research_lineage_id"),
@@ -361,6 +432,7 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
         "winner_backtest_id": record.get("winner_backtest_id") or record.get("backtest_id"),
         "baseline_backtest_id": record.get("baseline_backtest_id"),
         "economic_gate": record.get("economic_gate") or "NOT_DEFINED",
+        "contract_hash": record.get("contract_hash"),
         "cost_model_id": record.get("cost_model_id"),
         "intercept_only": (record.get("fitted_model") or {}).get("intercept_only"),
         "fitted_model": record.get("fitted_model") or {},
