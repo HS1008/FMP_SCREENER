@@ -55,7 +55,7 @@ def test_definition_and_winner_come_from_canonical_payload():
     assert definition["instrument"] == "IEF"
     assert definition["features"] == ["ret_1", "sma_gap"]
     assert "21-session" in str(definition["target"])
-    assert format_model_choice(definition["winner"]).startswith("Elasticnet")
+    assert format_model_choice(definition["winner"]).startswith("ElasticNet")
     assert "90-day SMA" in format_model_choice(definition["baseline"])
     assert "2015–2024" in format_validation(definition["validation"])
     assert "3 chronological folds" in format_inner_cv(definition["validation"])

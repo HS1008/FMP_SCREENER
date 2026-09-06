@@ -41,6 +41,12 @@ MODE_LABELS = {
     "MANUAL": "Manual",
     "AUTO": "Auto",
 }
+MODEL_LABELS = {
+    "elasticnet": "ElasticNet",
+    "ridge": "Ridge",
+    "deterministic": "Deterministic",
+    "sma": "SMA",
+}
 PROVENANCE_LABELS = {
     "REAL_QC": "Real QuantConnect",
     "LOCAL_LICENSED": "Local Licensed",
@@ -75,6 +81,10 @@ def friendly_label(value: Any, table: Mapping[str, str] | None = None) -> str:
         return STATUS_LABELS[raw]
     if raw in MODE_LABELS:
         return MODE_LABELS[raw]
+    if raw in MODEL_LABELS:
+        return MODEL_LABELS[raw]
+    if raw.lower() in MODEL_LABELS:
+        return MODEL_LABELS[raw.lower()]
     if raw in FAMILY_LABELS:
         return FAMILY_LABELS[raw]
     if raw in ASSET_LABELS:
@@ -264,6 +274,16 @@ def robustness_summary(windows: list[Mapping[str, Any]] | None, stability: Mappi
     }
 
 
+def tidy_number(value: Any, *, digits: int = 4) -> Any:
+    if value is None or value == UNAVAILABLE:
+        return UNAVAILABLE
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return value
+    return round(number, digits)
+
+
 def format_model_choice(choice: Any) -> str:
     parsed = choice
     if isinstance(choice, str):
@@ -278,7 +298,7 @@ def format_model_choice(choice: Any) -> str:
         bits.append("alpha {0}".format(parsed["alpha"]))
     if parsed.get("l1_ratio") is not None:
         bits.append("l1_ratio {0}".format(parsed["l1_ratio"]))
-    if parsed.get("lookback") is not None:
+    if parsed.get("lookback") is not None and parsed.get("alpha") is None:
         bits.append("lookback {0}".format(parsed["lookback"]))
     return " · ".join(item for item in bits if item) or str(parsed.get("trial_id") or UNAVAILABLE)
 

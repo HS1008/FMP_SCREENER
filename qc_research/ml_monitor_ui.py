@@ -27,6 +27,7 @@ from qc_research.platform_presentation import (
     robustness_summary,
     short_id,
     strategy_definition_from_payloads,
+    tidy_number,
 )
 
 from qc_research.ml_aggregation import (
@@ -563,17 +564,22 @@ def investor_wfo_frame(windows: list[dict[str, Any]] | None, *, selected_trial_f
     for value in full.get("selected_trial_id", []):
         parsed = format_model_choice(value)
         selected.append(parsed if parsed != UNAVAILABLE else value)
+    numeric = ["ml_sharpe", "baseline_sharpe", "sharpe_diff", "ml_cagr", "baseline_cagr", "ml_max_drawdown"]
+    cleaned = full.copy()
+    for column in numeric:
+        if column in cleaned.columns:
+            cleaned[column] = cleaned[column].map(lambda value: tidy_number(value) if value is not None else value)
     return pd.DataFrame(
         {
-            "Window": full["window_id"],
-            "Year": full["oos_end"].astype(str).str.slice(0, 4) if "oos_end" in full else full["window_id"],
-            "ML Sharpe": full["ml_sharpe"],
-            "Baseline Sharpe": full["baseline_sharpe"],
-            "Difference": full["sharpe_diff"],
-            "ML CAGR": full["ml_cagr"],
-            "Baseline CAGR": full["baseline_cagr"],
-            "Max DD": full["ml_max_drawdown"],
-            "Trades": full["ml_trades"],
+            "Window": cleaned["window_id"],
+            "Year": cleaned["oos_end"].astype(str).str.slice(0, 4) if "oos_end" in cleaned else cleaned["window_id"],
+            "ML Sharpe": cleaned["ml_sharpe"],
+            "Baseline Sharpe": cleaned["baseline_sharpe"],
+            "Difference": cleaned["sharpe_diff"],
+            "ML CAGR": cleaned["ml_cagr"],
+            "Baseline CAGR": cleaned["baseline_cagr"],
+            "Max DD": cleaned["ml_max_drawdown"],
+            "Trades": cleaned["ml_trades"],
             "Selected model": selected,
         }
     )
@@ -713,32 +719,32 @@ def render_platform_view(view: dict[str, Any]) -> None:
         st.caption(HELP["mean_across_windows"])
     ml = dict(view.get("ml_metrics") or {})
     r1 = st.columns(4)
-    r1[0].metric("CAGR", view.get("ml_cagr"), help=HELP["CAGR"])
+    r1[0].metric("CAGR", tidy_number(view.get("ml_cagr")), help=HELP["CAGR"])
     r1[1].metric(
         "Sharpe",
-        view.get("ml_sharpe") if view.get("ml_sharpe") is not None else view.get("sharpe"),
+        tidy_number(view.get("ml_sharpe") if view.get("ml_sharpe") is not None else view.get("sharpe")),
         help=HELP["Sharpe"],
     )
     r1[2].metric(
         "Sortino",
-        ml.get("sortino_ratio") if ml.get("sortino_ratio") is not None else UNAVAILABLE,
+        tidy_number(ml.get("sortino_ratio")) if ml.get("sortino_ratio") is not None else UNAVAILABLE,
         help=HELP["Sortino"],
     )
     r1[3].metric(
         "Max Drawdown",
-        ml.get("max_drawdown") if ml.get("max_drawdown") is not None else UNAVAILABLE,
+        tidy_number(ml.get("max_drawdown")) if ml.get("max_drawdown") is not None else UNAVAILABLE,
         help=HELP["Max Drawdown"],
     )
     r2 = st.columns(4)
-    r2[0].metric("Net Return", ml.get("net_profit") if ml.get("net_profit") is not None else UNAVAILABLE)
-    r2[1].metric("Trades", ml.get("trade_count") if ml.get("trade_count") is not None else UNAVAILABLE)
-    r2[2].metric("Fees / cost drag", ml.get("cost_drag") if ml.get("cost_drag") is not None else UNAVAILABLE)
-    r2[3].metric("Baseline Sharpe", view.get("baseline_sharpe"), help=HELP["Sharpe"])
+    r2[0].metric("Net Return", tidy_number(ml.get("net_profit")) if ml.get("net_profit") is not None else UNAVAILABLE)
+    r2[1].metric("Trades", tidy_number(ml.get("trade_count"), digits=2) if ml.get("trade_count") is not None else UNAVAILABLE)
+    r2[2].metric("Fees / cost drag", tidy_number(ml.get("cost_drag"), digits=2) if ml.get("cost_drag") is not None else UNAVAILABLE)
+    r2[3].metric("Baseline Sharpe", tidy_number(view.get("baseline_sharpe")), help=HELP["Sharpe"])
     r3 = st.columns(4)
-    r3[0].metric("ML-minus-baseline Sharpe", view.get("sharpe_diff"))
-    r3[1].metric("Baseline CAGR", view.get("baseline_cagr"), help=HELP["CAGR"])
-    r3[2].metric("Baseline", view.get("baseline"))
-    r3[3].metric("Selected model", view.get("selected_candidate"))
+    r3[0].metric("ML-minus-baseline Sharpe", tidy_number(view.get("sharpe_diff")))
+    r3[1].metric("Baseline CAGR", tidy_number(view.get("baseline_cagr")), help=HELP["CAGR"])
+    r3[2].metric("Baseline", format_model_choice(view.get("baseline")))
+    r3[3].metric("Selected model", format_model_choice(view.get("selected_candidate")))
     if metric_kind != "stitched_full_period":
         st.caption(
             "Mean Across WFO Windows. Stitched Full Non-Holdout OOS equity is unavailable "
