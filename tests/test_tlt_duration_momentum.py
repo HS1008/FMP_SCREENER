@@ -83,6 +83,12 @@ def test_official_tlt_artifact_wraps_ten_windows_and_identity():
     assert view["promotion_gate"] == "HUMAN_REVIEW_REQUIRED"
     assert view["holdout_status"] == "LOCKED"
     assert view["holdout_accessed"] is False
+    assert view["display_name"] == "TLT Duration Momentum"
+    assert view["delivery_status"] == "DELIVERED"
+    assert view["strategy_definition"]["instrument"] == "TLT"
+    assert "ret_1" in [str(item).lower() for item in view["strategy_definition"]["features"]]
+    assert view["strategy_definition"]["winner"]["trial_id"] == SELECTED_TRIAL
+    assert view["robustness_summary"]["selected_in"] == "10 / 10"
     frame = platform_oos_window_frame(view["oos_windows"])
     assert list(frame["window_id"]) == list(WINDOW_IDS)
     assert "2025" not in "".join(frame["oos_end"].astype(str))
@@ -135,6 +141,10 @@ def test_tlt_labels_and_cli_dry_run(monkeypatch):
     )
     assert built["research_mode_label"] == "ML Discovery"
     assert built["asset_class_label"] == "Bond ETF"
+    assert built["display_name"] == "TLT Duration Momentum"
+    assert built["delivery_status"] == "DELIVERED"
+    assert built["strategy_definition"]["target"]
+    assert built["metric_kind"] == "mean_across_windows"
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
@@ -261,6 +271,15 @@ def test_generic_canonical_artifact_needs_no_tlt_ui():
     monitor = (DEFAULT_ARTIFACT_ROOT.parent.parent / "pages" / "strategy_monitor.py").read_text(encoding="utf-8")
     body = monitor.split("def _render_live_monitor_body")[1]
     assert body.index("render_platform_section") < body.index("_render_paper_and_execution")
+    assert "if not show_platform:" in body
+    rules_block = body.split("if not show_platform:")[1]
+    assert "No structured rules stored for this strategy." in rules_block
+    assert 'if str(view.get("strategy_id") or "") == "TLTDurationMomentum"' not in monitor
+    assert "cron: \"23 * * * *\"" in (
+        DEFAULT_ARTIFACT_ROOT.parent.parent / ".github" / "workflows" / "ingest_platform_research.yml"
+    ).read_text(encoding="utf-8") or "23 * * * *" in (
+        DEFAULT_ARTIFACT_ROOT.parent.parent / ".github" / "workflows" / "ingest_platform_research.yml"
+    ).read_text(encoding="utf-8")
 
 
 def test_legacy_human_review_required_is_not_research_terminal():

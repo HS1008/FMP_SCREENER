@@ -8,6 +8,7 @@ import streamlit as st
 from sqlalchemy import text
 
 from db.connection import engine
+from qc_research.aggregation import smoke_backtests, stage1_backtests
 from qc_research.monitor_ui import (
     render_backtest_vs_paper,
     render_smoke_section,
@@ -18,6 +19,7 @@ from qc_research.ml_monitor_ui import (
     render_platform_section,
     render_stage2_section,
 )
+from qc_research.platform_presentation import display_strategy_name, picker_label
 
 
 logger = logging.getLogger(__name__)
@@ -68,7 +70,7 @@ def load_strategies():
     try:
         extra = pd.read_sql(
             """
-            SELECT DISTINCT
+            SELECT DISTINCT ON (strategy_id)
                 strategy_id,
                 strategy_id AS name,
                 'research' AS environment,
@@ -84,26 +86,78 @@ def load_strategies():
                 NULL::varchar AS git_commit,
                 NULL::jsonb AS rules_json,
                 first_seen_at AS created_at,
-                last_seen_at AS updated_at
+                last_seen_at AS updated_at,
+                research_mode,
+                research_kind,
+                asset_class
             FROM research_runs
             WHERE research_kind = 'platform_research'
               AND strategy_id IS NOT NULL
               AND strategy_id <> ''
-            ORDER BY strategy_id
+            ORDER BY strategy_id, last_seen_at DESC NULLS LAST
             """,
             engine,
         )
     except Exception:
         extra = pd.DataFrame()
     if extra is None or extra.empty:
-        return registered
-    if registered is None or registered.empty:
-        return extra
-    have = set(registered["strategy_id"].astype(str))
-    add = extra[~extra["strategy_id"].astype(str).isin(have)]
-    if add.empty:
-        return registered
-    return pd.concat([registered, add], ignore_index=True)
+        combined = registered
+    elif registered is None or registered.empty:
+        combined = extra
+    else:
+        have = set(registered["strategy_id"].astype(str))
+        add = extra[~extra["strategy_id"].astype(str).isin(have)]
+        combined = registered if add.empty else pd.concat([registered, add], ignore_index=True)
+    return _enrich_strategy_research_labels(combined)
+
+
+def _enrich_strategy_research_labels(strategies):
+    if strategies is None or strategies.empty:
+        return strategies
+    work = strategies.copy()
+    for column in ("research_mode", "research_kind", "asset_class", "delivery_status"):
+        if column not in work.columns:
+            work[column] = None
+    try:
+        meta = pd.read_sql(
+            """
+            SELECT DISTINCT ON (strategy_id)
+                strategy_id,
+                research_mode,
+                research_kind,
+                asset_class,
+                delivery_status,
+                last_seen_at
+            FROM research_runs
+            WHERE strategy_id IS NOT NULL
+              AND strategy_id <> ''
+            ORDER BY strategy_id, last_seen_at DESC NULLS LAST
+            """,
+            engine,
+        )
+    except Exception:
+        try:
+            meta = pd.read_sql(
+                """
+                SELECT DISTINCT ON (strategy_id)
+                    strategy_id,
+                    research_mode,
+                    research_kind,
+                    asset_class,
+                    last_seen_at
+                FROM research_runs
+                WHERE strategy_id IS NOT NULL
+                  AND strategy_id <> ''
+                ORDER BY strategy_id, last_seen_at DESC NULLS LAST
+                """,
+                engine,
+            )
+        except Exception:
+            return work
+    if meta is None or meta.empty:
+        return work
+    work = work.drop(columns=[col for col in ("research_mode", "research_kind", "asset_class", "delivery_status", "last_seen_at") if col in work.columns], errors="ignore")
+    return work.merge(meta, on="strategy_id", how="left")
 
 
 def load_strategy_by_id(strategy_id):
@@ -900,11 +954,20 @@ def _render_live_monitor_body(
         trades=trades,
     )
     show_platform = strategy_has_platform_research(strategy_id)
+    stage1_rows = stage1_backtests(backtests)
+    smoke_rows = smoke_backtests(backtests)
+    has_stage1 = stage1_rows is not None and not getattr(stage1_rows, "empty", True)
+    has_smoke = smoke_rows is not None and not getattr(smoke_rows, "empty", True)
 
     header_left, header_right = st.columns([4, 1])
 
     with header_left:
-        st.subheader(strategy["name"])
+        st.subheader(
+            display_strategy_name(
+                strategy_id,
+                strategy.get("name") if str(strategy.get("name") or "") != str(strategy_id) else None,
+            )
+        )
 
         if show_execution:
             st.caption(
@@ -912,6 +975,8 @@ def _render_live_monitor_body(
                 f"Research Project: {strategy.get('qc_research_project_name') or '—'}  •  "
                 f"Execution Project: {strategy['strategy_id']}"
             )
+        elif show_platform:
+            st.caption("Platform research · paper/live not deployed")
         else:
             st.caption(
                 f"{strategy['environment']}  •  "
@@ -948,59 +1013,69 @@ def _render_live_monitor_body(
 
 
     # =========================================================
-    # STAGE 1 VALIDATION
+    # STAGE 1 VALIDATION (only when Stage 1 rows exist)
     # =========================================================
 
-    render_stage1_section(
-        strategy_id,
-        backtests,
-        load_equity=load_backtest_equity,
-        load_run_row=load_research_run,
-        strategy_row=strategy,
-    )
-
-
-    # =========================================================
-    # SMOKE TESTS
-    # =========================================================
-
-    render_smoke_section(
-        backtests,
-        load_equity=load_backtest_equity,
-    )
-
-
-    # =========================================================
-    # STRATEGY RULESET
-    # =========================================================
-
-    st.markdown("### Strategy Rules")
-
-    rules = parse_rules(
-        strategy["rules_json"]
-    )
-
-    if not rules:
-
-        st.info(
-            "No structured rules stored for this strategy."
+    if has_stage1:
+        render_stage1_section(
+            strategy_id,
+            backtests,
+            load_equity=load_backtest_equity,
+            load_run_row=load_research_run,
+            strategy_row=strategy,
         )
 
-    else:
 
-        for key, value in rules.items():
+    # =========================================================
+    # SMOKE TESTS (hidden unless rows exist; collapsed for platform)
+    # =========================================================
 
-            col_rule, col_value = st.columns(
-                [1, 3]
+    if has_smoke:
+        if show_platform:
+            with st.expander("Smoke Tests", expanded=False):
+                render_smoke_section(
+                    backtests,
+                    load_equity=load_backtest_equity,
+                )
+        else:
+            render_smoke_section(
+                backtests,
+                load_equity=load_backtest_equity,
             )
 
-            with col_rule:
-                st.markdown(
-                    f"**{key.replace('_', ' ').title()}**"
+
+    # =========================================================
+    # STRATEGY RULESET (legacy only; platform uses StrategySpec)
+    # =========================================================
+
+    if not show_platform:
+        st.markdown("### Strategy Rules")
+
+        rules = parse_rules(
+            strategy["rules_json"]
+        )
+
+        if not rules:
+
+            st.info(
+                "No structured rules stored for this strategy."
+            )
+
+        else:
+
+            for key, value in rules.items():
+
+                col_rule, col_value = st.columns(
+                    [1, 3]
                 )
 
-            with col_value:
-                st.write(value)
+                with col_rule:
+                    st.markdown(
+                        f"**{key.replace('_', ' ').title()}**"
+                    )
+
+                with col_value:
+                    st.write(value)
 
 
     if show_execution:
@@ -1074,11 +1149,37 @@ if strategies.empty:
     st.warning("No strategies are registered.")
     st.stop()
 
-picker_col, auto_col = st.columns([4, 1])
+filter_col, picker_col, auto_col = st.columns([2, 4, 1])
+with filter_col:
+    scope = st.radio(
+        "Show",
+        ["All", "Research", "Paper", "Live"],
+        horizontal=True,
+        key="strategy_monitor_scope",
+    )
+visible = strategies.copy()
+if scope != "All" and "environment" in visible.columns:
+    env = visible["environment"].fillna("").astype(str).str.lower()
+    if scope == "Research":
+        kind = (
+            visible["research_kind"].fillna("").astype(str)
+            if "research_kind" in visible.columns
+            else pd.Series([""] * len(visible), index=visible.index)
+        )
+        visible = visible[env.eq("research") | kind.eq("platform_research")]
+    else:
+        visible = visible[env.eq(scope.lower())]
+if visible.empty:
+    visible = strategies
+labels = {
+    str(row["strategy_id"]): picker_label(row)
+    for _, row in visible.iterrows()
+}
 with picker_col:
-    selected_name = st.selectbox(
+    selected_id = st.selectbox(
         "Strategy",
-        strategies["name"].tolist(),
+        list(labels.keys()),
+        format_func=lambda sid: labels.get(sid, sid),
         key="strategy_monitor_selected_strategy",
     )
 with auto_col:
@@ -1089,10 +1190,7 @@ with auto_col:
         help="Update live monitor data every 30 seconds without reloading the page.",
     )
 
-strategy = strategies[
-    strategies["name"] == selected_name
-].iloc[0]
-
+strategy = visible[visible["strategy_id"].astype(str) == str(selected_id)].iloc[0]
 strategy_id = strategy["strategy_id"]
 
 if st.session_state["strategy_monitor_auto_refresh"]:

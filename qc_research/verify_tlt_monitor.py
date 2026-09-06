@@ -77,14 +77,27 @@ def main(argv: list[str] | None = None) -> int:
         if at.exception:
             raise RuntimeError(at.exception)
         names = list(at.selectbox[0].options) if at.selectbox else []
-        if STRATEGY_ID not in names:
+        chosen = None
+        for name in names:
+            text = str(name)
+            if text == STRATEGY_ID or STRATEGY_ID in text or "TLT Duration Momentum" in text:
+                chosen = name
+                break
+        if chosen is None:
             print("Strategy Monitor selectbox missing TLTDurationMomentum: {0}".format(names))
             return 1
-        at.selectbox[0].set_value(STRATEGY_ID).run()
+        at.selectbox[0].set_value(chosen).run()
         if at.exception:
             raise RuntimeError(at.exception)
         labels = [str(getattr(metric, "label", "") or "") for metric in at.metric]
         joined = " ".join(labels)
+        texts = []
+        for block in list(at.markdown) + list(at.subheader) + list(at.info) + list(at.caption):
+            texts.append(str(getattr(block, "value", "") or getattr(block, "label", "") or ""))
+        page = " ".join(texts)
+        if "No structured rules stored for this strategy." in page:
+            print("Strategy Monitor still shows empty rules_json empty-state for TLT")
+            return 1
         for needle in (
             "Economic gate",
             "OOS window count",

@@ -63,6 +63,9 @@ jobs:
               exit 1
             fi
 
+            python -m qc_research.ingest_platform_artifacts \
+              --root qc_research/platform_artifacts/tlt_duration_momentum.json \
+              --verify-monitor
             python -m qc_research.verify_tlt_monitor --live
             python -m qc_research.verify_tlt_monitor --live --apptest
           EOF

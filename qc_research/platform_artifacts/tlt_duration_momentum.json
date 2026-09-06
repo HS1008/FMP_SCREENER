@@ -723,5 +723,64 @@
       }
     ]
   },
-  "note": "Full non-holdout 2015\u20132024 sequential WFO. 10 windows \u00d7 3 roles = 30 official QC backtests. Not an economic PASS/FAIL. Do not retune the frozen TLT V0 search space. Do not define economic thresholds from this file. Do not unlock 2025+ / final holdout. Coefficients were not exported (Object Store internal only). W2023 and W2024 ML books were flat (0 fills) while the SMA baseline traded."
+  "note": "Full non-holdout 2015\u20132024 sequential WFO. 10 windows \u00d7 3 roles = 30 official QC backtests. Not an economic PASS/FAIL. Do not retune the frozen TLT V0 search space. Do not define economic thresholds from this file. Do not unlock 2025+ / final holdout. Coefficients were not exported (Object Store internal only). W2023 and W2024 ML books were flat (0 fills) while the SMA baseline traded.",
+  "delivery_status": "DELIVERED",
+  "requested_mode": "ML_DISCOVERY",
+  "resolved_mode": "ML_DISCOVERY",
+  "mode_source": "USER_EXPLICIT",
+  "routing": {
+    "requested_mode": "ML_DISCOVERY",
+    "resolved_mode": "ML_DISCOVERY",
+    "mode_source": "USER_EXPLICIT",
+    "routing_reason": "Frozen TLT V0 contract is ML_DISCOVERY.",
+    "routing_version": "auto_router_v1",
+    "routing_confidence": "HIGH"
+  },
+  "strategy_definition": {
+    "display_name": "TLT Duration Momentum",
+    "thesis": "Medium-term trends in long-duration Treasury ETF prices may persist.",
+    "instrument": "TLT",
+    "universe": [
+      "TLT"
+    ],
+    "portfolio_behavior": "Hold TLT when the frozen model's signal is positive. Otherwise hold cash.",
+    "features": [
+      "ret_1",
+      "sma_gap",
+      "vol"
+    ],
+    "lookback": 120,
+    "target": "21-session forward TLT return",
+    "models_searched": [
+      "deterministic",
+      "ridge",
+      "elasticnet"
+    ],
+    "winner": {
+      "trial_id": "elasticnet::lb120_a0p1_l10p5",
+      "model_family": "elasticnet",
+      "alpha": 0.1,
+      "l1_ratio": 0.5
+    },
+    "baseline": {
+      "trial_id": "deterministic::sma120_long_cash",
+      "label": "120-day SMA long/cash"
+    },
+    "validation": {
+      "train_years": 5,
+      "oos_years": 1,
+      "first_oos_year": 2015,
+      "last_oos_year": 2024,
+      "inner_folds": 3,
+      "embargo_sessions": 5,
+      "purge": true
+    },
+    "execution": {
+      "signal_timing": "decision_close_next_session",
+      "fill_assumptions": "next_open_or_moc"
+    },
+    "cost_model_id": "BOND_ETF_V1",
+    "metric_kind": "mean_across_windows"
+  },
+  "display_name": "TLT Duration Momentum"
 }

@@ -67,6 +67,19 @@ def test_migration_006_is_additive_lifecycle_columns():
     assert "ADD COLUMN IF NOT EXISTS economic_gate" in sql
 
 
+def test_migration_007_is_additive_delivery_status():
+    sql = (MIGRATIONS_DIR / "007_platform_delivery.sql").read_text(encoding="utf-8")
+    assert "DROP" not in sql
+    assert "RENAME" not in sql
+    assert "ADD COLUMN IF NOT EXISTS delivery_status" in sql
+    files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+    pending = pending_migration_files(
+        files,
+        {path.name for path in files if path.name != "007_platform_delivery.sql"},
+    )
+    assert [path.name for path in pending] == ["007_platform_delivery.sql"]
+
+
 def test_monitor_labels_and_unavailable_metrics():
     labels = infer_research_labels(strategy_id="CrossSectionalFactorML", run_summary={})
     assert labels["research_mode_label"] == "ML Discovery"

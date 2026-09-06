@@ -12,6 +12,23 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
+from qc_research.platform_presentation import (
+    ASSET_LABELS,
+    FAMILY_LABELS,
+    HELP,
+    MODE_LABELS,
+    PROVENANCE_LABELS,
+    display_strategy_name,
+    format_execution,
+    format_inner_cv,
+    format_model_choice,
+    format_validation,
+    friendly_label,
+    robustness_summary,
+    short_id,
+    strategy_definition_from_payloads,
+)
+
 from qc_research.ml_aggregation import (
     COMPLETE,
     STAGE2_THRESHOLD_KEYS,
@@ -224,6 +241,7 @@ def infer_research_labels(
         "selected_candidate": str(summary.get("selected_candidate") or summary.get("selected_trial_id") or UNAVAILABLE),
         "baseline_trial_id": str(summary.get("baseline_trial_id") or UNAVAILABLE),
         "provenance_kind": classify_monitor_provenance(provenance),
+        "delivery_status": str(lifecycle.get("delivery_status") or summary.get("delivery_status") or ""),
     }
 
 
@@ -470,6 +488,21 @@ def build_platform_monitor_view(
         "holdout_accessed": False if merged_summary.get("holdout_accessed") in {None, False, 0, "false"} else True,
         "holdout_locked": bool(merged_summary.get("holdout_locked")) if merged_summary.get("holdout_locked") is not None else labels.get("holdout_status") == "LOCKED",
         "official_windows": official_windows,
+        "display_name": display_strategy_name(strategy_id, merged_summary.get("display_name")),
+        "delivery_status": merged_summary.get("delivery_status")
+        or labels.get("delivery_status")
+        or ("DELIVERED" if provenance_kind == "REAL_QC" and window_count else "PENDING"),
+        "strategy_definition": strategy_definition_from_payloads(
+            summary=merged_summary,
+            spec=spec,
+            trials=trials,
+        ),
+        "robustness_summary": robustness_summary(
+            windows if isinstance(windows, list) and windows else official_windows,
+            robustness if isinstance(robustness, dict) else None,
+        ),
+        "metric_kind": merged_summary.get("metric_kind") or "mean_across_windows",
+        "last_research_update": merged_summary.get("last_seen_at") or summary.get("synced_at"),
     }
 
 
@@ -522,66 +555,207 @@ def official_qc_id_frame(windows: list[dict[str, Any]] | None):
     return pd.DataFrame(rows)
 
 
-def render_platform_view(view: dict[str, Any]) -> None:
-    """Render a built platform monitor view. No QuantConnect. No training."""
-    st.caption(
-        "Mode: {0} · Asset: {1} · Family: {2} · Research status: {3} · Provenance: {4}".format(
-            view.get("research_mode_label"),
-            view.get("asset_class_label"),
-            view.get("strategy_family"),
-            view.get("research_status") or view.get("research_state"),
-            view.get("provenance"),
-        )
+def investor_wfo_frame(windows: list[dict[str, Any]] | None, *, selected_trial_fallback: str | None = None):
+    full = platform_oos_window_frame(windows, selected_trial_fallback=selected_trial_fallback)
+    if full.empty:
+        return full
+    selected = []
+    for value in full.get("selected_trial_id", []):
+        parsed = format_model_choice(value)
+        selected.append(parsed if parsed != UNAVAILABLE else value)
+    return pd.DataFrame(
+        {
+            "Window": full["window_id"],
+            "Year": full["oos_end"].astype(str).str.slice(0, 4) if "oos_end" in full else full["window_id"],
+            "ML Sharpe": full["ml_sharpe"],
+            "Baseline Sharpe": full["baseline_sharpe"],
+            "Difference": full["sharpe_diff"],
+            "ML CAGR": full["ml_cagr"],
+            "Baseline CAGR": full["baseline_cagr"],
+            "Max DD": full["ml_max_drawdown"],
+            "Trades": full["ml_trades"],
+            "Selected model": selected,
+        }
     )
-    thesis = view.get("thesis")
+
+
+def _chip_row(items: list[str]) -> None:
+    chips = " · ".join("**{0}**".format(item) for item in items if item)
+    if chips:
+        st.markdown(chips)
+
+
+def _write_fields(fields: dict[str, Any]) -> None:
+    for label, value in fields.items():
+        if value is None or value == "" or value == [] or value == {} or value == UNAVAILABLE:
+            continue
+        st.markdown("**{0}**".format(label))
+        st.write(value)
+
+
+def _maybe_performance_charts(view: dict[str, Any]) -> None:
+    series = view.get("stitched_equity") or view.get("daily_returns") or view.get("oos_equity")
+    if not series:
+        return
+    frame = pd.DataFrame(series)
+    if frame.empty:
+        return
+    st.subheader("Performance")
+    if "equity" in frame.columns or "cumulative_return" in frame.columns:
+        y = "equity" if "equity" in frame.columns else "cumulative_return"
+        chart = frame.copy()
+        if "timestamp" in chart.columns:
+            chart = chart.set_index("timestamp")
+        st.line_chart(chart[y], use_container_width=True)
+    if "drawdown" in frame.columns:
+        st.caption("Drawdown")
+        dd = frame.copy()
+        if "timestamp" in dd.columns:
+            dd = dd.set_index("timestamp")
+        st.line_chart(dd["drawdown"], use_container_width=True)
+
+
+def render_platform_view(view: dict[str, Any]) -> None:
+    """Institutional Platform Research page. No QuantConnect. No training."""
+    st.markdown(
+        """
+        <style>
+        div[data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
+        div[data-testid="stDataFrame"] { overflow-x: auto; }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    definition = dict(view.get("strategy_definition") or {})
+    title = definition.get("display_name") or view.get("display_name") or view.get("strategy_id")
+    st.subheader(title)
+    _chip_row(
+        [
+            friendly_label(view.get("research_status") or view.get("research_state")),
+            friendly_label(view.get("research_mode"), MODE_LABELS),
+            friendly_label(view.get("strategy_family"), FAMILY_LABELS),
+            friendly_label(view.get("asset_class"), ASSET_LABELS),
+            friendly_label(view.get("provenance_kind") or view.get("provenance"), PROVENANCE_LABELS),
+            friendly_label(view.get("holdout_status")),
+            friendly_label(view.get("promotion_gate")),
+            friendly_label(view.get("delivery_status") or "DELIVERED"),
+        ]
+    )
+    if view.get("last_research_update"):
+        st.caption("Last research update: {0} · Dashboard delivery: {1}".format(
+            view.get("last_research_update"),
+            friendly_label(view.get("delivery_status") or "DELIVERED"),
+        ))
+    else:
+        st.caption("Dashboard delivery: {0}".format(friendly_label(view.get("delivery_status") or "DELIVERED")))
+
+    thesis = definition.get("thesis") or view.get("thesis")
     if thesis and thesis != UNAVAILABLE:
         st.markdown("**Thesis**")
         st.write(thesis)
-    a1, a2, a3, a4 = st.columns(4)
-    a1.metric("Research mode", view.get("research_mode_label"))
-    a2.metric("Family", view.get("strategy_family"))
-    a3.metric("Asset", view.get("asset_class_label"))
-    a4.metric("Research status", view.get("research_status") or view.get("research_state"))
-    b1, b2, b3, b4 = st.columns(4)
-    b1.metric("Provenance", view.get("provenance_kind") or view.get("provenance"))
-    b2.metric("Economic gate", view.get("economic_gate"))
-    b3.metric("Promotion gate", view.get("promotion_gate"))
-    b4.metric("Holdout status", view.get("holdout_status"))
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("WFO window count", view.get("window_count"))
-    c2.metric("Selected model", view.get("selected_candidate"))
-    c3.metric("Baseline", view.get("baseline"))
-    c4.metric("Model family", view.get("model_family"))
-    d1, d2, d3, d4 = st.columns(4)
-    d1.metric("ML Sharpe", view.get("ml_sharpe") if view.get("ml_sharpe") is not None else view.get("sharpe"))
-    d2.metric("Baseline Sharpe", view.get("baseline_sharpe"))
-    d3.metric("ML-minus-baseline Sharpe", view.get("sharpe_diff"))
-    d4.metric("ML CAGR", view.get("ml_cagr"))
-    e1, e2, e3, e4 = st.columns(4)
-    e1.metric("Search space", view.get("search_space_hash"))
-    e2.metric("Trial count", view.get("trial_count"))
-    e3.metric("Cost model", view.get("cost_model"))
-    e4.metric("Spec hash", view.get("spec_hash"))
-    f1, f2, f3, f4 = st.columns(4)
-    f1.metric("Lineage", view.get("lineage"))
-    f2.metric("Git SHA", view.get("git_sha"))
-    f3.metric("Winner QC id", view.get("winner_backtest_id"))
-    f4.metric("Baseline QC id", view.get("baseline_backtest_id"))
-    g1, g2, g3, g4 = st.columns(4)
-    g1.metric("Research kind", view.get("research_kind"))
-    g2.metric("Symbol", view.get("symbol"))
-    g3.metric("OOS window count", view.get("window_count"))
-    g4.metric("Holdout accessed", "no" if not view.get("holdout_accessed") else "yes")
-    h1, h2, h3, h4 = st.columns(4)
-    h1.metric("History provider", view.get("history_provider"))
-    h2.metric("Feature schema", view.get("feature_schema_hash"))
-    h3.metric("Fill assumptions", view.get("fill_assumptions"))
-    h4.metric("Signal timing", view.get("signal_timing"))
-    i1, i2, i3, i4 = st.columns(4)
-    i1.metric("Training layer", view.get("training_layer"))
-    i2.metric("Train QC id", view.get("train_backtest_id"))
-    i3.metric("Object Store key", view.get("object_store_key"))
-    i4.metric("Data download used", view.get("data_read_used"))
+    if definition.get("portfolio_behavior"):
+        st.markdown("**What the strategy does**")
+        st.write(definition["portfolio_behavior"])
+
+    overview = st.columns(2)
+    with overview[0]:
+        st.markdown("**Research mode**")
+        st.write(friendly_label(view.get("research_mode"), MODE_LABELS))
+        st.markdown("**Family**")
+        st.write(friendly_label(view.get("strategy_family"), FAMILY_LABELS))
+    with overview[1]:
+        st.markdown("**Instrument / universe**")
+        st.write(definition.get("instrument") or ", ".join(definition.get("universe") or []) or UNAVAILABLE)
+        st.markdown("**Holdout**")
+        st.write(friendly_label(view.get("holdout_status")))
+
+    mode = str(view.get("research_mode") or "")
+    st.subheader("Strategy Definition" if mode != "MANUAL" else "Strategy Rules")
+    if mode == "MANUAL":
+        _write_fields(
+            {
+                "Instrument / universe": definition.get("instrument") or definition.get("universe"),
+                "Signal rule": definition.get("signal_rule"),
+                "Entry": definition.get("entry"),
+                "Exit": definition.get("exit"),
+                "Sizing": definition.get("sizing"),
+                "Rebalance": definition.get("rebalance"),
+                "Leverage": definition.get("leverage"),
+                "Costs": definition.get("cost_model_id"),
+                "Execution timing": format_execution(definition.get("execution")),
+            }
+        )
+    else:
+        st.markdown("**Research Design**")
+        validation = definition.get("validation")
+        _write_fields(
+            {
+                "Features": ", ".join(str(item) for item in (definition.get("features") or [])),
+                "Lookback": definition.get("lookback"),
+                "Target": definition.get("target"),
+                "Models searched": ", ".join(
+                    str(item) for item in (definition.get("models_searched") or []) if isinstance(item, str)
+                ),
+                "Winner": format_model_choice(definition.get("winner") or view.get("selected_candidate")),
+                "Baseline": format_model_choice(definition.get("baseline") or view.get("baseline")),
+                "Validation": format_validation(validation),
+                "Inner CV": format_inner_cv(validation),
+                "Execution": format_execution(definition.get("execution")),
+                "Cost model": definition.get("cost_model_id") or view.get("cost_model"),
+            }
+        )
+
+    st.subheader("Key Results")
+    metric_kind = str(view.get("metric_kind") or "mean_across_windows")
+    if metric_kind == "stitched_full_period":
+        st.caption("Full Non-Holdout OOS from stitched daily returns.")
+    else:
+        st.caption(HELP["mean_across_windows"])
+    ml = dict(view.get("ml_metrics") or {})
+    r1 = st.columns(4)
+    r1[0].metric("CAGR", view.get("ml_cagr"), help=HELP["CAGR"])
+    r1[1].metric(
+        "Sharpe",
+        view.get("ml_sharpe") if view.get("ml_sharpe") is not None else view.get("sharpe"),
+        help=HELP["Sharpe"],
+    )
+    r1[2].metric(
+        "Sortino",
+        ml.get("sortino_ratio") if ml.get("sortino_ratio") is not None else UNAVAILABLE,
+        help=HELP["Sortino"],
+    )
+    r1[3].metric(
+        "Max Drawdown",
+        ml.get("max_drawdown") if ml.get("max_drawdown") is not None else UNAVAILABLE,
+        help=HELP["Max Drawdown"],
+    )
+    r2 = st.columns(4)
+    r2[0].metric("Net Return", ml.get("net_profit") if ml.get("net_profit") is not None else UNAVAILABLE)
+    r2[1].metric("Trades", ml.get("trade_count") if ml.get("trade_count") is not None else UNAVAILABLE)
+    r2[2].metric("Fees / cost drag", ml.get("cost_drag") if ml.get("cost_drag") is not None else UNAVAILABLE)
+    r2[3].metric("Baseline Sharpe", view.get("baseline_sharpe"), help=HELP["Sharpe"])
+    r3 = st.columns(4)
+    r3[0].metric("ML-minus-baseline Sharpe", view.get("sharpe_diff"))
+    r3[1].metric("Baseline CAGR", view.get("baseline_cagr"), help=HELP["CAGR"])
+    r3[2].metric("Baseline", view.get("baseline"))
+    r3[3].metric("Selected model", view.get("selected_candidate"))
+    if metric_kind != "stitched_full_period":
+        st.caption(
+            "Mean Across WFO Windows. Stitched Full Non-Holdout OOS equity is unavailable "
+            "for this record and is not fabricated."
+        )
+
+    # Keep production AppTest contract labels.
+    s1, s2, s3, s4 = st.columns(4)
+    s1.metric("Research status", view.get("research_status") or view.get("research_state"), help=HELP["promotion_gate"])
+    s2.metric("Economic gate", view.get("economic_gate"), help=HELP["economic_gate"])
+    s3.metric("Promotion gate", view.get("promotion_gate"), help=HELP["promotion_gate"])
+    s4.metric("Holdout status", view.get("holdout_status"), help=HELP["holdout"])
+    s5, s6, s7, s8 = st.columns(4)
+    s5.metric("OOS window count", view.get("window_count"), help=HELP["OOS"])
+    s6.metric("Holdout accessed", "no" if not view.get("holdout_accessed") else "yes", help=HELP["holdout"])
+    s7.metric("WFO window count", view.get("window_count"), help=HELP["WFO"])
+    s8.metric("Selected model", view.get("selected_candidate"))
     if view.get("provenance") == "LOCAL_LICENSED":
         st.info("Provenance is LOCAL_LICENSED optional local Lean data. This is not CLOUD_VALIDATED.")
     if view.get("intercept_only_flag") is True:
@@ -593,24 +767,36 @@ def render_platform_view(view: dict[str, Any]) -> None:
         "HUMAN_REVIEW_REQUIRED is the promotion gate, not the research terminal. "
         "2025+ / final holdout, paper, live, IBKR, and model promotion stay locked."
     )
+    _maybe_performance_charts(view)
     oos_windows = view.get("oos_windows")
     if oos_windows is not None and oos_windows != UNAVAILABLE:
-        st.subheader("OOS windows")
-        frame = platform_oos_window_frame(oos_windows, selected_trial_fallback=str(view.get("selected_candidate") or "") or None)
+        st.subheader("Walk-forward")
+        frame = investor_wfo_frame(
+            oos_windows if isinstance(oos_windows, list) else [],
+            selected_trial_fallback=str(view.get("selected_candidate") or "") or None,
+        )
         if not frame.empty:
             st.dataframe(frame, use_container_width=True, hide_index=True)
         else:
             st.write(oos_windows)
         st.caption("Non-holdout windows only. 2025+ / final holdout remain sealed.")
-    qc_rows = view.get("official_windows") or (oos_windows if isinstance(oos_windows, list) else [])
-    qc_frame = official_qc_id_frame(qc_rows if isinstance(qc_rows, list) else [])
-    if not qc_frame.empty:
-        st.subheader("Official QC IDs")
-        st.dataframe(qc_frame, use_container_width=True, hide_index=True)
+    summary = dict(view.get("robustness_summary") or {})
+    if summary:
+        st.subheader("Robustness")
+        b1, b2, b3, b4 = st.columns(4)
+        b1.metric("Selected model", format_model_choice(summary.get("selected_model") or view.get("selected_candidate")))
+        b2.metric("Selected in", summary.get("selected_in") or UNAVAILABLE)
+        b3.metric("Positive ML Sharpe", summary.get("positive_ml_sharpe") or UNAVAILABLE)
+        b4.metric("ML Sharpe > baseline", summary.get("ml_beats_baseline") or UNAVAILABLE)
+        c1, c2 = st.columns(2)
+        c1.metric("Parameter stability", summary.get("parameter_stability") or UNAVAILABLE)
+        c2.metric("Signal activity", summary.get("signal_activity") or UNAVAILABLE)
+        if summary.get("parameter_stability") == "High":
+            st.caption("The same candidate was selected in every window. This is selection stability, not an economic STABLE_PLATEAU.")
     robustness = view.get("robustness")
     if robustness is not None and robustness != UNAVAILABLE and robustness != {}:
-        st.subheader("Robustness")
-        st.write(robustness)
+        with st.expander("Robustness technical details", expanded=False):
+            st.write(robustness)
     st.subheader("Costs")
     st.write(
         {
@@ -619,15 +805,26 @@ def render_platform_view(view: dict[str, Any]) -> None:
             "signal_timing": view.get("signal_timing"),
         }
     )
-    if view.get("search_space"):
-        st.subheader("Search space / trial diagnostics")
-        st.write(view["search_space"])
-    if view.get("trials"):
-        st.subheader("Trial ledger")
-        st.write(view["trials"])
-        payload = view["trials"].get("payload") if isinstance(view["trials"], dict) else None
-        if isinstance(payload, dict) and payload.get("provenance") == "SYNTHETIC_TEST_ONLY":
-            st.error("Synthetic trial ledger cannot be research evidence.")
+    with st.expander("Model diagnostics", expanded=False):
+        st.write(
+            {
+                "models_searched": definition.get("models_searched") or UNAVAILABLE,
+                "winner": format_model_choice(definition.get("winner") or view.get("selected_candidate")),
+                "hyperparameters": definition.get("winner") or view.get("selected_candidate"),
+                "candidate_count": view.get("trial_count"),
+                "search_space_hash": short_id(view.get("search_space_hash"), keep=12),
+                "feature_schema": short_id(view.get("feature_schema_hash"), keep=12),
+                "parameter_stability": summary.get("parameter_stability"),
+                "intercept_only": view.get("intercept_only"),
+            }
+        )
+        if view.get("search_space"):
+            st.write(view["search_space"])
+        if view.get("trials"):
+            st.write(view["trials"])
+            payload = view["trials"].get("payload") if isinstance(view["trials"], dict) else None
+            if isinstance(payload, dict) and payload.get("provenance") == "SYNTHETIC_TEST_ONLY":
+                st.error("Synthetic trial ledger cannot be research evidence.")
     if view.get("pair"):
         st.subheader("Pair diagnostics")
         st.write(view["pair"])
@@ -641,6 +838,41 @@ def render_platform_view(view: dict[str, Any]) -> None:
     if view.get("roll"):
         st.subheader("Roll diagnostics")
         st.write(view["roll"])
+    with st.expander("Technical / audit details", expanded=False):
+        st.write(
+            {
+                "spec_hash": short_id(view.get("spec_hash")),
+                "search_space_hash": short_id(view.get("search_space_hash")),
+                "feature_schema_hash": short_id(view.get("feature_schema_hash")),
+                "lineage": view.get("lineage"),
+                "git_sha": short_id(view.get("git_sha")),
+                "history_provider": view.get("history_provider"),
+                "training_layer": view.get("training_layer"),
+                "object_store_key": short_id(view.get("object_store_key"), keep=16),
+                "data_download_used": view.get("data_read_used"),
+                "research_kind": view.get("research_kind"),
+                "symbol": view.get("symbol"),
+                "cost_model": view.get("cost_model"),
+            }
+        )
+        st.caption("Full identifiers")
+        st.write(
+            {
+                "spec_hash": view.get("spec_hash"),
+                "search_space_hash": view.get("search_space_hash"),
+                "feature_schema_hash": view.get("feature_schema_hash"),
+                "git_sha": view.get("git_sha"),
+                "winner_backtest_id": view.get("winner_backtest_id"),
+                "baseline_backtest_id": view.get("baseline_backtest_id"),
+                "train_backtest_id": view.get("train_backtest_id"),
+                "object_store_key": view.get("object_store_key"),
+            }
+        )
+        qc_rows = view.get("official_windows") or (oos_windows if isinstance(oos_windows, list) else [])
+        qc_frame = official_qc_id_frame(qc_rows if isinstance(qc_rows, list) else [])
+        if not qc_frame.empty:
+            st.caption("Official QC IDs")
+            st.dataframe(qc_frame, use_container_width=True, hide_index=True)
 
 
 def render_platform_section(strategy_id: str, *, engine=None) -> None:

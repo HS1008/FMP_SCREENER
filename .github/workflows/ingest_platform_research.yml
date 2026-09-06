@@ -3,6 +3,9 @@ name: Ingest platform research artifacts
 on:
   repository_dispatch:
     types: [platform-research-ingest]
+  schedule:
+    # Tokenless fallback: pull public complete QS artifacts if dispatch never arrived.
+    - cron: "23 * * * *"
   workflow_dispatch:
     inputs:
       root:
@@ -83,6 +86,18 @@ jobs:
             else
               echo "FAIL: remote artifact unavailable and no local copy of $ARTIFACT_PATH"
               exit 1
+            fi
+          elif [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "Scheduled pull fallback for complete public QS artifacts"
+            python -m qc_research.pull_public_platform_artifacts \
+              --repo "${SOURCE_REPO:-hs1008/quant-strategies}" \
+              --ref "${SOURCE_REF:-}" \
+              --dest "$DEST_DIR" || true
+            if ls "$DEST_DIR"/*.json >/dev/null 2>&1; then
+              TARGET="$DEST_DIR"
+            else
+              echo "Public pull empty; ingesting committed FMP canonical artifacts"
+              TARGET="$LOCAL_ROOT"
             fi
           fi
           echo "target=$TARGET" >> "$GITHUB_OUTPUT"

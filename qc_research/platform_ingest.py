@@ -152,6 +152,8 @@ def platform_run_identity(payload: dict[str, Any]) -> dict[str, Any]:
         "promotion_gate": inner.get("promotion_gate") or payload.get("promotion_gate"),
         "holdout_status": inner.get("holdout_status") or payload.get("holdout_status"),
         "economic_gate": inner.get("economic_gate") or payload.get("economic_gate"),
+        "delivery_status": inner.get("delivery_status") or payload.get("delivery_status") or "PENDING",
+        "name": inner.get("display_name") or payload.get("display_name"),
     }
 
 
@@ -307,6 +309,7 @@ INSERT INTO research_runs (
     promotion_gate,
     holdout_status,
     economic_gate,
+    delivery_status,
     holdout_accessed,
     holdout_access_count
 ) VALUES (
@@ -322,6 +325,7 @@ INSERT INTO research_runs (
     :promotion_gate,
     :holdout_status,
     :economic_gate,
+    :delivery_status,
     FALSE,
     0
 )
@@ -337,7 +341,8 @@ ON CONFLICT (research_run_id) DO UPDATE SET
     run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status),
     promotion_gate = COALESCE(EXCLUDED.promotion_gate, research_runs.promotion_gate),
     holdout_status = COALESCE(EXCLUDED.holdout_status, research_runs.holdout_status),
-    economic_gate = COALESCE(EXCLUDED.economic_gate, research_runs.economic_gate)
+    economic_gate = COALESCE(EXCLUDED.economic_gate, research_runs.economic_gate),
+    delivery_status = COALESCE(EXCLUDED.delivery_status, research_runs.delivery_status)
 """
 
 REGISTER_STRATEGY_SQL = """
@@ -594,6 +599,10 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
         "asset_class": record.get("asset_class"),
         "symbol": record.get("symbol"),
         "thesis": record.get("thesis") or record.get("original_user_thesis"),
+        "display_name": record.get("display_name"),
+        "delivery_status": record.get("delivery_status") or lifecycle.get("delivery_status") or "PENDING",
+        "strategy_definition": record.get("strategy_definition"),
+        "metric_kind": (record.get("strategy_definition") or {}).get("metric_kind") or "mean_across_windows",
         "run_status": lifecycle["research_status"],
         "research_status": lifecycle["research_status"],
         "research_state": lifecycle["research_status"],
