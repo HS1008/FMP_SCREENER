@@ -78,8 +78,9 @@ def _sources_summary(health: list[dict[str, Any]]) -> pd.DataFrame:
                 "Dataset": h.get("freshness_dataset") or h.get("dataset"),
                 "Enabled": "yes" if h.get("enabled") else "no",
                 "Access": h.get("access_status"),
+                "Cadence": h.get("dataset_cadence") or "—",
                 "Transport": transport_chip(h.get("transport_status")),
-                "Freshness": freshness_chip(h.get("freshness_status")),
+                "Freshness (now)": freshness_chip(h.get("freshness_status")),
                 "Latest obs": h.get("latest_observation_date") or "—",
                 "Last success": age_text(h.get("last_success_at")),
             }
@@ -183,16 +184,22 @@ def render_macro_overview() -> None:
         rows = []
         for block in blocks:
             transforms = block.get("transforms") or {}
-            row = {"Series": block.get("label") or block["series_id"], "ID": block["series_id"], "Latest": fmt(block["latest"].get("value"), None), "Units": block["latest"].get("units"), "Obs date": block["latest"].get("observation_date"), "Freq": block.get("frequency"), "SA": block.get("seasonal_adjustment"), "Vintage": block.get("vintage_kind")}
+            row = {"Series": block.get("label") or block["series_id"], "ID": block["series_id"], "Latest": fmt(block["latest"].get("value"), None), "Units": block["latest"].get("units") or block.get("catalog_units"), "Obs date": block["latest"].get("observation_date"), "Freq": block.get("frequency"), "SA": block.get("seasonal_adjustment"), "Aggregation": block.get("aggregation") or "—", "Vintage": block.get("vintage_kind")}
+            display = transforms.get("level_display")
+            if display is not None and display.get("value") is not None:
+                row["Display"] = "{0} {1}".format(fmt(display.get("value"), None), display.get("units") or "")
             for key in ("yoy_pct", "ann3m_pct", "ann6m_pct", "mom_pct", "qoq_saar_pct", "mom_change", "mom_change_pp", "yoy_change_pp", "wow_change", "chg_4w", "avg_4w", "chg_prev_bps", "chg_1w_bps", "chg_1m_bps", "chg_3m_bps"):
                 if key in transforms:
                     row[TRANSFORM_LABELS.get(key, key)] = _transform_text(transforms[key])
-            if block.get("metadata_status") == "MISMATCH":
-                row["Metadata"] = "MISMATCH"
+            if block.get("publication_status") and block.get("publication_status") != "PUBLISHED":
+                row["Publication"] = "{0} ({1})".format(block.get("publication_status"), block.get("metadata_status"))
             rows.append(row)
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+        quarantined = [b["series_id"] for b in blocks if b.get("publication_status") and b.get("publication_status") != "PUBLISHED"]
+        if quarantined:
+            st.warning("Metadata gate: {0} show the last validated data only; the latest retrieval was quarantined (see Data Health).".format(", ".join(quarantined)))
         if cat == "liquidity":
-            st.caption("Balances differ in dating (Wednesday levels vs weekly averages vs daily) and scale (millions vs billions); no composite liquidity score is computed.")
+            st.caption("Balances differ in dating (Wednesday levels for WALCL vs week averages ending Wednesday for WTREGEN/WRESBAL vs daily RRPONTSYD) and scale (provider units are millions or billions; 'Display' is an explicit versioned conversion, the stored level keeps provider units); no composite liquidity score is computed.")
         if cat == "inflation":
             st.caption("YoY = 100·(I_t/I_{t−12} − 1); 3M annualized = 100·((I_t/I_{t−3})⁴ − 1); 6M annualized = 100·((I_t/I_{t−6})² − 1); exact calendar alignment, no forward fill.")
     buckets = credit.get("buckets") or []
@@ -358,10 +365,44 @@ def render_data_health() -> None:
         st.info("No sources registered yet. The first `jobs.market_intelligence_refresh` run registers sources (disabled sources appear as explicit skips).")
     else:
         frame = pd.DataFrame(
-            [{"Source": h.get("source_id"), "Provider": h.get("provider"), "Dataset": h.get("freshness_dataset") or h.get("dataset"), "Enabled": "yes" if h.get("enabled") else "no", "Access": h.get("access_status"), "Cadence": h.get("expected_cadence"), "Transport": transport_chip(h.get("transport_status")), "Freshness": freshness_chip(h.get("freshness_status")), "Latest obs": h.get("latest_observation_date") or "—", "Tolerance (d)": h.get("tolerance_days"), "Last attempt": age_text(h.get("last_attempt_at")), "Last success": age_text(h.get("last_success_at")), "Error": (h.get("last_error_redacted") or "")[:80], "Export scope": h.get("usage_scope")} for h in health]
+            [
+                {
+                    "Source": h.get("source_id"),
+                    "Provider": h.get("provider"),
+                    "Dataset": h.get("freshness_dataset") or h.get("dataset"),
+                    "Enabled": "yes" if h.get("enabled") else "no",
+                    "Access": h.get("access_status"),
+                    "Cadence": h.get("dataset_cadence") or "—",
+                    "Transport": transport_chip(h.get("transport_status")),
+                    "Metadata": h.get("metadata_status") or "—",
+                    "Freshness (now)": freshness_chip(h.get("freshness_status")),
+                    "Freshness (at ingest)": freshness_chip(h.get("stored_freshness_status")),
+                    "Latest obs": h.get("latest_observation_date") or "—",
+                    "Age (d)": h.get("age_days"),
+                    "Tolerance (d)": h.get("tolerance_days"),
+                    "Stale after": h.get("stale_after_estimate") or "—",
+                    "Obs retrieved": age_text(h.get("latest_observation_retrieved_at")),
+                    "Last attempt": age_text(h.get("last_attempt_at")),
+                    "Last success": age_text(h.get("last_success_at")),
+                    "Error": (h.get("last_error_redacted") or "")[:80],
+                    "Export scope": h.get("usage_scope"),
+                }
+                for h in health
+            ]
         )
         st.dataframe(frame, use_container_width=True, hide_index=True)
-        st.caption("Transport (did the last retrieval succeed?) and freshness (is the latest observation within the release-lag tolerance?) are tracked separately. A successful retrieval of old data is not fresh; a failed retrieval does not erase last valid data.")
+        evaluated_on = next((h.get("evaluated_on") for h in health if h.get("evaluated_on")), None)
+        policy = next((h.get("freshness_policy_version") for h in health if h.get("freshness_policy_version")), None)
+        st.caption(
+            "Transport (did the last retrieval succeed?), metadata (did provider units/frequency/identity validate?) and freshness (is the latest observation within the cadence tolerance?) are tracked separately. "
+            "Freshness (now) is re-evaluated against the database clock on {0} under {1}; it decays even when no job runs. 'Stale after' is the tolerance bound, not an official release date. "
+            "A successful retrieval of old data is not fresh; a failed or metadata-rejected retrieval does not erase last valid data.".format(evaluated_on or "today", policy or "the freshness policy")
+        )
+    quarantine = load_or_stop("data_health_context").get("quarantine") or []
+    if quarantine:
+        st.subheader("Quarantined observations (metadata gate / future dates)")
+        st.dataframe(pd.DataFrame(quarantine), use_container_width=True, hide_index=True)
+        st.caption("Rows retrieved under failed metadata validation or with impossible dates are kept here for diagnosis and are never promoted to current observations or metrics. Last valid published data remains visible on the other pages.")
     st.subheader("Recent ingestion runs (30 days)")
     if not runs:
         st.info("No ingestion runs recorded.")
@@ -379,7 +420,7 @@ def render_data_health() -> None:
 # ---- Morning Context ------------------------------------------------------------------------
 
 def render_morning_context() -> None:
-    page_header("Morning Context", "Latest published morning_context_v1 snapshot: human-readable sections plus the deterministic JSON and its identity. Built by the backend; no LLM.", fred=True)
+    page_header("Morning Context", "Latest published morning_context snapshot: human-readable sections plus the deterministic JSON and its identity. Built by the backend (current-only; no historical reconstruction); no LLM.", fred=True)
     snapshot = load_or_stop("morning_latest")
     index = load_or_stop("morning_index", 20)
     if not snapshot:
@@ -391,15 +432,50 @@ def render_morning_context() -> None:
     cols[1].metric("Generated", str(snapshot["generated_at"])[:19])
     cols[2].metric("Cutoff", str(snapshot["cutoff_at"])[:19])
     cols[3].metric("Completeness", snapshot["completeness"])
-    st.caption("SHA-256: `{0}` · schema {1} · generated_at is builder wall-clock; cutoff_at is the DB read point; every metric keeps its own observation date.".format(snapshot["snapshot_sha256"], snapshot["schema_version"]))
+    from market_intelligence.read_models import snapshot_age
+
+    age = snapshot_age(snapshot)
+    quality = snapshot.get("quality_status") or "OK"
+    st.caption(
+        "SHA-256: `{0}` · content SHA-256: `{1}` · schema {2} · quality {3} · snapshot age {4} ({5} h; aging after {6} h, stale after {7} h). "
+        "generated_at is builder wall-clock; cutoff_at is the DB capture time (REPEATABLE READ); every metric keeps its own observation date. "
+        "Captured health inside the body is frozen at capture; the age shown here is evaluated now.".format(
+            snapshot["snapshot_sha256"], snapshot.get("content_sha256") or "n/a", snapshot["schema_version"], quality, age.get("snapshot_age_status"), age.get("age_hours"), age.get("aging_after_hours"), age.get("stale_after_hours")
+        )
+    )
+    if age.get("snapshot_age_status") == "STALE":
+        st.warning("The latest published snapshot is stale for delivery purposes (no newer snapshot has been published). Captured values are unchanged; check Data Health and the backend timer.")
+    if quality != "OK":
+        st.warning("Quality flag on this snapshot: {0} — {1}".format(quality, snapshot.get("quality_note") or ""))
     status = body.get("sections_status") or {}
-    st.dataframe(pd.DataFrame([{"Section": k, "Status": v.get("status"), "Reason": v.get("reason") or ""} for k, v in status.items()]), use_container_width=True, hide_index=True)
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Section": k,
+                    "Status": v.get("status"),
+                    "Latest obs": v.get("latest_observation_date") or "—",
+                    "Captured freshness": ((v.get("captured_freshness") or {}).get("status") or "—") if isinstance(v, dict) else "—",
+                    "Cadence": ((v.get("captured_freshness") or {}).get("cadence") or "—") if isinstance(v, dict) else "—",
+                    "Reason": v.get("reason") or "",
+                }
+                for k, v in status.items()
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    captured = body.get("captured_health") or {}
+    if captured.get("quarantined_series") or captured.get("stale_sources") or captured.get("failed_transport"):
+        st.caption("Captured health at cutoff: {0} stale source(s), {1} failed/rejected transport(s), quarantined series: {2}.".format(len(captured.get("stale_sources") or []), len(captured.get("failed_transport") or []), ", ".join(captured.get("quarantined_series") or []) or "none"))
     sections = body.get("sections") or {}
     market = (sections.get("market") or {}).get("data") or {}
     if market:
         st.subheader("Market")
         st.write(market.get("overnight_quotes", {}).get("reason", ""))
-        lead = market.get("sector_leadership_1m_rs_vs_spy") or []
+        lead = market.get("sector_leadership_rs_vs_spy") or market.get("sector_leadership_1m_rs_vs_spy") or []
+        if lead:
+            lead = sorted(lead, key=lambda r: (r.get("rs_chg_1m") is None, -(r.get("rs_chg_1m") or 0)))  # ranked locally; the body stores identity order
         if lead:
             st.dataframe(styled_heatmap(pd.DataFrame([{"Sector / theme": r["sector_key"], "ETF": r["instrument_id"], "As of": r["as_of"], "1W RS": r["rs_chg_1w"], "1M RS": r["rs_chg_1m"], "3M RS": r["rs_chg_3m"], "1M return": r["ret_1m"]} for r in lead]), ["1W RS", "1M RS", "3M RS", "1M return"]), use_container_width=True, hide_index=True)
     rates = (sections.get("rates") or {}).get("data") or {}

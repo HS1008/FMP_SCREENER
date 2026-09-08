@@ -130,7 +130,7 @@ def freshness_chip(status: str | None) -> str:
 
 
 def transport_chip(status: str | None) -> str:
-    return {"OK": "🟢 OK", "FAILED": "🔴 Failed", "SKIPPED": "⚪ Skipped", "NEVER_ATTEMPTED": "⚪ Never"}.get(str(status or "").upper(), str(status or "n/a"))
+    return {"OK": "🟢 OK", "FAILED": "🔴 Failed", "PARTIAL": "🟠 Partial", "METADATA_REJECTED": "🔴 Metadata rejected", "SKIPPED": "⚪ Skipped", "NEVER_ATTEMPTED": "⚪ Never"}.get(str(status or "").upper(), str(status or "n/a"))
 
 
 def age_text(iso: str | None, *, now: datetime | None = None) -> str:
