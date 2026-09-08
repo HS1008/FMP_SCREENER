@@ -55,8 +55,16 @@ jobs:
           echo "deployed_head=$(git rev-parse HEAD)"
           echo "deployed_oneline=$(git log -1 --oneline)"
           echo "dashboard=$(systemctl is-active fmp-dashboard || true)"
-          ls -1 /root/FMP_SCREENER/backups/fmp_pre_mi_*.dump 2>/dev/null | tail -3 || echo "WARN: no preflight dump found"
+          # Keep dumps outside the git checkout so Stage 1 working-tree verify stays clean.
+          install -d -m 0700 /root/fmp_backups
+          if [ -d /root/FMP_SCREENER/backups ]; then
+            mv /root/FMP_SCREENER/backups/fmp_pre_mi_*.dump /root/fmp_backups/ 2>/dev/null || true
+            mv /root/FMP_SCREENER/backups/fmp_pre_mi_*.state.txt /root/fmp_backups/ 2>/dev/null || true
+            rmdir /root/FMP_SCREENER/backups 2>/dev/null || true
+          fi
+          ls -1 /root/fmp_backups/fmp_pre_mi_*.dump 2>/dev/null | tail -3 || ls -1 /root/FMP_SCREENER/backups/fmp_pre_mi_*.dump 2>/dev/null | tail -3 || echo "WARN: no preflight dump found"
           test -x /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh
+          test "$(git rev-parse HEAD)" = "eb20bb84209c1a1aa1896063d91803b6eb2bd591"
           EOF
 
       - name: Transfer protected secret files (not logged)
