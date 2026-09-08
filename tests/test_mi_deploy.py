@@ -213,6 +213,31 @@ def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
         assert "echo \"$FRED" not in raw and "echo $FRED" not in raw
 
 
+def test_activate_host_script_uses_admin_or_peer_for_role_sql():
+    text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
+    assert "MI_ADMIN_DATABASE_URL" in text
+    assert "ADMIN_DATABASE_URL" in text
+    assert "sudo -n -u postgres" in text
+    assert "writer_host_kind" in text
+    assert "postgres_peer" in text
+    assert "--phase probe" in text
+    for line in text.splitlines():
+        if "market_intelligence_readonly.sql" in line:
+            assert "DATABASE_URL" not in line
+            assert "DB_USER" not in line
+
+
+def test_activate_workflow_installs_fixed_script_and_keeps_existing_secrets():
+    raw = (ROOT / ".github" / "workflows" / "mi_production_activate.yml").read_text()
+    text = _yaml_without_comments(ROOT / ".github" / "workflows" / "mi_production_activate.yml")
+    assert "actions/checkout@v4" in raw
+    assert "activate_market_intelligence_host.sh" in raw
+    assert "--phase probe" in raw
+    assert "existing secret files are not overwritten" in raw
+    assert "eb20bb84209c1a1aa1896063d91803b6eb2bd591" not in raw
+    assert "pull_request:" not in text
+
+
 def test_validate_fred_live_refuses_production_urls_and_missing_config(monkeypatch, capsys):
     from jobs.validate_fred_live import EXIT_CONFIG, EXIT_REFUSED, run
 

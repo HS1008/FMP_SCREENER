@@ -70,8 +70,13 @@ ALLOWED_SERVER_ONLY_FILES = frozenset(
     {
         "test_db.py",
         "update_dashboard.sh",
+        "backups/",
     }
 )
+
+# Host dumps that accidentally land under the checkout. Not a Stage 1
+# methodology change — only an operational exception for backup files.
+ALLOWED_UNTRACKED_PREFIXES = ("backups/",)
 
 
 def redact(text: str) -> str:
@@ -120,7 +125,7 @@ def evaluate_working_tree(porcelain: str) -> dict[str, Any]:
         if xy == "!!":
             continue
         if xy == "??":
-            if path in ALLOWED_SERVER_ONLY_FILES:
+            if path in ALLOWED_SERVER_ONLY_FILES or path.startswith(ALLOWED_UNTRACKED_PREFIXES):
                 allowed_untracked.append(path)
             else:
                 unexpected_untracked.append(path)
