@@ -181,3 +181,53 @@ def test_no_workflow_runs_untrusted_pr_code_with_credentials():
         assert "pull_request_target" not in text, path.name
         if "pull_request:" in text:
             assert "secrets." not in text, "{0}: pull_request workflows must not consume secrets".format(path.name)
+
+
+def test_fred_validation_workflow_is_manual_only_and_receives_the_fred_secret_explicitly():
+    raw = (ROOT / ".github" / "workflows" / "fred_validation.yml").read_text()
+    text = _yaml_without_comments(ROOT / ".github" / "workflows" / "fred_validation.yml")
+    assert "pull_request:" not in text and "pull_request_target" not in text
+    assert "schedule:" not in text and "workflow_run:" not in text
+    assert re.search(r"^on:\n  workflow_dispatch:\s*$", text, flags=re.M)
+    assert "secrets.FRED_API_KEY" in raw
+    assert "image: postgres:16" in text and "127.0.0.1:5432" in text
+    assert "jobs.validate_fred_live" in text
+    assert "digitalocean" not in text.lower()
+    assert "QC_API_TOKEN" in text and 'QC_API_TOKEN: ""' in text
+    pr = _yaml_without_comments(ROOT / ".github" / "workflows" / "pr_validation.yml")
+    assert "secrets.FRED_API_KEY" not in pr and 'FRED_API_KEY: ""' in pr
+
+
+def test_validate_fred_live_refuses_production_urls_and_missing_config(monkeypatch, capsys):
+    from jobs.validate_fred_live import EXIT_CONFIG, EXIT_REFUSED, run
+
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.delenv("FMP_TEST_DATABASE_URL", raising=False)
+    assert run([]) == EXIT_CONFIG
+    monkeypatch.setenv("FRED_API_KEY", "test-fred-key-not-real")
+    monkeypatch.setenv("FMP_TEST_DATABASE_URL", "postgresql://user:pw@db.ondigitalocean.com:25060/fmp")
+    assert run([]) == EXIT_REFUSED
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "test-fred-key-not-real" not in combined
+
+
+def test_digitalocean_secret_script_is_dry_run_by_default_and_never_activates(tmp_path):
+    script = ROOT / "scripts" / "provision_digitalocean_mi_secrets.sh"
+    env_file = tmp_path / "market_intelligence.env"
+    env_file.write_text("FRED_API_KEY=CHANGE_ME\nDATABASE_URL=postgresql://writer:keep@127.0.0.1/fmp\n")
+    os.chmod(env_file, 0o600)
+    key = tmp_path / "fred_api_key"
+    key.write_text("not-a-real-fred-key\n")
+    os.chmod(key, 0o600)
+    dry = subprocess.run(["bash", str(script), "--env-file", str(env_file), "--fred-key-file", str(key), "--root", str(ROOT)], capture_output=True, text=True, check=False)
+    assert dry.returncode == 0, dry.stderr
+    assert "DRY RUN" in dry.stdout and "will NOT" in dry.stdout
+    assert env_file.read_text() == "FRED_API_KEY=CHANGE_ME\nDATABASE_URL=postgresql://writer:keep@127.0.0.1/fmp\n"
+    assert "not-a-real-fred-key" not in dry.stdout
+    applied = subprocess.run(["bash", str(script), "--apply", "--env-file", str(env_file), "--fred-key-file", str(key), "--root", str(ROOT)], capture_output=True, text=True, check=False)
+    assert applied.returncode == 0, applied.stderr
+    text = env_file.read_text()
+    assert "FRED_API_KEY=not-a-real-fred-key" in text
+    assert "DATABASE_URL=postgresql://writer:keep@127.0.0.1/fmp" in text
+    assert "systemctl" not in applied.stdout and "not-a-real-fred-key" not in applied.stdout

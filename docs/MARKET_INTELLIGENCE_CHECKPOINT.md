@@ -83,10 +83,11 @@ imported it undeclared) + protected-path diff base from CI; `bb03224` base ref f
 ## Validation results (final heads)
 
 - FMP: `FMP_TEST_DATABASE_URL=... MI_REQUIRE_DB_TESTS=1 python3 -m pytest -q -p no:cacheprovider`
-  -> **371 passed** (PostgreSQL 16.15). Without the URL and with `MI_REQUIRE_DB_TESTS=1` the same
-  command fails 126 DB tests with "DB checks must not silently skip in CI" (fail-closed guard verified).
-- QS: `python3 -m pytest -q -p no:cacheprovider` with QC variables unset -> **502 passed** (500 + 2
-  CI audit tests).
+  -> **380 passed** on this correction head (PostgreSQL 16.15). The previous pushed head was 371.
+  Without the URL and with `MI_REQUIRE_DB_TESTS=1` the same command fails DB tests with
+  "DB checks must not silently skip in CI" (fail-closed guard verified).
+- QS: `python3 -m pytest -q -p no:cacheprovider` with QC variables unset -> **503 passed**
+  (previous pushed head 502; +1 held-return classification coverage).
 - Protected paths: `sha256sum` of the 66 files under `stage1_results/`, `stage2_results/`,
   `qc_research/platform_artifacts/` identical to `origin/main` (`/tmp/protected_hashes_{main,after}.txt`
   diff empty); TLT fingerprint `d8f43c83ddec8d70` present and unchanged. `qc_research/*.py` unchanged
@@ -113,3 +114,23 @@ imported it undeclared) + protected-path diff base from CI; `bb03224` base ref f
   backtest from an idea, IBKR/TRACE adapters, ML_FINAL_HOLDOUT.
 - `NOT_IMPLEMENTED`: QC research project exporting real PIT membership/prices/caps for the
   `sector_internals_v1` producer; OAS / floaters; bond terms/quotes ingestion source.
+
+## Continuation (export / NULL revisions / section health / FRED workflow)
+
+Independent review findings A–E were reproduced on head `b23db7e` and fixed on this branch.
+`FRED_API_KEY` is a GitHub Actions repository secret (not present on this build host). Ordinary
+PR validation stays secretless. A separate minimal PR is required before GitHub will show
+**Run workflow**: official docs require `workflow_dispatch` to exist on the default branch.
+
+| Finding | Status | Evidence |
+|---|---|---|
+| A. Permitted nested `latest` / transforms redacted as unscoped | FIXED: controlled inheritance only under `INHERIT_SCOPE_KEYS`; unrelated nested sources stay fail-closed; explicit child scope wins | `test_mi_contracts.py`, HTTP macro route in `test_mi_pipeline.py` |
+| B. Redacted `coverage` leaked nested values/secrets | FIXED: allowlisted coverage metadata + secret strip; original unsanitized coverage is never copied | `test_export_policy_redacted_coverage_cannot_leak_nested_values_or_secrets` |
+| C. Valid→NULL revision left derived metrics published | FIXED: withdrawn dates are selected; metrics/credit/slopes NULL-published as `WITHDRAWN_OBSERVATION`; latest views skip withdrawn; history retains them; later valid revision restores | `test_mi_corrections.py`, migration `015` |
+| D1. Metadata-only objects counted as available | FIXED: `_has_value` requires a numerical field; zero counts; status/units/ids do not | `test_has_value_rejects_metadata_only_and_accepts_zero` |
+| D2. Newest date in a section hid stale required inputs | FIXED: per-required-series cadence; stale/missing lists on `sections_status`; deduped snapshot builds return the stored id/hash/timestamps/body | `test_section_status_*`, clock-advance + replay tests in `test_mi_pipeline.py` |
+| E. Held return used post-exit prices | FIXED in QS `sector_internals_method_v2`: reclass/universe exit = last still-member close; inferred delisting without proceeds NULLs the held book (no renormalization) | `tests/test_market_intelligence_research.py`; FMP fixture regenerated |
+
+FRED live validation: `.github/workflows/fred_validation.yml` (`workflow_dispatch` only,
+`secrets.FRED_API_KEY`, disposable `postgres:16`). Script `jobs.validate_fred_live`. DigitalOcean
+secret write is `scripts/provision_digitalocean_mi_secrets.sh` (dry-run default; does not activate).

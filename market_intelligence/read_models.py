@@ -214,6 +214,7 @@ def _series_block(series_row: dict[str, Any], metrics: dict[str, dict[str, Any]]
             "retrieved_at": series_row.get("retrieved_at"),
             "revision_seq": series_row.get("revision_seq"),
             "ingestion_run_id": series_row.get("ingestion_run_id"),
+            "export_scope": scope,
         },
         "frequency": series_row.get("frequency_short"),
         "seasonal_adjustment": series_row.get("seasonal_adjustment_short"),

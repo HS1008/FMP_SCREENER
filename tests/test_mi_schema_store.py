@@ -27,7 +27,7 @@ pytestmark = pytest.mark.usefixtures("pg_engine")
 
 def test_new_migrations_are_additive_and_numbered_after_007():
     names = sorted(p.name for p in MIGRATIONS.glob("*.sql"))
-    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013", "014"))]
+    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013", "014", "015"))]
     assert new == [
         "008_market_intelligence_core.sql",
         "009_market_intelligence_analytics.sql",
@@ -36,6 +36,7 @@ def test_new_migrations_are_additive_and_numbered_after_007():
         "012_market_intelligence_publication.sql",
         "013_research_idea_completeness.sql",
         "014_pit_sector_internals.sql",
+        "015_metric_latest_skips_withdrawn.sql",
     ]
     for name in new:
         sql = (MIGRATIONS / name).read_text(encoding="utf-8").upper()
@@ -48,7 +49,7 @@ def test_new_migrations_are_additive_and_numbered_after_007():
 def test_migrations_applied_once_and_second_application_is_noop(pg_engine):
     with pg_engine.connect() as conn:
         applied = {r[0] for r in conn.execute(text("SELECT filename FROM schema_migrations"))}
-    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql", "013_research_idea_completeness.sql", "014_pit_sector_internals.sql"} <= applied
+    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql", "013_research_idea_completeness.sql", "014_pit_sector_internals.sql", "015_metric_latest_skips_withdrawn.sql"} <= applied
     files = sorted(MIGRATIONS.glob("*.sql"))
     assert pending_migration_files(files, applied) == []
     # Second application must be a no-op (idempotent) and leave research tables intact.

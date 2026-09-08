@@ -381,6 +381,9 @@ def test_morning_snapshot_replay_dedupes_by_content_and_supersedes_explicitly(pg
     # A different runtime timestamp / parent run alone is the same content: still not republished.
     later = build_and_publish(pg_engine, parent_run_id="another-run", generated_at=GENERATED_AT.replace(hour=12))
     assert later.published_new is False and later.content_sha256 == morning.content_sha256 and later.snapshot_id == morning.snapshot_id
+    # Dedup must name the stored snapshot (id/hash/timestamps/body), not the just-computed one.
+    assert later.generated_at == morning.generated_at and later.cutoff_at == morning.cutoff_at
+    assert later.body["artifact_sha256"] == morning.snapshot_sha256
     with pg_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_morning_context_snapshots")).scalar() == count
     # Explicit supersession publishes a successor and marks the old row without editing its body.
@@ -417,8 +420,10 @@ def test_morning_snapshot_health_advances_with_the_clock_without_ingestion(pg_en
         aged = build_and_publish(pg_engine, parent_run_id=populated["parent"], generated_at=GENERATED_AT + timedelta(days=30))
         assert aged.published_new and aged.completeness == "PARTIAL"
         st = aged.sections_status
-        assert st["credit"]["status"] == "STALE" and st["rates"]["status"] == "STALE" and st["macro"]["captured_freshness"]["status"] == "FRESH"
-        assert "stale for cadence D" in st["credit"]["reason"]
+        assert st["credit"]["status"] == "STALE" and st["rates"]["status"] == "STALE"
+        assert "CPIAUCSL" not in st["macro"]["stale_required"]
+        assert set(st["macro"]["stale_required"]) >= {"ICSA", "CCSA", "DFF", "SOFR"}
+        assert "required series stale at capture" in (st["credit"]["reason"] or "")
         assert aged.body["captured_health"]["stale_sources"], "daily FRED datasets must be listed stale at capture"
         # Live read model agrees: stored status was FRESH at ingest, re-evaluated STALE now.
         from market_intelligence.read_models import source_health
@@ -635,9 +640,16 @@ def test_morning_route_is_export_filtered_and_hash_covers_the_delivered_json(api
     buckets = payload["body"]["sections"]["credit"]["data"]["buckets"]
     assert all(b["restricted"] and "oas_bps" not in b and "percentile" not in b for b in buckets)
     assert [b["series_id"] for b in buckets] == sorted(b["series_id"] for b in buckets)  # identity order after redaction
-    # Unrestricted official macro data still exported.
+    # Unrestricted official macro data still exported — including nested latest/transforms (Finding A).
     curve = payload["body"]["sections"]["rates"]["data"]["curve"]
     assert any(c["yield_pct"] is not None for c in curve)
+    macro_payload = api.get("/v1/context/macro/latest", headers={"Authorization": "Bearer fixture-token"}).json()
+    assert verify_export_hash(macro_payload)
+    inflation = (macro_payload["body"]["categories"] or {}).get("inflation") or []
+    cpi = next(b for b in inflation if b["series_id"] == "CPIAUCSL")
+    assert cpi["latest"]["value"] is not None and isinstance(cpi["latest"]["value"], (int, float))
+    assert (cpi.get("transforms") or {}).get("yoy_pct", {}).get("value") is not None
+    assert "oas_bps" not in json.dumps(macro_payload["body"])
     assert payload["latest_snapshot"]["snapshot_id"] == latest["snapshot_id"] and payload["latest_snapshot"]["content_sha256"] == latest["content_sha256"]
     # Delivery health is evaluated now (the fixture snapshot is old), inside the hashed envelope.
     assert payload["delivery_health"]["snapshot_age_status"] == "STALE" and payload["degraded"] is True

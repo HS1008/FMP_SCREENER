@@ -275,6 +275,63 @@ def test_export_policy_reorders_lists_with_redacted_entries_to_identity_order():
     assert [r["series_id"] for r in export_policy.filter_for_export(allowed)] == ["B", "A"]  # unrestricted lists keep order
 
 
+def test_export_policy_inherits_parent_scope_onto_unscoped_latest_and_transforms():
+    """Finding A: permitted nested latest/transforms were treated as unscoped and redacted."""
+    block = {
+        "series_id": "CPIAUCSL",
+        "export_scope": catalog.EXPORT_ATTRIBUTION_REQUIRED,
+        "latest": {"value": 300.0, "observation_date": "2024-12-01", "units": "index"},
+        "transforms": {"yoy_pct": {"metric_id": "CPIAUCSL.yoy_pct", "value": 2.5, "units": "pct", "as_of": "2024-12-01"}},
+    }
+    out = export_policy.filter_for_export(block)
+    assert out["latest"]["value"] == 300.0
+    assert out["transforms"]["yoy_pct"]["value"] == 2.5
+    # Unrelated nested source without its own scope must not inherit the parent series scope.
+    mixed = {
+        "series_id": "CPIAUCSL",
+        "export_scope": catalog.EXPORT_ATTRIBUTION_REQUIRED,
+        "latest": {"value": 300.0},
+        "attached_credit": {"series_id": "BAMLC0A0CM", "value": 81.0},
+    }
+    mixed_out = export_policy.filter_for_export(mixed)
+    assert mixed_out["latest"]["value"] == 300.0
+    assert mixed_out["attached_credit"]["restricted"] is True and "value" not in mixed_out["attached_credit"]
+    # Explicit nested restriction wins over an allowed parent.
+    nested_restricted = {
+        "series_id": "CPIAUCSL",
+        "export_scope": catalog.EXPORT_ATTRIBUTION_REQUIRED,
+        "latest": {"value": 300.0, "export_scope": catalog.EXPORT_INTERNAL_ONLY},
+    }
+    nested_out = export_policy.filter_for_export(nested_restricted)
+    assert nested_out["latest"]["restricted"] is True and "value" not in nested_out["latest"]
+
+
+def test_export_policy_redacted_coverage_cannot_leak_nested_values_or_secrets():
+    """Finding B: redact_entry used to overwrite coverage from the unsanitized original."""
+    entry = {
+        "export_scope": catalog.EXPORT_INTERNAL_ONLY,
+        "value": 2,
+        "metric_id": "x.y",
+        "coverage": {"detail": {"value": 123, "password": "FAKE_TEST_SECRET"}, "universe_size": 10, "note": "ok"},
+    }
+    out = export_policy.filter_for_export(entry)
+    dumped = nulls.strict_dumps(out)
+    assert "123" not in dumped and "FAKE_TEST_SECRET" not in dumped and "password" not in dumped
+    assert out["restricted"] is True and "value" not in out
+    assert out.get("coverage", {}).get("universe_size") == 10
+    # Restricted ordering still cannot leak ranks.
+    ranked = [
+        {"series_id": "C", "export_scope": catalog.EXPORT_RESTRICTED, "value": 9.0, "rank": 1},
+        {"series_id": "A", "export_scope": catalog.EXPORT_RESTRICTED, "value": 1.0, "rank": 2},
+    ]
+    ordered = export_policy.filter_for_export(ranked)
+    assert [r["series_id"] for r in ordered] == ["A", "C"]
+    assert all("rank" not in r and "value" not in r for r in ordered)
+    # NULL values on an allowed entry survive as NULL (not redacted as unscoped).
+    nulls_ok = export_policy.filter_for_export({"export_scope": catalog.EXPORT_ATTRIBUTION_REQUIRED, "value": None, "series_id": "Z"})
+    assert nulls_ok["value"] is None and "restricted" not in nulls_ok
+
+
 def test_export_envelope_hash_covers_every_delivered_field():
     body = {"rates": [{"series_id": "DGS10", "export_scope": catalog.EXPORT_ATTRIBUTION_REQUIRED, "yield_pct": 4.5}]}
     env = export_policy.build_envelope(body, provenance={"kind": "FROZEN_SNAPSHOT", "source_snapshot_hash": "h" * 64}, available=True, degraded=False, latest_snapshot={"snapshot_id": "mc_1"}, delivery_health={"snapshot_age_status": "CURRENT"})

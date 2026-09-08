@@ -62,6 +62,18 @@ _ORDER_KEYS = ("series_id", "metric_id", "sector_key", "industry_key", "instrume
 # Keys that are never exported regardless of scope or nesting (defensive).
 ALWAYS_EXCLUDED_KEYS = {"api_key", "token", "password", "account_id", "account_ids", "client_holdings", "model_binary", "object_store_key", "secret", "database_url"}
 
+# Nested payloads that belong to the *same* series/metric as an allowed parent. Scope
+# inheritance is limited to these keys so an ATTRIBUTION_REQUIRED parent cannot bless an
+# unrelated nested source (credit, sector, another series) that happens to sit beside it.
+INHERIT_SCOPE_KEYS = frozenset({"latest", "transforms", "metrics", "comparison", "display", "history", "freshness"})
+
+# Coverage metadata that may be retained on a redacted entry. Counts and labels only;
+# never nested value-bearing objects or free-form dicts that could carry secrets.
+COVERAGE_ALLOWED_KEYS = frozenset({
+    "universe_size", "n", "count", "priced_count", "constituent_count", "status", "note",
+    "universe_method", "coverage_status", "held_names", "held_status", "trailing_status",
+})
+
 
 def _is_data_entry(entry: dict[str, Any]) -> bool:
     return any(k in VALUE_KEYS for k in entry)
@@ -90,19 +102,39 @@ def is_restricted(entry: dict[str, Any]) -> bool:
     return isinstance(entry, dict) and _is_data_entry(entry) and not decide(entry)[0]
 
 
+def _sanitize_coverage(coverage: Any) -> dict[str, Any] | None:
+    """Allowlisted coverage metadata only; recursively secret-stripped, never value-bearing."""
+    if not isinstance(coverage, dict):
+        return None
+    kept: dict[str, Any] = {}
+    for key, value in coverage.items():
+        if key in ALWAYS_EXCLUDED_KEYS or key in VALUE_KEYS or key not in COVERAGE_ALLOWED_KEYS:
+            continue
+        if isinstance(value, dict):
+            nested = _sanitize_coverage(value)
+            if nested:
+                kept[key] = nested
+            continue
+        if isinstance(value, list):
+            continue
+        kept[key] = copy.deepcopy(value)
+    return _strip_secrets(kept) if kept else None
+
+
 def redact_entry(entry: dict[str, Any], reason: str | None = None) -> dict[str, Any]:
     if reason is None:
         reason = decide(entry)[1] or RESTRICTED_REASON
     kept: dict[str, Any] = {}
     for k, v in entry.items():
-        if k in ALWAYS_EXCLUDED_KEYS or k not in IDENTITY_KEYS or k in VALUE_KEYS:
+        if k in ALWAYS_EXCLUDED_KEYS or k not in IDENTITY_KEYS or k in VALUE_KEYS or k == "coverage":
             continue
         kept[k] = _strip_secrets(v)
     latest = entry.get("latest")
     if isinstance(latest, dict):
-        kept["latest"] = {k: latest.get(k) for k in ("observation_date", "units", "retrieved_at", "revision_seq") if k in latest}
-    if isinstance(entry.get("coverage"), dict):
-        kept["coverage"] = {k: v for k, v in entry["coverage"].items() if not isinstance(v, (int, float)) or k in {"universe_size", "n", "count"}}
+        kept["latest"] = _strip_secrets({k: latest.get(k) for k in ("observation_date", "units", "retrieved_at", "revision_seq") if k in latest})
+    coverage = _sanitize_coverage(entry.get("coverage"))
+    if coverage is not None:
+        kept["coverage"] = coverage
     kept["restricted"] = True
     kept["restriction_reason"] = reason
     return kept
@@ -124,21 +156,39 @@ def _order_key(item: Any) -> str:
     return "~"
 
 
-def filter_for_export(obj: Any) -> Any:
-    """Recursively apply the export policy; returns a deep-copied filtered structure."""
+def filter_for_export(obj: Any, inherited_scope: str | None = None) -> Any:
+    """Recursively apply the export policy; returns a deep-copied filtered structure.
+
+    ``inherited_scope`` is the export scope of an already-allowed parent series/metric.
+    It applies only to unscoped nested payloads under :data:`INHERIT_SCOPE_KEYS` (or
+    through those objects). An explicit child ``export_scope`` always wins. Structural
+    envelopes and unrelated nested sources do not inherit.
+    """
     if isinstance(obj, dict):
-        if _is_data_entry(obj):
-            allowed, reason = decide(obj)
+        working = obj
+        if inherited_scope and not scope_of(obj) and _is_data_entry(obj):
+            working = dict(obj)
+            working["export_scope"] = inherited_scope
+        if _is_data_entry(working):
+            allowed, reason = decide(working)
             if not allowed:
-                return redact_entry(obj, reason)
-        out: dict[str, Any] = {}
+                return redact_entry(working, reason)
+            parent_scope = scope_of(working)
+            out: dict[str, Any] = {}
+            for key, value in obj.items():
+                if key in ALWAYS_EXCLUDED_KEYS:
+                    continue
+                child_scope = parent_scope if key in INHERIT_SCOPE_KEYS else None
+                out[key] = filter_for_export(value, child_scope)
+            return out
+        out = {}
         for key, value in obj.items():
             if key in ALWAYS_EXCLUDED_KEYS:
                 continue
-            out[key] = filter_for_export(value)
+            out[key] = filter_for_export(value, inherited_scope)
         return out
     if isinstance(obj, list):
-        items = [filter_for_export(item) for item in obj]
+        items = [filter_for_export(item, inherited_scope) for item in obj]
         if any(isinstance(i, dict) and i.get("restricted") is True for i in items):
             items = sorted(items, key=_order_key)
         return items
@@ -215,6 +265,7 @@ __all__ = [
     "EXPORT_INTERNAL_SUMMARY",
     "EXPORT_PUBLIC",
     "EXPORT_SCHEMA_VERSION",
+    "INHERIT_SCOPE_KEYS",
     "INTERNAL_ONLY_REASON",
     "REDACTED_SCOPES",
     "RESTRICTED_REASON",

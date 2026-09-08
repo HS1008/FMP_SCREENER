@@ -37,7 +37,7 @@ write endpoint, or writes from an AI actor.
 
 | Capability | Status | Where | Gate / configuration |
 |---|---|---|---|
-| Schema `mi_*` migrations 008-014 (additive; clean apply, upgrade from 011, second apply no-op all tested) | IMPLEMENTED_AND_TESTED | `db/migrations/008..014`, `jobs.apply_migrations` | deploy.yml already runs `apply_migrations` after a merge to `main` |
+| Schema `mi_*` migrations 008-015 (additive; clean apply, upgrade from 011, second apply no-op all tested) | IMPLEMENTED_AND_TESTED | `db/migrations/008..015`, `jobs.apply_migrations` | deploy.yml already runs `apply_migrations` after a merge to `main` |
 | FRED catalog `fred_catalog_v2`: every series checked against official metadata (units, frequency, SA, aggregation); WTREGEN/WRESBAL = millions of dollars, weekly average ending Wednesday | IMPLEMENTED_AND_TESTED (catalog) | `market_intelligence/catalog.py`, `tests/fixtures/fred_official_metadata.json` | — |
 | FRED ingestion with publication gate: `validate_metadata` MISMATCH / missing metadata -> observations quarantined (`mi_macro_observation_quarantine`), last valid data kept, run `METADATA_REJECTED`, other series unaffected | IMPLEMENTED_NOT_EXTERNALLY_VALIDATED | `market_intelligence/{fred_client,ingest_fred,store}.py` | `FRED_API_KEY` -> CONFIGURATION_REQUIRED on this build host |
 | Observation revisions (`revision_seq`, `is_current`), `.`/non-finite -> NULL, future observation dates rejected, LATEST_REVISED labelling for backfilled history (not ALFRED vintages) | IMPLEMENTED_AND_TESTED | `store.py`, `ingest_fred.py` | — |
@@ -62,6 +62,8 @@ write endpoint, or writes from an AI actor.
 | SEC EDGAR reference | CONFIGURATION_REQUIRED (opt-in) | `adapters.py` | `SEC_USER_AGENT` with contact + `MI_EDGAR_ENABLED=1`; never called by the timer |
 | Systemd timer + API service templates, dry-run installer; DST/units verified with `systemd-analyze` | IMPLEMENTED_AND_TESTED (templates) | `deploy/market_intelligence/`, `scripts/install_market_intelligence_timers.sh` | operator runs `--apply`; deploy.yml does not |
 | PR validation CI: offline tests + disposable PostgreSQL 16, no secrets, `pull_request` only | IMPLEMENTED_AND_TESTED locally (workflow audited by tests) | `.github/workflows/pr_validation.yml` (both repos) | first real run happens when the PR head is pushed |
+| FRED live validation (manual): bounded real FRED requests on disposable PostgreSQL, `secrets.FRED_API_KEY` received explicitly, export contract checked | IMPLEMENTED_AND_TESTED (workflow + script; live run is a human dispatch) | `.github/workflows/fred_validation.yml`, `jobs.validate_fred_live` | GitHub cannot dispatch a brand-new workflow until it exists on `main`. Merge the minimal workflow PR first; do not merge this full PR only to make the workflow runnable. |
+| DigitalOcean secret provisioning (env file only; no activation) | IMPLEMENTED_AND_TESTED (script dry-run / apply on a temp file) | `scripts/provision_digitalocean_mi_secrets.sh`, `deploy/market_intelligence/DIGITALOCEAN_SECRETS.md` | operator `--apply` writes `FRED_API_KEY`; timers stay off |
 | Research artifact delivery: remote fetch, otherwise committed copy labelled `LAST_KNOWN_GOOD` | IMPLEMENTED_AND_TESTED | `qc_research/delivery_visibility.py`, `ingest_platform_research.yml` | repo vars `QS_ARTIFACT_SOURCE_REF`, `QS_ARTIFACT_SOURCE_PATH` (see below) |
 | QC activation on 2025+ data, ML_FINAL_HOLDOUT, paper/live, AI writes | DISABLED_BY_POLICY | QS `ActivationGate`, FMP `queue --execute` | never automated |
 
@@ -124,7 +126,7 @@ Access statuses written to `mi_source_registry.access_status` and shown on Data 
 Prerequisites already present: `/root/FMP_SCREENER` checkout with `venv`, PostgreSQL, the
 `fmp-dashboard` service, deploy.yml applying migrations on push to `main`.
 
-1. Merge the FMP PR. The existing deploy applies migrations 008-014 (additive, no data change) and
+1. Merge the FMP PR. The existing deploy applies migrations 008-015 (additive, no data change) and
    restarts Streamlit. Pages 10-17 appear and report `DATABASE_READONLY_URL` missing until step 3.
    Rollback of a bad merge = revert + redeploy; the `mi_*` tables can stay (no view or table is dropped).
 2. Environment file:
@@ -232,10 +234,10 @@ in `mi_macro_observation_quarantine` for diagnosis. Superseded morning snapshots
 
 ## Known limits
 
-* Real FRED validation could not be run on the build host (`FRED_API_KEY` absent): ingestion is
-  exercised with a fixture client mirroring the API contract (pagination, `.` tokens, sentinel
-  dates, metadata mismatch/missing). The first production `--fred --mode full` run is the external
-  validation; inspect Data Health and the quarantine summary afterwards.
+* Real FRED validation is a **manually dispatched** GitHub Actions workflow
+  (`fred_validation.yml`) that receives `secrets.FRED_API_KEY`. It is not on `main` until the
+  minimal workflow PR is merged. Ordinary PR tests remain secretless. DigitalOcean secret
+  provisioning is a separate dry-run-default script and does not activate production.
 * Legacy bridge parity was validated against fixtures shaped by the real serialiser; the production
   bundles may carry labels that land in quarantine (visible on Sector Rotation V2, health PARTIAL).
 * `sector_internals_v1` has only been produced from synthetic PIT fixtures. A QuantConnect research

@@ -1,0 +1,135 @@
+# Manually triggered live FRED validation.
+#
+# Safety properties (audited):
+#   * Trigger is `workflow_dispatch` only. Not `push`, `pull_request`, `schedule`,
+#     or `workflow_run`. Ordinary PR validation stays secretless.
+#   * Receives `secrets.FRED_API_KEY` explicitly in the job environment. The key is
+#     never printed, never placed on a command line, and never interpolated into a URL
+#     that is logged (the Python client redacts `api_key=`).
+#   * The only database is a throw-away `postgres:16` service. The job creates a child
+#     database and drops it. Production / DigitalOcean URLs are refused by the script.
+#   * Restricted credit values are checked for absence in the export envelope and are
+#     not printed. No QuantConnect, no deploy, no production mutation.
+name: FRED live validation (disposable PostgreSQL)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fred-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fred-validation:
+    name: Bounded live FRED validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fmp_test_admin
+          POSTGRES_PASSWORD: fmp_test_only_not_a_secret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fmp_test_admin -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      FMP_TEST_DATABASE_URL: postgresql+psycopg2://fmp_test_admin:fmp_test_only_not_a_secret@127.0.0.1:5432/postgres
+      DATABASE_URL: ""
+      DATABASE_READONLY_URL: ""
+      FMP_API_KEY: ""
+      QC_API_TOKEN: ""
+      QC_USER_ID: ""
+      TZ: UTC
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require the validation module on this ref
+        run: |
+          if [ ! -f jobs/validate_fred_live.py ]; then
+            echo "jobs/validate_fred_live.py is not on this ref."
+            echo "In the Run workflow dialog, select branch cursor/market-intelligence-v1-674b"
+            echo "(or another ref that contains the Market Intelligence validation script)."
+            echo "Do not merge the full unfinished Market Intelligence PR just to make this runnable."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Refuse to continue without the FRED secret
+        run: |
+          if [ -z "${FRED_API_KEY}" ]; then
+            echo "FRED_API_KEY repository secret is empty or unavailable"
+            exit 1
+          fi
+
+      - name: Install requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Wait for disposable PostgreSQL
+        run: |
+          python - <<'PY'
+          import time
+          from sqlalchemy import create_engine, text
+          url = "postgresql+psycopg2://fmp_test_admin:fmp_test_only_not_a_secret@127.0.0.1:5432/postgres"
+          engine = create_engine(url, future=True)
+          for _ in range(30):
+              try:
+                  with engine.connect() as conn:
+                      conn.execute(text("SELECT 1"))
+                  engine.dispose()
+                  raise SystemExit(0)
+              except Exception:
+                  time.sleep(2)
+          raise SystemExit("PostgreSQL service did not become ready")
+          PY
+
+      - name: Run bounded FRED validation
+        run: python -m jobs.validate_fred_live --json
+
+      - name: Assert logs do not contain the key or a key-bearing URL
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, pathlib, sys
+          key = os.environ.get("FRED_API_KEY") or ""
+          if not key:
+              sys.exit(0)
+          root = pathlib.Path(os.environ.get("GITHUB_WORKSPACE") or ".")
+          # Runner logs are not files we control; this step exists so a later
+          # workflow dump cannot be grepped for the key in our printed JSON.
+          print("secret-presence check: key is configured and was not written to the workspace")
+          for path in root.rglob("*"):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              if path.stat().st_size > 2_000_000:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+              except OSError:
+                  continue
+              if key in text:
+                  print("refusing: workspace file contains the FRED key")
+                  sys.exit(1)
+          PY

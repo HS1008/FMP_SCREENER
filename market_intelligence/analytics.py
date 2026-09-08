@@ -41,6 +41,7 @@ CREDIT_WINDOWS = (
     ("3Y", 3 * 366, 600),
 )
 CREDIT_MIN_AVAILABLE_OBSERVATIONS = 60
+STATUS_WITHDRAWN = "WITHDRAWN_OBSERVATION"
 
 _UNITS_BY_KIND = {
     "percent": "pct",
@@ -120,7 +121,7 @@ def series_metrics(spec: SeriesSpec, obs: Mapping[date, Decimal | None], *, at: 
     if at is None:
         return []
     if obs.get(at) is None:
-        return []
+        return withdrawn_series_metrics(spec, at)
     if any(d > at for d in obs):
         obs = {d: v for d, v in obs.items() if d <= at}
     rows: list[MetricRow] = []
@@ -183,6 +184,85 @@ def series_metrics(spec: SeriesSpec, obs: Mapping[date, Decimal | None], *, at: 
     return rows
 
 
+def _metric_names_for(spec: SeriesSpec) -> list[tuple[str, str]]:
+    """``(metric suffix, units)`` pairs that ``series_metrics`` would emit for ``spec``."""
+    names: list[tuple[str, str]] = [("level", _level_units(spec))]
+    if spec.display_divisor and spec.display_units:
+        names.append(("level_display", spec.display_units))
+    for transform in spec.transforms:
+        if transform == "level_pct":
+            names.append(("level_pct", "pct"))
+        elif transform == "oas_bps":
+            names.append(("oas_bps", "bps"))
+        elif transform == "chg_bps":
+            names.extend((n, "bps") for n in ("chg_prev_bps", "chg_1w_bps", "chg_1m_bps", "chg_3m_bps"))
+        elif transform == "yoy_pct":
+            names.append(("yoy_pct", "pct"))
+        elif transform == "ann3m_pct":
+            names.append(("ann3m_pct", "pct"))
+        elif transform == "ann6m_pct":
+            names.append(("ann6m_pct", "pct"))
+        elif transform == "mom_pct":
+            names.append(("mom_pct", "pct"))
+        elif transform == "qoq_annualized_pct":
+            names.append(("qoq_saar_pct", "pct"))
+        elif transform == "mom_change":
+            names.append(("mom_change", _level_units(spec)))
+        elif transform == "mom_change_pp":
+            names.append(("mom_change_pp", "pp"))
+        elif transform == "yoy_change_pp":
+            names.append(("yoy_change_pp", "pp"))
+        elif transform == "wow_change":
+            names.append(("wow_change", _level_units(spec)))
+        elif transform == "chg_4w":
+            names.append(("chg_4w", _level_units(spec)))
+        elif transform == "avg_4w":
+            names.append(("avg_4w", _level_units(spec)))
+        elif transform == "chg_1d":
+            names.append(("chg_prev", _level_units(spec)))
+        elif transform == "chg_1w":
+            names.append(("chg_1w", _level_units(spec)))
+    return names
+
+
+def withdrawn_series_metrics(spec: SeriesSpec, at: date) -> list[MetricRow]:
+    """NULL-publish every derived metric for a date whose current observation is NULL."""
+    reason = "current observation is NULL; derived metrics unpublished (observation history retained)"
+    rows = []
+    for name, units in _metric_names_for(spec):
+        result = TransformResult(None, units, status=STATUS_WITHDRAWN, reason=reason, detail={"at": at.isoformat(), "withdrawn": True})
+        rows.append(MetricRow("{0}.{1}".format(spec.series_id, name), spec.series_id, spec.category, at, result))
+    return rows
+
+
+def withdrawn_credit_params(spec: SeriesSpec, at: date) -> dict[str, Any]:
+    return {
+        "series_id": spec.series_id,
+        "bucket": spec.subcategory,
+        "as_of": at,
+        "oas_bps": None,
+        "chg_1d": None,
+        "chg_1w": None,
+        "chg_1m": None,
+        "chg_3m": None,
+        "pwindow": None,
+        "percentile": None,
+        "zscore": None,
+        "window_obs": None,
+        "first_date": None,
+        "history_status": STATUS_WITHDRAWN,
+        "transform_version": TRANSFORM_VERSION,
+        "export_scope": spec.export_scope,
+        "source_refs": strict_dumps({"source_url": spec.source_url, "attribution": spec.attribution}),
+        "detail": strict_dumps({"status": STATUS_WITHDRAWN, "at": at.isoformat(), "withdrawn": True, "reason": "current observation is NULL; credit snapshot unpublished"}),
+    }
+
+
+def withdrawn_curve_rows(as_of: date) -> list[MetricRow]:
+    result = TransformResult(None, "bps", status=STATUS_WITHDRAWN, reason="a curve leg observation is NULL at this date", detail={"at": as_of.isoformat(), "withdrawn": True})
+    return [MetricRow("curve.slope_{0}_bps".format(name), None, "rates", as_of, result) for name in CURVE_SLOPES]
+
+
 def _quarterly_yoy(obs: Mapping[date, Decimal | None], at: date) -> TransformResult:
     from market_intelligence.transforms import period_ratio_pct
 
@@ -208,8 +288,10 @@ def _trailing_average(obs: Mapping[date, Decimal | None], at: date, n: int, unit
 def credit_snapshot_params(spec: SeriesSpec, obs: Mapping[date, Decimal | None], *, at: date | None = None) -> dict[str, Any] | None:
     if at is None:
         at = latest_date(obs)
-    if at is None or obs.get(at) is None:
+    if at is None:
         return None
+    if obs.get(at) is None:
+        return withdrawn_credit_params(spec, at)
     if any(d > at for d in obs):
         obs = {d: v for d, v in obs.items() if d <= at}
     current = float(obs[at])
@@ -385,16 +467,25 @@ def build_analytics(conn, *, as_of: date | None = None, run_id: str | None = Non
         if wanted and spec.series_id not in wanted:
             continue
         obs = current_observations(conn, spec.series_id, end=as_of)
-        if not obs or latest_date(obs) is None:
+        if not obs:
+            report.series_without_data.append(spec.series_id)
+            continue
+        if latest_date(obs) is None and since is None and history_start is None:
             report.series_without_data.append(spec.series_id)
             continue
         observations[spec.series_id] = obs
-        inputs_max[spec.series_id] = _inputs_retrieved_max(conn, spec.series_id, as_of or latest_date(obs))
+        inputs_max[spec.series_id] = _inputs_retrieved_max(conn, spec.series_id, as_of or latest_date(obs) or max(obs))
     revised = revised_since(conn, since) if since is not None else {}
 
     def dates_for(spec: SeriesSpec, obs: Mapping[date, Decimal | None]) -> list[date]:
-        latest = latest_date(obs)
-        if latest is None:
+        """Dates to (re)compute, including current NULL revisions that must invalidate derived rows.
+
+        Valid latest is the newest non-NULL observation. A later (or same) date whose current
+        value is NULL is still selected so existing metric/credit rows are unpublished.
+        """
+        valid_latest = latest_date(obs)
+        current_dates = sorted(obs)
+        if not current_dates:
             return []
         start: date | None = None
         if history_start is not None:
@@ -402,8 +493,13 @@ def build_analytics(conn, *, as_of: date | None = None, run_id: str | None = Non
         elif since is not None and spec.series_id in revised:
             start = revised[spec.series_id]
         if start is None:
-            return [latest]
-        dates = sorted(d for d, v in obs.items() if v is not None and start <= d <= latest)
+            dates = []
+            if valid_latest is not None:
+                dates.append(valid_latest)
+            dates.extend(d for d in current_dates if valid_latest is None or d > valid_latest)
+            return sorted(set(dates))
+        end = max(current_dates)
+        dates = sorted(d for d in current_dates if start <= d <= end)
         if len(dates) > MAX_HISTORY_DATES_PER_SERIES:
             dates = dates[-MAX_HISTORY_DATES_PER_SERIES:]
             report.truncated_series.append(spec.series_id)
@@ -421,18 +517,19 @@ def build_analytics(conn, *, as_of: date | None = None, run_id: str | None = Non
             report.metrics_written += _write_rows(conn, rows, run_id, inputs_max)
             rows = []
     curve_legs = {sid: observations.get(sid, {}) for pair in CURVE_SLOPES.values() for sid in pair}
-    curve_dates: list[date] = []
-    if history_start is not None or since is not None:
-        leg_dates = [d for sid in curve_legs for d in per_series_dates.get(sid, [])]
-        curve_dates = sorted(set(leg_dates))
+    curve_dates = sorted({d for sid in curve_legs for d in per_series_dates.get(sid, [])})
     curve_as_of = as_of or max((latest_date(o) for o in curve_legs.values() if o), default=None)
-    if curve_as_of is not None and (not curve_dates or curve_dates[-1] != curve_as_of):
+    if curve_as_of is not None and curve_as_of not in curve_dates:
         curve_dates.append(curve_as_of)
+        curve_dates.sort()
     for cd in curve_dates:
+        withdrawn_leg = any(cd in (curve_legs.get(sid) or {}) and (curve_legs.get(sid) or {}).get(cd) is None for pair in CURVE_SLOPES.values() for sid in pair)
         curve_rows, common, missing = curve_metrics(curve_legs, cd)
+        if withdrawn_leg or not curve_rows:
+            rows.extend(withdrawn_curve_rows(cd))
         rows.extend(curve_rows)
         if cd == curve_dates[-1]:
-            report.curve_date = common
+            report.curve_date = None if withdrawn_leg else common
             report.curve_missing_legs = missing
     report.metrics_written += _write_rows(conn, rows, run_id, inputs_max)
     for sid in CREDIT_SERIES:
@@ -441,7 +538,7 @@ def build_analytics(conn, *, as_of: date | None = None, run_id: str | None = Non
             continue
         spec = CATALOG_BY_ID[sid]
         params_list = []
-        for at in per_series_dates.get(sid, [latest_date(obs)]):
+        for at in per_series_dates.get(sid, [latest_date(obs)] if latest_date(obs) else []):
             params = credit_snapshot_params(spec, obs, at=at)
             if params is not None:
                 params_list.append(params)
@@ -452,4 +549,4 @@ def build_analytics(conn, *, as_of: date | None = None, run_id: str | None = Non
     return report
 
 
-__all__ = ["AnalyticsReport", "CREDIT_WINDOWS", "DEFAULT_HISTORY_DAYS", "MetricRow", "build_analytics", "credit_snapshot_params", "curve_metrics", "last_analytics_run_at", "revised_since", "series_metrics"]
+__all__ = ["AnalyticsReport", "CREDIT_WINDOWS", "DEFAULT_HISTORY_DAYS", "MetricRow", "STATUS_WITHDRAWN", "build_analytics", "credit_snapshot_params", "curve_metrics", "last_analytics_run_at", "revised_since", "series_metrics", "withdrawn_credit_params", "withdrawn_curve_rows", "withdrawn_series_metrics"]

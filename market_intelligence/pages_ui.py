@@ -425,7 +425,7 @@ def render_pit_sector_internals() -> None:
     value_cols = ["% > 20d", "% > 50d", "% > 100d", "% > 200d", "Median {0}d".format(k), "EW {0}d".format(k), "CW {0}d".format(k), "EW-CW", "Held EW {0}d".format(k)]
     st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
     heatmap_legend()
-    st.caption("Breadth = share of decision-time members above their own W-session simple moving average (denominator = members with full W-session history). Trailing returns are statistics of *current* decision-time members; 'Held EW' is the equal-weight portfolio actually formed at d-K from the members known then (delistings/reclassifications keep their terminal price). CW uses point-in-time caps at the window start and is NULL when cap coverage is insufficient; it is never substituted with current caps.")
+    st.caption("Breadth = share of decision-time members above their own W-session simple moving average (denominator = members with full W-session history). Trailing returns are statistics of *current* decision-time members; 'Held EW' is the equal-weight portfolio formed at d-K from members known then (reclassification/universe exit = last still-member close; inferred delisting without declared proceeds NULLs the held return). CW uses point-in-time caps at the window start and is NULL when cap coverage is insufficient; it is never substituted with current caps.")
     st.subheader("History (stored rows, current revisions)")
     history = ctx.get("history") or {}
     if history:

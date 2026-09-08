@@ -27,7 +27,7 @@ from typing import Any
 from sqlalchemy import text
 
 from market_intelligence import CODE_VERSION
-from market_intelligence.catalog import CATALOG_VERSION
+from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CATALOG_VERSION, CREDIT_SERIES, CURVE_TENORS
 from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness
 from market_intelligence.nulls import canonical_sha256, normalize_payload, strict_dumps
 from market_intelligence.read_models import (
@@ -63,11 +63,41 @@ COMPLETENESS_COMPLETE = "COMPLETE"
 COMPLETENESS_PARTIAL = "PARTIAL"
 COMPLETENESS_EMPTY = "EMPTY"
 
-# Keys that never make a section "available" on their own (static text / policy notes).
-_STATIC_KEYS = {"attribution", "note", "notes", "units_note", "disclosure", "coverage_note", "metric_provenance_note", "semantics"}
+# Keys that never make a section "available" on their own (static text / policy notes / identity).
+_STATIC_KEYS = {
+    "attribution", "note", "notes", "units_note", "disclosure", "coverage_note", "metric_provenance_note",
+    "semantics", "leadership_order", "units",
+}
+_IDENTITY_KEYS = {
+    "metric_id", "series_id", "status", "units", "as_of", "observation_date", "label", "title", "category",
+    "subcategory", "tenor", "export_scope", "source", "source_id", "frequency", "seasonal_adjustment",
+    "vintage_kind", "pit_safe", "metadata_status", "publication_status", "publication_reason",
+    "transform_version", "computed_at", "retrieved_at", "revision_seq", "ingestion_run_id",
+    "sector_key", "entity_kind", "instrument_id", "canonical_sector", "provider_label", "benchmark",
+    "return_basis", "value_basis", "universe_method", "research_eligible", "dataset", "industry_key",
+    "aggregation", "catalog_units", "artifact_sha256", "schema_version", "methodology_version",
+    "bucket", "window_observations", "percentile_window", "history_first_date", "history_status",
+    "reason", "restriction_reason", "restricted", "display", "freshness", "coverage",
+    "strategy_id", "research_kind", "research_mode", "asset_class", "research_status",
+    "economic_gate", "promotion_gate", "holdout_status", "delivery_status",
+}
+_NUMERIC_VALUE_KEYS = {
+    "value", "oas_bps", "yield_pct", "chg_prev_bps", "chg_1w_bps", "chg_1m_bps", "chg_3m_bps",
+    "change_1d_bps", "change_1w_bps", "change_1m_bps", "change_3m_bps", "percentile", "zscore",
+    "rs_chg_1w", "rs_chg_1m", "rs_chg_3m", "rs_chg_6m", "rs_chg_12m", "ret_1m", "ret_1w", "ret_3m",
+}
 
-# Per-section cadence used to judge captured staleness against the capture time.
+# Per-section cadence used to judge captured staleness against the capture time (summary only).
 _SECTION_CADENCE = {"market": "D", "rates": "D", "credit": "D", "sectors": "D", "industries": "D", "liquidity": "W", "macro": "M"}
+
+# Catalog series that must be present and individually fresh for a section to be OK.
+_MACRO_REQUIRED = tuple(s.series_id for s in CATALOG if s.category in {"growth", "labor", "inflation", "policy"})
+_RATES_REQUIRED = tuple(CURVE_TENORS.values())
+_LIQUIDITY_REQUIRED = tuple(s.series_id for s in CATALOG if s.category == "liquidity")
+_CREDIT_REQUIRED = tuple(CREDIT_SERIES)
+
+# Statuses that mean "this object is not numerical data" even when other strings are present.
+_EMPTY_STATUSES = frozenset({"INSUFFICIENT_DATA", "UNAVAILABLE", "WITHDRAWN_OBSERVATION", "NULL_NO_MEMBERS", "NULL_INSUFFICIENT_HISTORY"})
 
 
 class HistoricalReconstructionUnsupported(ValueError):
@@ -105,15 +135,32 @@ class BuildResult:
 
 # ---- section semantics --------------------------------------------------------------------
 
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 def _has_value(obj: Any) -> bool:
-    """True when ``obj`` carries at least one non-null scalar outside static-text keys."""
+    """True when ``obj`` carries at least one numerical value (zero counts; labels/status/units do not)."""
     if obj is None or obj == "" or obj == [] or obj == {}:
         return False
+    if isinstance(obj, bool):
+        return False
+    if isinstance(obj, (int, float)):
+        return True
+    if isinstance(obj, str):
+        return False
     if isinstance(obj, dict):
-        return any(_has_value(v) for k, v in obj.items() if k not in _STATIC_KEYS)
+        if obj.get("status") in _EMPTY_STATUSES and not any(_is_number(obj.get(k)) for k in _NUMERIC_VALUE_KEYS):
+            return False
+        if any(k in obj for k in _NUMERIC_VALUE_KEYS):
+            if any(_is_number(obj.get(k)) for k in _NUMERIC_VALUE_KEYS):
+                return True
+            nested = {k: v for k, v in obj.items() if k not in _NUMERIC_VALUE_KEYS}
+            return any(_has_value(v) for k, v in nested.items() if k not in _STATIC_KEYS and k not in _IDENTITY_KEYS)
+        return any(_has_value(v) for k, v in obj.items() if k not in _STATIC_KEYS and k not in _IDENTITY_KEYS)
     if isinstance(obj, list):
         return any(_has_value(v) for v in obj)
-    return True
+    return False
 
 
 def _dates_in(obj: Any, keys=("as_of", "observation_date")) -> list[date]:
@@ -133,26 +180,134 @@ def _dates_in(obj: Any, keys=("as_of", "observation_date")) -> list[date]:
     return out
 
 
-def section_status(name: str, data: Any, *, required: list[str], capture_date: date, empty_reason: str) -> dict[str, Any]:
-    """Availability = presence of value-bearing data + required-field coverage + captured freshness."""
-    if not _has_value(data):
-        return {"status": SECTION_UNAVAILABLE, "reason": empty_reason, "data": None, "required_missing": list(required), "latest_observation_date": None, "captured_freshness": None}
-    missing = [k for k in required if not _has_value(data.get(k) if isinstance(data, dict) else None)]
+def _presence(data: Any, *, required: list[str]) -> bool:
+    """Non-numerical sections (health, strategy summary) are present when required keys exist."""
+    if not isinstance(data, dict):
+        return bool(data)
+    return all(data.get(k) not in (None, [], {}) for k in required)
+
+
+def _collect_series_blocks(data: Any) -> list[dict[str, Any]]:
+    blocks: list[dict[str, Any]] = []
+    if isinstance(data, dict):
+        if data.get("series_id") or data.get("metric_id") or data.get("tenor"):
+            blocks.append(data)
+        for key, value in data.items():
+            if key in {"latest", "transforms", "metrics", "source", "freshness", "comparison", "display"}:
+                continue
+            blocks.extend(_collect_series_blocks(value))
+    elif isinstance(data, list):
+        for item in data:
+            blocks.extend(_collect_series_blocks(item))
+    return blocks
+
+
+def _required_input_row(series_id: str, data: Any, capture_date: date) -> dict[str, Any]:
+    spec = CATALOG_BY_ID.get(series_id)
+    cadence = spec.expected_frequency if spec else None
+    block = next((b for b in _collect_series_blocks(data) if b.get("series_id") == series_id), None)
+    latest = (block or {}).get("latest") if isinstance((block or {}).get("latest"), dict) else {}
+    obs = latest.get("observation_date") or (block or {}).get("observation_date") or (block or {}).get("as_of")
+    obs_d = None
+    if isinstance(obs, str):
+        try:
+            obs_d = date.fromisoformat(obs[:10])
+        except ValueError:
+            obs_d = None
+    has_value = _has_value(block) if block is not None else False
+    if block is None:
+        state = "MISSING"
+        freshness = None
+    elif not has_value:
+        state = "MISSING_OBS"
+        freshness = assess_freshness(obs_d, cadence, capture_date) if obs_d is not None else None
+    else:
+        freshness = assess_freshness(obs_d, cadence, capture_date)
+        state = "STALE" if freshness.status == "STALE" else "AVAILABLE"
+    pub = (block or {}).get("publication_status")
+    if pub == "QUARANTINED_METADATA":
+        state = "METADATA_QUARANTINE"
+    return {
+        "series_id": series_id,
+        "cadence": cadence,
+        "observation_date": obs_d.isoformat() if obs_d else None,
+        "has_value": has_value,
+        "state": state,
+        "freshness": None if freshness is None else {"status": freshness.status, "age_days": freshness.age_days, "tolerance_days": freshness.tolerance_days, "policy_version": FRESHNESS_POLICY_VERSION},
+        "publication_status": pub,
+    }
+
+
+def _section_required_series(name: str) -> tuple[str, ...]:
+    if name == "macro":
+        return _MACRO_REQUIRED
+    if name == "rates":
+        return _RATES_REQUIRED
+    if name == "liquidity":
+        return _LIQUIDITY_REQUIRED
+    if name == "credit":
+        return _CREDIT_REQUIRED
+    if name == "market":
+        return ("DGS10",)
+    return ()
+
+
+def section_status(name: str, data: Any, *, required: list[str], capture_date: date, empty_reason: str, presence: str = "numeric") -> dict[str, Any]:
+    """Availability = explicit numerical/presence contract + per-required-series freshness.
+
+    ``presence`` is ``numeric`` (market values; zero counts, labels/status/units do not) or
+    ``registry`` (data-health / strategy rows that carry statuses, not quotes).
+    Required series are judged individually by their own cadence; one fresh series cannot
+    conceal another required series that is missing or stale.
+    """
+    available = _presence(data, required=required) if presence == "registry" else _has_value(data)
+    required_series = _section_required_series(name)
+    inputs = [_required_input_row(sid, data, capture_date) for sid in required_series] if data is not None else [{"series_id": sid, "cadence": (CATALOG_BY_ID[sid].expected_frequency if sid in CATALOG_BY_ID else None), "observation_date": None, "has_value": False, "state": "MISSING", "freshness": None, "publication_status": None} for sid in required_series]
+    missing_fields = [k for k in required if not (_presence(data, required=[k]) if presence == "registry" else _has_value(data.get(k) if isinstance(data, dict) else None))]
+    missing_series = [i["series_id"] for i in inputs if i["state"] in {"MISSING", "MISSING_OBS", "METADATA_QUARANTINE"}]
+    stale_series = [i["series_id"] for i in inputs if i["state"] == "STALE"]
+    if not available:
+        return {
+            "status": SECTION_UNAVAILABLE,
+            "reason": empty_reason,
+            "data": None,
+            "required_missing": list(required),
+            "latest_observation_date": None,
+            "captured_freshness": None,
+            "required_inputs": inputs,
+            "stale_required": stale_series,
+            "missing_required": missing_series,
+        }
     dates = _dates_in(data)
     latest = max(dates) if dates else None
-    freshness = assess_freshness(latest, _SECTION_CADENCE.get(name), capture_date) if latest is not None else None
-    status = SECTION_OK if not missing else SECTION_PARTIAL
-    reason = None if not missing else "required fields without data: {0}".format(", ".join(missing))
-    if freshness is not None and freshness.status == "STALE":
+    cadence = _SECTION_CADENCE.get(name)
+    # Summary freshness is the worst required input (stale wins). Section cadence stays the declared default.
+    if stale_series:
+        worst = next(i for i in inputs if i["series_id"] == stale_series[0])
+        freshness = assess_freshness(date.fromisoformat(worst["observation_date"]) if worst.get("observation_date") else None, worst.get("cadence") or cadence, capture_date)
+    elif latest is not None:
+        freshness = assess_freshness(latest, cadence, capture_date)
+    else:
+        freshness = None
+    status = SECTION_OK if not missing_fields and not missing_series else SECTION_PARTIAL
+    reasons = []
+    if missing_fields:
+        reasons.append("required fields without data: {0}".format(", ".join(missing_fields)))
+    if missing_series:
+        reasons.append("required series missing or without a numerical observation: {0}".format(", ".join(missing_series)))
+    if stale_series:
         status = SECTION_STALE if status == SECTION_OK else SECTION_PARTIAL
-        reason = ((reason + "; ") if reason else "") + "latest observation {0} is stale for cadence {1} at capture".format(latest.isoformat(), _SECTION_CADENCE.get(name))
+        reasons.append("required series stale at capture: {0}".format(", ".join(stale_series)))
     return {
         "status": status,
-        "reason": reason,
+        "reason": "; ".join(reasons) if reasons else None,
         "data": data,
-        "required_missing": missing,
+        "required_missing": missing_fields + [s for s in missing_series if s not in missing_fields],
         "latest_observation_date": latest.isoformat() if latest else None,
-        "captured_freshness": None if freshness is None else {"status": freshness.status, "age_days": freshness.age_days, "tolerance_days": freshness.tolerance_days, "cadence": _SECTION_CADENCE.get(name), "policy_version": FRESHNESS_POLICY_VERSION},
+        "captured_freshness": None if freshness is None else {"status": freshness.status, "age_days": freshness.age_days, "tolerance_days": freshness.tolerance_days, "cadence": cadence, "policy_version": FRESHNESS_POLICY_VERSION},
+        "required_inputs": inputs,
+        "stale_required": stale_series,
+        "missing_required": missing_series,
     }
 
 
@@ -277,7 +432,7 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
     macro_data = {"categories": macro_categories, "series_without_data": macro.get("series_without_data"), "quarantined_series": _quarantined_series(macro), "attribution": macro.get("attribution")} if macro_categories else None
     rates_data = rates if any(c.get("yield_pct") is not None for c in rates.get("curve", [])) else None
     sections = {
-        "data_health": section_status("data_health", {"sources": health.get("sources")} if health.get("sources") else None, required=["sources"], capture_date=capture_date, empty_reason="No sources registered yet; run jobs.market_intelligence_refresh."),
+        "data_health": section_status("data_health", {"sources": health.get("sources")} if health.get("sources") else None, required=["sources"], capture_date=capture_date, empty_reason="No sources registered yet; run jobs.market_intelligence_refresh.", presence="registry"),
         "market": section_status("market", _market_section(sectors, rates), required=["sector_leadership_rs_vs_spy", "us_10y"], capture_date=capture_date, empty_reason="No sector or rates data available."),
         "macro": section_status("macro", macro_data, required=["categories"], capture_date=capture_date, empty_reason="No FRED macro observations stored (FRED_API_KEY not configured or refresh not run)."),
         "rates": section_status("rates", rates_data, required=["curve", "slopes"], capture_date=capture_date, empty_reason="No Treasury curve observations stored."),
@@ -285,9 +440,10 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
         "credit": section_status("credit", credit if credit.get("buckets") else None, required=["buckets"], capture_date=capture_date, empty_reason="No credit index snapshots stored."),
         "sectors": section_status("sectors", sectors if sectors.get("datasets") else None, required=["datasets"], capture_date=capture_date, empty_reason="No sector snapshots stored (legacy bridge not run)."),
         "industries": section_status("industries", industries if industries.get("datasets") else None, required=["datasets"], capture_date=capture_date, empty_reason="No industry snapshots stored."),
-        "strategy_monitor_summary": section_status("strategy_monitor_summary", strategies if strategies.get("strategies") else None, required=["strategies"], capture_date=capture_date, empty_reason="No research runs in PostgreSQL."),
+        "strategy_monitor_summary": section_status("strategy_monitor_summary", strategies if strategies.get("strategies") else None, required=["strategies"], capture_date=capture_date, empty_reason="No research runs in PostgreSQL.", presence="registry"),
     }
-    sections_status = {name: {k: sec[k] for k in ("status", "reason", "required_missing", "latest_observation_date", "captured_freshness")} for name, sec in sections.items()}
+    _status_keys = ("status", "reason", "required_missing", "latest_observation_date", "captured_freshness", "required_inputs", "stale_required", "missing_required")
+    sections_status = {name: {k: sec[k] for k in _status_keys} for name, sec in sections.items()}
     statuses = [s["status"] for s in sections.values()]
     if all(s == SECTION_OK for s in statuses):
         completeness = COMPLETENESS_COMPLETE
@@ -373,9 +529,33 @@ def build_and_publish(engine, *, parent_run_id: str | None = None, requested_cut
                 text("SELECT snapshot_id, content_sha256, snapshot_sha256 FROM mi_morning_context_snapshots WHERE publication_state = 'PUBLISHED' ORDER BY cutoff_at DESC, generated_at DESC, created_at DESC LIMIT 1")
             ).mappings().first()
             if latest is not None and latest["content_sha256"] == content and not supersede_reason:
+                stored = conn.execute(
+                    text(
+                        """
+                        SELECT snapshot_id, snapshot_sha256, content_sha256, snapshot_json, generated_at, cutoff_at, as_of_date, sections_status, completeness
+                        FROM mi_morning_context_snapshots WHERE snapshot_id = :id
+                        """
+                    ),
+                    {"id": latest["snapshot_id"]},
+                ).mappings().one()
+                stored_body = stored["snapshot_json"] if isinstance(stored["snapshot_json"], dict) else body
+
+                def _iso(value: Any) -> str:
+                    if hasattr(value, "isoformat"):
+                        return value.isoformat()
+                    return str(value)
+
                 return BuildResult(
-                    snapshot_id=latest["snapshot_id"], snapshot_sha256=latest["snapshot_sha256"], content_sha256=content, completeness=body["completeness"],
-                    sections_status=body["sections_status"], published_new=False, generated_at=body["generated_at"], cutoff_at=body["cutoff_at"], as_of_date=body["as_of_date"], body=body,
+                    snapshot_id=stored["snapshot_id"],
+                    snapshot_sha256=stored["snapshot_sha256"],
+                    content_sha256=stored["content_sha256"],
+                    completeness=stored["completeness"],
+                    sections_status=stored["sections_status"] or stored_body.get("sections_status") or {},
+                    published_new=False,
+                    generated_at=_iso(stored["generated_at"]),
+                    cutoff_at=_iso(stored["cutoff_at"]),
+                    as_of_date=_iso(stored["as_of_date"])[:10],
+                    body=stored_body,
                 )
             snapshot_id = "mc_{0}".format(sha[:20])
             inserted = conn.execute(
@@ -454,4 +634,5 @@ __all__ = [
     "content_hash",
     "mark_quality",
     "section_status",
+    "_has_value",
 ]
