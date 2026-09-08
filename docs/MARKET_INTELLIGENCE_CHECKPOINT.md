@@ -76,7 +76,9 @@ recompute; `179f3eb` morning v2; `147aa35` export v2 + API contract + live clock
 014 + page 17; `9f84795` CI + ops verification; docs commit (this file).
 
 QS (`479af28..HEAD`): `fa2ecad` contract v2 consumer + `sector_internals_v1` producer + frozen-spec
-windows; `32c9ce7` fixture provenance; `a8e2b07` offline PR validation workflow + trigger audit tests.
+windows; `32c9ce7` fixture provenance; `a8e2b07` offline PR validation workflow + trigger audit tests;
+`55247fd` README statuses; `df2a792` pandas declared as a test-only dependency (two pre-existing tests
+imported it undeclared) + protected-path diff base from CI; `bb03224` base ref from full-history checkout.
 
 ## Validation results (final heads)
 
@@ -90,6 +92,12 @@ windows; `32c9ce7` fixture provenance; `a8e2b07` offline PR validation workflow 
   diff empty); TLT fingerprint `d8f43c83ddec8d70` present and unchanged. `qc_research/*.py` unchanged
   since the reviewed head. QS: no file outside `research/market_intelligence/**`, `tests/**`,
   `.github/workflows/pr_validation.yml` changed since PR #26's head.
+- CI (first real runs on the pushed heads): FMP `PR validation (offline + disposable PostgreSQL)` at
+  `5131cb4` success — offline job 245 passed / 126 skipped (DB tests skip without a database, as
+  designed), postgres job 371 passed on PostgreSQL 16.15 (Debian container) + clean apply of 14
+  migrations + no-op reapply + 30-test DB probe with zero skips. QS `PR validation (offline tests)` at
+  `bb03224` success — 502 passed, protected-path diff test executed against `origin/cursor/platform-research-lifecycle-674b`.
+  No other workflow ran on either branch (no QC, no deploy, no publish).
 - Timer templates: `systemd-analyze calendar` EST/EDT/weekend cases and `systemd-analyze verify` on
   rendered units pass (`tests/test_mi_deploy.py`).
 - Not run (by instruction / no access): QuantConnect backtests of any kind, FRED live calls, legacy
