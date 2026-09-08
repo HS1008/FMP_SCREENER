@@ -206,3 +206,6 @@ outputs/
 .env
 .streamlit/secrets.toml
 venv/
+
+# Research-delivery visibility reports written by the ingest workflow (runtime only).
+delivery/

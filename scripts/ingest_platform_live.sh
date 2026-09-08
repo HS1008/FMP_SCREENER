@@ -66,4 +66,13 @@ if echo "${TARGET}${STRATEGY_ID}" | grep -Eq 'TLTDurationMomentum|tlt_duration_m
   python -m qc_research.verify_tlt_monitor --live --apptest --root "$TARGET"
 fi
 
+DELIVERY_REPORT="$ROOT/delivery/report.json"
+if [ -f "$DELIVERY_REPORT" ]; then
+  echo "Recording research-delivery facts (remote status / fallback / artifact hashes) in PostgreSQL..."
+  python -m qc_research.delivery_visibility record --report "$DELIVERY_REPORT" \
+    || echo "WARN: delivery report could not be recorded; ingest result above is unaffected"
+else
+  echo "No delivery report present (direct host invocation); delivery facts not recorded."
+fi
+
 echo "Platform research live Postgres ingest passed."

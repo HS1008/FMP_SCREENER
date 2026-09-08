@@ -37,7 +37,19 @@ Workflow trigger audit (before any push):
 
 ## Completed work
 
-(appended as it lands)
+- `4e8d013` core: migrations 008-011, `market_intelligence/` (nulls, catalog, fred_client,
+  freshness, transforms, store, writer_db, locking, ingest_fred, analytics, sector_mapping,
+  legacy_bridge), CLIs `jobs.market_intelligence_refresh`, `jobs.ingest_legacy_sector_precomputed`.
+- `5d8c17a` consumers + tests: `readonly_db`, `read_models`, `ui`, `pages_ui`, pages
+  `pages/10_Market_Pulse.py` … `16_Morning_Context.py`, `morning_context`, `export_policy`,
+  `ai_context_api.py`, `jobs.build_morning_context`, `db/roles/market_intelligence_readonly.sql`,
+  tests `tests/test_mi_{contracts,schema_store,ingest_bridge,pipeline}.py`.
+  Fixes found by tests: `pd.NaT` was serialised as "NaT" (now NULL); credit windows now report
+  `LIMITED_TO_1Y` when the 3Y window is unavailable; export hash is verifiable
+  (`export_policy.verify_export_hash`).
+  Full FMP suite at `5d8c17a`: `python3 -m pytest -q tests -p no:cacheprovider` -> 230 passed
+  (with `FMP_TEST_DATABASE_URL` set; the PG-backed tests skip without it).
+- Draft PR: https://github.com/HS1008/FMP_SCREENER/pull/18 (base `main` @ `9d9d987`).
 
 ## Remaining blockers
 
