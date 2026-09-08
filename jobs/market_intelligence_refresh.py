@@ -116,7 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--probe-config", action="store_true", help="Read-only probe of configuration and DB reachability")
     parser.add_argument("--mode", choices=("incremental", "full"), default="incremental")
     parser.add_argument("--series", nargs="*", default=None, help="Restrict FRED ingestion to these series ids")
-    parser.add_argument("--as-of", default=None, help="Analytics/morning as-of date (YYYY-MM-DD); default today")
+    parser.add_argument("--as-of", default=None, help="Analytics as-of date / FRED retrieval date (YYYY-MM-DD); default today. The morning snapshot is always current-only.")
+    parser.add_argument("--backfill-analytics-from", default=None, metavar="YYYY-MM-DD", help="Bounded, idempotent history backfill: compute metrics for every stored observation date on/after this date (latest-revised vintage, labeled as such)")
     parser.add_argument("--wait-lock", action="store_true", help="Wait for the writer lock instead of failing fast")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON status")
     return parser
@@ -237,17 +238,24 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 if report.failed_bundles:
                     failures += 1
             elif name == "build_analytics":
-                from market_intelligence.analytics import build_analytics
+                from market_intelligence.analytics import build_analytics, last_analytics_run_at
 
+                history_start = date.fromisoformat(args.backfill_analytics_from) if getattr(args, "backfill_analytics_from", None) else None
                 with engine.begin() as conn:
+                    # Revision-aware incremental mode: recompute from the earliest observation
+                    # date rewritten since the last successful analytics run (None -> first run,
+                    # which only computes the latest date unless a backfill start is given).
+                    since = None if history_start else last_analytics_run_at(conn)
                     rid = start_run(conn, source_id="ANALYTICS", dataset="metric_snapshots", parent_run_id=parent_run_id)
-                    report = build_analytics(conn, as_of=as_of, run_id=rid)
-                    finish_run(conn, rid, status=RUN_SUCCEEDED, counts={"inserted": report.metrics_written + report.credit_written}, details=report.as_dict())
-                status["results"][name] = report.as_dict()
+                    report = build_analytics(conn, as_of=as_of, run_id=rid, history_start=history_start, since=since)
+                    details = report.as_dict()
+                    details["mode"] = "backfill" if history_start else ("incremental_since_{0}".format(since.isoformat()) if since else "latest_only")
+                    finish_run(conn, rid, status=RUN_SUCCEEDED, counts={"inserted": report.metrics_written + report.credit_written}, details=details)
+                status["results"][name] = details
             elif name == "build_morning":
                 from market_intelligence.morning_context import build_and_publish
 
-                result = build_and_publish(engine, parent_run_id=parent_run_id, as_of=as_of)
+                result = build_and_publish(engine, parent_run_id=parent_run_id, extra_params={"analytics_as_of": as_of.isoformat() if as_of else None})
                 status["results"][name] = result.as_dict()
         except Exception as exc:  # noqa: BLE001 - keep other steps running
             logger.exception("step %s failed", name)
