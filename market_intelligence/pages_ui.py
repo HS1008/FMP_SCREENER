@@ -322,16 +322,35 @@ def render_sector_rotation_v2() -> None:
         heatmap_legend()
         st.subheader("ETF trend & risk (from bundle prices)")
         trend = pd.DataFrame(
-            [{"Sector / theme": r["sector_key"], "ETF": r["instrument_id"], "1M return": (r["metrics"] or {}).get("ret_1m"), "3M return": (r["metrics"] or {}).get("ret_3m"), "12M return": (r["metrics"] or {}).get("ret_12m"), "vs 50DMA": (r["metrics"] or {}).get("pct_vs_50dma"), "vs 200DMA": (r["metrics"] or {}).get("pct_vs_200dma"), "Vol 63d (ann)": (r["metrics"] or {}).get("vol_63d_ann"), "Max DD 252d": (r["metrics"] or {}).get("max_drawdown_252d")} for r in rows]
+            [
+                {
+                    "Sector / theme": r["sector_key"],
+                    "ETF": r["instrument_id"],
+                    "1M return": (r["metrics"] or {}).get("ret_1m"),
+                    "3M return": (r["metrics"] or {}).get("ret_3m"),
+                    "12M return": (r["metrics"] or {}).get("ret_12m"),
+                    "vs 50DMA": (r["metrics"] or {}).get("pct_vs_50dma"),
+                    "vs 200DMA": (r["metrics"] or {}).get("pct_vs_200dma"),
+                    "Vol 63d (ann)": (r["metrics"] or {}).get("vol_63d_ann"),
+                    "Max DD 252d": (r["metrics"] or {}).get("max_drawdown_252d"),
+                    "DD coverage": ((r.get("coverage") or {}).get("price_metrics") or {}).get("max_drawdown_252d"),
+                    "Price status": (r.get("coverage") or {}).get("price_status"),
+                    "Last price": (r.get("coverage") or {}).get("last_price_date"),
+                }
+                for r in rows
+            ]
         )
         st.dataframe(styled_heatmap(trend, ["1M return", "3M return", "12M return", "vs 50DMA", "vs 200DMA"]), use_container_width=True, hide_index=True)
-        st.caption("ETF returns on FMP adjusted close (dividend-adjusted, price-ratio basis); these are ETF returns, not constituent portfolio returns.")
+        stale = [r["instrument_id"] for r in rows if (r.get("coverage") or {}).get("price_status") == "STALE"]
+        if stale:
+            st.warning("Stale instruments (last price before the bundle as_of): {0}. Their windowed metrics are NULL rather than relabelled current.".format(", ".join(str(s) for s in stale)))
+        st.caption("ETF returns on FMP adjusted close (dividend-adjusted, price-ratio basis); these are ETF returns, not constituent portfolio returns. Windows are counted on the bundle session calendar; a metric is blank unless its full window is present (PARTIAL = a few NULL sessions inside the window).")
     disp = datasets.get("CONSTITUENT_DISPERSION") or []
     if disp:
         st.subheader("Breadth, dispersion & concentration (current universe, context only)")
         st.warning("Constituent metrics use the FMP profile-bulk *current* universe and current market caps: CURRENT_UNIVERSE_CONTEXT_ONLY, research-ineligible, not point-in-time.")
         st.dataframe(
-            pd.DataFrame([{"Sector": r["sector_key"], "As of": r["as_of"], "Universe": (r.get("coverage") or {}).get("universe_size"), "% > 50DMA": fmt((r["metrics"] or {}).get("pct_above_50dma"), "fraction").replace("+", ""), "% > 200DMA": fmt((r["metrics"] or {}).get("pct_above_200dma"), "fraction").replace("+", ""), "EW std": fmt((r["metrics"] or {}).get("equal_weight_std"), None, digits=3), "CW std": fmt((r["metrics"] or {}).get("cap_weight_std"), None, digits=3), "Median 1M ret": fmt_signed((r["metrics"] or {}).get("median_return_1m"), "fraction"), "Top5 weight": fmt((r["metrics"] or {}).get("top5_weight"), "fraction").replace("+", ""), "HHI": fmt((r["metrics"] or {}).get("hhi"), None, digits=3)} for r in disp]),
+            pd.DataFrame([{"Sector": r["sector_key"], "As of": r["as_of"], "Universe": (r.get("coverage") or {}).get("universe_size"), "Valid 200DMA": (r.get("coverage") or {}).get("count_valid_200dma"), "Stale constituents": (r.get("coverage") or {}).get("stale_constituents"), "Denominator": (r.get("coverage") or {}).get("denominator_status"), "% > 50DMA": fmt((r["metrics"] or {}).get("pct_above_50dma"), "fraction").replace("+", ""), "% > 200DMA": fmt((r["metrics"] or {}).get("pct_above_200dma"), "fraction").replace("+", ""), "EW std": fmt((r["metrics"] or {}).get("equal_weight_std"), None, digits=3), "CW std": fmt((r["metrics"] or {}).get("cap_weight_std"), None, digits=3), "Median 1M ret": fmt_signed((r["metrics"] or {}).get("median_return_1m"), "fraction"), "Top5 weight": fmt((r["metrics"] or {}).get("top5_weight"), "fraction").replace("+", ""), "HHI": fmt((r["metrics"] or {}).get("hhi"), None, digits=3)} for r in disp]),
             use_container_width=True,
             hide_index=True,
         )
