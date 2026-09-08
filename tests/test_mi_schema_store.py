@@ -60,6 +60,109 @@ def test_migrations_applied_once_and_second_application_is_noop(pg_engine):
     assert after == before
 
 
+def test_upgrade_from_011_schema_preserves_rows_and_second_apply_is_noop(pg_admin_url, tmp_path):
+    """Upgrade path: a DB already at 011 (with data written by the reviewed code) upgrades to 012 additively."""
+    import shutil
+    import uuid
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+
+    from tests.conftest import STRATEGIES_TABLE_SQL
+
+    staged = tmp_path / "migrations_011"
+    staged.mkdir()
+    for path in sorted(MIGRATIONS.glob("*.sql")):
+        if path.name < "012":
+            shutil.copy(path, staged / path.name)
+    name = "fmp_mi_upgrade_{0}".format(uuid.uuid4().hex[:8])
+    admin = create_engine(pg_admin_url, isolation_level="AUTOCOMMIT", future=True)
+    with admin.connect() as conn:
+        conn.execute(text('CREATE DATABASE "{0}"'.format(name)))
+    engine = create_engine(make_url(pg_admin_url).set(database=name), future=True)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text(STRATEGIES_TABLE_SQL))
+        apply_migrations(staged, engine=engine)
+        with engine.begin() as conn:
+            applied = {r[0] for r in conn.execute(text("SELECT filename FROM schema_migrations"))}
+            assert "011_bond_securities.sql" in applied and "012_market_intelligence_publication.sql" not in applied
+            cols = {r[0] for r in conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='mi_macro_series'"))}
+            assert "publication_status" not in cols
+            # Rows in the pre-012 shape (what the reviewed head would have written).
+            conn.execute(text("INSERT INTO mi_source_registry (source_id, provider, dataset, enabled) VALUES ('FRED', 'FRED', 'series', TRUE)"))
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO mi_macro_series (series_id, source_id, provider_series_id, category, subcategory, catalog_version,
+                        source_url, export_scope, frequency_short, units, metadata_status, vintage_kind, pit_safe)
+                    VALUES ('WTREGEN', 'FRED', 'WTREGEN', 'liquidity', 'tga', 'fred_catalog_v1', 'https://fred.stlouisfed.org/series/WTREGEN',
+                        'ATTRIBUTION_REQUIRED', 'W', 'Billions of U.S. Dollars', 'OK', 'LATEST_REVISED', FALSE)
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO mi_macro_observations (series_id, observation_date, value, raw_value, revision_seq, is_current, retrieved_at)
+                    VALUES ('WTREGEN', '2024-12-25', 722000.0, '722000.0', 1, TRUE, NOW())
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO mi_data_freshness (source_id, dataset, last_attempt_at, latest_observation_date, expected_cadence,
+                        tolerance_days, transport_status, freshness_status, updated_at)
+                    VALUES ('FRED', 'series:WTREGEN', NOW(), '2024-12-25', 'W', 10, 'OK', 'FRESH', NOW())
+                    """
+                )
+            )
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO mi_morning_context_snapshots (snapshot_id, schema_version, generated_at, cutoff_at, as_of_date,
+                        generation_params, input_refs, sections_status, snapshot_json, snapshot_sha256, completeness, publication_state)
+                    VALUES ('legacy-snap', 'morning_context_v1', NOW(), NOW(), '2024-12-31', '{}'::jsonb, '{}'::jsonb, '{}'::jsonb,
+                        '{"schema_version":"morning_context_v1"}'::jsonb, repeat('a', 64), 'COMPLETE', 'PUBLISHED')
+                    """
+                )
+            )
+        # Upgrade with the full directory: only 012 is pending.
+        applied_now = apply_migrations(MIGRATIONS, engine=engine)
+        assert [a for a in applied_now if not a.endswith("(skipped)")] == ["012_market_intelligence_publication.sql"]
+        with engine.connect() as conn:
+            series = conn.execute(text("SELECT units, metadata_status, publication_status, publication_reason, catalog_units FROM mi_macro_series WHERE series_id='WTREGEN'")).mappings().one()
+            obs = conn.execute(text("SELECT value, is_current FROM mi_macro_observations WHERE series_id='WTREGEN'")).one()
+            fresh = conn.execute(text("SELECT freshness_status, freshness_policy_version, metadata_status FROM mi_data_freshness WHERE dataset='series:WTREGEN'")).one()
+            snap = conn.execute(text("SELECT quality_status, content_sha256, superseded_by, snapshot_sha256 FROM mi_morning_context_snapshots WHERE snapshot_id='legacy-snap'")).one()
+            latest_view = conn.execute(text("SELECT series_id, publication_status, value, units FROM mi_v_macro_latest WHERE series_id='WTREGEN'")).mappings().one()
+            health_view = conn.execute(text("SELECT source_id, freshness_dataset, freshness_policy_version FROM mi_v_source_health WHERE freshness_dataset='series:WTREGEN'")).mappings().one()
+            quarantine = conn.execute(text("SELECT COUNT(*) FROM mi_macro_observation_quarantine")).scalar()
+            snap_view = conn.execute(text("SELECT snapshot_id, quality_status, content_sha256 FROM mi_v_morning_context_latest")).mappings().one()
+        # Existing data preserved; the pre-012 series is honestly UNVALIDATED (not silently PUBLISHED) until
+        # the next refresh re-validates it against fred_catalog_v2; its raw values are untouched.
+        assert (series["units"], series["metadata_status"]) == ("Billions of U.S. Dollars", "OK")
+        assert series["publication_status"] == "UNVALIDATED" and series["publication_reason"] is None and series["catalog_units"] is None
+        assert float(obs.value) == 722000.0 and obs.is_current is True
+        assert fresh == ("FRESH", None, None)
+        assert snap == ("OK", None, None, "a" * 64)  # immutable snapshot body/hash untouched
+        assert latest_view["publication_status"] == "UNVALIDATED" and float(latest_view["value"]) == 722000.0
+        assert health_view["freshness_policy_version"] is None and quarantine == 0
+        assert snap_view["snapshot_id"] == "legacy-snap" and snap_view["quality_status"] == "OK" and snap_view["content_sha256"] is None
+        # Second application is a no-op.
+        again = apply_migrations(MIGRATIONS, engine=engine)
+        assert all(a.endswith("(skipped)") for a in again)
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT COUNT(*) FROM schema_migrations")).scalar() == len(list(MIGRATIONS.glob("*.sql")))
+    finally:
+        engine.dispose()
+        with admin.connect() as conn:
+            conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = :n AND pid <> pg_backend_pid()"), {"n": name})
+            conn.execute(text('DROP DATABASE IF EXISTS "{0}"'.format(name)))
+        admin.dispose()
+
+
 def test_schema_objects_exist(pg_engine):
     expected_tables = {
         "mi_source_registry", "mi_ingestion_runs", "mi_data_freshness", "mi_macro_series", "mi_macro_observations",
