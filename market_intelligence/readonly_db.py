@@ -110,13 +110,44 @@ def fetch_one(sql: str, params: Mapping[str, Any] | None = None) -> dict[str, An
     return rows[0] if rows else None
 
 
-def probe_readonly() -> dict[str, Any]:
-    """Configuration/readiness probe; never returns the URL or credentials."""
+REQUIRED_VIEWS = (
+    "mi_v_source_health",
+    "mi_v_macro_latest",
+    "mi_v_metric_latest",
+    "mi_v_credit_latest",
+    "mi_v_sector_latest",
+    "mi_v_morning_context_latest",
+    "mi_v_morning_context_index",
+    "mi_v_strategy_research_summary",
+)
+
+
+def probe_readonly(required_views: tuple[str, ...] = REQUIRED_VIEWS) -> dict[str, Any]:
+    """Readiness probe: every required curated view must be *readable* by the connected role.
+
+    ``SELECT 1`` succeeding or ``information_schema`` listing zero views is not readiness.
+    Returns ``status`` OK only when all required views answered a bounded SELECT; otherwise
+    ``VIEWS_UNAVAILABLE`` with the failing view names (never the URL or credentials).
+    """
     try:
         with readonly_connection() as conn:
-            conn.execute(text("SELECT 1"))
-            views = conn.execute(text("SELECT COUNT(*) FROM information_schema.views WHERE table_name LIKE 'mi\\_v\\_%'")).scalar()
-        return {"status": "OK", "curated_views_visible": int(views or 0)}
+            visible = {
+                r[0]
+                for r in conn.execute(text("SELECT table_name FROM information_schema.views WHERE table_name LIKE 'mi\\_v\\_%'")).all()
+            }
+            failing: list[str] = []
+            for view in required_views:
+                try:
+                    conn.execute(text("SAVEPOINT probe_view"))
+                    conn.execute(text("SELECT * FROM {0} LIMIT 1".format(view)))
+                    conn.execute(text("RELEASE SAVEPOINT probe_view"))
+                except Exception as exc:  # noqa: BLE001 - permission or missing relation
+                    conn.execute(text("ROLLBACK TO SAVEPOINT probe_view"))
+                    failing.append("{0}:{1}".format(view, exc.__class__.__name__))
+            role_ro = conn.execute(text("SHOW transaction_read_only")).scalar()
+        if failing or not visible:
+            return {"status": "VIEWS_UNAVAILABLE", "curated_views_visible": len(visible), "required_views": len(required_views), "failing_views": failing, "transaction_read_only": role_ro}
+        return {"status": "OK", "curated_views_visible": len(visible), "required_views": len(required_views), "failing_views": [], "transaction_read_only": role_ro}
     except ReadOnlyUnavailable as exc:
         return {"status": exc.reason, "message": str(exc)}
 
@@ -124,6 +155,7 @@ def probe_readonly() -> dict[str, Any]:
 __all__ = [
     "DEFAULT_ROW_LIMIT",
     "READONLY_URL_ENV",
+    "REQUIRED_VIEWS",
     "ReadOnlyUnavailable",
     "fetch_all",
     "fetch_one",

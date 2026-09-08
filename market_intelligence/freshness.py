@@ -94,7 +94,7 @@ class FreshnessAssessment:
     status: str
     tolerance_days: int | None
     age_days: int | None
-    expected_next_release: date | None
+    stale_after: date | None  # tolerance bound implied by the policy; NOT an official release date
     policy_version: str = FRESHNESS_POLICY_VERSION
 
 
@@ -109,7 +109,12 @@ def assess_freshness(latest_observation: date | None, cadence: str | None, today
         bdays = business_days_between(latest_observation, today)
         tol = int(rule["business_days"])
         status = FRESH if bdays <= tol else STALE
-        return FreshnessAssessment(status, tol, age, None)
+        bound = latest_observation
+        for _ in range(tol):
+            bound += timedelta(days=1)
+            while not is_business_day(bound):
+                bound += timedelta(days=1)
+        return FreshnessAssessment(status, tol, age, bound)
     tol_days = rule.get("days")
     if tol_days is None:
         return FreshnessAssessment(UNKNOWN, None, age, None)

@@ -9,25 +9,85 @@ applied uniformly.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from sqlalchemy import text
 
-from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CURVE_SLOPES, CURVE_TENORS, FRED_ATTRIBUTION, CREDIT_SERIES
+from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CURVE_SLOPES, CURVE_TENORS, EXPORT_ATTRIBUTION_REQUIRED, FRED_ATTRIBUTION, CREDIT_SERIES
+from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness
 from market_intelligence.nulls import normalize_payload
 
 MAX_HISTORY_ROWS = 4000
+
+# Delivery-age policy for published morning snapshots (hours since capture). Versioned so
+# the API can state which rule produced ``snapshot_age_status``.
+SNAPSHOT_AGE_POLICY_VERSION = "snapshot_age_policy_v1"
+SNAPSHOT_AGE_AGING_HOURS = 30
+SNAPSHOT_AGE_STALE_HOURS = 78  # spans a weekend + one missed weekday refresh
 
 
 def _rows(conn, sql: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     return [normalize_payload(dict(r)) for r in conn.execute(text(sql), params or {}).mappings().all()]
 
 
+def _today(conn, today: date | None) -> date:
+    if today is not None:
+        return today
+    # Database clock keeps every reader (pages, API, snapshot builder) on one clock source.
+    return conn.execute(text("SELECT CURRENT_DATE")).scalar()
+
+
 # ---- primitives ------------------------------------------------------------------------
 
-def source_health(conn) -> list[dict[str, Any]]:
-    return _rows(conn, "SELECT * FROM mi_v_source_health ORDER BY source_id, freshness_dataset")
+def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
+    """Registry x freshness rows with health recomputed against an explicit clock.
+
+    ``stored_freshness_status`` is what the last writer recorded; ``freshness_status`` is
+    re-evaluated now from ``latest_observation_date`` and the dataset cadence, so health
+    decays even when no ingestion job has run. ``stale_after_estimate`` is the tolerance
+    bound, not an official release date.
+    """
+    today = _today(conn, today)
+    rows = _rows(conn, "SELECT * FROM mi_v_source_health ORDER BY source_id, freshness_dataset")
+    out = []
+    for row in rows:
+        cadence = row.get("dataset_cadence") or row.get("expected_cadence")
+        latest = row.get("latest_observation_date")
+        latest_d = date.fromisoformat(latest) if isinstance(latest, str) else latest
+        assessment = assess_freshness(latest_d, cadence, today)
+        row["stored_freshness_status"] = row.get("freshness_status")
+        row["freshness_status"] = assessment.status if latest_d is not None else (row.get("freshness_status") or "UNKNOWN")
+        row["age_days"] = assessment.age_days
+        row["tolerance_days"] = assessment.tolerance_days if assessment.tolerance_days is not None else row.get("tolerance_days")
+        row.pop("expected_next_release", None)  # pre-012 view column name; never an official release date
+        if assessment.stale_after is not None:
+            row["stale_after_estimate"] = assessment.stale_after.isoformat()
+        row["dataset_cadence"] = cadence
+        row["evaluated_on"] = today.isoformat()
+        row["freshness_policy_version"] = row.get("freshness_policy_version") or FRESHNESS_POLICY_VERSION
+        out.append(row)
+    return out
+
+
+def snapshot_age(snapshot: dict[str, Any] | None, *, now: datetime | None = None) -> dict[str, Any]:
+    """Delivery-time age of a published snapshot (never stored inside the snapshot body)."""
+    now = now or datetime.now(timezone.utc)
+    if not snapshot or not snapshot.get("cutoff_at"):
+        return {"snapshot_age_status": "NONE", "age_hours": None, "policy_version": SNAPSHOT_AGE_POLICY_VERSION, "evaluated_at": now.isoformat()}
+    cutoff = snapshot["cutoff_at"]
+    if isinstance(cutoff, str):
+        cutoff = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    hours = (now - cutoff).total_seconds() / 3600.0
+    if hours <= SNAPSHOT_AGE_AGING_HOURS:
+        status = "CURRENT"
+    elif hours <= SNAPSHOT_AGE_STALE_HOURS:
+        status = "AGING"
+    else:
+        status = "STALE"
+    return {"snapshot_age_status": status, "age_hours": round(hours, 2), "policy_version": SNAPSHOT_AGE_POLICY_VERSION, "evaluated_at": now.isoformat(), "aging_after_hours": SNAPSHOT_AGE_AGING_HOURS, "stale_after_hours": SNAPSHOT_AGE_STALE_HOURS}
 
 
 def recent_runs(conn, limit: int = 200) -> list[dict[str, Any]]:
@@ -112,7 +172,7 @@ def research_ideas(conn) -> list[dict[str, Any]]:
 
 # ---- composite contexts ---------------------------------------------------------------------
 
-def _metric_entry(metrics: dict[str, dict[str, Any]], metric_id: str) -> dict[str, Any] | None:
+def _metric_entry(metrics: dict[str, dict[str, Any]], metric_id: str, *, export_scope: str | None = None) -> dict[str, Any] | None:
     row = metrics.get(metric_id)
     if row is None:
         return None
@@ -124,8 +184,10 @@ def _metric_entry(metrics: dict[str, dict[str, Any]], metric_id: str) -> dict[st
         "as_of": row.get("as_of"),
         "status": row.get("status"),
         "transform_version": row.get("transform_version"),
-        "comparison": {k: detail.get(k) for k in ("comparison_date", "anchor_date", "lag_date", "gap_days", "anchor_lag_days", "missing_legs") if detail.get(k) is not None},
+        "computed_at": row.get("computed_at"),
+        "comparison": {k: detail.get(k) for k in ("comparison_date", "anchor_date", "lag_date", "gap_days", "anchor_lag_days", "missing_legs", "span_days") if detail.get(k) is not None},
         "reason": detail.get("reason"),
+        "export_scope": export_scope or row.get("export_scope"),
     }
 
 
@@ -134,8 +196,9 @@ def _series_block(series_row: dict[str, Any], metrics: dict[str, dict[str, Any]]
     spec = CATALOG_BY_ID.get(sid)
     transforms: dict[str, Any] = {}
     prefix = sid + "."
+    scope = series_row.get("export_scope")
     for metric_id in sorted(m for m in metrics if m.startswith(prefix)):
-        entry = _metric_entry(metrics, metric_id)
+        entry = _metric_entry(metrics, metric_id, export_scope=scope)
         if entry is not None:
             transforms[metric_id[len(prefix):]] = entry
     return {
@@ -144,27 +207,46 @@ def _series_block(series_row: dict[str, Any], metrics: dict[str, dict[str, Any]]
         "title": series_row.get("title"),
         "category": series_row.get("category"),
         "subcategory": series_row.get("subcategory"),
-        "latest": {"value": series_row.get("value"), "observation_date": series_row.get("observation_date"), "units": series_row.get("units"), "retrieved_at": series_row.get("retrieved_at")},
+        "latest": {
+            "value": series_row.get("value"),
+            "observation_date": series_row.get("observation_date"),
+            "units": series_row.get("units"),
+            "retrieved_at": series_row.get("retrieved_at"),
+            "revision_seq": series_row.get("revision_seq"),
+            "ingestion_run_id": series_row.get("ingestion_run_id"),
+        },
         "frequency": series_row.get("frequency_short"),
         "seasonal_adjustment": series_row.get("seasonal_adjustment_short"),
+        "aggregation": series_row.get("aggregation") or (spec.aggregation if spec else None),
+        "catalog_units": series_row.get("catalog_units") or (spec.raw_units if spec else None),
+        "display": {"divisor": series_row.get("display_divisor"), "units": series_row.get("display_units")} if series_row.get("display_divisor") else None,
         "vintage_kind": series_row.get("vintage_kind"),
         "pit_safe": series_row.get("pit_safe"),
         "metadata_status": series_row.get("metadata_status"),
-        "export_scope": series_row.get("export_scope"),
+        "publication_status": series_row.get("publication_status"),
+        "publication_reason": series_row.get("publication_reason"),
+        "export_scope": scope,
         "source": {"provider": "FRED", "url": series_row.get("source_url"), "attribution": spec.attribution if spec else FRED_ATTRIBUTION},
         "notes": spec.notes if spec else None,
         "transforms": transforms,
     }
 
 
-def macro_context(conn) -> dict[str, Any]:
+def macro_context(conn, *, today: date | None = None) -> dict[str, Any]:
     latest = macro_latest(conn)
     metrics = metric_latest(conn)
+    today = _today(conn, today)
     by_category: dict[str, list[dict[str, Any]]] = {}
     for row in latest:
         if row.get("observation_date") is None:
             continue
-        by_category.setdefault(row["category"] or "uncategorized", []).append(_series_block(row, metrics))
+        block = _series_block(row, metrics)
+        spec = CATALOG_BY_ID.get(row["series_id"])
+        obs_date = row.get("observation_date")
+        obs_d = date.fromisoformat(obs_date) if isinstance(obs_date, str) else obs_date
+        fresh = assess_freshness(obs_d, spec.expected_frequency if spec else row.get("frequency_short"), today)
+        block["freshness"] = {"status": fresh.status, "age_days": fresh.age_days, "tolerance_days": fresh.tolerance_days, "cadence": spec.expected_frequency if spec else row.get("frequency_short"), "evaluated_on": today.isoformat()}
+        by_category.setdefault(row["category"] or "uncategorized", []).append(block)
     missing = [s.series_id for s in CATALOG if s.series_id not in {r["series_id"] for r in latest if r.get("observation_date")}]
     return {
         "categories": by_category,
@@ -179,20 +261,26 @@ def rates_context(conn) -> dict[str, Any]:
     curve = []
     for tenor, sid in CURVE_TENORS.items():
         row = latest.get(sid)
+        scope = (row.get("export_scope") if row else None) or (CATALOG_BY_ID[sid].export_scope if sid in CATALOG_BY_ID else None)
         curve.append(
             {
                 "tenor": tenor,
                 "series_id": sid,
                 "yield_pct": row.get("value") if row else None,
                 "observation_date": row.get("observation_date") if row else None,
+                "retrieved_at": row.get("retrieved_at") if row else None,
+                "revision_seq": row.get("revision_seq") if row else None,
+                "ingestion_run_id": row.get("ingestion_run_id") if row else None,
+                "publication_status": row.get("publication_status") if row else None,
                 "chg_prev_bps": (_metric_entry(metrics, sid + ".chg_prev_bps") or {}).get("value"),
                 "chg_1w_bps": (_metric_entry(metrics, sid + ".chg_1w_bps") or {}).get("value"),
                 "chg_1m_bps": (_metric_entry(metrics, sid + ".chg_1m_bps") or {}).get("value"),
                 "chg_3m_bps": (_metric_entry(metrics, sid + ".chg_3m_bps") or {}).get("value"),
-                "export_scope": row.get("export_scope") if row else None,
+                "export_scope": scope,
             }
         )
-    slopes = {name: _metric_entry(metrics, "curve.slope_{0}_bps".format(name)) for name in CURVE_SLOPES}
+    # Slopes are derived from Treasury constant-maturity series (attribution-required scope).
+    slopes = {name: _metric_entry(metrics, "curve.slope_{0}_bps".format(name), export_scope=EXPORT_ATTRIBUTION_REQUIRED) for name in CURVE_SLOPES}
     dates = {c["observation_date"] for c in curve if c["observation_date"]}
     real = [_series_block(latest[s], metrics) for s in ("DFII5", "DFII10", "DFII20", "DFII30") if s in latest and latest[s].get("observation_date")]
     comp = [_series_block(latest[s], metrics) for s in ("T5YIE", "T10YIE", "T5YIFR") if s in latest and latest[s].get("observation_date")]
@@ -233,6 +321,8 @@ def credit_context(conn) -> dict[str, Any]:
                 "history_first_date": row["history_first_date"],
                 "history_status": row["history_status"],
                 "units": row["units"],
+                "transform_version": row.get("transform_version"),
+                "computed_at": row.get("computed_at"),
                 "export_scope": row["export_scope"],
                 "source": row.get("source_refs"),
             }
@@ -290,9 +380,20 @@ def industries_context(conn) -> dict[str, Any]:
     return {"datasets": out}
 
 
-def data_health_context(conn) -> dict[str, Any]:
-    health = source_health(conn)
-    return {"sources": health, "stale": [h for h in health if h.get("freshness_status") == "STALE"], "failed_transport": [h for h in health if h.get("transport_status") == "FAILED"]}
+def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
+    health = source_health(conn, today=today)
+    quarantine = _rows(conn, "SELECT * FROM mi_v_macro_quarantine_summary ORDER BY series_id, reason") if _view_exists(conn, "mi_v_macro_quarantine_summary") else []
+    return {
+        "sources": health,
+        "stale": [h for h in health if h.get("freshness_status") == "STALE"],
+        "failed_transport": [h for h in health if h.get("transport_status") in ("FAILED", "METADATA_REJECTED", "PARTIAL")],
+        "quarantine": quarantine,
+        "export_scope": "INTERNAL_SUMMARY",
+    }
+
+
+def _view_exists(conn, name: str) -> bool:
+    return bool(conn.execute(text("SELECT 1 FROM information_schema.views WHERE table_name = :n"), {"n": name}).first())
 
 
 def strategies_context(conn) -> dict[str, Any]:
@@ -322,9 +423,11 @@ def strategies_context(conn) -> dict[str, Any]:
 
 
 __all__ = [
+    "SNAPSHOT_AGE_POLICY_VERSION",
     "credit_context",
     "credit_latest",
     "data_health_context",
+    "snapshot_age",
     "industries_context",
     "industry_latest",
     "macro_context",
