@@ -48,6 +48,13 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            ServerAliveInterval 15
+            ServerAliveCountMax 120
+            ConnectTimeout 20
+          EOF
+          chmod 600 ~/.ssh/config
 
       - name: Confirm deployed checkout, move leftover dumps, install fixed activator
         run: |
@@ -116,10 +123,25 @@ jobs:
           ssh "$DO_USER@$DO_HOST" \
             '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase provision'
 
-      - name: First FRED ingest, optional legacy files, analytics, morning snapshot
+      - name: FRED ingest (idempotent)
         run: |
           ssh "$DO_USER@$DO_HOST" \
-            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest'
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-fred'
+
+      - name: Legacy sector ingest
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-legacy'
+
+      - name: Analytics backfill from 2019
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-analytics'
+
+      - name: Morning context snapshot
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-morning'
 
       - name: Restart dashboard and AppTest Market Intelligence pages
         run: |

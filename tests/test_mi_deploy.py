@@ -219,6 +219,8 @@ def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     assert "writer_host_kind" in text
     assert "postgres_peer" in text
     assert "--phase probe" in text
+    assert "run_with_heartbeat" in text
+    assert "ingest-analytics" in text
     assert '-f -' in text
     for line in text.splitlines():
         if "market_intelligence_readonly.sql" in line:
@@ -233,6 +235,8 @@ def test_activate_workflow_installs_fixed_script_and_keeps_existing_secrets():
     assert "activate_market_intelligence_host.sh" in raw
     assert "--phase probe" in raw
     assert "existing secret files are not overwritten" in raw
+    assert "ServerAliveInterval 15" in raw
+    assert "--phase ingest-analytics" in raw
     assert "eb20bb84209c1a1aa1896063d91803b6eb2bd591" not in raw
     assert "pull_request:" not in text
 
