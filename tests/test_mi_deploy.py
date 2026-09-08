@@ -221,6 +221,7 @@ def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     assert "writer_host_kind" in text
     assert "postgres_peer" in text
     assert "--phase probe" in text
+    assert '-f -' in text
     for line in text.splitlines():
         if "market_intelligence_readonly.sql" in line:
             assert "DATABASE_URL" not in line
