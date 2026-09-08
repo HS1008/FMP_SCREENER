@@ -5,6 +5,7 @@
 #   scripts/activate_market_intelligence_host.sh --phase probe
 #   scripts/activate_market_intelligence_host.sh --phase provision
 #   scripts/activate_market_intelligence_host.sh --phase ingest
+#   scripts/activate_market_intelligence_host.sh --phase ingest-fred|ingest-legacy|ingest-analytics|ingest-morning
 #   scripts/activate_market_intelligence_host.sh --phase verify
 #   scripts/activate_market_intelligence_host.sh --phase schedule
 #
@@ -253,20 +254,66 @@ PY
   echo "provision complete"
 }
 
-phase_ingest() {
-  echo "PHASE ingest"
+run_with_heartbeat() {
+  local label="$1"
+  shift
+  local hb_pid rc
+  echo "starting ${label} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  (
+    while sleep 15; do
+      echo "${label}_heartbeat=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    done
+  ) &
+  hb_pid=$!
+  set +e
+  "$@"
+  rc=$?
+  set -e
+  kill "$hb_pid" 2>/dev/null || true
+  wait "$hb_pid" 2>/dev/null || true
+  echo "finished ${label} rc=${rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  return "$rc"
+}
+
+phase_ingest_fred() {
+  echo "PHASE ingest-fred"
   load_writer_env
   python -m jobs.apply_migrations
   python -m jobs.market_intelligence_refresh --probe-config --json
   python -m jobs.market_intelligence_refresh --all-configured --dry-run --json
-  python -m jobs.market_intelligence_refresh --fred --mode full --json
+  run_with_heartbeat fred_ingest python -m jobs.market_intelligence_refresh --fred --mode full --wait-lock --json
+}
+
+phase_ingest_legacy() {
+  echo "PHASE ingest-legacy"
+  load_writer_env
   if [ -d "$ROOT/outputs/precomputed" ] && [ "$(find "$ROOT/outputs/precomputed" -type f | wc -l)" -gt 0 ]; then
-    python -m jobs.market_intelligence_refresh --legacy-sector --json || echo "legacy sector ingest returned non-zero (recorded; continuing)"
+    run_with_heartbeat legacy_sector python -m jobs.market_intelligence_refresh --legacy-sector --wait-lock --json \
+      || echo "legacy sector ingest returned non-zero (recorded; continuing)"
   else
     echo "legacy precomputed bundles absent — sector pages will show honest unavailable/empty"
   fi
-  python -m jobs.market_intelligence_refresh --build-analytics --backfill-analytics-from 2019-01-01 --json
-  python -m jobs.build_morning_context --json
+}
+
+phase_ingest_analytics() {
+  echo "PHASE ingest-analytics"
+  load_writer_env
+  run_with_heartbeat analytics_backfill python -m jobs.market_intelligence_refresh \
+    --build-analytics --backfill-analytics-from 2019-01-01 --wait-lock --json
+}
+
+phase_ingest_morning() {
+  echo "PHASE ingest-morning"
+  load_writer_env
+  run_with_heartbeat morning_context python -m jobs.build_morning_context --wait-lock --json
+}
+
+phase_ingest() {
+  echo "PHASE ingest"
+  phase_ingest_fred
+  phase_ingest_legacy
+  phase_ingest_analytics
+  phase_ingest_morning
   echo "ingest complete"
 }
 
@@ -306,11 +353,15 @@ case "$PHASE" in
   probe) phase_probe ;;
   provision) phase_provision ;;
   ingest) phase_ingest ;;
+  ingest-fred) phase_ingest_fred ;;
+  ingest-legacy) phase_ingest_legacy ;;
+  ingest-analytics) phase_ingest_analytics ;;
+  ingest-morning) phase_ingest_morning ;;
   verify)
     systemctl restart fmp-dashboard
     systemctl is-active --quiet fmp-dashboard
     phase_verify
     ;;
   schedule) phase_schedule ;;
-  *) echo "usage: --phase probe|provision|ingest|verify|schedule" >&2; exit 64 ;;
+  *) echo "usage: --phase probe|provision|ingest|ingest-fred|ingest-legacy|ingest-analytics|ingest-morning|verify|schedule" >&2; exit 64 ;;
 esac
