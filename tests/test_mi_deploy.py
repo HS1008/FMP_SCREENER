@@ -86,3 +86,98 @@ def test_units_reference_real_entrypoints():
     assert (ROOT / "ai_context_api.py").exists() and "ai_context_api:app" in api
     assert "SuccessExitStatus=0 2 75" in refresh
     assert "deploy/market_intelligence" not in (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+
+
+# ---- operational verification: DST, unit semantics, secrets in process lines, CI triggers -------------------
+
+def _systemd_analyze() -> str | None:
+    import shutil
+
+    return shutil.which("systemd-analyze")
+
+
+@pytest.mark.parametrize(
+    "base_time, spec, expected_utc",
+    [
+        # Standard time (EST, UTC-5): 09:15 New York = 14:15 UTC.
+        ("2026-03-06 00:00:00 UTC", "Mon..Fri 09:15 America/New_York", "2026-03-06 14:15:00 UTC"),
+        # After the 2026-03-08 spring-forward (EDT, UTC-4): 09:15 New York = 13:15 UTC.
+        ("2026-03-09 00:00:00 UTC", "Mon..Fri 09:15 America/New_York", "2026-03-09 13:15:00 UTC"),
+        # Before/after the 2026-11-01 fall-back for the evening run.
+        ("2026-10-30 00:00:00 UTC", "Mon..Fri 18:30 America/New_York", "2026-10-30 22:30:00 UTC"),
+        ("2026-11-02 00:00:00 UTC", "Mon..Fri 18:30 America/New_York", "2026-11-02 23:30:00 UTC"),
+        # Weekend skipped: Saturday base rolls to Monday.
+        ("2026-09-12 00:00:00 UTC", "Mon..Fri 09:15 America/New_York", "2026-09-14 13:15:00 UTC"),
+    ],
+)
+def test_timer_calendar_follows_new_york_dst_and_skips_weekends(base_time, spec, expected_utc):
+    tool = _systemd_analyze()
+    if tool is None:
+        pytest.skip("systemd-analyze not available; OnCalendar DST semantics unverified on this host")
+    timer = (TEMPLATES / "fmp-mi-refresh.timer").read_text()
+    assert "OnCalendar={0}".format(spec) in timer
+    out = subprocess.run([tool, "calendar", "--base-time={0}".format(base_time), "--iterations=1", spec], capture_output=True, text=True, check=True, env={**os.environ, "TZ": "UTC"}).stdout
+    match = re.search(r"Next elapse:\s+\w+ (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC)", out)
+    assert match, out
+    assert match.group(1) == expected_utc
+
+
+def test_rendered_units_pass_systemd_verify_and_encode_lock_restart_and_port_semantics(fake_host):
+    out = _run("--apply", "--with-api", "--no-systemctl", "--root", str(fake_host["root"]), "--user", "svc", "--env-file", str(fake_host["env"]), "--systemd-dir", str(fake_host["systemd"]), cwd=ROOT)
+    assert out.returncode == 0, out.stderr
+    refresh = (fake_host["systemd"] / "fmp-mi-refresh.service").read_text()
+    api = (fake_host["systemd"] / "fmp-ai-context-api.service").read_text()
+    timer = (fake_host["systemd"] / "fmp-mi-refresh.timer").read_text()
+    # Overlap: a oneshot unit cannot be started twice concurrently by systemd, and the job itself
+    # takes the shared PostgreSQL advisory lock (exit 75 = contention, treated as success for the unit).
+    assert "Type=oneshot" in refresh and "SuccessExitStatus=0 2 75" in refresh and "--all-configured" in refresh
+    assert "TimeoutStartSec=" in refresh and "Restart=" not in refresh  # scheduled job: the timer re-runs it, no restart loop
+    # API: localhost only on the documented port, restarts on failure, read-only filesystem, no capabilities.
+    assert "Environment=AI_CONTEXT_API_HOST=127.0.0.1" in api and "Environment=AI_CONTEXT_API_PORT=8765" in api
+    assert "Restart=on-failure" in api and "ProtectSystem=strict" in api and "CapabilityBoundingSet=" in api
+    # Secrets come from the protected EnvironmentFile; no credential appears on any command line.
+    for unit in (refresh, api, timer):
+        assert "EnvironmentFile=-{0}".format(fake_host["env"]) in unit or unit is timer
+        for line in unit.splitlines():
+            if line.startswith("ExecStart="):
+                assert not re.search(r"(password|token|api_key|postgres(ql)?://)", line, flags=re.I), line
+    assert "Unit=fmp-mi-refresh.service" in timer and "Persistent=true" in timer
+    tool = _systemd_analyze()
+    if tool is None:
+        pytest.skip("systemd-analyze not available; unit file verification skipped on this host")
+    verify = subprocess.run([tool, "verify", *(str(p) for p in sorted(fake_host["systemd"].glob("fmp-*")))], capture_output=True, text=True, check=False)
+    problems = [l for l in (verify.stdout + verify.stderr).splitlines() if l.strip() and "fmp-" in l and "Failed to" in l]
+    assert verify.returncode == 0 and not problems, verify.stdout + verify.stderr
+
+
+def test_env_example_never_suggests_a_password_on_the_command_line():
+    example = (TEMPLATES / "market_intelligence.env.example").read_text()
+    assert "ro_password=\"$(cat " in example  # protected-file form
+    for line in example.splitlines():
+        assert not re.search(r"-v\s+\w*password\w*='", line), line  # literal password in argv
+
+
+def _yaml_without_comments(path: Path) -> str:
+    return "\n".join(line for line in path.read_text().splitlines() if not line.lstrip().startswith("#"))
+
+
+def test_pr_validation_workflow_is_secretless_and_uses_only_a_disposable_database():
+    workflow = _yaml_without_comments(ROOT / ".github" / "workflows" / "pr_validation.yml")
+    assert "pull_request_target" not in workflow
+    assert re.search(r"^on:\n  pull_request:\n  workflow_dispatch:", workflow, flags=re.M)
+    assert "secrets." not in workflow and "DO_SSH_KEY" not in workflow and "ssh " not in workflow
+    assert "permissions:\n  contents: read" in workflow
+    assert "image: postgres:16" in workflow and "MI_REQUIRE_DB_TESTS: \"1\"" in workflow
+    assert "127.0.0.1:5432" in workflow and "digitalocean" not in workflow.lower()
+    assert "apply_migrations" in workflow and "second apply must be a no-op" in workflow
+    # The deployment workflow is untouched by validation and still the only path that mutates production.
+    deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    assert "pull_request" not in deploy and "branches:\n      - main" in deploy
+
+
+def test_no_workflow_runs_untrusted_pr_code_with_credentials():
+    for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
+        text = _yaml_without_comments(path)
+        assert "pull_request_target" not in text, path.name
+        if "pull_request:" in text:
+            assert "secrets." not in text, "{0}: pull_request workflows must not consume secrets".format(path.name)
