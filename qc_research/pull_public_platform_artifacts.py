@@ -78,7 +78,10 @@ def pull_complete_artifacts(
             "skipped": 0,
             "blocked": True,
             "delivery_status": "BLOCKED",
-            "reason": "Public artifact listing unavailable: {0}".format(exc),
+            "reason": _redact("Public artifact listing unavailable ({0} @ {1}, path {2}): {3}".format(repo, ref or "default branch", path, exc)),
+            "repo": repo,
+            "ref": ref or None,
+            "path": path,
             "paths": [],
         }
     pulled = []
@@ -104,8 +107,20 @@ def pull_complete_artifacts(
         "blocked": False,
         "delivery_status": "PENDING" if pulled else "BLOCKED",
         "reason": "Pulled complete public artifacts" if pulled else "No complete public artifacts found",
+        "repo": repo,
+        "ref": ref or None,
+        "path": path,
         "paths": pulled,
     }
+
+
+def _redact(text: str) -> str:
+    out = str(text)
+    for name in ("QS_READ_TOKEN", "CROSS_REPO_DISPATCH_TOKEN", "GH_PAT", "GITHUB_TOKEN"):
+        value = os.environ.get(name)
+        if value:
+            out = out.replace(value, "[REDACTED]")
+    return out
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -114,9 +129,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--path", default=DEFAULT_PATH)
     parser.add_argument("--ref", default="")
     parser.add_argument("--dest", required=True)
+    parser.add_argument("--report", default=None, help="Also write the JSON report to this path (for delivery_visibility)")
     ns = parser.parse_args(argv)
     report = pull_complete_artifacts(Path(ns.dest), repo=ns.repo, path=ns.path, ref=ns.ref)
     print(json.dumps(report, indent=2))
+    if ns.report:
+        out = Path(ns.report)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, indent=2), encoding="utf-8")
     return 0
 
 

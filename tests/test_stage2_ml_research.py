@@ -68,6 +68,14 @@ def test_migration_is_idempotent_and_additive():
         "005_platform_research.sql",
         "006_platform_lifecycle.sql",
         "007_platform_delivery.sql",
+        "008_market_intelligence_core.sql",
+        "009_market_intelligence_analytics.sql",
+        "010_research_ideas.sql",
+        "011_bond_securities.sql",
+        "012_market_intelligence_publication.sql",
+        "013_research_idea_completeness.sql",
+        "014_pit_sector_internals.sql",
+        "015_metric_latest_skips_withdrawn.sql",
     ]
     assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})

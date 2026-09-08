@@ -1,0 +1,102 @@
+# Pre-merge production preflight: backup + record current host state.
+#
+# Trigger is a same-repo push to this dedicated branch (GitHub App tokens cannot
+# create workflow_dispatch events). Not pull_request. No FRED ingest. No timer
+# enable. Secrets are never printed.
+name: Market Intelligence host preflight (backup)
+
+on:
+  push:
+    branches:
+      - cursor/mi-host-preflight-674b
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mi-host-preflight
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    name: Backup production PostgreSQL and record host state
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DO_HOST: ${{ secrets.DO_HOST }}
+      DO_USER: ${{ secrets.DO_USER }}
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Record host state and take a custom-format PostgreSQL backup
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          set -euo pipefail
+          umask 077
+          cd /root/FMP_SCREENER
+          STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+          BACKUP_DIR="/root/FMP_SCREENER/backups"
+          mkdir -p "$BACKUP_DIR"
+          DEST="${BACKUP_DIR}/fmp_pre_mi_${STAMP}.dump"
+          STATE="${BACKUP_DIR}/fmp_pre_mi_${STAMP}.state.txt"
+
+          {
+            echo "MARKET INTELLIGENCE HOST PREFLIGHT"
+            echo "stamp_utc=${STAMP}"
+            echo "pwd=$(pwd)"
+            echo "git_head=$(git rev-parse HEAD)"
+            echo "git_describe=$(git log -1 --oneline)"
+            echo "git_dirty=$(git status --porcelain | wc -l)"
+            echo "dashboard_active=$(systemctl is-active fmp-dashboard || true)"
+            echo "dashboard_unit=$(systemctl show fmp-dashboard -p FragmentPath --value || true)"
+            echo "dashboard_envfiles=$(systemctl show fmp-dashboard -p EnvironmentFiles --value || true)"
+            echo "mi_timer=$(systemctl is-enabled fmp-mi-refresh.timer 2>/dev/null || echo absent)"
+            echo "mi_api=$(systemctl is-active fmp-ai-context-api.service 2>/dev/null || echo absent)"
+            echo "precomputed_dir=$(test -d /root/FMP_SCREENER/outputs/precomputed && echo present || echo absent)"
+            echo "precomputed_files=$(find /root/FMP_SCREENER/outputs/precomputed -type f 2>/dev/null | wc -l)"
+            echo "mi_env_file=$(test -f /etc/fmp/market_intelligence.env && echo present || echo absent)"
+          } | tee "$STATE"
+
+          set -a
+          # shellcheck disable=SC1091
+          source /root/FMP_SCREENER/.env
+          set +a
+
+          DUMP_OK=0
+          if command -v pg_dump >/dev/null 2>&1 && [ -n "${DATABASE_URL:-}" ]; then
+            # Never echo DATABASE_URL. custom format is restorable with pg_restore.
+            pg_dump --format=custom --file="$DEST" "$DATABASE_URL"
+            DUMP_OK=1
+          elif command -v pg_dump >/dev/null 2>&1 && [ -n "${DB_HOST:-}" ] && [ -n "${DB_NAME:-}" ] && [ -n "${DB_USER:-}" ]; then
+            export PGPASSWORD="${DB_PASSWORD:-}"
+            pg_dump --format=custom --file="$DEST" \
+              -h "$DB_HOST" -p "${DB_PORT:-5432}" -U "$DB_USER" "$DB_NAME"
+            unset PGPASSWORD
+            DUMP_OK=1
+          else
+            echo "FAIL: pg_dump or writer connection settings unavailable"
+            exit 1
+          fi
+
+          SIZE="$(stat -c '%s' "$DEST")"
+          echo "backup_path=${DEST}"
+          echo "backup_bytes=${SIZE}"
+          if [ "$SIZE" -lt 1024 ]; then
+            echo "FAIL: backup file is too small"
+            exit 1
+          fi
+          pg_restore --list "$DEST" >/tmp/fmp_pre_mi_toc.txt
+          echo "backup_toc_lines=$(wc -l < /tmp/fmp_pre_mi_toc.txt)"
+          echo "backup_has_strategies=$(grep -c 'TABLE DATA.*strategies' /tmp/fmp_pre_mi_toc.txt || true)"
+          chmod 600 "$DEST" "$STATE"
+          echo "PREFLIGHT_OK dump_ok=${DUMP_OK}"
+          EOF

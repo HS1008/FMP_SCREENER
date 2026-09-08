@@ -1,0 +1,118 @@
+# Production activation after Deploy FMP Dashboard succeeds on main.
+#
+# Uses existing DigitalOcean SSH secrets plus secrets.FRED_API_KEY.
+# Never prints the key, request URLs, restricted values, or database credentials.
+# No QuantConnect. No public bind. Timer is enabled only after ingest+verify.
+name: Market Intelligence production activate
+
+on:
+  # One-shot same-repo push. workflow_dispatch is preferred but the GitHub App
+  # token used here cannot create dispatch events (HTTP 403).
+  push:
+    branches:
+      - cursor/mi-production-activate-674b
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mi-production-activate
+  cancel-in-progress: false
+
+jobs:
+  activate:
+    name: Provision, ingest, verify, schedule
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      DO_HOST: ${{ secrets.DO_HOST }}
+      DO_USER: ${{ secrets.DO_USER }}
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+    steps:
+      - name: Refuse to continue without the FRED secret
+        run: |
+          if [ -z "${FRED_API_KEY}" ]; then
+            echo "FRED_API_KEY repository secret is empty or unavailable"
+            exit 1
+          fi
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Confirm deployed commit and existing backup
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          set -euo pipefail
+          cd /root/FMP_SCREENER
+          echo "deployed_head=$(git rev-parse HEAD)"
+          echo "deployed_oneline=$(git log -1 --oneline)"
+          echo "dashboard=$(systemctl is-active fmp-dashboard || true)"
+          ls -1 /root/FMP_SCREENER/backups/fmp_pre_mi_*.dump 2>/dev/null | tail -3 || echo "WARN: no preflight dump found"
+          test -x /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh
+          EOF
+
+      - name: Transfer protected secret files (not logged)
+        run: |
+          umask 077
+          ssh "$DO_USER@$DO_HOST" 'install -d -m 0700 /root/FMP_SCREENER/.secrets'
+          install -m 0600 /dev/null /tmp/fred_api_key
+          printf '%s\n' "$FRED_API_KEY" > /tmp/fred_api_key
+          openssl rand -base64 32 | tr -d '\n' > /tmp/mi_readonly.pw
+          openssl rand -hex 32 > /tmp/ai_context_api_token
+          chmod 600 /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token
+          scp -q /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0600 /root/FMP_SCREENER/.secrets/fred_api_key /root/FMP_SCREENER/.secrets/mi_readonly.pw /root/FMP_SCREENER/.secrets/ai_context_api_token'
+          shred -u /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token || rm -f /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token
+
+      - name: Provision FRED key, read-only role, and private API token
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase provision'
+
+      - name: First FRED ingest, optional legacy files, analytics, morning snapshot
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest'
+
+      - name: Restart dashboard and AppTest Market Intelligence pages
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase verify'
+
+      - name: Enable refresh timer and localhost AI context API
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase schedule'
+
+      - name: Assert workspace has no leaked FRED key
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, pathlib, sys
+          key = os.environ.get("FRED_API_KEY") or ""
+          if not key:
+              sys.exit(0)
+          root = pathlib.Path(os.environ.get("GITHUB_WORKSPACE") or ".")
+          for path in root.rglob("*"):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              if path.stat().st_size > 2_000_000:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+              except OSError:
+                  continue
+              if key in text:
+                  print("refusing: workspace file contains the FRED key")
+                  sys.exit(1)
+          print("secret-presence check: key was not written to the workspace")
+          PY

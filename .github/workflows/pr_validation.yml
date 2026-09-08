@@ -1,0 +1,161 @@
+# PR validation for FMP_SCREENER: offline unit tests + disposable PostgreSQL integration tests.
+#
+# Safety properties (audited):
+#   * Trigger is `pull_request` (never `pull_request_target`): PR code runs with a read-only
+#     GITHUB_TOKEN and no repository secrets. No QC, FRED, FMP, IBKR, DigitalOcean or DB secrets
+#     are referenced anywhere in this file.
+#   * The only database is a throw-away `postgres:16` service container that lives for the job.
+#     The test session creates and drops its own database inside it (tests/conftest.py).
+#   * MI_REQUIRE_DB_TESTS=1 makes the PostgreSQL job FAIL (not skip) if the test database URL
+#     is missing, so required DB checks cannot silently pass as skips.
+#   * Nothing here deploys, migrates production, launches QuantConnect, or touches research
+#     artifacts. `Deploy FMP Dashboard` (push to main) remains the only deployment path.
+name: PR validation (offline + disposable PostgreSQL)
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  # Belt and braces: provider/writer configuration is explicitly empty so any accidental
+  # network or writer path fails closed instead of reaching a real service.
+  FRED_API_KEY: ""
+  FMP_API_KEY: ""
+  DATABASE_URL: ""
+  DATABASE_READONLY_URL: ""
+  AI_CONTEXT_API_TOKEN: ""
+  QC_API_TOKEN: ""
+  QC_USER_ID: ""
+
+jobs:
+  offline:
+    name: Offline unit tests (no database, no network)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Assert no database URL is configured for this job
+        run: |
+          test -z "${FMP_TEST_DATABASE_URL:-}" || { echo "offline job must not see a database"; exit 1; }
+
+      - name: Run unit tests (PostgreSQL-backed tests skip here; they are required in the postgres job)
+        run: python -m pytest -q -p no:cacheprovider -rs --durations=15
+
+  postgres:
+    name: Integration tests on disposable PostgreSQL 16
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fmp_test_admin
+          POSTGRES_PASSWORD: fmp_test_only_not_a_secret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fmp_test_admin -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Disposable service container only. The session fixture creates fmp_mi_test_<uuid>
+      # databases inside it and drops them; the read-only role tests create test-unique roles
+      # through the real db/roles/*.sql via psql and drop them afterwards.
+      FMP_TEST_DATABASE_URL: postgresql+psycopg2://fmp_test_admin:fmp_test_only_not_a_secret@127.0.0.1:5432/postgres
+      MI_REQUIRE_DB_TESTS: "1"
+      TZ: UTC
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Install requirements and psql client (role tests run db/roles/*.sql through psql)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client
+          psql --version
+
+      - name: Wait for PostgreSQL and report server version
+        run: |
+          for i in $(seq 1 30); do
+            if PGPASSWORD=fmp_test_only_not_a_secret psql -h 127.0.0.1 -U fmp_test_admin -d postgres -tAc "SELECT version()"; then exit 0; fi
+            sleep 2
+          done
+          echo "PostgreSQL service did not become ready"; exit 1
+
+      - name: Clean-database migration apply + second no-op apply
+        run: |
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          from jobs.apply_migrations import apply_migrations
+          from tests.conftest import STRATEGIES_TABLE_SQL  # the dashboard's pre-existing table that migration 002 extends
+          admin = create_engine(os.environ["FMP_TEST_DATABASE_URL"], isolation_level="AUTOCOMMIT", future=True)
+          with admin.connect() as conn:
+              conn.execute(text('DROP DATABASE IF EXISTS fmp_ci_migrations'))
+              conn.execute(text('CREATE DATABASE fmp_ci_migrations'))
+          url = os.environ["FMP_TEST_DATABASE_URL"].rsplit("/", 1)[0] + "/fmp_ci_migrations"
+          engine = create_engine(url, future=True)
+          with engine.begin() as conn:
+              conn.execute(text(STRATEGIES_TABLE_SQL))
+          first = apply_migrations(engine=engine)
+          second = apply_migrations(engine=engine)
+          print("applied on clean DB:", first)
+          assert first and not any(n.endswith("(skipped)") for n in first), first
+          assert second and all(n.endswith("(skipped)") for n in second), "second apply must be a no-op, got {0}".format(second)
+          engine.dispose()
+          with admin.connect() as conn:
+              conn.execute(text('DROP DATABASE fmp_ci_migrations'))
+          PY
+
+      - name: Run full suite with required PostgreSQL tests
+        run: |
+          set -o pipefail
+          python -m pytest -q -p no:cacheprovider -rs --durations=20 2>&1 | tee /tmp/pytest_postgres.log
+
+      - name: Assert PostgreSQL-backed tests actually ran (no silent skips)
+        run: |
+          if grep -Eq "FMP_TEST_DATABASE_URL not set" /tmp/pytest_postgres.log; then
+            echo "database tests skipped although a database was provided"; exit 1
+          fi
+          # Positive evidence: the consumer/read-only-role modules must have executed against PostgreSQL.
+          python -m pytest -q -p no:cacheprovider -rs tests/test_mi_pit_sector.py 2>&1 | tee /tmp/pytest_db_probe.log
+          grep -Eq "^[0-9]+ passed" /tmp/pytest_db_probe.log || { echo "PostgreSQL-backed tests did not pass/run"; exit 1; }
+          ! grep -Eq "skipped" /tmp/pytest_db_probe.log

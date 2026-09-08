@@ -1,0 +1,24 @@
+# Market Intelligence scheduled refresh (oneshot; driven by fmp-mi-refresh.timer).
+# Rendered by scripts/install_market_intelligence_timers.sh; placeholders: __ROOT__ __USER__ __ENV_FILE__
+[Unit]
+Description=FMP Market Intelligence refresh (FRED + legacy bridge + analytics + morning context)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__USER__
+WorkingDirectory=__ROOT__
+EnvironmentFile=-__ENV_FILE__
+# --all-configured: unconfigured sources are explicit skips, never failures.
+# Exit 0 ok, 2 partial (some configured source failed), 75 lock contention (another writer holds the lock).
+ExecStart=__ROOT__/venv/bin/python -m jobs.market_intelligence_refresh --all-configured --json
+SuccessExitStatus=0 2 75
+TimeoutStartSec=45min
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=__ROOT__/outputs
+StandardOutput=append:__ROOT__/outputs/market_intelligence_refresh.log
+StandardError=inherit
