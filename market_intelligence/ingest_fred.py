@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Iterable
 
-from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CATALOG_VERSION, FRED_SOURCE_ID, SeriesSpec, validate_metadata
+from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CATALOG_VERSION, FRED_SOURCE_ID, SeriesSpec, publishable, validate_metadata
 from market_intelligence.fred_client import FredClient, FredError, redact
 from market_intelligence.store import (
     RUN_FAILED,
@@ -27,6 +27,7 @@ from market_intelligence.store import (
     ObservationInput,
     finish_run,
     latest_observation_date,
+    quarantine_observations,
     record_freshness,
     start_run,
     upsert_macro_series,
@@ -37,6 +38,9 @@ from market_intelligence.store import (
 logger = logging.getLogger(__name__)
 
 FRED_DATASET = "fred_series_observations"
+RUN_QUARANTINED = "QUARANTINED"
+TRANSPORT_METADATA_REJECTED = "METADATA_REJECTED"
+TRANSPORT_PARTIAL = "PARTIAL"
 
 REVISION_LOOKBACK = {
     "D": timedelta(days=45),
@@ -80,10 +84,15 @@ class FredIngestReport:
     parent_run_id: str | None
     mode: str
     results: list[SeriesIngestResult] = field(default_factory=list)
+    transport_status: str | None = None
 
     @property
     def failed(self) -> list[SeriesIngestResult]:
-        return [r for r in self.results if r.status == RUN_FAILED]
+        return [r for r in self.results if r.status in (RUN_FAILED, RUN_QUARANTINED)]
+
+    @property
+    def quarantined(self) -> list[SeriesIngestResult]:
+        return [r for r in self.results if r.status == RUN_QUARANTINED]
 
     @property
     def succeeded(self) -> list[SeriesIngestResult]:
@@ -98,6 +107,8 @@ class FredIngestReport:
             "series_total": len(self.results),
             "series_succeeded": len(self.succeeded),
             "series_failed": len(self.failed),
+            "series_quarantined_metadata": [r.series_id for r in self.quarantined],
+            "transport_status": self.transport_status,
             "results": [r.as_dict() for r in self.results],
         }
 
@@ -119,15 +130,7 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
         result.request_window = window
         result.run_id = start_run(conn, source_id=FRED_SOURCE_ID, dataset="series:{0}".format(spec.series_id), parent_run_id=parent_run_id, request_window=window)
 
-    spec_fields = {
-        "category": spec.category,
-        "subcategory": spec.subcategory,
-        "catalog_version": CATALOG_VERSION,
-        "source_url": spec.source_url,
-        "notes": spec.notes,
-        "export_scope": spec.export_scope,
-        "expected_frequency": spec.expected_frequency,
-    }
+    spec_fields = spec_registry_fields(spec)
     try:
         meta = client.series_metadata(spec.series_id)
         metadata_status, mismatches = validate_metadata(spec, meta)
@@ -142,6 +145,8 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
         ObservationInput(o.observation_date, o.raw_value, o.realtime_start, o.realtime_end)
         for o in observations
     ]
+    if not publishable(metadata_status):
+        return _quarantine(engine, result, spec, spec_fields, meta, metadata_status, mismatches, rows, retrieved_at=retrieved_at, today=today, retry_count=client.retry_count, mode=mode)
     try:
         with engine.begin() as conn:
             upsert_macro_series(
@@ -154,7 +159,7 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
                 metadata_status=metadata_status,
                 mismatches=mismatches,
             )
-            counts = upsert_observations(conn, series_id=spec.series_id, rows=rows, retrieved_at=retrieved_at, run_id=result.run_id)
+            counts = upsert_observations(conn, series_id=spec.series_id, rows=rows, retrieved_at=retrieved_at, run_id=result.run_id, today=today)
             latest = latest_observation_date(conn, spec.series_id)
             first = min((r.observation_date for r in rows), default=None)
             freshness = record_freshness(
@@ -168,10 +173,13 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
                 error_redacted=None,
                 run_id=result.run_id,
                 today=today,
+                metadata_status=metadata_status,
+                latest_observation_retrieved_at=retrieved_at,
             )
             details = {
                 "metadata_status": metadata_status,
                 "metadata_mismatches": mismatches,
+                "publication_status": "PUBLISHED",
                 "provider_observation_start": meta.get("observation_start"),
                 "provider_observation_end": meta.get("observation_end"),
                 "provider_last_updated": meta.get("last_updated"),
@@ -190,6 +198,55 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
         return result
     except Exception as exc:  # noqa: BLE001
         return _fail(engine, result, spec, "db write failed: {0}".format(redact(exc.__class__.__name__)), retry_count=client.retry_count)
+
+
+def spec_registry_fields(spec: SeriesSpec) -> dict[str, Any]:
+    return {
+        "category": spec.category,
+        "subcategory": spec.subcategory,
+        "catalog_version": CATALOG_VERSION,
+        "source_url": spec.source_url,
+        "notes": spec.notes,
+        "export_scope": spec.export_scope,
+        "expected_frequency": spec.expected_frequency,
+        "catalog_units": spec.raw_units,
+        "catalog_label": spec.label,
+        "aggregation": spec.aggregation,
+        "display_divisor": spec.display_divisor,
+        "display_units": spec.display_units,
+    }
+
+
+def _quarantine(engine, result: SeriesIngestResult, spec: SeriesSpec, spec_fields: dict[str, Any], meta: dict[str, Any], metadata_status: str, mismatches: list[dict], rows: list[ObservationInput], *, retrieved_at, today: date, retry_count: int, mode: str) -> SeriesIngestResult:
+    """Publication gate: keep the payload for diagnosis, keep the last valid data, report loudly."""
+    logger.warning("FRED series %s metadata %s; %d observations quarantined", spec.series_id, metadata_status, len(rows))
+    result.status = RUN_QUARANTINED
+    result.metadata_status = metadata_status
+    result.error = "metadata {0}; observations quarantined, last valid data retained".format(metadata_status)
+    try:
+        with engine.begin() as conn:
+            upsert_macro_series(conn, series_id=spec.series_id, source_id=FRED_SOURCE_ID, provider_series_id=spec.series_id, spec_fields=spec_fields, meta=meta, metadata_status=metadata_status, mismatches=mismatches)
+            quarantined = quarantine_observations(conn, series_id=spec.series_id, rows=rows, retrieved_at=retrieved_at, run_id=result.run_id, reason="METADATA_{0}".format(metadata_status), metadata_status=metadata_status, detail={"mismatches": mismatches})
+            latest_valid = latest_observation_date(conn, spec.series_id)
+            result.freshness_status = record_freshness(
+                conn,
+                source_id=FRED_SOURCE_ID,
+                dataset="series:{0}".format(spec.series_id),
+                cadence=spec.expected_frequency,
+                transport_status=TRANSPORT_METADATA_REJECTED,
+                latest_observation=latest_valid,
+                success=False,
+                error_redacted=result.error[:500],
+                run_id=result.run_id,
+                today=today,
+                metadata_status=metadata_status,
+            )
+            result.counts = {"received": len(rows), "inserted": 0, "revised": 0, "unchanged": 0, "rejected": quarantined}
+            result.latest_observation = latest_valid
+            finish_run(conn, result.run_id, status=RUN_QUARANTINED, counts=result.counts, error_redacted=result.error[:500], retry_count=retry_count, details={"metadata_status": metadata_status, "metadata_mismatches": mismatches, "publication_status": "QUARANTINED_METADATA", "quarantined_rows": quarantined, "mode": mode})
+    except Exception:  # noqa: BLE001 - bookkeeping must not mask the gate outcome
+        logger.exception("failed to record quarantine for %s", spec.series_id)
+    return result
 
 
 def _series_exists(conn, series_id: str) -> bool:
@@ -229,19 +286,29 @@ def ingest_fred_catalog(engine, client: FredClient, *, series_ids: Iterable[str]
         report.results.append(ingest_series(engine, client, spec, mode=mode, today=today, parent_run_id=parent_run_id))
     with engine.begin() as conn:
         latest_any = max((r.latest_observation for r in report.succeeded if r.latest_observation), default=None)
+        if report.failed and report.succeeded:
+            transport = TRANSPORT_PARTIAL
+        elif report.failed:
+            transport = TRANSPORT_FAILED
+        else:
+            transport = TRANSPORT_OK
+        report.transport_status = transport
+        error = None
+        if report.failed:
+            error = "{0} series failed ({1} metadata-quarantined)".format(len(report.failed), len(report.quarantined))
         record_freshness(
             conn,
             source_id=FRED_SOURCE_ID,
             dataset=FRED_DATASET,
             cadence="MIXED",
-            transport_status=TRANSPORT_OK if report.succeeded and not report.failed else (TRANSPORT_FAILED if report.failed else TRANSPORT_OK),
+            transport_status=transport,
             latest_observation=latest_any,
             success=bool(report.succeeded),
-            error_redacted=("{0} series failed".format(len(report.failed)) if report.failed else None),
+            error_redacted=error,
             run_id=parent_run_id,
             today=today,
         )
     return report
 
 
-__all__ = ["FRED_DATASET", "FredIngestReport", "REVISION_LOOKBACK", "SeriesIngestResult", "ingest_fred_catalog", "ingest_series", "request_window"]
+__all__ = ["FRED_DATASET", "FredIngestReport", "REVISION_LOOKBACK", "RUN_QUARANTINED", "SeriesIngestResult", "TRANSPORT_METADATA_REJECTED", "TRANSPORT_PARTIAL", "ingest_fred_catalog", "ingest_series", "request_window", "spec_registry_fields"]

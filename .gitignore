@@ -209,3 +209,6 @@ venv/
 
 # Research-delivery visibility reports written by the ingest workflow (runtime only).
 delivery/
+
+# Test fixtures captured from official provider metadata are tracked despite *.json
+!tests/fixtures/*.json

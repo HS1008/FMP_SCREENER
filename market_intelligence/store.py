@@ -6,7 +6,6 @@ All functions take an open SQLAlchemy connection; callers own transaction bounda
 
 from __future__ import annotations
 
-import json
 import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
@@ -16,8 +15,8 @@ from typing import Any, Iterable, Mapping
 from sqlalchemy import text
 
 from market_intelligence import CODE_VERSION
-from market_intelligence.catalog import CATALOG_VERSION, SOURCE_REGISTRY_DEFAULTS
-from market_intelligence.freshness import assess_freshness
+from market_intelligence.catalog import CATALOG_VERSION, SOURCE_REGISTRY_DEFAULTS, publishable
+from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness
 from market_intelligence.nulls import MalformedValueError, normalize_numeric, strict_dumps
 
 RUN_ATTEMPTED = "ATTEMPTED"
@@ -166,8 +165,22 @@ def finish_run(conn, run_id: str, *, status: str, counts: Mapping[str, int] | No
 
 # ---- series metadata -------------------------------------------------------------------
 
-def upsert_macro_series(conn, *, series_id: str, source_id: str, provider_series_id: str, spec_fields: Mapping[str, Any], meta: Mapping[str, Any] | None, metadata_status: str, mismatches: list[dict] | None) -> None:
+PUBLICATION_PUBLISHED = "PUBLISHED"
+PUBLICATION_QUARANTINED = "QUARANTINED_METADATA"
+PUBLICATION_UNVALIDATED = "UNVALIDATED"
+
+
+def upsert_macro_series(conn, *, series_id: str, source_id: str, provider_series_id: str, spec_fields: Mapping[str, Any], meta: Mapping[str, Any] | None, metadata_status: str, mismatches: list[dict] | None) -> str:
+    """Upsert series metadata and return the publication status decided by the metadata gate.
+
+    Provider metadata columns are only overwritten when the metadata validated; a failed
+    validation records the status/mismatches and leaves the last valid description intact so
+    downstream consumers keep seeing the units that match the published observations.
+    """
     meta = meta or {}
+    publish = publishable(metadata_status)
+    publication_status = PUBLICATION_PUBLISHED if publish else PUBLICATION_QUARANTINED
+    reason = None if publish else "metadata {0}: {1}".format(metadata_status, strict_dumps(mismatches or [])[:400])
     conn.execute(
         text(
             """
@@ -175,33 +188,48 @@ def upsert_macro_series(conn, *, series_id: str, source_id: str, provider_series
                 series_id, source_id, provider_series_id, title, units, units_short, frequency, frequency_short,
                 seasonal_adjustment, seasonal_adjustment_short, category, subcategory, catalog_version, source_url,
                 source_notes, provider_last_updated, provider_observation_start, provider_observation_end,
-                metadata_status, metadata_mismatch_json, vintage_kind, pit_safe, export_scope, updated_at
+                metadata_status, metadata_mismatch_json, vintage_kind, pit_safe, export_scope, updated_at,
+                publication_status, publication_reason, catalog_units, catalog_label, aggregation, display_divisor, display_units,
+                last_validated_at, last_quarantined_at
             ) VALUES (
-                :series_id, :source_id, :provider_series_id, :title, :units, :units_short, :frequency, :frequency_short,
-                :sa, :sa_short, :category, :subcategory, :catalog_version, :source_url,
-                :source_notes, :provider_last_updated, :obs_start, :obs_end,
-                :metadata_status, CAST(:mismatches AS JSONB), 'LATEST_REVISED', FALSE, :export_scope, NOW()
+                :series_id, :source_id, :provider_series_id,
+                CASE WHEN :publish THEN :title END, CASE WHEN :publish THEN :units END, CASE WHEN :publish THEN :units_short END,
+                CASE WHEN :publish THEN :frequency END, CASE WHEN :publish THEN :frequency_short END,
+                CASE WHEN :publish THEN :sa END, CASE WHEN :publish THEN :sa_short END, :category, :subcategory, :catalog_version, :source_url,
+                :source_notes, CASE WHEN :publish THEN :provider_last_updated END, CASE WHEN :publish THEN CAST(:obs_start AS DATE) END, CASE WHEN :publish THEN CAST(:obs_end AS DATE) END,
+                :metadata_status, CAST(:mismatches AS JSONB), 'LATEST_REVISED', FALSE, :export_scope, NOW(),
+                :publication_status, :publication_reason, :catalog_units, :catalog_label, :aggregation, :display_divisor, :display_units,
+                CASE WHEN :publish THEN NOW() ELSE NULL END, CASE WHEN :publish THEN NULL ELSE NOW() END
             )
             ON CONFLICT (series_id) DO UPDATE SET
-                title = COALESCE(EXCLUDED.title, mi_macro_series.title),
-                units = COALESCE(EXCLUDED.units, mi_macro_series.units),
-                units_short = COALESCE(EXCLUDED.units_short, mi_macro_series.units_short),
-                frequency = COALESCE(EXCLUDED.frequency, mi_macro_series.frequency),
-                frequency_short = COALESCE(EXCLUDED.frequency_short, mi_macro_series.frequency_short),
-                seasonal_adjustment = COALESCE(EXCLUDED.seasonal_adjustment, mi_macro_series.seasonal_adjustment),
-                seasonal_adjustment_short = COALESCE(EXCLUDED.seasonal_adjustment_short, mi_macro_series.seasonal_adjustment_short),
+                title = CASE WHEN :publish THEN COALESCE(EXCLUDED.title, mi_macro_series.title) ELSE mi_macro_series.title END,
+                units = CASE WHEN :publish THEN COALESCE(EXCLUDED.units, mi_macro_series.units) ELSE mi_macro_series.units END,
+                units_short = CASE WHEN :publish THEN COALESCE(EXCLUDED.units_short, mi_macro_series.units_short) ELSE mi_macro_series.units_short END,
+                frequency = CASE WHEN :publish THEN COALESCE(EXCLUDED.frequency, mi_macro_series.frequency) ELSE mi_macro_series.frequency END,
+                frequency_short = CASE WHEN :publish THEN COALESCE(EXCLUDED.frequency_short, mi_macro_series.frequency_short) ELSE mi_macro_series.frequency_short END,
+                seasonal_adjustment = CASE WHEN :publish THEN COALESCE(EXCLUDED.seasonal_adjustment, mi_macro_series.seasonal_adjustment) ELSE mi_macro_series.seasonal_adjustment END,
+                seasonal_adjustment_short = CASE WHEN :publish THEN COALESCE(EXCLUDED.seasonal_adjustment_short, mi_macro_series.seasonal_adjustment_short) ELSE mi_macro_series.seasonal_adjustment_short END,
                 category = EXCLUDED.category,
                 subcategory = EXCLUDED.subcategory,
                 catalog_version = EXCLUDED.catalog_version,
                 source_url = EXCLUDED.source_url,
                 source_notes = EXCLUDED.source_notes,
-                provider_last_updated = COALESCE(EXCLUDED.provider_last_updated, mi_macro_series.provider_last_updated),
-                provider_observation_start = COALESCE(EXCLUDED.provider_observation_start, mi_macro_series.provider_observation_start),
-                provider_observation_end = COALESCE(EXCLUDED.provider_observation_end, mi_macro_series.provider_observation_end),
+                provider_last_updated = CASE WHEN :publish THEN COALESCE(EXCLUDED.provider_last_updated, mi_macro_series.provider_last_updated) ELSE mi_macro_series.provider_last_updated END,
+                provider_observation_start = CASE WHEN :publish THEN COALESCE(EXCLUDED.provider_observation_start, mi_macro_series.provider_observation_start) ELSE mi_macro_series.provider_observation_start END,
+                provider_observation_end = CASE WHEN :publish THEN COALESCE(EXCLUDED.provider_observation_end, mi_macro_series.provider_observation_end) ELSE mi_macro_series.provider_observation_end END,
                 metadata_status = EXCLUDED.metadata_status,
                 metadata_mismatch_json = EXCLUDED.metadata_mismatch_json,
                 export_scope = EXCLUDED.export_scope,
-                updated_at = NOW()
+                updated_at = NOW(),
+                publication_status = EXCLUDED.publication_status,
+                publication_reason = EXCLUDED.publication_reason,
+                catalog_units = EXCLUDED.catalog_units,
+                catalog_label = EXCLUDED.catalog_label,
+                aggregation = EXCLUDED.aggregation,
+                display_divisor = EXCLUDED.display_divisor,
+                display_units = EXCLUDED.display_units,
+                last_validated_at = CASE WHEN :publish THEN NOW() ELSE mi_macro_series.last_validated_at END,
+                last_quarantined_at = CASE WHEN :publish THEN mi_macro_series.last_quarantined_at ELSE NOW() END
             """
         ),
         {
@@ -226,8 +254,51 @@ def upsert_macro_series(conn, *, series_id: str, source_id: str, provider_series
             "metadata_status": metadata_status,
             "mismatches": _json(mismatches or []),
             "export_scope": spec_fields.get("export_scope", "INTERNAL_ONLY"),
+            "publish": publish,
+            "publication_status": publication_status,
+            "publication_reason": reason,
+            "catalog_units": spec_fields.get("catalog_units"),
+            "catalog_label": spec_fields.get("catalog_label"),
+            "aggregation": spec_fields.get("aggregation"),
+            "display_divisor": spec_fields.get("display_divisor"),
+            "display_units": spec_fields.get("display_units"),
         },
     )
+    return publication_status
+
+
+def quarantine_observations(conn, *, series_id: str, rows: Iterable["ObservationInput"], retrieved_at: datetime, run_id: str | None, reason: str, metadata_status: str | None, detail: Mapping[str, Any] | None = None) -> int:
+    """Retain rejected payloads for diagnosis without promoting them to current observations."""
+    rows = list(rows)
+    if not rows:
+        return 0
+    conn.execute(
+        text(
+            """
+            INSERT INTO mi_macro_observation_quarantine (
+                series_id, observation_date, raw_value, realtime_start, realtime_end, retrieved_at, ingestion_run_id, reason, metadata_status, detail_json
+            ) VALUES (
+                :series_id, :d, :raw_value, :rs, :re, :retrieved_at, :run_id, :reason, :metadata_status, CAST(:detail AS JSONB)
+            )
+            """
+        ),
+        [
+            {
+                "series_id": series_id,
+                "d": r.observation_date,
+                "raw_value": None if r.raw_value is None else str(r.raw_value)[:64],
+                "rs": r.realtime_start,
+                "re": r.realtime_end,
+                "retrieved_at": retrieved_at,
+                "run_id": run_id,
+                "reason": reason,
+                "metadata_status": metadata_status,
+                "detail": _json(detail) if detail is not None else None,
+            }
+            for r in rows
+        ],
+    )
+    return len(rows)
 
 
 def _date_or_none(raw: Any) -> date | None:
@@ -282,18 +353,30 @@ def _values_equal(a: Decimal | None, b: Decimal | None) -> bool:
     return a == b
 
 
-def upsert_observations(conn, *, series_id: str, rows: Iterable[ObservationInput], retrieved_at: datetime, run_id: str | None) -> UpsertCounts:
+def upsert_observations(conn, *, series_id: str, rows: Iterable[ObservationInput], retrieved_at: datetime, run_id: str | None, today: date | None = None) -> UpsertCounts:
     """Idempotent upsert with auditable revisions.
 
     - identical value -> untouched economic row, ``last_seen_at`` refreshed
     - different value -> previous row ``is_current=false`` + ``superseded_at``; new row revision_seq+1
     - missing tokens -> NULL value with raw token retained; malformed text -> rejected (never stored as 0)
+    - observation dates after ``today`` (retrieval date) -> rejected and quarantined (never current)
     """
     counts = UpsertCounts()
     rows = list(rows)
     counts.received = len(rows)
     if not rows:
         return counts
+    today = today or retrieved_at.date()
+    future = [r for r in rows if r.observation_date > today]
+    if future:
+        quarantine_observations(conn, series_id=series_id, rows=future, retrieved_at=retrieved_at, run_id=run_id, reason="FUTURE_OBSERVATION_DATE", metadata_status=None, detail={"today": today.isoformat()})
+        counts.rejected += len(future)
+        for r in future[:5]:
+            if len(counts.rejected_samples) < 5:
+                counts.rejected_samples.append({"observation_date": r.observation_date.isoformat(), "raw_value": str(r.raw_value)[:32], "error": "observation date is after retrieval date"})
+        rows = [r for r in rows if r.observation_date <= today]
+        if not rows:
+            return counts
     dates = [r.observation_date for r in rows]
     existing = conn.execute(
         text(
@@ -402,11 +485,17 @@ def latest_observation_date(conn, series_id: str) -> date | None:
 
 # ---- freshness ----------------------------------------------------------------------
 
-def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None, transport_status: str, latest_observation: date | None, success: bool, error_redacted: str | None, run_id: str | None, today: date | None = None) -> str:
-    """Update transport + observation freshness separately. Failed retrievals keep last valid data."""
+def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None, transport_status: str, latest_observation: date | None, success: bool, error_redacted: str | None, run_id: str | None, today: date | None = None, metadata_status: str | None = None, latest_observation_retrieved_at: datetime | None = None) -> str:
+    """Update transport + observation freshness separately. Failed retrievals keep last valid data.
+
+    The stored ``freshness_status`` is the assessment *at write time*; readers must recompute
+    against their own clock (``read_models.source_health``) because health decays even when
+    no ingestion job runs. The ``expected_next_release`` column holds the stale-after bound implied by the
+    tolerance, not an official release calendar date.
+    """
     today = today or utcnow().date()
     prior = conn.execute(
-        text("SELECT latest_observation_date, last_success_at FROM mi_data_freshness WHERE source_id = :s AND dataset = :d"),
+        text("SELECT latest_observation_date, last_success_at, latest_observation_retrieved_at FROM mi_data_freshness WHERE source_id = :s AND dataset = :d"),
         {"s": source_id, "d": dataset},
     ).mappings().first()
     effective_latest = latest_observation
@@ -414,6 +503,11 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
         effective_latest = prior["latest_observation_date"]
     elif prior is not None and prior["latest_observation_date"] is not None and latest_observation is not None:
         effective_latest = max(latest_observation, prior["latest_observation_date"])
+    retrieved = latest_observation_retrieved_at
+    if retrieved is None and prior is not None and (latest_observation is None or effective_latest == prior["latest_observation_date"]):
+        retrieved = prior["latest_observation_retrieved_at"]
+    if retrieved is None and success and latest_observation is not None:
+        retrieved = utcnow()
     assessment = assess_freshness(effective_latest, cadence, today)
     conn.execute(
         text(
@@ -421,10 +515,10 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
             INSERT INTO mi_data_freshness (
                 source_id, dataset, last_attempt_at, last_success_at, latest_observation_date, expected_cadence,
                 tolerance_days, expected_next_release, transport_status, freshness_status, last_error_redacted,
-                last_run_id, updated_at
+                last_run_id, updated_at, freshness_policy_version, latest_observation_retrieved_at, metadata_status
             ) VALUES (
                 :s, :d, NOW(), CASE WHEN :success THEN NOW() ELSE NULL END, :latest, :cadence,
-                :tol, :next_release, :transport, :fresh, :err, :run_id, NOW()
+                :tol, :next_release, :transport, :fresh, :err, :run_id, NOW(), :policy, :retrieved, :meta
             )
             ON CONFLICT (source_id, dataset) DO UPDATE SET
                 last_attempt_at = NOW(),
@@ -437,7 +531,10 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
                 freshness_status = :fresh,
                 last_error_redacted = :err,
                 last_run_id = :run_id,
-                updated_at = NOW()
+                updated_at = NOW(),
+                freshness_policy_version = :policy,
+                latest_observation_retrieved_at = COALESCE(:retrieved, mi_data_freshness.latest_observation_retrieved_at),
+                metadata_status = COALESCE(:meta, mi_data_freshness.metadata_status)
             """
         ),
         {
@@ -447,11 +544,14 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
             "latest": effective_latest,
             "cadence": cadence,
             "tol": assessment.tolerance_days,
-            "next_release": assessment.expected_next_release,
+            "next_release": assessment.stale_after,
             "transport": transport_status,
             "fresh": assessment.status,
             "err": error_redacted,
             "run_id": run_id,
+            "policy": FRESHNESS_POLICY_VERSION,
+            "retrieved": retrieved,
+            "meta": metadata_status,
         },
     )
     return assessment.status
@@ -459,6 +559,10 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
 
 __all__ = [
     "ObservationInput",
+    "PUBLICATION_PUBLISHED",
+    "PUBLICATION_QUARANTINED",
+    "PUBLICATION_UNVALIDATED",
+    "quarantine_observations",
     "RUN_ATTEMPTED",
     "RUN_FAILED",
     "RUN_PARTIAL",

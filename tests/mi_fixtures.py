@@ -7,7 +7,6 @@ in this module may be published as research evidence.
 from __future__ import annotations
 
 import json
-import math
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -177,19 +176,8 @@ class FakeFredClient:
         self.request_count += 1
         if series_id in self.failures:
             raise FredError("FRED HTTP 500 for series", status=500, retryable=True)
-        base = {
-            "id": series_id,
-            "title": "Synthetic {0}".format(series_id),
-            "units": _units_for(series_id),
-            "units_short": _units_for(series_id),
-            "frequency": "Daily" if _is_daily(series_id) else "Monthly",
-            "frequency_short": "D" if _is_daily(series_id) else "M",
-            "seasonal_adjustment": "Not Seasonally Adjusted" if _is_daily(series_id) else "Seasonally Adjusted",
-            "seasonal_adjustment_short": "NSA" if _is_daily(series_id) else "SA",
-            "observation_start": "2000-01-01",
-            "observation_end": "2024-12-31",
-            "last_updated": "2024-12-31 16:00:00-06",
-        }
+        base = dict(official_metadata(series_id))
+        base.update({"observation_start": "2000-01-01", "observation_end": "2024-12-31", "last_updated": "2024-12-31 16:00:00-06"})
         base.update(self.metadata.get(series_id, {}))
         return base
 
@@ -207,22 +195,27 @@ class FakeFredClient:
         return out
 
 
+OFFICIAL_METADATA_PATH = Path(__file__).with_name("fixtures") / "fred_official_metadata.json"
+_OFFICIAL_CACHE: dict[str, dict] | None = None
+
+
+def official_metadata_all() -> dict[str, dict]:
+    """Official FRED metadata captured from fred.stlouisfed.org; independent of the catalog."""
+    global _OFFICIAL_CACHE
+    if _OFFICIAL_CACHE is None:
+        _OFFICIAL_CACHE = json.loads(OFFICIAL_METADATA_PATH.read_text(encoding="utf-8"))["series"]
+    return _OFFICIAL_CACHE
+
+
+def official_metadata(series_id: str) -> dict:
+    meta = official_metadata_all().get(series_id)
+    if meta is None:
+        raise KeyError("no official metadata fixture for {0}; add it to {1}".format(series_id, OFFICIAL_METADATA_PATH.name))
+    return meta
+
+
 def _is_daily(series_id: str) -> bool:
-    return series_id.startswith(("DGS", "DFII", "T5Y", "T10Y", "BAML", "DFF", "SOFR", "RRPONTSYD"))
-
-
-def _units_for(series_id: str) -> str:
-    if _is_daily(series_id) or series_id == "UNRATE":
-        return "Percent"
-    if series_id.startswith("CPI") or series_id.startswith("PCE") or series_id == "INDPRO":
-        return "Index 1982-1984=100"
-    if series_id == "PAYEMS":
-        return "Thousands of Persons"
-    if series_id in {"ICSA", "CCSA"}:
-        return "Number"
-    if series_id == "GDPC1":
-        return "Billions of Chained 2017 Dollars"
-    return "Billions of U.S. Dollars"
+    return official_metadata(series_id)["frequency_short"] == "D"
 
 
 def daily_series(end: date, sessions: int, start_value: float, step: float, *, missing_every: int | None = None) -> list[tuple[date, str]]:
@@ -271,8 +264,9 @@ def synthetic_fred_data(end: date = date(2024, 12, 31)) -> dict[str, list[tuple[
     data["ICSA"] = [(d, "{0:.0f}".format(210000 + (i % 5) * 1000)) for i, d in enumerate(weekly_days)]
     data["CCSA"] = [(d, "{0:.0f}".format(1800000 + (i % 7) * 5000)) for i, d in enumerate(weekly_days)]
     data["WALCL"] = [(d, "{0:.0f}".format(7000000 - 3000 * i)) for i, d in enumerate(weekly_days)]
-    data["WTREGEN"] = [(d, "{0:.1f}".format(700 + (i % 9) * 10)) for i, d in enumerate(weekly_days)]
-    data["WRESBAL"] = [(d, "{0:.1f}".format(3300 - 2 * i)) for i, d in enumerate(weekly_days)]
+    # Millions of USD (official units); week averages ending Wednesday.
+    data["WTREGEN"] = [(d, "{0:.1f}".format(700000 + (i % 9) * 10000)) for i, d in enumerate(weekly_days)]
+    data["WRESBAL"] = [(d, "{0:.1f}".format(3300000 - 2000 * i)) for i, d in enumerate(weekly_days)]
     data["RRPONTSYD"] = daily_series(end, 400, 500.0, -0.5)
     return data
 
