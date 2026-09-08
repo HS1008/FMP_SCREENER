@@ -207,6 +207,9 @@ outputs/
 .streamlit/secrets.toml
 venv/
 
+# Host-only database dumps. Never keep them inside the git checkout.
+/backups/
+
 # Research-delivery visibility reports written by the ingest workflow (runtime only).
 delivery/
 

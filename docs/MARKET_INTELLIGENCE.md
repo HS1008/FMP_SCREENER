@@ -133,7 +133,9 @@ Prerequisites already present: `/root/FMP_SCREENER` checkout with `venv`, Postgr
    `install -m 0600 deploy/market_intelligence/market_intelligence.env.example /etc/fmp/market_intelligence.env`
    and fill the writer identity, `FRED_API_KEY`, `AI_CONTEXT_API_TOKEN` (long random), later
    `DATABASE_READONLY_URL`.
-3. Read-only role (password never in argv or shell history):
+3. Read-only role (password never in argv or shell history). The dashboard writer cannot
+   `CREATE ROLE`. Use `MI_ADMIN_DATABASE_URL` / `ADMIN_DATABASE_URL`, or local postgres peer
+   (`sudo -n -u postgres`) when the writer host is loopback. Then:
    `psql "$ADMIN_DATABASE_URL" -f db/roles/market_intelligence_readonly.sql` (prompts for the
    password only on first creation), or non-interactively
    `psql "$ADMIN_DATABASE_URL" -v ro_password="$(cat /etc/fmp/mi_readonly.pw)" -f db/roles/market_intelligence_readonly.sql`

@@ -2,6 +2,7 @@
 # Host-side Market Intelligence activation. Called over authorized SSH after
 # the application commit is deployed. Never prints secret values.
 #
+#   scripts/activate_market_intelligence_host.sh --phase probe
 #   scripts/activate_market_intelligence_host.sh --phase provision
 #   scripts/activate_market_intelligence_host.sh --phase ingest
 #   scripts/activate_market_intelligence_host.sh --phase verify
@@ -11,6 +12,10 @@
 #   /root/FMP_SCREENER/.secrets/fred_api_key
 #   /root/FMP_SCREENER/.secrets/mi_readonly.pw
 #   /root/FMP_SCREENER/.secrets/ai_context_api_token
+#
+# CREATE ROLE uses an admin identity, never the dashboard writer:
+#   1. MI_ADMIN_DATABASE_URL or ADMIN_DATABASE_URL, if set
+#   2. local postgres peer (sudo/runuser) only when the writer host is loopback
 set -euo pipefail
 
 ROOT="/root/FMP_SCREENER"
@@ -30,7 +35,7 @@ while [ $# -gt 0 ]; do
     --fred-key-file) FRED_KEY_FILE="$2"; shift 2 ;;
     --readonly-pw-file) RO_PW_FILE="$2"; shift 2 ;;
     --ai-token-file) AI_TOKEN_FILE="$2"; shift 2 ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
 done
@@ -53,6 +58,144 @@ load_writer_env() {
     source "$ENV_FILE"
     set +a
   fi
+}
+
+writer_db_meta() {
+  python3 - <<'PY'
+import os
+import urllib.parse
+
+raw = (os.environ.get("DATABASE_URL") or "").strip()
+if raw:
+    parts = urllib.parse.urlsplit(raw)
+    db = (parts.path or "/fmp").lstrip("/") or "fmp"
+    host = (parts.hostname or "").lower()
+else:
+    db = os.environ.get("DB_NAME") or "fmp"
+    host = (os.environ.get("DB_HOST") or "127.0.0.1").lower()
+if host in {"127.0.0.1", "localhost", "::1"}:
+    kind = "loopback"
+elif not host:
+    kind = "socket"
+else:
+    kind = "tcp"
+print("{0}\t{1}".format(db, kind))
+PY
+}
+
+postgres_peer_works() {
+  if ! getent passwd postgres >/dev/null 2>&1; then
+    return 1
+  fi
+  if command -v sudo >/dev/null 2>&1; then
+    if sudo -n -u postgres psql -d postgres -v ON_ERROR_STOP=1 -tAc "SELECT 1" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  if command -v runuser >/dev/null 2>&1; then
+    if runuser -u postgres -- psql -d postgres -v ON_ERROR_STOP=1 -tAc "SELECT 1" >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
+apply_readonly_sql_as_postgres() {
+  local db_name="$1"
+  if command -v sudo >/dev/null 2>&1 && sudo -n -u postgres psql -d postgres -v ON_ERROR_STOP=1 -tAc "SELECT 1" >/dev/null 2>&1; then
+    sudo -n -u postgres psql -d "$db_name" -v ON_ERROR_STOP=1 \
+      -v ro_password="$(cat "$RO_PW_FILE")" \
+      -f "$ROOT/db/roles/market_intelligence_readonly.sql"
+    return $?
+  fi
+  runuser -u postgres -- psql -d "$db_name" -v ON_ERROR_STOP=1 \
+    -v ro_password="$(cat "$RO_PW_FILE")" \
+    -f "$ROOT/db/roles/market_intelligence_readonly.sql"
+}
+
+apply_readonly_role_sql() {
+  local meta db_name host_kind admin_url
+  meta="$(writer_db_meta)"
+  db_name="${meta%%	*}"
+  host_kind="${meta#*	}"
+  echo "readonly_sql_db=${db_name}"
+  echo "writer_host_kind=${host_kind}"
+
+  admin_url="${MI_ADMIN_DATABASE_URL:-${ADMIN_DATABASE_URL:-}}"
+  if [ -n "$admin_url" ]; then
+    echo "readonly_sql_via=admin_url"
+    unset PGPASSWORD
+    psql "$admin_url" -v ON_ERROR_STOP=1 \
+      -v ro_password="$(cat "$RO_PW_FILE")" \
+      -f "$ROOT/db/roles/market_intelligence_readonly.sql"
+    return
+  fi
+
+  if [ "$host_kind" = "loopback" ] || [ "$host_kind" = "socket" ]; then
+    if postgres_peer_works; then
+      echo "readonly_sql_via=postgres_peer"
+      unset PGPASSWORD
+      apply_readonly_sql_as_postgres "$db_name"
+      return
+    fi
+    echo "FAIL: writer database is local but postgres peer/admin auth is unavailable"
+    echo "Need MI_ADMIN_DATABASE_URL / ADMIN_DATABASE_URL, or sudo -n -u postgres (or runuser) peer access."
+    echo "The dashboard writer cannot CREATE ROLE. FRED/env files may already be written; timers were not enabled."
+    exit 3
+  fi
+
+  echo "FAIL: writer database is remote and no admin URL is configured"
+  echo "Set MI_ADMIN_DATABASE_URL or ADMIN_DATABASE_URL to a CREATEROLE identity."
+  echo "Do not use the dashboard writer. FRED/env files may already be written; timers were not enabled."
+  exit 3
+}
+
+phase_probe() {
+  echo "PHASE probe"
+  load_writer_env
+  echo "whoami=$(id -un)"
+  echo "postgres_os_user=$(getent passwd postgres >/dev/null && echo present || echo absent)"
+  echo "sudo_present=$(command -v sudo >/dev/null && echo yes || echo no)"
+  echo "runuser_present=$(command -v runuser >/dev/null && echo yes || echo no)"
+  echo "psql_present=$(command -v psql >/dev/null && echo yes || echo no)"
+  echo "admin_url_env=$([ -n "${MI_ADMIN_DATABASE_URL:-${ADMIN_DATABASE_URL:-}}" ] && echo present || echo absent)"
+  echo "dashboard_env_present=$([ -f "$DASHBOARD_ENV" ] && echo yes || echo no)"
+  echo "mi_env_present=$([ -f "$ENV_FILE" ] && echo yes || echo no)"
+  echo "fred_key_file=$([ -s "$FRED_KEY_FILE" ] && echo present || echo absent)"
+  echo "readonly_pw_file=$([ -s "$RO_PW_FILE" ] && echo present || echo absent)"
+  echo "ai_token_file=$([ -s "$AI_TOKEN_FILE" ] && echo present || echo absent)"
+  if [ -z "${DATABASE_URL:-}" ] && { [ -z "${DB_HOST:-}" ] || [ -z "${DB_NAME:-}" ]; }; then
+    echo "writer_db=missing"
+  else
+    meta="$(writer_db_meta)"
+    echo "writer_db=present"
+    echo "readonly_sql_db=${meta%%	*}"
+    echo "writer_host_kind=${meta#*	}"
+  fi
+  if postgres_peer_works; then
+    echo "postgres_peer=ok"
+  else
+    echo "postgres_peer=unavailable"
+  fi
+  if [ -n "${DATABASE_URL:-}" ]; then
+    unset PGPASSWORD
+    if role_state="$(psql "$DATABASE_URL" -tAc "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mi_readonly') THEN 'present' ELSE 'absent' END" 2>/dev/null)"; then
+      echo "mi_readonly_role=$(printf '%s' "$role_state" | tr -d '[:space:]')"
+    else
+      echo "mi_readonly_role=unknown"
+    fi
+  elif [ -n "${DB_HOST:-}" ] && [ -n "${DB_NAME:-}" ] && [ -n "${DB_USER:-}" ]; then
+    export PGPASSWORD="${DB_PASSWORD:-}"
+    if role_state="$(psql -h "${DB_HOST}" -p "${DB_PORT:-5432}" -U "${DB_USER}" -d "${DB_NAME}" -tAc "SELECT CASE WHEN EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'mi_readonly') THEN 'present' ELSE 'absent' END" 2>/dev/null)"; then
+      echo "mi_readonly_role=$(printf '%s' "$role_state" | tr -d '[:space:]')"
+    else
+      echo "mi_readonly_role=unknown"
+    fi
+    unset PGPASSWORD
+  else
+    echo "mi_readonly_role=unknown"
+  fi
+  echo "probe complete"
 }
 
 phase_provision() {
@@ -101,17 +244,8 @@ PY
   rm -f /tmp/mi_readonly_url
 
   load_writer_env
-  echo "Applying mi_readonly grants (password file, not printed)"
-  export PGPASSWORD="${DB_PASSWORD:-}"
-  if [ -n "${DATABASE_URL:-}" ]; then
-    psql "$DATABASE_URL" -v ON_ERROR_STOP=1 \
-      -v ro_password="$(cat "$RO_PW_FILE")" \
-      -f "$ROOT/db/roles/market_intelligence_readonly.sql"
-  else
-    psql -h "${DB_HOST}" -p "${DB_PORT:-5432}" -U "${DB_USER}" -d "${DB_NAME}" -v ON_ERROR_STOP=1 \
-      -v ro_password="$(cat "$RO_PW_FILE")" \
-      -f "$ROOT/db/roles/market_intelligence_readonly.sql"
-  fi
+  echo "Applying mi_readonly grants via admin/peer (password file, not printed)"
+  apply_readonly_role_sql
   unset PGPASSWORD
   echo "provision complete"
 }
@@ -148,10 +282,25 @@ phase_schedule() {
   systemctl is-enabled fmp-mi-refresh.timer
   systemctl is-active fmp-ai-context-api.service
   systemctl list-timers fmp-mi-refresh.timer --no-pager
+  no_token="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/v1/ready || true)"
+  echo "ai_ready_without_token=${no_token}"
+  if [ "$no_token" != "401" ]; then
+    echo "FAIL: private AI API did not return 401 without a token"
+    exit 4
+  fi
+  with_token="$(curl -sS -o /dev/null -w '%{http_code}' \
+    -H "Authorization: Bearer $(cat "$AI_TOKEN_FILE")" \
+    http://127.0.0.1:8765/v1/ready || true)"
+  echo "ai_ready_with_token=${with_token}"
+  if [ "$with_token" != "200" ]; then
+    echo "FAIL: private AI API did not return 200 with the configured token"
+    exit 4
+  fi
   echo "schedule complete"
 }
 
 case "$PHASE" in
+  probe) phase_probe ;;
   provision) phase_provision ;;
   ingest) phase_ingest ;;
   verify)
@@ -160,5 +309,5 @@ case "$PHASE" in
     phase_verify
     ;;
   schedule) phase_schedule ;;
-  *) echo "usage: --phase provision|ingest|verify|schedule" >&2; exit 64 ;;
+  *) echo "usage: --phase probe|provision|ingest|verify|schedule" >&2; exit 64 ;;
 esac

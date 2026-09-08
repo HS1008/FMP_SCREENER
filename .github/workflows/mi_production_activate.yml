@@ -37,6 +37,8 @@ jobs:
             exit 1
           fi
 
+      - uses: actions/checkout@v4
+
       - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
@@ -47,7 +49,7 @@ jobs:
           ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
 
-      - name: Confirm deployed commit and existing backup
+      - name: Confirm deployed checkout, move leftover dumps, install fixed activator
         run: |
           ssh "$DO_USER@$DO_HOST" << 'EOF'
           set -euo pipefail
@@ -62,24 +64,52 @@ jobs:
             mv /root/FMP_SCREENER/backups/fmp_pre_mi_*.state.txt /root/fmp_backups/ 2>/dev/null || true
             rmdir /root/FMP_SCREENER/backups 2>/dev/null || true
           fi
-          ls -1 /root/fmp_backups/fmp_pre_mi_*.dump 2>/dev/null | tail -3 || ls -1 /root/FMP_SCREENER/backups/fmp_pre_mi_*.dump 2>/dev/null | tail -3 || echo "WARN: no preflight dump found"
-          test -x /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh
-          test "$(git rev-parse HEAD)" = "eb20bb84209c1a1aa1896063d91803b6eb2bd591"
+          ls -1 /root/fmp_backups/fmp_pre_mi_*.dump 2>/dev/null | tail -3 || echo "WARN: no preflight dump found"
+          test -f /root/FMP_SCREENER/db/roles/market_intelligence_readonly.sql
+          test -f /root/FMP_SCREENER/pages/16_Morning_Context.py
+          systemctl is-active --quiet fmp-dashboard
           EOF
+          scp -q scripts/activate_market_intelligence_host.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh'
 
-      - name: Transfer protected secret files (not logged)
+      - name: Probe host admin/peer path for CREATE ROLE (no secrets)
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase probe'
+
+      - name: Transfer protected secret files if missing (existing secret files are not overwritten)
         run: |
           umask 077
           ssh "$DO_USER@$DO_HOST" 'install -d -m 0700 /root/FMP_SCREENER/.secrets'
-          install -m 0600 /dev/null /tmp/fred_api_key
-          printf '%s\n' "$FRED_API_KEY" > /tmp/fred_api_key
-          openssl rand -base64 32 | tr -d '\n' > /tmp/mi_readonly.pw
-          openssl rand -hex 32 > /tmp/ai_context_api_token
-          chmod 600 /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token
-          scp -q /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token \
-            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/"
+          if ssh "$DO_USER@$DO_HOST" 'test -s /root/FMP_SCREENER/.secrets/fred_api_key'; then
+            echo "fred key file already present (not overwritten)"
+          else
+            install -m 0600 /dev/null /tmp/fred_api_key
+            printf '%s\n' "$FRED_API_KEY" > /tmp/fred_api_key
+            scp -q /tmp/fred_api_key "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/fred_api_key"
+            shred -u /tmp/fred_api_key || rm -f /tmp/fred_api_key
+            echo "fred key file installed"
+          fi
+          if ssh "$DO_USER@$DO_HOST" 'test -s /root/FMP_SCREENER/.secrets/mi_readonly.pw'; then
+            echo "readonly password file already present (not overwritten)"
+          else
+            openssl rand -base64 32 | tr -d '\n' > /tmp/mi_readonly.pw
+            chmod 600 /tmp/mi_readonly.pw
+            scp -q /tmp/mi_readonly.pw "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/mi_readonly.pw"
+            shred -u /tmp/mi_readonly.pw || rm -f /tmp/mi_readonly.pw
+            echo "readonly password file installed"
+          fi
+          if ssh "$DO_USER@$DO_HOST" 'test -s /root/FMP_SCREENER/.secrets/ai_context_api_token'; then
+            echo "ai token file already present (not overwritten)"
+          else
+            openssl rand -hex 32 > /tmp/ai_context_api_token
+            chmod 600 /tmp/ai_context_api_token
+            scp -q /tmp/ai_context_api_token "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/ai_context_api_token"
+            shred -u /tmp/ai_context_api_token || rm -f /tmp/ai_context_api_token
+            echo "ai token file installed"
+          fi
           ssh "$DO_USER@$DO_HOST" 'chmod 0600 /root/FMP_SCREENER/.secrets/fred_api_key /root/FMP_SCREENER/.secrets/mi_readonly.pw /root/FMP_SCREENER/.secrets/ai_context_api_token'
-          shred -u /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token || rm -f /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token
 
       - name: Provision FRED key, read-only role, and private API token
         run: |
