@@ -374,6 +374,92 @@ def render_sector_rotation_v2() -> None:
     heatmap_legend()
 
 
+# ---- PIT Sector Internals ---------------------------------------------------------------------
+
+def render_pit_sector_internals() -> None:
+    page_header("PIT Sector Internals", "Decision-time sector aggregates from hash-verified sector_internals_v1 artifacts (isolated quant-strategies producer). Pre-holdout only. No live provider calls, no constituent data.", fred=False)
+    ctx = load_or_stop("pit_sector_context")
+    if not ctx.get("available"):
+        reason = ctx.get("reason") or "NO_ARTIFACT_INGESTED"
+        if reason == "MIGRATION_PENDING":
+            st.info("No PIT sector views yet (migration 014 pending). Nothing is fabricated.")
+        else:
+            st.info("No sector_internals_v1 artifact ingested. Build one locally with the quant-strategies producer, then run `python -m jobs.ingest_pit_sector_internals --artifact <file>` on the backend.")
+        return
+    latest = ctx.get("latest") or []
+    artifacts = ctx.get("artifacts") or []
+    provenances = sorted({str(r.get("provenance")) for r in latest})
+    if any(p not in {"REAL_QC", "LOCAL_LICENSED", "REAL_HISTORICAL_PRE_2025"} for p in provenances):
+        st.warning("Provenance {0}: research_eligible = FALSE. Synthetic/test artifacts are never research evidence; they demonstrate the consumer path only.".format(", ".join(provenances)))
+    boundaries = sorted({str(a.get("effective_holdout_start")) for a in artifacts if a.get("effective_holdout_start")})
+    st.caption("Method {0} · latest decision date {1} · effective holdout boundary {2} · every stored row is dated strictly before the boundary.".format(", ".join(sorted({str(r.get("method_version")) for r in latest})), max(str(r.get("decision_date")) for r in latest), ", ".join(boundaries) or "—"))
+    k = latest[0].get("return_sessions") if latest else None
+    frame = pd.DataFrame(
+        [
+            {
+                "Sector": r.get("sector"),
+                "Decision date": r.get("decision_date"),
+                "Members": r.get("constituent_count"),
+                "Priced": r.get("priced_count"),
+                "% > 20d": r.get("pct_above_20d"),
+                "% > 50d": r.get("pct_above_50d"),
+                "% > 100d": r.get("pct_above_100d"),
+                "% > 200d": r.get("pct_above_200d"),
+                "Median {0}d".format(k): r.get("median_return"),
+                "EW {0}d".format(k): r.get("ew_return"),
+                "CW {0}d".format(k): r.get("cw_return"),
+                "EW-CW": r.get("ew_minus_cw"),
+                "Held EW {0}d".format(k): r.get("held_ew_return"),
+                "Dispersion": fmt(r.get("dispersion"), None, digits=4),
+                "Return n": r.get("return_denominator"),
+                "CW status": r.get("cw_status"),
+                "Held status": r.get("held_status"),
+                "HHI": fmt(r.get("hhi_cap"), None, digits=3),
+                "Top5 share": fmt(r.get("top5_cap_share"), "fraction").replace("+", ""),
+                "Conc. status": r.get("concentration_status"),
+                "Rev": r.get("revision_seq"),
+            }
+            for r in latest
+        ]
+    )
+    value_cols = ["% > 20d", "% > 50d", "% > 100d", "% > 200d", "Median {0}d".format(k), "EW {0}d".format(k), "CW {0}d".format(k), "EW-CW", "Held EW {0}d".format(k)]
+    st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
+    heatmap_legend()
+    st.caption("Breadth = share of decision-time members above their own W-session simple moving average (denominator = members with full W-session history). Trailing returns are statistics of *current* decision-time members; 'Held EW' is the equal-weight portfolio actually formed at d-K from the members known then (delistings/reclassifications keep their terminal price). CW uses point-in-time caps at the window start and is NULL when cap coverage is insufficient; it is never substituted with current caps.")
+    st.subheader("History (stored rows, current revisions)")
+    history = ctx.get("history") or {}
+    if history:
+        sector = st.selectbox("Sector", sorted(history))
+        rows = history.get(sector) or []
+        metric = st.selectbox("Metric", ["pct_above_50d", "pct_above_200d", "median_return", "ew_return", "cw_return", "held_ew_return", "dispersion", "hhi_cap"])
+        history_chart(rows, x="decision_date", y=metric, title="{0} · {1}".format(sector, metric), units="fraction")
+        st.caption("{0} stored decision dates for {1}; NULL points are gaps in coverage (insufficient history or cap coverage), never zeros.".format(len(rows), sector))
+    st.subheader("Ingested artifacts")
+    if artifacts:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "SHA-256": str(a.get("artifact_sha256"))[:16] + "…",
+                        "Method": a.get("method_version"),
+                        "Provenance": a.get("provenance"),
+                        "Research eligible": "yes" if a.get("research_eligible") else "no",
+                        "Idea": a.get("contract_idea_id") or "—",
+                        "Window": "{0} → {1}".format(a.get("window_start"), a.get("window_end")),
+                        "Sessions": a.get("sessions"),
+                        "Rows": a.get("row_count"),
+                        "Boundary": a.get("effective_holdout_start"),
+                        "Ingested": age_text(a.get("ingested_at")),
+                    }
+                    for a in artifacts
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    st.caption(ctx.get("note") or "")
+
+
 # ---- Data Health -----------------------------------------------------------------------------
 
 def render_data_health() -> None:

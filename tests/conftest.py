@@ -83,6 +83,8 @@ def pg_engine(pg_database):
 
 
 MI_TABLES_TRUNCATE = (
+    "mi_pit_sector_internals",
+    "mi_pit_sector_artifacts",
     "mi_macro_observation_quarantine",
     "mi_research_idea_tests",
     "mi_research_idea_approvals",

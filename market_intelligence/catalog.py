@@ -324,13 +324,13 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
     {
         "source_id": "QC_MARKET_INTELLIGENCE",
         "provider": "QuantConnect (MarketIntelligenceResearch)",
-        "dataset": "sector_diagnostics_v1",
-        "source_url": "quant-strategies research/market_intelligence",
+        "dataset": "sector_internals_v1",
+        "source_url": "quant-strategies research/market_intelligence (local producer -> hash-verified artifact file)",
         "expected_cadence": "ON_DEMAND",
         "usage_scope": EXPORT_INTERNAL_ONLY,
-        "attribution": "QuantConnect PIT universe; derived aggregates only.",
-        "terms_notes": "Current-data activation is a human gate; pre-2025 only until approved.",
-        "units_metadata": {"returns": "fraction"},
+        "attribution": "QuantConnect PIT universe; derived sector aggregates only (no constituents).",
+        "terms_notes": "Consumer ingests local artifact files only. QC project activation is a human gate; pre-2025 only until approved. SYNTHETIC_TEST_ONLY artifacts are research-ineligible.",
+        "units_metadata": {"pct_above_*": "fraction_0_1", "*_return_*": "simple_return_fraction", "hhi_cap": "sum_of_squared_weights_0_1"},
     },
     {
         "source_id": "IBKR_MARKET_DATA",

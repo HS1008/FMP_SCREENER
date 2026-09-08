@@ -31,6 +31,7 @@ from market_intelligence.legacy_bridge import ingest_precomputed_root
 from market_intelligence.locking import EXIT_LOCK_CONTENTION, writer_lock
 from market_intelligence.morning_context import HistoricalReconstructionUnsupported, build_and_publish
 from market_intelligence.nulls import canonical_sha256, strict_dumps, strict_loads
+from market_intelligence.pit_sector import ingest_artifact
 from market_intelligence.store import finish_run, start_run, upsert_source_registry
 from tests.mi_fixtures import SYNTHETIC_MARKER, fake_fred_client, write_full_precomputed_root
 
@@ -43,7 +44,7 @@ GENERATED_AT = datetime(2025, 1, 2, 11, 30, tzinfo=timezone.utc)
 # so the module pins that clock to GENERATED_AT (a test seam on a private function, not a
 # production knob); clock-advancement tests move it forward explicitly.
 CAPTURE_CLOCK = {"now": GENERATED_AT}
-MI_PAGES = sorted(p for p in PAGES.glob("1[0-6]_*.py"))
+MI_PAGES = sorted(p for p in PAGES.glob("1[0-7]_*.py"))
 
 
 def _boom(*_a, **_k):
@@ -102,6 +103,9 @@ def populated(pg_engine, tmp_path_factory, pinned_capture_clock):
         analytics = build_analytics(conn, as_of=AS_OF, run_id=rid, history_start=HISTORY_START)
         finish_run(conn, rid, status="SUCCEEDED", details=analytics.as_dict())
     with pg_engine.begin() as conn:
+        # Synthetic PIT sector internals artifact from the isolated quant-strategies producer (research-ineligible).
+        pit = ingest_artifact(conn, json.loads((ROOT / "tests" / "fixtures" / "sector_internals_v1_synthetic.json").read_text(encoding="utf-8")), source_ref="sector_internals_v1_synthetic.json", parent_run_id=parent)
+        assert pit.status == "INGESTED" and not pit.research_eligible
         finish_run(conn, parent, status="SUCCEEDED")
     morning = build_and_publish(pg_engine, parent_run_id=parent, generated_at=GENERATED_AT)
     return {"fred": fred, "legacy": legacy, "analytics": analytics, "morning": morning, "root": root, "client": client, "parent": parent}
@@ -462,6 +466,8 @@ def test_morning_snapshot_empty_db_is_explicit(pg_engine, populated):
         "DELETE FROM mi_morning_context_snapshots",
         "CREATE TABLE mi_should_fail (id INT)",
         "SELECT COUNT(*) FROM mi_macro_observations",
+        "SELECT COUNT(*) FROM mi_pit_sector_internals",
+        "UPDATE mi_pit_sector_internals SET is_current = FALSE",
         "SELECT COUNT(*) FROM research_runs",
         "INSERT INTO research_runs (research_run_id, strategy_id) VALUES ('x','y')",
     ],
@@ -478,7 +484,7 @@ def test_readonly_role_can_select_curated_views(ro_engine, populated):
     with ro_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_v_macro_latest")).scalar() > 40
         assert conn.execute(text("SELECT COUNT(*) FROM mi_v_strategy_research_summary WHERE strategy_id='FIXTURE_STRATEGY'")).scalar() == 1
-        for view in readonly_db.REQUIRED_VIEWS + ("mi_v_macro_quarantine_summary", "mi_v_metric_history", "mi_v_industry_latest", "mi_v_research_ideas"):
+        for view in readonly_db.REQUIRED_VIEWS + ("mi_v_macro_quarantine_summary", "mi_v_metric_history", "mi_v_industry_latest", "mi_v_research_ideas", "mi_v_pit_sector_artifacts", "mi_v_pit_sector_internals_current", "mi_v_pit_sector_internals_latest"):
             conn.execute(text("SELECT * FROM {0} LIMIT 1".format(view)))
 
 
@@ -758,7 +764,7 @@ def test_pages_render_populated_state_db_only(consumer, page):
     text_out = _texts(at)
     assert at.title[0].value
     assert len(at.dataframe) >= 1, "each page shows at least one table when data exists"
-    if page.stem not in {"14_Sector_Rotation_V2", "15_Data_Health"}:
+    if page.stem not in {"14_Sector_Rotation_V2", "15_Data_Health", "17_PIT_Sector_Internals"}:  # pages with no FRED content
         assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in text_out
     if page.stem == "10_Market_Pulse":
         assert "Overnight quotes unavailable" in text_out
@@ -766,6 +772,8 @@ def test_pages_render_populated_state_db_only(consumer, page):
         assert "SHA-256" in text_out
     if page.stem == "14_Sector_Rotation_V2":
         assert "CURRENT_UNIVERSE_CONTEXT_ONLY" in text_out and "never as zero" in text_out
+    if page.stem == "17_PIT_Sector_Internals":
+        assert "research_eligible = FALSE" in text_out and "SYNTHETIC_TEST_ONLY" in text_out and "2020-01-01" in text_out
 
 
 @pytest.mark.parametrize("page", MI_PAGES, ids=[p.stem for p in MI_PAGES])

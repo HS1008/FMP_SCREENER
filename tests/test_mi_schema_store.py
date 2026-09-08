@@ -27,7 +27,7 @@ pytestmark = pytest.mark.usefixtures("pg_engine")
 
 def test_new_migrations_are_additive_and_numbered_after_007():
     names = sorted(p.name for p in MIGRATIONS.glob("*.sql"))
-    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013"))]
+    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013", "014"))]
     assert new == [
         "008_market_intelligence_core.sql",
         "009_market_intelligence_analytics.sql",
@@ -35,6 +35,7 @@ def test_new_migrations_are_additive_and_numbered_after_007():
         "011_bond_securities.sql",
         "012_market_intelligence_publication.sql",
         "013_research_idea_completeness.sql",
+        "014_pit_sector_internals.sql",
     ]
     for name in new:
         sql = (MIGRATIONS / name).read_text(encoding="utf-8").upper()
@@ -47,7 +48,7 @@ def test_new_migrations_are_additive_and_numbered_after_007():
 def test_migrations_applied_once_and_second_application_is_noop(pg_engine):
     with pg_engine.connect() as conn:
         applied = {r[0] for r in conn.execute(text("SELECT filename FROM schema_migrations"))}
-    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql", "013_research_idea_completeness.sql"} <= applied
+    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql", "013_research_idea_completeness.sql", "014_pit_sector_internals.sql"} <= applied
     files = sorted(MIGRATIONS.glob("*.sql"))
     assert pending_migration_files(files, applied) == []
     # Second application must be a no-op (idempotent) and leave research tables intact.
@@ -193,7 +194,7 @@ def test_schema_objects_exist(pg_engine):
         # Pre-existing research tables untouched.
         research = {r[0] for r in conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_name IN ('research_runs','research_experiments','strategies')"))}
     assert expected_tables <= tables
-    assert {"mi_v_source_health", "mi_v_macro_latest", "mi_v_credit_latest", "mi_v_morning_context_latest", "mi_v_strategy_research_summary", "mi_v_research_ideas"} <= views
+    assert {"mi_v_source_health", "mi_v_macro_latest", "mi_v_credit_latest", "mi_v_morning_context_latest", "mi_v_strategy_research_summary", "mi_v_research_ideas", "mi_v_pit_sector_artifacts", "mi_v_pit_sector_internals_current", "mi_v_pit_sector_internals_latest"} <= views
     assert {"research_runs", "strategies"} <= research
 
 
@@ -312,3 +313,20 @@ def test_writer_lock_contention_is_distinct_and_released_on_exit(pg_engine):
     # Released after the block (a crashed process releases with its session).
     with writer_lock(pg_engine):
         pass
+
+
+def test_readonly_role_file_grants_exactly_the_curated_views_that_migrations_create():
+    """Every mi_v_* view shipped by a migration needs an explicit GRANT (no default-privilege shortcut) and nothing else."""
+    import re
+
+    views: set[str] = set()
+    for path in MIGRATIONS.glob("*.sql"):
+        views |= set(re.findall(r"CREATE OR REPLACE VIEW (mi_v_\w+)", path.read_text(encoding="utf-8")))
+    role_sql = (ROOT / "db" / "roles" / "market_intelligence_readonly.sql").read_text(encoding="utf-8")
+    granted = set(re.findall(r"GRANT SELECT ON (mi_v_\w+) TO mi_readonly", role_sql))
+    assert granted == views, {"missing_grant": sorted(views - granted), "grant_without_view": sorted(granted - views)}
+    statements = [line.strip() for line in role_sql.splitlines() if line.strip() and not line.strip().startswith("--")]
+    assert not [s for s in statements if s.upper().startswith("ALTER DEFAULT PRIVILEGES")]
+    for statement in statements:
+        if statement.upper().startswith("GRANT SELECT ON"):
+            assert re.match(r"GRANT SELECT ON mi_v_\w+ TO mi_readonly;$", statement), statement  # views only, never raw tables / ALL TABLES

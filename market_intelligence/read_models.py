@@ -362,6 +362,44 @@ def sectors_context(conn) -> dict[str, Any]:
     return {"datasets": datasets, "as_of_by_dataset": as_of_by_dataset, "note": "Per-dataset as_of; rotation and dispersion bundles may differ."}
 
 
+def pit_sector_context(conn, *, history_limit: int = MAX_HISTORY_ROWS) -> dict[str, Any]:
+    """PIT sector internals (isolated QS producer -> hash-verified artifact -> canonical rows).
+
+    Returns the latest current row per sector plus bounded history for charts, with the artifact
+    provenance/boundary so the page can label synthetic or research-ineligible data honestly.
+    Empty when the consumer has never ingested (the views may not exist before migration 014).
+    """
+    if not _view_exists(conn, "mi_v_pit_sector_internals_latest"):
+        return {"available": False, "reason": "MIGRATION_PENDING", "latest": [], "history": {}, "artifacts": []}
+    latest = _rows(conn, "SELECT * FROM mi_v_pit_sector_internals_latest ORDER BY sector, method_version")
+    artifacts = _rows(conn, "SELECT * FROM mi_v_pit_sector_artifacts ORDER BY ingested_at DESC LIMIT 20")
+    history: dict[str, list[dict[str, Any]]] = {}
+    if latest:
+        rows = _rows(
+            conn,
+            """
+            SELECT decision_date, sector, method_version, revision_seq, provenance, research_eligible, constituent_count, priced_count,
+                   pct_above_20d, pct_above_50d, pct_above_100d, pct_above_200d, median_return, ew_return, cw_return, cw_status,
+                   ew_minus_cw, dispersion, return_denominator, held_ew_return, held_status, hhi_cap, top5_cap_share, concentration_status
+            FROM mi_v_pit_sector_internals_current
+            ORDER BY decision_date DESC, sector
+            LIMIT :limit
+            """,
+            {"limit": history_limit},
+        )
+        for row in reversed(rows):
+            history.setdefault(row["sector"], []).append(row)
+    return {
+        "available": bool(latest),
+        "reason": None if latest else "NO_ARTIFACT_INGESTED",
+        "latest": latest,
+        "history": history,
+        "artifacts": artifacts,
+        "export_scope": "INTERNAL_ONLY",
+        "note": "Aggregates from decision-time membership; trailing statistics and the held equal-weight portfolio are distinct quantities. SYNTHETIC_TEST_ONLY provenance is never research evidence.",
+    }
+
+
 def industries_context(conn) -> dict[str, Any]:
     rows = industry_latest(conn)
     out: dict[str, dict[str, list[dict[str, Any]]]] = {}
