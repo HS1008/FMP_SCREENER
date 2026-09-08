@@ -126,12 +126,15 @@ jobs:
           import os
           from sqlalchemy import create_engine, text
           from jobs.apply_migrations import apply_migrations
+          from tests.conftest import STRATEGIES_TABLE_SQL  # the dashboard's pre-existing table that migration 002 extends
           admin = create_engine(os.environ["FMP_TEST_DATABASE_URL"], isolation_level="AUTOCOMMIT", future=True)
           with admin.connect() as conn:
               conn.execute(text('DROP DATABASE IF EXISTS fmp_ci_migrations'))
               conn.execute(text('CREATE DATABASE fmp_ci_migrations'))
           url = os.environ["FMP_TEST_DATABASE_URL"].rsplit("/", 1)[0] + "/fmp_ci_migrations"
           engine = create_engine(url, future=True)
+          with engine.begin() as conn:
+              conn.execute(text(STRATEGIES_TABLE_SQL))
           first = apply_migrations(engine=engine)
           second = apply_migrations(engine=engine)
           print("applied on clean DB:", first)
