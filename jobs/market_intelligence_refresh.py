@@ -86,11 +86,14 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
         steps.append({"step": "build_analytics", "action": "compute"})
     if args.build_morning or want_all:
         steps.append({"step": "build_morning", "action": "compute"})
+    from market_intelligence.adapters import probe_all
+
     return {
         "code_version": CODE_VERSION,
         "dry_run": bool(args.dry_run),
         "writer_configured": _writer_configured(env),
         "steps": steps,
+        "external_adapters": {sid: {"access_status": p.access_status, "enabled": p.enabled, "reason": p.reason} for sid, p in probe_all(env).items()},
     }
 
 
@@ -193,6 +196,13 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
         FRED_SOURCE_ID: "CONFIGURED" if fred_key else "CONFIGURATION_REQUIRED",
         LEGACY_SOURCE_ID: "CONFIGURED" if enabled[LEGACY_SOURCE_ID] else "CONFIGURATION_REQUIRED",
     }
+    from market_intelligence.adapters import probe_all
+
+    adapter_status = probe_all(env)
+    for source_id, probe in adapter_status.items():
+        enabled[source_id] = False  # never part of the scheduled refresh, even when configured
+        access[source_id] = probe.access_status
+    status["external_adapters"] = {sid: {"access_status": p.access_status, "reason": p.reason} for sid, p in adapter_status.items()}
     with engine.begin() as conn:
         upsert_source_registry(conn, enabled=enabled, access=access)
         parent_run_id = start_run(conn, source_id="ORCHESTRATOR", dataset="market_intelligence_refresh")

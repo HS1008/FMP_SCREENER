@@ -51,6 +51,18 @@ Workflow trigger audit (before any push):
   (with `FMP_TEST_DATABASE_URL` set; the PG-backed tests skip without it).
 - Draft PR: https://github.com/HS1008/FMP_SCREENER/pull/18 (base `main` @ `9d9d987`).
 
+- P3 bonds: `market_intelligence/bonds.py` (fixed-coupon bullet analytics: accrued, YTM,
+  Macaulay/modified duration, convexity, G-spread vs interpolated FRED par curve, Z-spread vs
+  bootstrapped zero curve; OAS `UNSUPPORTED_NO_OPTION_MODEL`; callable = YTM only; floating =
+  unsupported), `jobs.bond_analytics` (reads stored terms/quotes + FRED curve, `--dry-run`),
+  `market_intelligence/adapters.py` (IBKR `DISABLED`, TRACE `DISABLED`/`CONFIGURATION_REQUIRED`/
+  `ENTITLEMENT_REQUIRED`, EDGAR opt-in behind `SEC_USER_AGENT` + `MI_EDGAR_ENABLED`; fetch raises
+  `AdapterDisabled` otherwise; no order surface). Refresh job now writes adapter access statuses
+  to `mi_source_registry` and reports them in `--dry-run` plans.
+  Fix found by tests: zero-curve bootstrap skipped semiannual periods below the shortest quoted
+  tenor, corrupting every later discount factor (flat 4% par -> 1.99% zeros); now flat-extrapolates.
+  `tests/test_bond_analytics.py` -> 14 passed.
+
 ## Remaining blockers
 
 (appended as discovered)
