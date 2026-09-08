@@ -71,6 +71,22 @@ Workflow trigger audit (before any push):
   operator steps, limits). Units pass `systemd-analyze verify`; calendar spec validated with
   `systemd-analyze calendar`. `tests/test_mi_deploy.py` -> 5 passed.
 
+## Final validation (at `ae4de00` FMP / `479af28` QS)
+
+- FMP: `python3 -m pytest -q tests -p no:cacheprovider` -> 265 passed (baseline on `main` was 131).
+- QS: `python3 -m pytest -q tests -p no:cacheprovider` -> 491 passed.
+- Protected artifacts: `sha256sum` of the 66 files under `stage1_results/`, `stage2_results/`,
+  `qc_research/platform_artifacts/` identical before/after; `git diff main...HEAD` on those paths empty.
+  QS: `git diff 3861291..HEAD` touches only `research/market_intelligence/**`,
+  `tests/fixtures/idea_research_contract_v1.json`, `tests/test_market_intelligence_research.py`;
+  `research/platform_smokes`, `research/platform_artifacts`, `research/platform_research` untouched.
+- Workflow triggers: `gh run list` on both branches shows no runs; no CI was triggered by any push.
+- PRs (draft): FMP #18 (`cursor/market-intelligence-v1-674b` -> `main`),
+  QS #27 (`cursor/platform-market-intelligence-674b` -> `cursor/platform-research-lifecycle-674b`, stacked on #26).
+
 ## Remaining blockers
 
-(appended as discovered)
+- `CONFIGURATION_REQUIRED`: `FRED_API_KEY` (real FRED validation), `DATABASE_READONLY_URL` after the
+  operator provisions `mi_readonly`, `AI_CONTEXT_API_TOKEN`. None were invented; tests use fixtures.
+- Human gates left closed on purpose: timer installation (`--apply`), QC activation on 2025+ data,
+  any backtest launch from an idea contract.
