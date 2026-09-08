@@ -55,13 +55,21 @@ def test_metadata_mismatch_is_reported_not_silently_accepted(mi_db):
     client = FakeFredClient(synthetic_fred_data(AS_OF), metadata={"UNRATE": {"units": "Thousands of Persons", "frequency_short": "W"}})
     report = ingest_fred_catalog(mi_db, client, series_ids=["UNRATE", "CPIAUCSL"], mode="full", today=AS_OF)
     by_id = {r.series_id: r for r in report.results}
-    assert by_id["UNRATE"].status == "SUCCEEDED" and by_id["UNRATE"].metadata_status == "MISMATCH"
-    assert by_id["CPIAUCSL"].metadata_status == "VALIDATED"
+    # Publication gate (review finding): a MISMATCH is not a success and promotes nothing.
+    assert by_id["UNRATE"].status == "QUARANTINED" and by_id["UNRATE"].metadata_status == "MISMATCH"
+    assert by_id["CPIAUCSL"].metadata_status == "VALIDATED" and by_id["CPIAUCSL"].status == "SUCCEEDED"
+    assert report.transport_status == "PARTIAL" and [r.series_id for r in report.quarantined] == ["UNRATE"]
     with mi_db.connect() as conn:
-        row = conn.execute(text("SELECT metadata_status, metadata_mismatch_json, units FROM mi_macro_series WHERE series_id='UNRATE'")).mappings().one()
+        row = conn.execute(text("SELECT metadata_status, metadata_mismatch_json, units, publication_status, publication_reason FROM mi_macro_series WHERE series_id='UNRATE'")).mappings().one()
+        current = conn.execute(text("SELECT COUNT(*) FROM mi_macro_observations WHERE series_id='UNRATE'")).scalar()
+        quarantined = conn.execute(text("SELECT COUNT(*), MIN(reason), MIN(metadata_status) FROM mi_macro_observation_quarantine WHERE series_id='UNRATE'")).one()
+        latest = conn.execute(text("SELECT COUNT(*) FROM mi_v_macro_latest WHERE series_id='UNRATE' AND observation_date IS NOT NULL")).scalar()
     fields = {m["field"] for m in row["metadata_mismatch_json"]}
     assert fields == {"units", "frequency_short"}
-    assert row["units"] == "Thousands of Persons"  # provider units preserved verbatim, catalog expectation flagged
+    # No valid metadata was ever published for UNRATE, so the mismatching provider units are not adopted.
+    assert row["units"] is None and row["publication_status"] == "QUARANTINED_METADATA" and "Thousands of Persons" in row["publication_reason"]
+    assert current == 0 and latest == 0
+    assert quarantined == (40, "METADATA_MISMATCH", "MISMATCH")
 
 
 def test_incremental_refresh_uses_bounded_revision_lookback_and_reconciles_revisions(mi_db):

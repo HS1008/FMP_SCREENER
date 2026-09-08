@@ -4,7 +4,6 @@ sector mapping, export policy, catalog invariants.
 
 from __future__ import annotations
 
-import math
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -241,6 +240,57 @@ def test_export_policy_unfiltered_when_nothing_restricted():
     assert envelope["body"] == body
 
 
+def test_export_policy_internal_only_and_unscoped_entries_do_not_leak_values():
+    # Reproduced defect: {"export_scope": "INTERNAL_ONLY", "value": 123} used to pass through unchanged.
+    internal = {"export_scope": catalog.EXPORT_INTERNAL_ONLY, "value": 123, "metric_id": "x.y", "as_of": "2024-12-31"}
+    out = export_policy.filter_for_export(internal)
+    assert out["restricted"] is True and "value" not in out and out["metric_id"] == "x.y"
+    assert out["restriction_reason"] == export_policy.INTERNAL_ONLY_REASON
+    # Missing scope on a value-bearing entry fails closed; unknown scope fails closed with the scope named.
+    unscoped = export_policy.filter_for_export({"series_id": "S", "value": 1.0})
+    assert unscoped["restricted"] is True and "value" not in unscoped and unscoped["restriction_reason"] == export_policy.UNSCOPED_REASON
+    unknown = export_policy.filter_for_export({"series_id": "S", "export_scope": "WHATEVER", "value": 1.0})
+    assert unknown["restricted"] is True and "WHATEVER" in unknown["restriction_reason"]
+    # Structural envelope fields (no value-bearing keys) are not data entries and pass through.
+    structural = {"schema_version": "x", "attribution": "FRED", "sections_status": {"macro": {"status": "OK"}}}
+    assert export_policy.filter_for_export(structural) == structural
+    # Secrets are excluded recursively even inside retained identity/source objects.
+    nested = {"series_id": "S", "export_scope": catalog.EXPORT_RESTRICTED, "value": 1.0, "source": {"provider": "FRED", "api_key": "k"}}
+    red = export_policy.filter_for_export(nested)
+    assert red["source"] == {"provider": "FRED"}
+    # INTERNAL_SUMMARY / PUBLIC / ATTRIBUTION_REQUIRED export values.
+    for scope in (export_policy.EXPORT_INTERNAL_SUMMARY, export_policy.EXPORT_PUBLIC, catalog.EXPORT_ATTRIBUTION_REQUIRED):
+        assert export_policy.filter_for_export({"export_scope": scope, "value": 2.0})["value"] == 2.0
+
+
+def test_export_policy_reorders_lists_with_redacted_entries_to_identity_order():
+    ranked = [
+        {"series_id": "B", "export_scope": catalog.EXPORT_RESTRICTED, "value": 9.0},
+        {"series_id": "A", "export_scope": catalog.EXPORT_RESTRICTED, "value": 1.0},
+        {"series_id": "C", "export_scope": catalog.EXPORT_RESTRICTED, "value": 5.0},
+    ]
+    out = export_policy.filter_for_export(ranked)
+    assert [r["series_id"] for r in out] == ["A", "B", "C"]  # rank order (a leak) replaced by identity order
+    allowed = [{"series_id": "B", "export_scope": export_policy.EXPORT_PUBLIC, "value": 9.0}, {"series_id": "A", "export_scope": export_policy.EXPORT_PUBLIC, "value": 1.0}]
+    assert [r["series_id"] for r in export_policy.filter_for_export(allowed)] == ["B", "A"]  # unrestricted lists keep order
+
+
+def test_export_envelope_hash_covers_every_delivered_field():
+    body = {"rates": [{"series_id": "DGS10", "export_scope": catalog.EXPORT_ATTRIBUTION_REQUIRED, "yield_pct": 4.5}]}
+    env = export_policy.build_envelope(body, provenance={"kind": "FROZEN_SNAPSHOT", "source_snapshot_hash": "h" * 64}, available=True, degraded=False, latest_snapshot={"snapshot_id": "mc_1"}, delivery_health={"snapshot_age_status": "CURRENT"})
+    final = export_policy.finalize_envelope(env)
+    assert export_policy.verify_export_hash(final)
+    assert final["provenance"]["kind"] == "FROZEN_SNAPSHOT" and final["source_snapshot_hash"] == "h" * 64
+    # Appending or tampering with any field after finalization is detectable.
+    assert not export_policy.verify_export_hash(dict(final, degraded=True))
+    assert not export_policy.verify_export_hash(dict(final, extra_field=1))
+    assert not export_policy.verify_export_hash(dict(final, latest_snapshot={"snapshot_id": "mc_2"}))
+    assert not export_policy.verify_export_hash({k: v for k, v in final.items() if k != "delivery_health"})
+    assert not export_policy.verify_export_hash({k: v for k, v in final.items() if k != "export_sha256"})
+    # JSON round trip (what an HTTP client sees) verifies as-is.
+    assert export_policy.verify_export_hash(nulls.strict_loads(nulls.strict_dumps(final)))
+
+
 # ---- catalog ----------------------------------------------------------------------------------
 
 def test_catalog_contains_required_series_and_flags_ice_as_restricted():
@@ -257,7 +307,67 @@ def test_catalog_contains_required_series_and_flags_ice_as_restricted():
             assert spec.export_scope == catalog.EXPORT_RESTRICTED
             assert "Ice Data Indices" in spec.attribution
         assert spec.source_url == "https://fred.stlouisfed.org/series/{0}".format(spec.series_id)
-    assert catalog.CATALOG_VERSION == "fred_catalog_v1"
+    assert catalog.CATALOG_VERSION == "fred_catalog_v2"
     assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in catalog.FRED_ATTRIBUTION
     for sid in ("T5YIE", "T10YIE", "T5YIFR"):
         assert "survey" in catalog.CATALOG_BY_ID[sid].notes.lower()
+
+
+def test_every_catalog_series_validates_against_official_fred_metadata():
+    """Fixture captured from fred.stlouisfed.org (independent of the catalog): units, frequency, SA."""
+    from tests.mi_fixtures import official_metadata_all
+
+    official = official_metadata_all()
+    assert set(official) >= {s.series_id for s in catalog.CATALOG}
+    failures = {}
+    for spec in catalog.CATALOG:
+        status, mismatches = catalog.validate_metadata(spec, official[spec.series_id])
+        if status != catalog.META_VALIDATED:
+            failures[spec.series_id] = mismatches
+    assert failures == {}, failures
+
+
+def test_wtregen_wresbal_walcl_units_and_aggregation_corrected():
+    # Review finding: WTREGEN/WRESBAL were "billions" + "Wednesday level"; FRED publishes millions, week average ending Wednesday.
+    for sid in ("WTREGEN", "WRESBAL"):
+        spec = catalog.CATALOG_BY_ID[sid]
+        assert spec.expected_units_contains == ("millions",)
+        assert spec.aggregation == catalog.AGG_WEEK_AVG_WED
+        assert spec.raw_units == "millions_usd"
+        assert spec.display_divisor == 1000 and spec.display_units == "billions_usd"
+        assert "average" in spec.notes.lower() and "wednesday" in spec.notes.lower()
+    walcl = catalog.CATALOG_BY_ID["WALCL"]
+    assert walcl.expected_units_contains == ("millions",) and walcl.aggregation == catalog.AGG_WED_LEVEL
+    # Display conversion is a versioned transform, never a relabel: the raw value keeps provider units.
+    from market_intelligence.analytics import DISPLAY_CONVERSION_VERSION, series_metrics
+
+    obs = {date(2024, 12, 25): Decimal("700123"), date(2024, 12, 18): Decimal("690000")}
+    rows = {r.metric_id: r for r in series_metrics(catalog.CATALOG_BY_ID["WTREGEN"], obs)}
+    assert rows["WTREGEN.level"].result.value == 700123.0 and rows["WTREGEN.level"].result.units == "millions_usd"
+    disp = rows["WTREGEN.level_display"].result
+    assert disp.value == pytest.approx(700.123) and disp.units == "billions_usd"
+    assert disp.detail["source_units"] == "millions_usd" and disp.detail["conversion_version"] == DISPLAY_CONVERSION_VERSION
+
+
+def test_validate_metadata_statuses_gate_publication():
+    spec = catalog.CATALOG_BY_ID["DGS10"]
+    good = {"id": "DGS10", "title": "t", "units": "Percent", "frequency_short": "D", "seasonal_adjustment_short": "NSA"}
+    assert catalog.validate_metadata(spec, good) == (catalog.META_VALIDATED, [])
+    assert catalog.publishable(catalog.META_VALIDATED)
+    # Missing metadata never validates silently.
+    status, mism = catalog.validate_metadata(spec, None)
+    assert status == catalog.META_UNAVAILABLE and mism and not catalog.publishable(status)
+    status, mism = catalog.validate_metadata(spec, {"id": "DGS10", "title": "t"})
+    assert status == catalog.META_UNAVAILABLE and mism[0]["field"] == "required_fields" and "units" in mism[0]["missing"]
+    # Wrong series identity is its own status even when units/frequency look right.
+    status, mism = catalog.validate_metadata(spec, dict(good, id="DGS2"))
+    assert status == catalog.META_IDENTITY_MISMATCH and any(m["field"] == "id" for m in mism)
+    # Units / frequency / SA differences are MISMATCH and every finding is reported at once.
+    status, mism = catalog.validate_metadata(spec, dict(good, units="Billions of Dollars", frequency_short="W"))
+    assert status == catalog.META_MISMATCH and {m["field"] for m in mism} == {"units", "frequency_short"}
+    sa_spec = catalog.CATALOG_BY_ID["CPIAUCSL"]
+    status, mism = catalog.validate_metadata(sa_spec, {"id": "CPIAUCSL", "title": "t", "units": "Index 1982-1984=100", "frequency_short": "M", "seasonal_adjustment_short": None})
+    assert status == catalog.META_MISMATCH and mism == [{"field": "seasonal_adjustment_short", "expected": "SA", "actual": None}]  # missing SA when SA expected gates
+    status, mism = catalog.validate_metadata(sa_spec, {"id": "CPIAUCSL", "title": "t", "units": "Index 1982-1984=100", "frequency_short": "M", "seasonal_adjustment_short": "NSA"})
+    assert status == catalog.META_MISMATCH and mism[0]["field"] == "seasonal_adjustment_short"
+    assert not catalog.publishable(status)

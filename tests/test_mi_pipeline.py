@@ -13,21 +13,23 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import shutil
+import subprocess
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
-from market_intelligence import readonly_db
+from market_intelligence import morning_context, readonly_db
 from market_intelligence.analytics import build_analytics
 from market_intelligence.export_policy import verify_export_hash
 from market_intelligence.ingest_fred import ingest_fred_catalog
 from market_intelligence.legacy_bridge import ingest_precomputed_root
 from market_intelligence.locking import EXIT_LOCK_CONTENTION, writer_lock
-from market_intelligence.morning_context import build_and_publish
+from market_intelligence.morning_context import HistoricalReconstructionUnsupported, build_and_publish
 from market_intelligence.nulls import canonical_sha256, strict_dumps, strict_loads
 from market_intelligence.store import finish_run, start_run, upsert_source_registry
 from tests.mi_fixtures import SYNTHETIC_MARKER, fake_fred_client, write_full_precomputed_root
@@ -35,7 +37,12 @@ from tests.mi_fixtures import SYNTHETIC_MARKER, fake_fred_client, write_full_pre
 ROOT = Path(__file__).resolve().parent.parent
 PAGES = ROOT / "pages"
 AS_OF = date(2024, 12, 31)
+HISTORY_START = date(2024, 7, 1)
 GENERATED_AT = datetime(2025, 1, 2, 11, 30, tzinfo=timezone.utc)
+# The builder's capture clock is the DB transaction timestamp. The synthetic data ends 2024-12-31,
+# so the module pins that clock to GENERATED_AT (a test seam on a private function, not a
+# production knob); clock-advancement tests move it forward explicitly.
+CAPTURE_CLOCK = {"now": GENERATED_AT}
 MI_PAGES = sorted(p for p in PAGES.glob("1[0-6]_*.py"))
 
 
@@ -55,8 +62,17 @@ def no_network(monkeypatch):
     yield
 
 
+@pytest.fixture(scope="module", autouse=True)
+def pinned_capture_clock():
+    mp = pytest.MonkeyPatch()
+    mp.setattr(morning_context, "_db_now", lambda conn: CAPTURE_CLOCK["now"])
+    yield
+    mp.undo()
+    CAPTURE_CLOCK["now"] = GENERATED_AT
+
+
 @pytest.fixture(scope="module")
-def populated(pg_engine, tmp_path_factory):
+def populated(pg_engine, tmp_path_factory, pinned_capture_clock):
     """Populate the disposable DB once for this module (module-scoped; tests only read)."""
     from tests.conftest import MI_TABLES_TRUNCATE
 
@@ -82,28 +98,48 @@ def populated(pg_engine, tmp_path_factory):
     assert not legacy.failed_bundles, legacy.as_dict()
     with pg_engine.begin() as conn:
         rid = start_run(conn, source_id="ANALYTICS", dataset="metric_snapshots", parent_run_id=parent)
-        analytics = build_analytics(conn, as_of=AS_OF, run_id=rid)
+        # First run: bounded historical backfill so page charts have real stored history immediately.
+        analytics = build_analytics(conn, as_of=AS_OF, run_id=rid, history_start=HISTORY_START)
         finish_run(conn, rid, status="SUCCEEDED", details=analytics.as_dict())
     with pg_engine.begin() as conn:
         finish_run(conn, parent, status="SUCCEEDED")
-    morning = build_and_publish(pg_engine, parent_run_id=parent, as_of=AS_OF, generated_at=GENERATED_AT)
+    morning = build_and_publish(pg_engine, parent_run_id=parent, generated_at=GENERATED_AT)
     return {"fred": fred, "legacy": legacy, "analytics": analytics, "morning": morning, "root": root, "client": client, "parent": parent}
 
 
+def provision_role_with_psql(admin_url: str, role: str, password: str | None, tmp_dir: Path) -> subprocess.CompletedProcess:
+    """Run the real db/roles file through psql (it uses psql meta-commands), renamed to a test role.
+
+    The password is passed as a ``\\set`` inside a temp file, never in argv.
+    """
+    psql = shutil.which("psql")
+    if psql is None:
+        pytest.fail("psql client is required for read-only role tests (install postgresql-client)")
+    sql = (ROOT / "db" / "roles" / "market_intelligence_readonly.sql").read_text(encoding="utf-8").replace("mi_readonly", role)
+    if password is not None:
+        sql = "\\set ro_password '{0}'\n".format(password) + sql
+    path = tmp_dir / "{0}.sql".format(role)
+    path.write_text(sql, encoding="utf-8")
+    return subprocess.run([psql, admin_url, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", str(path)], capture_output=True, text=True, check=False, timeout=120)
+
+
 @pytest.fixture(scope="module")
-def ro_engine(pg_engine, pg_database, pg_admin_url):
+def ro_engine(pg_engine, pg_database, pg_admin_url, tmp_path_factory):
     """Provision the real read-only role from db/roles/*.sql (test-unique name) and return its engine."""
     role = "mi_readonly_test_{0}".format(uuid.uuid4().hex[:8])
     password = "ro_{0}".format(uuid.uuid4().hex)
-    dbname = make_url(pg_database).database
-    sql = (ROOT / "db" / "roles" / "market_intelligence_readonly.sql").read_text(encoding="utf-8")
-    sql = sql.replace("mi_readonly", role).replace(":'ro_password'", "'{0}'".format(password)).replace(':"DBNAME"', '"{0}"'.format(dbname))
-    statements = [s.strip() for s in "\n".join(l for l in sql.splitlines() if not l.strip().startswith("--")).split(";") if s.strip()]
-    with pg_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
-        for statement in statements:
-            conn.execute(text(statement))
+    tmp_dir = tmp_path_factory.mktemp("roles")
+    admin_on_test_db = make_url(pg_admin_url).set(database=make_url(pg_database).database, drivername="postgresql").render_as_string(hide_password=False)
+    first = provision_role_with_psql(admin_on_test_db, role, password, tmp_dir)
+    assert first.returncode == 0, first.stderr
+    # Repeatable: a second run without a password refreshes grants and does not touch the password.
+    second = provision_role_with_psql(admin_on_test_db, role, None, tmp_dir)
+    assert second.returncode == 0, second.stderr
+    assert "refreshing grants only" in second.stdout
     url = make_url(pg_database).set(username=role, password=password)
     engine = create_engine(url, future=True, pool_pre_ping=True, connect_args={"options": "-c default_transaction_read_only=on -c statement_timeout={0}".format(readonly_db.DEFAULT_STATEMENT_TIMEOUT_MS)})
+    with engine.connect() as conn:
+        assert conn.execute(text("SELECT 1")).scalar() == 1  # original password still valid after the refresh run
     yield engine
     engine.dispose()
     with pg_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
@@ -164,6 +200,112 @@ def test_curve_slopes_and_bps_changes_are_stored_with_units(pg_engine, populated
     assert dgs10_chg["detail_json"]["comparison_date"] < dgs10_chg["as_of"].isoformat()
     cpi_yoy = next(v for k, v in metrics.items() if k.startswith("CPIAUCSL.yoy_pct"))
     assert cpi_yoy["units"] == "pct" and cpi_yoy["detail_json"]["lag_date"] == "2023-12-01"
+    # Provider-native units are stored; display conversion is a separate versioned metric.
+    assert metrics["WTREGEN.level"]["units"] == "millions_usd" and float(metrics["WTREGEN.level"]["value"]) > 100000
+    assert metrics["WTREGEN.level_display"]["units"] == "billions_usd"
+    assert float(metrics["WTREGEN.level_display"]["value"]) == pytest.approx(float(metrics["WTREGEN.level"]["value"]) / 1000)
+    assert metrics["WTREGEN.level_display"]["detail_json"]["conversion_version"] == "display_scale_v1"
+
+
+def test_first_run_backfill_populates_metric_history_bounded_and_idempotent(pg_engine, populated):
+    """Review finding: analytics wrote only the latest date, so the Credit chart had one point."""
+    report = populated["analytics"].as_dict()
+    assert report["history_dates_per_series"]["BAMLC0A0CM"] > 100 and report["truncated_series"] == []
+    with pg_engine.connect() as conn:
+        hist = conn.execute(text("SELECT as_of, value FROM mi_v_metric_history WHERE metric_id='BAMLC0A0CM.oas_bps' ORDER BY as_of")).all()
+        credit_hist = conn.execute(text("SELECT COUNT(*) FROM mi_credit_index_snapshots WHERE series_id='BAMLH0A0HYM2'")).scalar()
+        slope_hist = conn.execute(text("SELECT COUNT(*) FROM mi_metric_snapshots WHERE metric_id='curve.slope_10Y2Y_bps'")).scalar()
+        lineage = conn.execute(text("SELECT inputs_retrieved_max FROM mi_metric_snapshots WHERE metric_id='BAMLC0A0CM.oas_bps' ORDER BY as_of DESC LIMIT 1")).scalar()
+        before = conn.execute(text("SELECT COUNT(*), MAX(computed_at) FROM mi_metric_snapshots")).one()
+    assert len(hist) > 100 and hist[0][0] >= HISTORY_START and hist[-1][0] == AS_OF
+    assert credit_hist > 100 and slope_hist > 100 and lineage is not None
+    # Idempotent: the same backfill again changes no row counts and no values.
+    with pg_engine.begin() as conn:
+        again = build_analytics(conn, as_of=AS_OF, run_id=None, history_start=HISTORY_START)
+        after = conn.execute(text("SELECT COUNT(*), MAX(computed_at) FROM mi_metric_snapshots")).one()
+        hist2 = conn.execute(text("SELECT as_of, value FROM mi_v_metric_history WHERE metric_id='BAMLC0A0CM.oas_bps' ORDER BY as_of")).all()
+    assert again.metrics_written > 0 and after[0] == before[0] and hist2 == hist
+
+
+def test_revision_aware_incremental_recompute_covers_dates_after_the_revised_input(pg_engine, populated):
+    """A revised input on date D must recompute rolling/lagged values for every later date."""
+    from decimal import Decimal
+
+    from market_intelligence.analytics import last_analytics_run_at, revised_since
+    from market_intelligence.store import ObservationInput, upsert_observations
+
+    revised_day = AS_OF - timedelta(days=45)
+    with pg_engine.connect() as conn:
+        d, old = conn.execute(text("SELECT observation_date, value FROM mi_macro_observations WHERE series_id='BAMLC0A0CM' AND is_current AND observation_date <= :d ORDER BY observation_date DESC LIMIT 1"), {"d": revised_day}).one()
+        before = {r[0]: r[1] for r in conn.execute(text("SELECT as_of, value FROM mi_metric_snapshots WHERE metric_id='BAMLC0A0CM.chg_1m_bps' ORDER BY as_of")).all()}
+        since = last_analytics_run_at(conn)
+    assert since is not None
+    retrieved_at = datetime.now(timezone.utc)
+    with pg_engine.begin() as conn:
+        counts = upsert_observations(conn, series_id="BAMLC0A0CM", rows=[ObservationInput(d, str(Decimal(old) + Decimal("0.50")), date(2024, 1, 1), date(9999, 12, 31))], retrieved_at=retrieved_at, run_id=None, today=AS_OF)
+        assert counts.revised == 1
+        assert revised_since(conn, since) == {"BAMLC0A0CM": d}
+        rid = start_run(conn, source_id="ANALYTICS", dataset="metric_snapshots")
+        report = build_analytics(conn, run_id=rid, since=since)
+        finish_run(conn, rid, status="SUCCEEDED", details=report.as_dict())
+        after = {r[0]: r[1] for r in conn.execute(text("SELECT as_of, value FROM mi_metric_snapshots WHERE metric_id='BAMLC0A0CM.chg_1m_bps' ORDER BY as_of")).all()}
+        # The revision is retained as history, not overwritten.
+        revs = conn.execute(text("SELECT COUNT(*) FROM mi_macro_observations WHERE series_id='BAMLC0A0CM' AND observation_date=:d"), {"d": d}).scalar()
+    assert revs == 2 and report.history_dates.get("BAMLC0A0CM", 0) > 1
+    changed = [a for a in before if a >= d and before[a] != after.get(a)]
+    unchanged = [a for a in before if a < d and before[a] != after.get(a)]
+    assert changed and not unchanged, (len(changed), len(unchanged))
+    # Restore the original value (another revision) so later tests see the fixture state.
+    with pg_engine.begin() as conn:
+        upsert_observations(conn, series_id="BAMLC0A0CM", rows=[ObservationInput(d, str(old), date(2024, 1, 1), date(9999, 12, 31))], retrieved_at=datetime.now(timezone.utc), run_id=None, today=AS_OF)
+        build_analytics(conn, run_id=None, history_start=HISTORY_START, series_ids=["BAMLC0A0CM"])
+
+
+def test_metadata_mismatch_quarantines_series_without_touching_others(pg_engine, populated):
+    """Review finding: MISMATCH used to write observations and mark success."""
+    bad = fake_fred_client(AS_OF, metadata={"WTREGEN": {"units": "Billions of U.S. Dollars", "units_short": "Bil. of U.S. $"}, "DGS2": {"id": "DGS1"}, "M2SL": {"units": None}})
+    with pg_engine.begin() as conn:
+        parent = start_run(conn, source_id="ORCHESTRATOR", dataset="quarantine_test")
+        wtregen_before = conn.execute(text("SELECT COUNT(*) FROM mi_macro_observations WHERE series_id='WTREGEN' AND is_current")).scalar()
+        units_before = conn.execute(text("SELECT units, publication_status FROM mi_macro_series WHERE series_id='WTREGEN'")).one()
+    report = ingest_fred_catalog(pg_engine, bad, mode="incremental", today=AS_OF, parent_run_id=parent, series_ids=("WTREGEN", "DGS2", "M2SL", "DGS10"))
+    by_id = {r.series_id: r for r in report.results}
+    assert by_id["DGS10"].status == "SUCCEEDED"
+    assert {r.series_id for r in report.quarantined} == {"WTREGEN", "DGS2", "M2SL"}
+    assert by_id["WTREGEN"].metadata_status == "MISMATCH" and by_id["DGS2"].metadata_status == "IDENTITY_MISMATCH" and by_id["M2SL"].metadata_status == "UNAVAILABLE"
+    assert report.transport_status == "PARTIAL"
+    with pg_engine.connect() as conn:
+        # Prior valid data and its validated metadata survive; nothing new was promoted.
+        assert conn.execute(text("SELECT COUNT(*) FROM mi_macro_observations WHERE series_id='WTREGEN' AND is_current")).scalar() == wtregen_before
+        units_after = conn.execute(text("SELECT units, publication_status, publication_reason, metadata_status FROM mi_macro_series WHERE series_id='WTREGEN'")).one()
+        assert units_after.units == units_before.units and units_after.publication_status == "QUARANTINED_METADATA" and units_after.metadata_status == "MISMATCH"
+        assert "Billions" in units_after.publication_reason
+        q = conn.execute(text("SELECT series_id, COUNT(*), MIN(reason) FROM mi_macro_observation_quarantine GROUP BY series_id ORDER BY series_id")).all()
+        assert {r[0] for r in q} == {"WTREGEN", "DGS2", "M2SL"} and all(r[1] > 0 for r in q)
+        fresh = conn.execute(text("SELECT transport_status, metadata_status, latest_observation_date FROM mi_data_freshness WHERE dataset='series:WTREGEN'")).one()
+        assert fresh.transport_status == "METADATA_REJECTED" and fresh.metadata_status == "MISMATCH" and fresh.latest_observation_date == max(d for d, _ in bad.data["WTREGEN"])
+        summary = conn.execute(text("SELECT * FROM mi_v_macro_quarantine_summary WHERE series_id='WTREGEN'")).mappings().one()
+        assert summary["quarantined_rows"] > 0
+        runs = conn.execute(text("SELECT status FROM mi_ingestion_runs WHERE dataset='series:WTREGEN' ORDER BY started_at DESC LIMIT 1")).scalar()
+    assert runs == "QUARANTINED"
+    # A later validated retrieval republishes the series and clears the gate.
+    good = fake_fred_client(AS_OF)
+    report2 = ingest_fred_catalog(pg_engine, good, mode="incremental", today=AS_OF, parent_run_id=parent, series_ids=("WTREGEN", "DGS2", "M2SL"))
+    assert not report2.failed and not report2.quarantined
+    with pg_engine.connect() as conn:
+        assert conn.execute(text("SELECT publication_status FROM mi_macro_series WHERE series_id='WTREGEN'")).scalar() == "PUBLISHED"
+
+
+def test_future_dated_observations_are_quarantined_not_promoted(pg_engine, populated):
+    from market_intelligence.store import ObservationInput, upsert_observations
+
+    future = AS_OF + timedelta(days=30)
+    with pg_engine.begin() as conn:
+        counts = upsert_observations(conn, series_id="DGS10", rows=[ObservationInput(future, "4.5", date(2024, 1, 1), date(9999, 12, 31))], retrieved_at=datetime.now(timezone.utc), run_id=None, today=AS_OF)
+        assert counts.inserted == 0
+        assert conn.execute(text("SELECT COUNT(*) FROM mi_macro_observations WHERE series_id='DGS10' AND observation_date=:d"), {"d": future}).scalar() == 0
+        reason = conn.execute(text("SELECT reason FROM mi_macro_observation_quarantine WHERE series_id='DGS10' AND observation_date=:d"), {"d": future}).scalar()
+    assert reason == "FUTURE_OBSERVATION_DATE"
 
 
 def test_sector_snapshots_keep_provider_labels_units_and_per_group_dates(pg_engine, populated):
@@ -185,32 +327,129 @@ def test_sector_snapshots_keep_provider_labels_units_and_per_group_dates(pg_engi
 
 # ---- morning snapshot ----------------------------------------------------------------------------------
 
-def test_morning_snapshot_is_hashed_immutable_and_deterministic(pg_engine, populated):
+def test_morning_snapshot_is_hashed_current_only_with_db_capture_time_and_lineage(pg_engine, populated):
     morning = populated["morning"]
-    assert morning.published_new and morning.completeness in {"COMPLETE", "PARTIAL"}
+    assert morning.published_new and morning.completeness == "COMPLETE", morning.sections_status
     with pg_engine.connect() as conn:
-        row = conn.execute(text("SELECT snapshot_json, snapshot_sha256, generated_at, cutoff_at FROM mi_v_morning_context_latest")).mappings().one()
+        row = conn.execute(text("SELECT snapshot_json, snapshot_sha256, content_sha256, generated_at, cutoff_at, quality_status, publication_state FROM mi_v_morning_context_latest")).mappings().one()
     body = row["snapshot_json"]
     assert body["artifact_sha256"] == row["snapshot_sha256"] == canonical_sha256(body)
-    assert body["schema_version"] == "morning_context_v1"
-    assert set(body["sections"]) >= {"data_health", "market", "macro", "rates", "credit", "sectors", "strategy_monitor_summary"}
+    assert body["content_sha256"] == row["content_sha256"] == morning_context.content_hash(body)
+    assert body["schema_version"] == "morning_context_v2" and row["publication_state"] == "PUBLISHED"
+    # cutoff_at is the DB capture time (pinned here), not the caller-supplied generated_at.
+    assert body["cutoff_at"] == GENERATED_AT.isoformat() and body["generation_params"]["builder"] == "current_only"
+    assert "as_of" not in body["generation_params"]
+    assert set(body["sections"]) >= {"data_health", "market", "macro", "rates", "credit", "sectors", "liquidity", "strategy_monitor_summary"}
     assert body["sections"]["market"]["data"]["overnight_quotes"]["status"] != "OK"
+    assert body["sections"]["market"]["data"]["leadership_order"].startswith("sector_key")
     strategies = body["sections"]["strategy_monitor_summary"]["data"]["strategies"]
     fixture = next(s for s in strategies if s["strategy_id"] == "FIXTURE_STRATEGY")
     assert fixture["research_status"] == "COMPLETE" and fixture["economic_gate"] == "NOT_DEFINED" and fixture["promotion_gate"] == "LOCKED"
     text_json = strict_dumps(body)
     assert "NaN" not in text_json and strict_loads(text_json) == body
-    # Replay with identical inputs and explicit generation parameters -> identical hash, no new row.
-    replay = build_and_publish(pg_engine, parent_run_id=populated["parent"], as_of=AS_OF, generated_at=GENERATED_AT)
-    assert replay.snapshot_sha256 == morning.snapshot_sha256 and replay.published_new is False
+    # Exact input lineage: series revisions, metric rows, credit rows, artifact hashes, run ids, versions.
+    refs = body["input_refs"]
+    assert {r["series_id"] for r in refs["series_revisions"]} >= {"DGS10", "CPIAUCSL", "WTREGEN"}
+    dgs10 = next(r for r in refs["series_revisions"] if r["series_id"] == "DGS10")
+    assert dgs10["revision_seq"] is not None and dgs10["ingestion_run_id"] and dgs10["observation_date"] == AS_OF.isoformat()
+    assert dgs10["publication_status"] == "PUBLISHED"
+    assert any(m["metric_id"] == "curve.slope_10Y2Y_bps" for m in refs["metric_rows"])
+    assert len(refs["credit_rows"]) == 9 and len(refs["sector_artifact_hashes"]) >= 5
+    assert refs["contributing_ingestion_run_ids"] and refs["versions"]["catalog_version"] == "fred_catalog_v2"
+    assert refs["versions"]["freshness_policy_version"]
+    # Captured health is frozen inside the body and every section carries its own freshness.
+    assert body["captured_health"]["evaluated_at"] == body["cutoff_at"] and body["captured_health"]["quarantined_series"] == []
+    assert body["sections_status"]["credit"]["captured_freshness"]["status"] == "FRESH"
+    assert body["sections_status"]["macro"]["captured_freshness"]["cadence"] == "M"
+    assert body["semantics"]["vintage"].startswith("FRED values are LATEST_REVISED")
+
+
+def test_morning_snapshot_replay_dedupes_by_content_and_supersedes_explicitly(pg_engine, populated):
+    # Earlier tests revised inputs (new revision_seq / run ids), so the current content may differ
+    # from the fixture snapshot; that is a real content change and publishes a new row honestly.
+    morning = build_and_publish(pg_engine, parent_run_id=populated["parent"], generated_at=GENERATED_AT)
+    assert morning.published_new == (morning.snapshot_id != populated["morning"].snapshot_id)
     with pg_engine.connect() as conn:
-        assert conn.execute(text("SELECT COUNT(*) FROM mi_morning_context_snapshots")).scalar() == 1
-        # Immutability: published rows cannot be rewritten by a second publish with a different body.
-        different = build_and_publish(pg_engine, parent_run_id=populated["parent"], as_of=AS_OF, generated_at=GENERATED_AT.replace(hour=12))
-        assert different.snapshot_id != morning.snapshot_id
-        assert conn.execute(text("SELECT COUNT(*) FROM mi_morning_context_snapshots")).scalar() == 2
-        first = conn.execute(text("SELECT snapshot_sha256 FROM mi_morning_context_snapshots WHERE snapshot_id=:s"), {"s": morning.snapshot_id}).scalar()
-    assert first == morning.snapshot_sha256
+        count = conn.execute(text("SELECT COUNT(*) FROM mi_morning_context_snapshots")).scalar()
+    # Replay with identical frozen inputs -> same content hash, nothing new published.
+    replay = build_and_publish(pg_engine, parent_run_id=populated["parent"], generated_at=GENERATED_AT)
+    assert replay.snapshot_sha256 == morning.snapshot_sha256 and replay.content_sha256 == morning.content_sha256 and replay.published_new is False
+    # A different runtime timestamp / parent run alone is the same content: still not republished.
+    later = build_and_publish(pg_engine, parent_run_id="another-run", generated_at=GENERATED_AT.replace(hour=12))
+    assert later.published_new is False and later.content_sha256 == morning.content_sha256 and later.snapshot_id == morning.snapshot_id
+    with pg_engine.connect() as conn:
+        assert conn.execute(text("SELECT COUNT(*) FROM mi_morning_context_snapshots")).scalar() == count
+    # Explicit supersession publishes a successor and marks the old row without editing its body.
+    corrected = build_and_publish(pg_engine, parent_run_id=populated["parent"], generated_at=GENERATED_AT.replace(hour=13), supersede_reason="test: republish after metadata correction")
+    assert corrected.published_new and corrected.snapshot_id != morning.snapshot_id and corrected.superseded_snapshot_id == morning.snapshot_id
+    with pg_engine.connect() as conn:
+        old = conn.execute(text("SELECT snapshot_sha256, publication_state, superseded_by, quality_status, snapshot_json FROM mi_morning_context_snapshots WHERE snapshot_id=:s"), {"s": morning.snapshot_id}).mappings().one()
+        latest = conn.execute(text("SELECT snapshot_id FROM mi_v_morning_context_latest")).scalar()
+        index = conn.execute(text("SELECT snapshot_id, publication_state, superseded_by FROM mi_v_morning_context_index ORDER BY generated_at")).all()
+    assert old["snapshot_sha256"] == morning.snapshot_sha256 == old["snapshot_json"]["artifact_sha256"]
+    assert old["publication_state"] == "SUPERSEDED" and old["superseded_by"] == corrected.snapshot_id and old["quality_status"] == "SUPERSEDED"
+    assert latest == corrected.snapshot_id and len(index) == count + 1 and {"SUPERSEDED", "PUBLISHED"} <= {r[1] for r in index}
+    # Quality flags never touch the body either.
+    with pg_engine.begin() as conn:
+        assert morning_context.mark_quality(conn, corrected.snapshot_id, quality_status="QUESTIONABLE", note="fixture") == 1
+        q = conn.execute(text("SELECT quality_status, snapshot_sha256 FROM mi_morning_context_snapshots WHERE snapshot_id=:s"), {"s": corrected.snapshot_id}).one()
+        assert q == ("QUESTIONABLE", corrected.snapshot_sha256)
+        conn.execute(text("UPDATE mi_morning_context_snapshots SET quality_status = 'OK', quality_note = NULL WHERE snapshot_id=:s"), {"s": corrected.snapshot_id})
+
+
+def test_morning_snapshot_refuses_historical_reconstruction(pg_engine, populated):
+    with pytest.raises(HistoricalReconstructionUnsupported) as excinfo:
+        build_and_publish(pg_engine, requested_cutoff=GENERATED_AT - timedelta(days=3))
+    assert "historical snapshots cannot be rebuilt" in str(excinfo.value)
+    # A cutoff request at/after the capture time is accepted (it is not a reconstruction).
+    ok = build_and_publish(pg_engine, requested_cutoff=GENERATED_AT + timedelta(minutes=1))
+    assert ok.published_new is False  # same content as the latest published snapshot
+
+
+def test_morning_snapshot_health_advances_with_the_clock_without_ingestion(pg_engine, populated):
+    """Freshness must decay when nobody ingests; a new capture on a later day is new content."""
+    CAPTURE_CLOCK["now"] = GENERATED_AT + timedelta(days=30)
+    try:
+        aged = build_and_publish(pg_engine, parent_run_id=populated["parent"], generated_at=GENERATED_AT + timedelta(days=30))
+        assert aged.published_new and aged.completeness == "PARTIAL"
+        st = aged.sections_status
+        assert st["credit"]["status"] == "STALE" and st["rates"]["status"] == "STALE" and st["macro"]["captured_freshness"]["status"] == "FRESH"
+        assert "stale for cadence D" in st["credit"]["reason"]
+        assert aged.body["captured_health"]["stale_sources"], "daily FRED datasets must be listed stale at capture"
+        # Live read model agrees: stored status was FRESH at ingest, re-evaluated STALE now.
+        from market_intelligence.read_models import source_health
+
+        with pg_engine.connect() as conn:
+            rows = {r["freshness_dataset"]: r for r in source_health(conn, today=(GENERATED_AT + timedelta(days=30)).date())}
+        dgs10 = rows["series:DGS10"]
+        assert dgs10["stored_freshness_status"] == "FRESH" and dgs10["freshness_status"] == "STALE" and dgs10["dataset_cadence"] == "D"
+        assert rows["series:CPIAUCSL"]["freshness_status"] == "FRESH" and rows["series:CPIAUCSL"]["dataset_cadence"] == "M"
+        assert "expected_next_release" not in dgs10 and dgs10["stale_after_estimate"] is not None
+    finally:
+        CAPTURE_CLOCK["now"] = GENERATED_AT
+        with pg_engine.begin() as conn:
+            conn.execute(text("DELETE FROM mi_morning_context_snapshots WHERE snapshot_id=:s"), {"s": aged.snapshot_id})
+            conn.execute(text("UPDATE mi_morning_context_snapshots SET publication_state='PUBLISHED', superseded_by=NULL, superseded_at=NULL, quality_status='OK', quality_note=NULL WHERE publication_state='SUPERSEDED' AND superseded_by=:s"), {"s": aged.snapshot_id})
+
+
+def test_morning_snapshot_empty_db_is_explicit(pg_engine, populated):
+    """Catalog-only / empty DB: sections UNAVAILABLE with reasons, completeness EMPTY, nothing fabricated."""
+    from market_intelligence.read_models import macro_context, rates_context
+
+    with pg_engine.connect() as conn:
+        conn = conn.execution_options(isolation_level="REPEATABLE READ")
+        with conn.begin() as tx:
+            conn.execute(text("SET LOCAL statement_timeout = '60s'"))
+            conn.execute(text("TRUNCATE TABLE mi_morning_context_snapshots, mi_credit_index_snapshots, mi_metric_snapshots, mi_industry_snapshots, mi_sector_snapshots, mi_macro_observations, mi_macro_observation_quarantine, mi_macro_series, mi_data_freshness, mi_ingestion_runs, mi_source_registry CASCADE"))
+            body = morning_context.build_snapshot_body(conn, generated_at=GENERATED_AT, cutoff_at=GENERATED_AT, generation_params={})
+            assert not any(c["yield_pct"] is not None for c in rates_context(conn)["curve"])
+            assert macro_context(conn)["categories"] == {} or all(not v for v in macro_context(conn)["categories"].values())
+            tx.rollback()
+    # Only the research-run summary (research_runs table, untouched) is available -> PARTIAL, not COMPLETE.
+    assert body["completeness"] == "PARTIAL" and body["sections"]["strategy_monitor_summary"]["status"] == "OK"
+    for name in ("macro", "rates", "credit", "sectors", "liquidity", "market", "data_health"):
+        assert body["sections"][name]["status"] == "UNAVAILABLE" and body["sections"][name]["data"] is None and body["sections"][name]["reason"]
+    assert body["input_refs"]["series_revisions"] == [] and body["input_refs"]["credit_rows"] == []
 
 
 # ---- read-only role: real denial -----------------------------------------------------------------------
@@ -239,6 +478,60 @@ def test_readonly_role_can_select_curated_views(ro_engine, populated):
     with ro_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_v_macro_latest")).scalar() > 40
         assert conn.execute(text("SELECT COUNT(*) FROM mi_v_strategy_research_summary WHERE strategy_id='FIXTURE_STRATEGY'")).scalar() == 1
+        for view in readonly_db.REQUIRED_VIEWS + ("mi_v_macro_quarantine_summary", "mi_v_metric_history", "mi_v_industry_latest", "mi_v_research_ideas"):
+            conn.execute(text("SELECT * FROM {0} LIMIT 1".format(view)))
+
+
+def test_readonly_role_privileges_hold_even_when_session_defaults_are_overridden(ro_engine, populated):
+    """Privileges, not the default_transaction_read_only setting, enforce read-only."""
+    for sql in ("INSERT INTO mi_source_registry (source_id, provider, dataset) VALUES ('X','x','x')", "CREATE TABLE mi_should_fail_rw (id INT)", "SELECT COUNT(*) FROM mi_macro_observations"):
+        with pytest.raises(Exception) as excinfo:
+            with ro_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+                conn.execute(text("SET default_transaction_read_only = off"))
+                assert conn.execute(text("SHOW transaction_read_only")).scalar() == "off"
+                conn.execute(text(sql))
+        assert "permission denied" in str(excinfo.value).lower(), sql
+
+
+def test_public_grants_are_not_cancelled_by_role_revoke_and_remediation_works(ro_engine, pg_engine, populated):
+    """PostgreSQL < 15 grants CREATE ON SCHEMA public TO PUBLIC; REVOKE ... FROM <role> does not undo it."""
+    role = make_url(ro_engine.url).username
+    with pg_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as admin:
+        admin.execute(text("GRANT CREATE ON SCHEMA public TO PUBLIC"))
+        try:
+            admin.execute(text('REVOKE CREATE ON SCHEMA public FROM "{0}"'.format(role)))
+            assert admin.execute(text("SELECT has_schema_privilege(:r, 'public', 'CREATE')"), {"r": role}).scalar() is True
+            # Documented administrator remediation.
+            admin.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
+            assert admin.execute(text("SELECT has_schema_privilege(:r, 'public', 'CREATE')"), {"r": role}).scalar() is False
+            assert admin.execute(text("SELECT has_schema_privilege(:r, 'public', 'USAGE')"), {"r": role}).scalar() is True
+        finally:
+            admin.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
+    # No PUBLIC table grants exist on any mi_* / research table (the role must not inherit reads through PUBLIC).
+    with pg_engine.connect() as conn:
+        leaks = conn.execute(text("SELECT table_name FROM information_schema.role_table_grants WHERE grantee = 'PUBLIC' AND table_schema = 'public' AND table_name NOT LIKE 'mi\\_v\\_%'")).all()
+    assert leaks == []
+
+
+def test_probe_readonly_requires_every_view_readable(ro_engine, pg_engine, populated):
+    readonly_db.set_engine_for_tests(ro_engine)
+    try:
+        probe = readonly_db.probe_readonly()
+        assert probe["status"] == "OK" and probe["failing_views"] == [] and probe["transaction_read_only"] == "on"
+        probe_missing = readonly_db.probe_readonly(required_views=readonly_db.REQUIRED_VIEWS + ("mi_v_does_not_exist",))
+        assert probe_missing["status"] == "VIEWS_UNAVAILABLE" and probe_missing["failing_views"] == ["mi_v_does_not_exist:ProgrammingError"]
+        role = make_url(ro_engine.url).username
+        with pg_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as admin:
+            admin.execute(text('REVOKE SELECT ON mi_v_credit_latest FROM "{0}"'.format(role)))
+            try:
+                denied = readonly_db.probe_readonly()
+                assert denied["status"] == "VIEWS_UNAVAILABLE" and denied["failing_views"] == ["mi_v_credit_latest:ProgrammingError"]
+                assert "postgres" not in json.dumps(denied).lower()
+            finally:
+                admin.execute(text('GRANT SELECT ON mi_v_credit_latest TO "{0}"'.format(role)))
+        assert readonly_db.probe_readonly()["status"] == "OK"
+    finally:
+        readonly_db.set_engine_for_tests(None)
 
 
 def test_readonly_config_fails_closed_without_writer_fallback(monkeypatch):
@@ -265,7 +558,8 @@ def api(consumer):
     return TestClient(ai_context_api.app, raise_server_exceptions=False)
 
 
-ROUTES = ["/v1/ready", "/v1/context/morning/latest", "/v1/context/macro/latest", "/v1/context/rates/latest", "/v1/context/credit/latest", "/v1/context/sectors/latest", "/v1/context/strategies/latest", "/v1/context/data-health"]
+SECTION_PATHS = ["/v1/context/{0}/latest".format(p) for p in ("morning", "macro", "rates", "credit", "sectors", "liquidity", "market", "strategies", "data-health")]
+ROUTES = ["/v1/ready", *SECTION_PATHS, "/v1/context/data-health/live", "/v1/context/data-health"]
 
 
 def test_health_is_minimal_and_unauthenticated(api):
@@ -302,24 +596,74 @@ def test_docs_and_schema_routes_disabled(api):
         assert api.get(route).status_code == 404
 
 
-def test_morning_route_is_export_filtered_and_hash_consistent(api, populated, pg_engine):
+def test_ready_reflects_view_readability(api, pg_engine, ro_engine):
+    r = api.get("/v1/ready", headers={"Authorization": "Bearer fixture-token"})
+    assert r.status_code == 200 and r.json()["ready"] is True and r.json()["database"]["failing_views"] == []
+    role = make_url(ro_engine.url).username
+    with pg_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as admin:
+        admin.execute(text('REVOKE SELECT ON mi_v_morning_context_latest FROM "{0}"'.format(role)))
+        try:
+            r = api.get("/v1/ready", headers={"Authorization": "Bearer fixture-token"})
+            assert r.status_code == 503 and r.json()["ready"] is False and r.json()["database"]["status"] == "VIEWS_UNAVAILABLE"
+            assert r.json()["database"]["failing_views"] == ["mi_v_morning_context_latest:ProgrammingError"]
+        finally:
+            admin.execute(text('GRANT SELECT ON mi_v_morning_context_latest TO "{0}"'.format(role)))
+
+
+def test_morning_route_is_export_filtered_and_hash_covers_the_delivered_json(api, populated, pg_engine):
     with pg_engine.connect() as conn:
-        latest = conn.execute(text("SELECT snapshot_id, snapshot_sha256, completeness FROM mi_v_morning_context_latest")).mappings().one()
+        latest = conn.execute(text("SELECT snapshot_id, snapshot_sha256, content_sha256, completeness FROM mi_v_morning_context_latest")).mappings().one()
     r = api.get("/v1/context/morning/latest", headers={"Authorization": "Bearer fixture-token"})
     payload = r.json()
-    assert payload["available"] is True
-    assert payload["source_snapshot_hash"] == latest["snapshot_sha256"]
+    assert payload["available"] is True and payload["section"] is None
+    assert payload["provenance"]["kind"] == "FROZEN_SNAPSHOT" and payload["provenance"]["snapshot_id"] == latest["snapshot_id"]
+    assert payload["source_snapshot_hash"] == latest["snapshot_sha256"] == payload["provenance"]["source_snapshot_hash"]
+    assert payload["export_schema_version"] == "export_safe_v2"
     assert payload["export_filtered"] is True and payload["restricted_entries"] >= 9
     assert payload["export_sha256"] != payload["source_snapshot_hash"]
-    assert verify_export_hash({k: v for k, v in payload.items() if k in {"export_schema_version", "source_snapshot_hash", "export_filtered", "restricted_entries", "body", "export_sha256"}})
+    # Review finding: the hash must verify on the HTTP JSON exactly as delivered (no fields removed).
+    assert verify_export_hash(payload)
+    assert verify_export_hash(json.loads(r.text))
+    assert not verify_export_hash(dict(payload, degraded=not payload["degraded"]))
+    assert not verify_export_hash({**payload, "latest_snapshot": None})
     buckets = payload["body"]["sections"]["credit"]["data"]["buckets"]
     assert all(b["restricted"] and "oas_bps" not in b and "percentile" not in b for b in buckets)
-    assert buckets[0]["series_id"] == "BAMLC0A0CM"  # identity kept, catalog order (not value-ranked)
+    assert [b["series_id"] for b in buckets] == sorted(b["series_id"] for b in buckets)  # identity order after redaction
     # Unrestricted official macro data still exported.
     curve = payload["body"]["sections"]["rates"]["data"]["curve"]
     assert any(c["yield_pct"] is not None for c in curve)
-    assert payload["latest_snapshot"]["snapshot_id"] == latest["snapshot_id"]
-    assert payload["degraded"] == (latest["completeness"] != "COMPLETE")
+    assert payload["latest_snapshot"]["snapshot_id"] == latest["snapshot_id"] and payload["latest_snapshot"]["content_sha256"] == latest["content_sha256"]
+    # Delivery health is evaluated now (the fixture snapshot is old), inside the hashed envelope.
+    assert payload["delivery_health"]["snapshot_age_status"] == "STALE" and payload["degraded"] is True
+    assert payload["body"]["captured_health"]["evaluated_at"] == payload["body"]["cutoff_at"]  # immutable captured health preserved
+
+
+@pytest.mark.parametrize("path", SECTION_PATHS)
+def test_every_section_route_serves_the_same_frozen_snapshot_with_verifiable_hash(api, path, pg_engine):
+    with pg_engine.connect() as conn:
+        latest = conn.execute(text("SELECT snapshot_id, snapshot_sha256 FROM mi_v_morning_context_latest")).mappings().one()
+    payload = api.get(path, headers={"Authorization": "Bearer fixture-token"}).json()
+    assert verify_export_hash(payload)
+    assert payload["provenance"] == {**payload["provenance"], "kind": "FROZEN_SNAPSHOT", "snapshot_id": latest["snapshot_id"], "source_snapshot_hash": latest["snapshot_sha256"]}
+    assert payload["available"] is True and payload["body"] is not None
+    if payload["section"]:
+        assert payload["section_status"]["status"] in {"OK", "PARTIAL", "STALE"}
+
+
+def test_live_data_health_route_declares_live_provenance_not_snapshot_hash(api, pg_engine):
+    for path in ("/v1/context/data-health/live", "/v1/context/data-health"):
+        payload = api.get(path, headers={"Authorization": "Bearer fixture-token"}).json()
+        assert verify_export_hash(payload)
+        assert payload["provenance"]["kind"] == "LIVE_VIEW" and payload["source_snapshot_hash"] is None and payload["provenance"]["captured_at"]
+        assert payload["section"] == "data_health_live" and payload["available"] is True
+        sources = {s["freshness_dataset"]: s for s in payload["body"]["sources"]}
+        # Health is re-evaluated against the live clock: the 2024 fixture data is stale now, per-dataset cadence shown.
+        assert sources["series:DGS10"]["freshness_status"] == "STALE" and sources["series:DGS10"]["dataset_cadence"] == "D"
+        assert sources["series:DGS10"]["stored_freshness_status"] == "FRESH"
+        assert "expected_next_release" not in sources["series:DGS10"]
+        assert payload["latest_snapshot"]["snapshot_id"]  # the snapshot is referenced as context, not as the source
+    frozen = api.get("/v1/context/data-health/latest", headers={"Authorization": "Bearer fixture-token"}).json()
+    assert frozen["provenance"]["kind"] == "FROZEN_SNAPSHOT" and frozen["body"]["sources"]
 
 
 def test_credit_route_redacts_every_value_including_history_and_deltas(api, pg_engine):
@@ -329,14 +673,49 @@ def test_credit_route_redacts_every_value_including_history_and_deltas(api, pg_e
         real = conn.execute(text("SELECT oas_bps FROM mi_v_credit_latest WHERE series_id='BAMLH0A0HYM2'")).scalar()
     assert payload["restricted_entries"] == 9
     assert "{0:.4f}".format(float(real)) [:6] not in json.dumps(payload["body"])
-    for b in payload["body"]["data"]["buckets"]:
+    for b in payload["body"]["buckets"]:
         assert set(b) & {"oas_bps", "change_1d_bps", "change_1w_bps", "change_1m_bps", "percentile", "zscore", "history"} == set()
         assert b["restriction_reason"]
 
 
+def test_sectors_route_redacts_internal_only_legacy_values(api):
+    payload = api.get("/v1/context/sectors/latest", headers={"Authorization": "Bearer fixture-token"}).json()
+    assert verify_export_hash(payload)
+    rows = payload["body"]["datasets"]["ETF_RS_VS_SPY"]
+    assert rows and all(r["restricted"] is True and "metrics" not in r for r in rows)
+    assert [r["sector_key"] for r in rows] == sorted(r["sector_key"] for r in rows)
+    assert all("Internal-only" in r["restriction_reason"] for r in rows)
+    market = api.get("/v1/context/market/latest", headers={"Authorization": "Bearer fixture-token"}).json()
+    leaders = market["body"]["sector_leadership_rs_vs_spy"]
+    assert leaders and all(l["restricted"] and "rs_chg_1m" not in l for l in leaders)
+    assert market["body"]["us_10y"]["yield_pct"] is not None  # official FRED data exported with attribution scope
+
+
+def test_missing_snapshot_response_is_explicit_and_hashed(consumer, pg_engine):
+    from fastapi.testclient import TestClient
+
+    import ai_context_api
+
+    client = TestClient(ai_context_api.app, raise_server_exceptions=False)
+    with pg_engine.begin() as conn:
+        conn.execute(text("UPDATE mi_morning_context_snapshots SET publication_state = 'WITHDRAWN_TEST' WHERE publication_state = 'PUBLISHED'"))
+    try:
+        for path in ("/v1/context/morning/latest", "/v1/context/credit/latest"):
+            r = client.get(path, headers={"Authorization": "Bearer fixture-token"})
+            payload = r.json()
+            assert r.status_code == 200 and payload["available"] is False and payload["body"] is None
+            assert payload["provenance"]["kind"] == "UNPUBLISHED" and payload["source_snapshot_hash"] is None
+            assert payload["unavailable_reason"] == "no published morning_context snapshot" and payload["degraded"] is True
+            assert payload["delivery_health"]["snapshot_age_status"] == "NONE"
+            assert verify_export_hash(payload)
+    finally:
+        with pg_engine.begin() as conn:
+            conn.execute(text("UPDATE mi_morning_context_snapshots SET publication_state = 'PUBLISHED' WHERE publication_state = 'WITHDRAWN_TEST'"))
+
+
 def test_strategies_route_preserves_gate_status_not_success_claims(api):
     r = api.get("/v1/context/strategies/latest", headers={"Authorization": "Bearer fixture-token"})
-    fixture = next(s for s in r.json()["body"]["data"]["strategies"] if s["strategy_id"] == "FIXTURE_STRATEGY")
+    fixture = next(s for s in r.json()["body"]["strategies"] if s["strategy_id"] == "FIXTURE_STRATEGY")
     assert fixture["research_status"] == "COMPLETE"
     assert fixture["economic_gate"] == "NOT_DEFINED" and fixture["promotion_gate"] == "LOCKED" and fixture["delivery_status"] == "LAST_KNOWN_GOOD"
 

@@ -43,6 +43,8 @@ def _admin_url():
 def pg_admin_url():
     url = _admin_url()
     if not url:
+        if (os.environ.get("MI_REQUIRE_DB_TESTS") or "").strip() in {"1", "true", "yes"}:
+            pytest.fail("MI_REQUIRE_DB_TESTS is set but FMP_TEST_DATABASE_URL is missing: DB checks must not silently skip in CI")
         pytest.skip("FMP_TEST_DATABASE_URL not set; real-PostgreSQL tests unverified")
     return url
 
@@ -81,6 +83,7 @@ def pg_engine(pg_database):
 
 
 MI_TABLES_TRUNCATE = (
+    "mi_macro_observation_quarantine",
     "mi_research_idea_tests",
     "mi_research_idea_approvals",
     "mi_research_idea_transitions",
