@@ -9,8 +9,16 @@ Hard rules encoded here (not policy prose):
 * every spec change after a freeze creates a new version, resets the lifecycle and revokes
   approvals of superseded versions;
 * approval binds to (idea_id, version, spec_hash) - a changed hash has no approval;
-* unsupported research types register honestly with ``execution_support=UNSUPPORTED``;
-* specs must not touch data on/after ``HOLDOUT_START`` (2025-01-01) or any holdout flag;
+* approval additionally requires a COMPLETE frozen spec (``APPROVAL_REQUIRED_FIELDS``). The
+  registry never fills economic decisions in: a missing field stays INCOMPLETE and blocks
+  approval; ``acceptance_thresholds`` are recorded only when a human supplied them, otherwise
+  the contract carries ``economic_gate = NOT_DEFINED``;
+* an idea may declare a *stricter* holdout boundary than the platform's 2025-01-01. The
+  stricter date is kept as ``effective_holdout_start`` and every structured date range in the
+  spec is validated against it (never loosened to the global cutoff);
+* execution support is a fact about implemented adapters: ``SUPPORTED_DRY_RUN_CONTRACT`` only
+  for types with a real contract consumer in quant-strategies; ``MANUAL_SPEC_REQUIRED`` where
+  infrastructure exists but no idea->StrategySpec adapter does; ``UNSUPPORTED`` otherwise;
 * automatic execution is disabled: ``queue_research`` only records a DRY_RUN plan.
 """
 
@@ -30,10 +38,16 @@ from sqlalchemy import text
 from market_intelligence import CODE_VERSION
 from market_intelligence.nulls import canonical_sha256, normalize_payload, strict_dumps
 
-SCHEMA_VERSION = "idea_spec_v1"
-CONTRACT_SCHEMA_VERSION = "idea_research_contract_v1"
+SCHEMA_VERSION = "idea_spec_v2"
+CONTRACT_SCHEMA_VERSION = "idea_research_contract_v2"
 HOLDOUT_START = date(2025, 1, 1)
 DEFAULT_HOLDOUT_POLICY = {"holdout_start": HOLDOUT_START.isoformat(), "access": "NONE", "note": "Final holdout and 2025+ data are never read by idea research."}
+
+# Completeness of the frozen spec (approval gate). Economic decisions are never invented here.
+COMPLETENESS_COMPLETE = "COMPLETE"
+COMPLETENESS_INCOMPLETE = "INCOMPLETE"
+ECONOMIC_GATE_NOT_DEFINED = "NOT_DEFINED"
+ECONOMIC_GATE_HUMAN_SUPPLIED = "HUMAN_SUPPLIED"
 
 # Lifecycle
 DRAFT = "DRAFT"
@@ -57,22 +71,61 @@ TRANSITIONS: dict[str, set[str]] = {
     REJECTED: {DRAFT},
 }
 
-# Execution support is a fact about the platform today, not about the idea's merit.
-SUPPORT_EXISTING_INFRA = "SUPPORTED_EXISTING_INFRA"
+# Execution support is a fact about implemented adapters today, not about the idea's merit.
+# SUPPORTED_DRY_RUN_CONTRACT: quant-strategies research.market_intelligence has a consumer that
+#   verifies this contract type and produces a dry-run plan / local artifact (no QC launch).
+# MANUAL_SPEC_REQUIRED: the research engine exists (research.platform / Stage 2) but there is no
+#   adapter that turns an idea spec into a StrategySpecV1; a human authors that spec explicitly.
+# UNSUPPORTED: no adapter and no engine; the idea is registered honestly and can be reviewed.
 SUPPORT_DRY_RUN_CONTRACT = "SUPPORTED_DRY_RUN_CONTRACT"
+SUPPORT_MANUAL_SPEC_REQUIRED = "MANUAL_SPEC_REQUIRED"
 SUPPORT_UNSUPPORTED = "UNSUPPORTED"
 RESEARCH_TYPES: dict[str, dict[str, str]] = {
-    "SINGLE_ASSET_MOMENTUM": {"support": SUPPORT_EXISTING_INFRA, "adapter": "quant-strategies platform research (TLTDurationMomentum-style WFO)"},
-    "CROSS_SECTIONAL_FACTOR_ML": {"support": SUPPORT_EXISTING_INFRA, "adapter": "quant-strategies Stage 2 cross-sectional factor ML"},
-    "SECTOR_ROTATION_DIAGNOSTIC": {"support": SUPPORT_DRY_RUN_CONTRACT, "adapter": "quant-strategies MarketIntelligenceResearch sector diagnostics (contract only; first 2025+ activation is a human gate)"},
+    "SECTOR_ROTATION_DIAGNOSTIC": {
+        "support": SUPPORT_DRY_RUN_CONTRACT,
+        "adapter": "quant-strategies research.market_intelligence.sector_diagnostics (descriptive RS diagnostic; windows come from the frozen spec.signal; no costs; no economic pass)",
+    },
+    "SECTOR_INTERNALS_PIT": {
+        "support": SUPPORT_DRY_RUN_CONTRACT,
+        "adapter": "quant-strategies research.market_intelligence.sector_internals (PIT sector aggregate producer -> sector_internals_v1 artifact -> FMP consumer; locally validated; QC activation is a human gate)",
+    },
+    "SINGLE_ASSET_MOMENTUM": {
+        "support": SUPPORT_MANUAL_SPEC_REQUIRED,
+        "adapter": "research.platform outer WFO exists (TLTDurationMomentum family) but no idea->StrategySpecV1 adapter; a human must author the spec as a new lineage",
+    },
+    "CROSS_SECTIONAL_FACTOR_ML": {
+        "support": SUPPORT_MANUAL_SPEC_REQUIRED,
+        "adapter": "research.stage2 engine exists but V1 is frozen and there is no idea->StrategySpecV1 adapter; a human must author a new lineage spec",
+    },
     "MACRO_REGIME_OVERLAY": {"support": SUPPORT_UNSUPPORTED, "adapter": ""},
     "CREDIT_SPREAD_SIGNAL": {"support": SUPPORT_UNSUPPORTED, "adapter": ""},
     "PAIRS_RELATIVE_VALUE": {"support": SUPPORT_UNSUPPORTED, "adapter": ""},
     "BOND_RELATIVE_VALUE": {"support": SUPPORT_UNSUPPORTED, "adapter": ""},
+    "EVENT_STUDY": {"support": SUPPORT_UNSUPPORTED, "adapter": ""},
+    "CONDITIONAL_RETURN": {"support": SUPPORT_UNSUPPORTED, "adapter": ""},
     "OTHER": {"support": SUPPORT_UNSUPPORTED, "adapter": ""},
 }
+QUEUE_STATUS_BY_SUPPORT = {SUPPORT_DRY_RUN_CONTRACT: "DRY_RUN_PLANNED", SUPPORT_MANUAL_SPEC_REQUIRED: "MANUAL_SPEC_REQUIRED", SUPPORT_UNSUPPORTED: "UNSUPPORTED"}
 
+# Minimum to register a DRAFT (an idea can be captured before every decision is made).
 REQUIRED_SPEC_FIELDS = ("title", "research_type", "hypothesis", "universe", "signal", "horizon", "data_used")
+# Frozen fields a human must have decided before research approval. None has a default.
+APPROVAL_REQUIRED_FIELDS = (
+    "hypothesis",
+    "economic_rationale",
+    "universe",
+    "signal",
+    "signal_timing",
+    "expected_behavior",
+    "invalidation",
+    "horizon",
+    "costs",
+    "validation_protocol",
+    "data_requirements",
+    "holdout_policy",
+)
+# Structured date-range pairs validated at this boundary (and again by the QS consumer).
+DATE_RANGE_PAIRS = (("start", "end"), ("history_start", "history_end"), ("train_start", "train_end"), ("oos_start", "oos_end"))
 _HOLDOUT_TOKENS = re.compile(r"holdout|final[_ ]?test|2025|2026", re.IGNORECASE)
 
 
@@ -92,6 +145,11 @@ class SpecValidation:
     spec_hash: str | None = None
     normalized: dict[str, Any] | None = None
     execution_support: str = SUPPORT_UNSUPPORTED
+    completeness: str = COMPLETENESS_INCOMPLETE
+    missing_fields: list[str] = field(default_factory=list)
+    effective_holdout_start: date = HOLDOUT_START
+    date_ranges: list[dict[str, Any]] = field(default_factory=list)
+    economic_gate: str = ECONOMIC_GATE_NOT_DEFINED
 
 
 def utcnow() -> datetime:
@@ -99,13 +157,50 @@ def utcnow() -> datetime:
 
 
 def _parse_date(value: Any) -> date | None:
+    """Strict ISO date parsing (``YYYY-MM-DD``). Anything else raises IdeaError."""
     if value in (None, ""):
         return None
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
         return value
-    return date.fromisoformat(str(value)[:10])
+    text_value = str(value)
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text_value):
+        raise IdeaError("date {0!r} is not an ISO calendar date (YYYY-MM-DD)".format(value))
+    try:
+        return date.fromisoformat(text_value)
+    except ValueError as exc:
+        raise IdeaError("invalid calendar date {0!r}: {1}".format(value, exc)) from exc
+
+
+def _missing(value: Any) -> bool:
+    return value in (None, "", [], {})
+
+
+def _collect_date_ranges(obj: Any, found: list[dict[str, Any]], errors: list[str], path: str = "") -> None:
+    """Find every dict carrying a structured (start, end) pair and validate it as a range."""
+    if isinstance(obj, dict):
+        for start_key, end_key in DATE_RANGE_PAIRS:
+            if start_key in obj or end_key in obj:
+                label = "{0}.{1}/{2}".format(path or "spec", start_key, end_key)
+                try:
+                    start = _parse_date(obj.get(start_key))
+                    end = _parse_date(obj.get(end_key))
+                except IdeaError as exc:
+                    errors.append("{0}: {1}".format(label, exc))
+                    continue
+                if start is None or end is None:
+                    errors.append("{0}: both {1} and {2} are required when a range is given".format(label, start_key, end_key))
+                    continue
+                if end < start:
+                    errors.append("{0}: end {1} precedes start {2}".format(label, end.isoformat(), start.isoformat()))
+                    continue
+                found.append({"path": label, "start": start, "end": end})
+        for k, v in obj.items():
+            _collect_date_ranges(v, found, errors, "{0}.{1}".format(path, k) if path else str(k))
+    elif isinstance(obj, list):
+        for i, v in enumerate(obj):
+            _collect_date_ranges(v, found, errors, "{0}[{1}]".format(path, i))
 
 
 def _scan_dates(obj: Any, found: list[tuple[str, date]], path: str = "") -> None:
@@ -149,6 +244,7 @@ def validate_spec(spec: dict[str, Any]) -> SpecValidation:
             if not isinstance(ref, dict) or not ref.get("source_id"):
                 errors.append("data_used[{0}] must be an object with source_id".format(i))
 
+    # --- holdout policy: the idea may be stricter than the platform, never looser -------------------
     policy = spec.get("holdout_policy") or {}
     if not isinstance(policy, dict):
         errors.append("holdout_policy must be an object")
@@ -156,25 +252,71 @@ def validate_spec(spec: dict[str, Any]) -> SpecValidation:
     access = str(policy.get("access") or "NONE").upper()
     if access != "NONE":
         errors.append("holdout_policy.access must be NONE (got {0})".format(access))
-    holdout_start = _parse_date(policy.get("holdout_start")) or HOLDOUT_START
-    if holdout_start > HOLDOUT_START:
-        errors.append("holdout_policy.holdout_start {0} is later than the platform boundary {1}".format(holdout_start, HOLDOUT_START))
+    effective_holdout = HOLDOUT_START
+    try:
+        idea_holdout = _parse_date(policy.get("holdout_start"))
+    except IdeaError as exc:
+        errors.append("holdout_policy.holdout_start: {0}".format(exc))
+        idea_holdout = None
+    if idea_holdout is not None:
+        if idea_holdout > HOLDOUT_START:
+            errors.append("holdout_policy.holdout_start {0} is later than the platform boundary {1}".format(idea_holdout, HOLDOUT_START))
+        else:
+            effective_holdout = idea_holdout
 
+    # --- structured date ranges (validated here; the QS consumer validates again) ------------------
+    ranges: list[dict[str, Any]] = []
+    _collect_date_ranges({k: v for k, v in spec.items() if k not in {"holdout_policy", "conception_at"}}, ranges, errors)
+    for rng in ranges:
+        if rng["end"] >= effective_holdout:
+            errors.append("{0}: end {1} is on/after the effective holdout boundary {2}".format(rng["path"], rng["end"].isoformat(), effective_holdout.isoformat()))
     dates: list[tuple[str, date]] = []
     _scan_dates({k: v for k, v in spec.items() if k not in {"holdout_policy", "conception_at"}}, dates)
     for path, d in dates:
-        if d >= HOLDOUT_START:
-            errors.append("{0}={1} touches the protected window (>= {2})".format(path, d.isoformat(), HOLDOUT_START.isoformat()))
+        if d >= effective_holdout:
+            errors.append("{0}={1} touches the protected window (>= {2})".format(path, d.isoformat(), effective_holdout.isoformat()))
     for key in ("universe", "signal", "params"):
         blob = strict_dumps(spec.get(key)) if spec.get(key) is not None else ""
         if _HOLDOUT_TOKENS.search(blob):
             warnings.append("{0} mentions holdout/2025+ tokens; verify the spec does not require protected data".format(key))
 
+    # --- data / PIT requirements must be explicit when present ---------------------------------------
+    reqs = spec.get("data_requirements")
+    if reqs is not None:
+        if not isinstance(reqs, dict):
+            errors.append("data_requirements must be an object")
+        elif not isinstance(reqs.get("pit_required"), bool):
+            errors.append("data_requirements.pit_required must be an explicit boolean")
+
+    # --- completeness (approval gate) ---------------------------------------------------------------
+    # holdout_policy counts only when the human stated it; the normalized default is a platform
+    # floor, not a lineage-specific decision.
+    missing = [name for name in APPROVAL_REQUIRED_FIELDS if _missing(spec.get(name))]
+    completeness = COMPLETENESS_COMPLETE if not missing else COMPLETENESS_INCOMPLETE
+    thresholds = spec.get("acceptance_thresholds")
+    if thresholds is not None and not isinstance(thresholds, dict):
+        errors.append("acceptance_thresholds must be an object supplied by a human (or omitted)")
+    economic_gate = ECONOMIC_GATE_HUMAN_SUPPLIED if isinstance(thresholds, dict) and thresholds else ECONOMIC_GATE_NOT_DEFINED
+    if economic_gate == ECONOMIC_GATE_NOT_DEFINED:
+        warnings.append("no acceptance_thresholds supplied; economic_gate stays NOT_DEFINED (the registry never invents thresholds)")
+
     normalized = normalize_payload({k: v for k, v in spec.items() if k != "conception_at"})
-    normalized.setdefault("schema_version", SCHEMA_VERSION)
-    normalized["holdout_policy"] = {**DEFAULT_HOLDOUT_POLICY, **(policy or {}), "access": "NONE", "holdout_start": HOLDOUT_START.isoformat()}
+    normalized["schema_version"] = SCHEMA_VERSION
+    normalized["holdout_policy"] = {**DEFAULT_HOLDOUT_POLICY, **(policy or {}), "access": "NONE", "holdout_start": effective_holdout.isoformat()}
     spec_hash = canonical_sha256(normalized)
-    return SpecValidation(not errors, errors, warnings, spec_hash, normalized, support)
+    return SpecValidation(
+        not errors,
+        errors,
+        warnings,
+        spec_hash,
+        normalized,
+        support,
+        completeness=completeness,
+        missing_fields=missing,
+        effective_holdout_start=effective_holdout,
+        date_ranges=[{"path": r["path"], "start": r["start"].isoformat(), "end": r["end"].isoformat()} for r in ranges],
+        economic_gate=economic_gate,
+    )
 
 
 def _slug(title: str) -> str:
@@ -237,6 +379,9 @@ def register_idea(conn, spec: dict[str, Any], *, actor: str, actor_kind: str = "
     snap_id, snap_hash = _snapshot_ref(conn, source_snapshot_id or spec.get("source_snapshot_id"), conception)
     idea_id = "idea_{0}".format(uuid.uuid4().hex[:12])
     lineage_id = "LINEAGE_IDEA_{0}_{1}".format(_slug(str(spec["title"])), validation.spec_hash[:8])
+    existing = conn.execute(text("SELECT idea_id FROM mi_research_ideas WHERE lineage_id = :l"), {"l": lineage_id}).scalar()
+    if existing:
+        raise IdeaError("an identical spec is already registered as {0} (lineage {1}); revise that idea instead".format(existing, lineage_id))
     conn.execute(
         text(
             """
@@ -251,7 +396,19 @@ def register_idea(conn, spec: dict[str, Any], *, actor: str, actor_kind: str = "
         text("INSERT INTO mi_research_idea_transitions (idea_id, version, from_state, to_state, actor, actor_kind, reason, bound_spec_hash) VALUES (:i, 1, NULL, :s, :a, :k, 'registered', :h)"),
         {"i": idea_id, "s": DRAFT, "a": actor, "k": actor_kind, "h": validation.spec_hash},
     )
-    return {"idea_id": idea_id, "lineage_id": lineage_id, "version": 1, "spec_hash": validation.spec_hash, "state": DRAFT, "execution_support": validation.execution_support, "warnings": validation.warnings}
+    return {
+        "idea_id": idea_id,
+        "lineage_id": lineage_id,
+        "version": 1,
+        "spec_hash": validation.spec_hash,
+        "state": DRAFT,
+        "execution_support": validation.execution_support,
+        "spec_completeness": validation.completeness,
+        "missing_fields": list(validation.missing_fields),
+        "effective_holdout_start": validation.effective_holdout_start.isoformat(),
+        "economic_gate": validation.economic_gate,
+        "warnings": validation.warnings,
+    }
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -268,8 +425,10 @@ def _insert_version(conn, idea_id: str, version: int, validation: SpecValidation
         text(
             """
             INSERT INTO mi_research_idea_versions (idea_id, version, spec_json, spec_hash, research_type, source_snapshot_id, source_snapshot_hash,
-                conception_at, data_used_json, holdout_policy_json, execution_support, created_by)
-            VALUES (:idea_id, :version, CAST(:spec AS JSONB), :hash, :rtype, :snap_id, :snap_hash, :conception, CAST(:data_used AS JSONB), CAST(:policy AS JSONB), :support, :actor)
+                conception_at, data_used_json, holdout_policy_json, execution_support, created_by,
+                spec_completeness, missing_fields_json, effective_holdout_start, economic_gate)
+            VALUES (:idea_id, :version, CAST(:spec AS JSONB), :hash, :rtype, :snap_id, :snap_hash, :conception, CAST(:data_used AS JSONB), CAST(:policy AS JSONB), :support, :actor,
+                :completeness, CAST(:missing AS JSONB), :effective_holdout, :economic_gate)
             """
         ),
         {
@@ -285,6 +444,10 @@ def _insert_version(conn, idea_id: str, version: int, validation: SpecValidation
             "policy": strict_dumps(validation.normalized.get("holdout_policy")),
             "support": validation.execution_support,
             "actor": actor,
+            "completeness": validation.completeness,
+            "missing": strict_dumps(list(validation.missing_fields)),
+            "effective_holdout": validation.effective_holdout_start,
+            "economic_gate": validation.economic_gate,
         },
     )
 
@@ -315,18 +478,40 @@ def revise_idea(conn, idea_id: str, spec: dict[str, Any], *, actor: str, actor_k
             {"i": idea_id, "v": version, "f": idea["current_state"], "s": DRAFT, "a": actor, "k": actor_kind, "r": reason, "h": validation.spec_hash},
         )
         conn.execute(text("UPDATE mi_research_ideas SET current_state = :s WHERE idea_id = :i"), {"s": DRAFT, "i": idea_id})
-    return {"idea_id": idea_id, "version": version, "spec_hash": validation.spec_hash, "state": DRAFT, "approvals_revoked": int(revoked), "execution_support": validation.execution_support, "warnings": validation.warnings}
+    return {
+        "idea_id": idea_id,
+        "version": version,
+        "spec_hash": validation.spec_hash,
+        "state": DRAFT,
+        "approvals_revoked": int(revoked),
+        "execution_support": validation.execution_support,
+        "spec_completeness": validation.completeness,
+        "missing_fields": list(validation.missing_fields),
+        "effective_holdout_start": validation.effective_holdout_start.isoformat(),
+        "economic_gate": validation.economic_gate,
+        "warnings": validation.warnings,
+    }
 
 
 def freeze_spec(conn, idea_id: str, *, actor: str, actor_kind: str = "HUMAN", reason: str | None = None) -> dict[str, Any]:
+    """Freeze the current version (immutability). An INCOMPLETE spec may be frozen but not approved."""
     idea = _idea_row(conn, idea_id)
     version = _current_version(conn, idea_id, idea["current_version"])
     _transition(conn, idea, SPEC_FROZEN, actor=actor, actor_kind=actor_kind, reason=reason or "spec frozen", version=idea["current_version"], bound_spec_hash=version["spec_hash"])
-    return {"idea_id": idea_id, "version": idea["current_version"], "spec_hash": version["spec_hash"], "state": SPEC_FROZEN}
+    return {
+        "idea_id": idea_id,
+        "version": idea["current_version"],
+        "spec_hash": version["spec_hash"],
+        "state": SPEC_FROZEN,
+        "spec_completeness": version.get("spec_completeness"),
+        "missing_fields": version.get("missing_fields_json") or [],
+    }
 
 
 def approve_research(conn, idea_id: str, *, approved_by: str, version: int, spec_hash: str, scope: str = "NON_HOLDOUT_RESEARCH", reason: str | None = None) -> dict[str, Any]:
-    """Explicit human approval bound to the exact (version, spec_hash). Anything else is rejected."""
+    """Explicit human approval bound to the exact (version, spec_hash) of a COMPLETE frozen spec."""
+    if not str(approved_by or "").strip():
+        raise IdeaError("approved_by must identify the human approver")
     idea = _idea_row(conn, idea_id)
     if int(version) != int(idea["current_version"]):
         raise IdeaError("approval targets version {0} but current version is {1}".format(version, idea["current_version"]))
@@ -337,6 +522,11 @@ def approve_research(conn, idea_id: str, *, approved_by: str, version: int, spec
         raise IdeaError("only NON_HOLDOUT_RESEARCH scope can be approved through the registry")
     if idea["current_state"] != SPEC_FROZEN:
         raise IdeaError("idea must be SPEC_FROZEN to approve (state {0})".format(idea["current_state"]))
+    if current.get("spec_completeness") != COMPLETENESS_COMPLETE:
+        missing = current.get("missing_fields_json") or []
+        raise IdeaError("spec is INCOMPLETE; decide and freeze these fields before approval: {0}".format(", ".join(missing) or "unknown"))
+    if active_approval(conn, idea_id, version, spec_hash) is not None:
+        raise IdeaError("version {0} / spec {1} already has an active approval".format(version, spec_hash[:12]))
     conn.execute(
         text("INSERT INTO mi_research_idea_approvals (idea_id, version, spec_hash, scope, approved_by) VALUES (:i, :v, :h, :s, :a)"),
         {"i": idea_id, "v": version, "h": spec_hash, "s": scope, "a": approved_by},
@@ -372,7 +562,17 @@ def build_contract(conn, idea_id: str) -> dict[str, Any]:
     approval = active_approval(conn, idea_id, idea["current_version"], version["spec_hash"])
     if approval is None:
         raise IdeaError("no active approval bound to version {0} / spec {1}".format(idea["current_version"], version["spec_hash"]))
+    if version.get("spec_completeness") != COMPLETENESS_COMPLETE:
+        raise IdeaError("cannot emit a contract for an INCOMPLETE spec (missing: {0})".format(", ".join(version.get("missing_fields_json") or [])))
     support = RESEARCH_TYPES.get(version["research_type"], RESEARCH_TYPES["OTHER"])
+    spec_json = version["spec_json"]
+    revalidated = validate_spec(dict(spec_json))
+    if not revalidated.ok or revalidated.spec_hash != version["spec_hash"]:
+        raise IdeaError("stored spec for version {0} no longer validates or its hash changed; refusing to emit a contract".format(idea["current_version"]))
+    effective_holdout = version.get("effective_holdout_start") or revalidated.effective_holdout_start
+    if isinstance(effective_holdout, datetime):
+        effective_holdout = effective_holdout.date()
+    thresholds = spec_json.get("acceptance_thresholds") if isinstance(spec_json, dict) else None
     body = {
         "schema_version": CONTRACT_SCHEMA_VERSION,
         "idea_id": idea_id,
@@ -382,15 +582,21 @@ def build_contract(conn, idea_id: str) -> dict[str, Any]:
         "research_type": version["research_type"],
         "execution_support": version["execution_support"],
         "adapter": support["adapter"],
-        "spec": version["spec_json"],
+        "spec": spec_json,
+        "spec_completeness": version.get("spec_completeness") or revalidated.completeness,
+        "missing_fields": version.get("missing_fields_json") or [],
         "holdout_policy": version["holdout_policy_json"],
+        "effective_holdout_start": effective_holdout.isoformat(),
+        "date_ranges": revalidated.date_ranges,
+        "economic_gate": {"status": version.get("economic_gate") or revalidated.economic_gate, "acceptance_thresholds": thresholds if isinstance(thresholds, dict) and thresholds else None},
         "data_used": version["data_used_json"],
         "source_snapshot": {"snapshot_id": version["source_snapshot_id"], "snapshot_sha256": version["source_snapshot_hash"]},
         "conception_at": version["conception_at"],
         "approval": {"approved_by": approval["approved_by"], "approved_at": approval["approved_at"], "scope": approval["scope"]},
         "execution_mode": "DRY_RUN",
         "constraints": {
-            "no_data_on_or_after": HOLDOUT_START.isoformat(),
+            "no_data_on_or_after": effective_holdout.isoformat(),
+            "platform_holdout_start": HOLDOUT_START.isoformat(),
             "no_backtest_launch": True,
             "no_deployment": True,
             "results_return_path": "canonical QS artifact -> FMP research_runs (research_run_id) -> link_result",
@@ -411,7 +617,12 @@ def queue_research(conn, idea_id: str, *, actor: str, dry_run: bool = True, note
         raise IdeaError("idea must be RESEARCH_APPROVED to queue (state {0})".format(idea["current_state"]))
     contract = build_contract(conn, idea_id)
     support = contract["execution_support"]
-    status = "DRY_RUN_PLANNED" if support != SUPPORT_UNSUPPORTED else "UNSUPPORTED"
+    status = QUEUE_STATUS_BY_SUPPORT.get(support, "UNSUPPORTED")
+    default_notes = {
+        "UNSUPPORTED": "no execution adapter for {0}".format(contract["research_type"]),
+        "MANUAL_SPEC_REQUIRED": "engine exists but no idea->StrategySpecV1 adapter; a human must author the spec ({0})".format(contract["research_type"]),
+        "DRY_RUN_PLANNED": "dry-run contract emitted; nothing launched",
+    }
     conn.execute(
         text(
             """
@@ -419,7 +630,7 @@ def queue_research(conn, idea_id: str, *, actor: str, dry_run: bool = True, note
             VALUES (:i, :v, :h, NULL, NULL, :status, :ref, :sha, :actor, :notes)
             """
         ),
-        {"i": idea_id, "v": contract["version"], "h": contract["spec_hash"], "status": status, "ref": "contract:{0}".format(contract["artifact_sha256"]), "sha": contract["artifact_sha256"], "actor": actor, "notes": notes or ("no execution adapter for {0}".format(contract["research_type"]) if status == "UNSUPPORTED" else "dry-run contract emitted; nothing launched")},
+        {"i": idea_id, "v": contract["version"], "h": contract["spec_hash"], "status": status, "ref": "contract:{0}".format(contract["artifact_sha256"]), "sha": contract["artifact_sha256"], "actor": actor, "notes": notes or default_notes[status]},
     )
     _transition(conn, idea, RESEARCH_QUEUED, actor=actor, actor_kind="HUMAN", reason="dry-run queued ({0})".format(status), version=contract["version"], bound_spec_hash=contract["spec_hash"])
     return {"idea_id": idea_id, "version": contract["version"], "spec_hash": contract["spec_hash"], "state": RESEARCH_QUEUED, "execution_status": status, "contract_sha256": contract["artifact_sha256"], "contract": contract}
@@ -463,7 +674,7 @@ def show_idea(conn, idea_id: str) -> dict[str, Any]:
     idea = conn.execute(text("SELECT * FROM mi_research_ideas WHERE idea_id = :i"), {"i": idea_id}).mappings().first()
     if idea is None:
         raise IdeaError("unknown idea {0}".format(idea_id))
-    versions = [dict(r) for r in conn.execute(text("SELECT version, spec_hash, research_type, execution_support, source_snapshot_id, source_snapshot_hash, conception_at, created_by, created_at FROM mi_research_idea_versions WHERE idea_id = :i ORDER BY version"), {"i": idea_id}).mappings()]
+    versions = [dict(r) for r in conn.execute(text("SELECT version, spec_hash, research_type, execution_support, spec_completeness, missing_fields_json AS missing_fields, effective_holdout_start, economic_gate, source_snapshot_id, source_snapshot_hash, conception_at, created_by, created_at FROM mi_research_idea_versions WHERE idea_id = :i ORDER BY version"), {"i": idea_id}).mappings()]
     transitions = [dict(r) for r in conn.execute(text("SELECT version, from_state, to_state, actor, actor_kind, reason, bound_spec_hash, transitioned_at FROM mi_research_idea_transitions WHERE idea_id = :i ORDER BY transitioned_at, id"), {"i": idea_id}).mappings()]
     approvals = [dict(r) for r in conn.execute(text("SELECT version, spec_hash, scope, approved_by, approved_at, revoked_at, revoke_reason FROM mi_research_idea_approvals WHERE idea_id = :i ORDER BY approved_at"), {"i": idea_id}).mappings()]
     tests = [dict(r) for r in conn.execute(text("SELECT version, spec_hash, research_run_id, execution_status, artifact_ref, artifact_sha256, created_by, created_at, notes FROM mi_research_idea_tests WHERE idea_id = :i ORDER BY created_at, id"), {"i": idea_id}).mappings()]
@@ -535,7 +746,23 @@ def main(argv: list[str] | None = None, *, engine=None) -> int:
 
     if ns.command == "validate":
         result = validate_spec(_read_spec(ns.spec))
-        print(strict_dumps({"ok": result.ok, "errors": result.errors, "warnings": result.warnings, "spec_hash": result.spec_hash, "execution_support": result.execution_support}, indent=2))
+        print(
+            strict_dumps(
+                {
+                    "ok": result.ok,
+                    "errors": result.errors,
+                    "warnings": result.warnings,
+                    "spec_hash": result.spec_hash,
+                    "execution_support": result.execution_support,
+                    "spec_completeness": result.completeness,
+                    "missing_fields": result.missing_fields,
+                    "effective_holdout_start": result.effective_holdout_start.isoformat(),
+                    "economic_gate": result.economic_gate,
+                    "date_ranges": result.date_ranges,
+                },
+                indent=2,
+            )
+        )
         return 0 if result.ok else 2
 
     if engine is None:
@@ -588,9 +815,19 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "APPROVAL_REQUIRED_FIELDS",
     "ARCHIVED",
+    "COMPLETENESS_COMPLETE",
+    "COMPLETENESS_INCOMPLETE",
     "CONTRACT_SCHEMA_VERSION",
+    "DATE_RANGE_PAIRS",
     "DRAFT",
+    "ECONOMIC_GATE_HUMAN_SUPPLIED",
+    "ECONOMIC_GATE_NOT_DEFINED",
+    "QUEUE_STATUS_BY_SUPPORT",
+    "SUPPORT_DRY_RUN_CONTRACT",
+    "SUPPORT_MANUAL_SPEC_REQUIRED",
+    "SUPPORT_UNSUPPORTED",
     "ExecutionBlocked",
     "HOLDOUT_START",
     "HUMAN_REVIEW",

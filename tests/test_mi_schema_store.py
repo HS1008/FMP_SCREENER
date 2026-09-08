@@ -27,13 +27,14 @@ pytestmark = pytest.mark.usefixtures("pg_engine")
 
 def test_new_migrations_are_additive_and_numbered_after_007():
     names = sorted(p.name for p in MIGRATIONS.glob("*.sql"))
-    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012"))]
+    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013"))]
     assert new == [
         "008_market_intelligence_core.sql",
         "009_market_intelligence_analytics.sql",
         "010_research_ideas.sql",
         "011_bond_securities.sql",
         "012_market_intelligence_publication.sql",
+        "013_research_idea_completeness.sql",
     ]
     for name in new:
         sql = (MIGRATIONS / name).read_text(encoding="utf-8").upper()
@@ -46,7 +47,7 @@ def test_new_migrations_are_additive_and_numbered_after_007():
 def test_migrations_applied_once_and_second_application_is_noop(pg_engine):
     with pg_engine.connect() as conn:
         applied = {r[0] for r in conn.execute(text("SELECT filename FROM schema_migrations"))}
-    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql"} <= applied
+    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql", "013_research_idea_completeness.sql"} <= applied
     files = sorted(MIGRATIONS.glob("*.sql"))
     assert pending_migration_files(files, applied) == []
     # Second application must be a no-op (idempotent) and leave research tables intact.
@@ -128,10 +129,22 @@ def test_upgrade_from_011_schema_preserves_rows_and_second_apply_is_noop(pg_admi
                     """
                 )
             )
-        # Upgrade with the full directory: only 012 is pending.
+            # A v1 idea version written before 013 (no completeness columns yet).
+            conn.execute(text("INSERT INTO mi_research_ideas (idea_id, lineage_id, title, research_type, current_state, current_version, created_by) VALUES ('idea_legacy', 'LINEAGE_LEGACY', 'legacy', 'SECTOR_ROTATION_DIAGNOSTIC', 'SPEC_FROZEN', 1, 'alice')"))
+            conn.execute(
+                text(
+                    """
+                    INSERT INTO mi_research_idea_versions (idea_id, version, spec_json, spec_hash, research_type, conception_at, execution_support, created_by)
+                    VALUES ('idea_legacy', 1, '{"schema_version":"idea_spec_v1"}'::jsonb, repeat('b', 64), 'SECTOR_ROTATION_DIAGNOSTIC', NOW(), 'SUPPORTED_DRY_RUN_CONTRACT', 'alice')
+                    """
+                )
+            )
+        # Upgrade with the full directory: exactly the post-011 migrations are pending, in order.
         applied_now = apply_migrations(MIGRATIONS, engine=engine)
-        assert [a for a in applied_now if not a.endswith("(skipped)")] == ["012_market_intelligence_publication.sql"]
+        expected_pending = sorted(p.name for p in MIGRATIONS.glob("*.sql") if p.name >= "012")
+        assert [a for a in applied_now if not a.endswith("(skipped)")] == expected_pending
         with engine.connect() as conn:
+            legacy_idea = conn.execute(text("SELECT spec_completeness, missing_fields, effective_holdout_start, economic_gate FROM mi_v_research_ideas WHERE idea_id='idea_legacy'")).mappings().one()
             series = conn.execute(text("SELECT units, metadata_status, publication_status, publication_reason, catalog_units FROM mi_macro_series WHERE series_id='WTREGEN'")).mappings().one()
             obs = conn.execute(text("SELECT value, is_current FROM mi_macro_observations WHERE series_id='WTREGEN'")).one()
             fresh = conn.execute(text("SELECT freshness_status, freshness_policy_version, metadata_status FROM mi_data_freshness WHERE dataset='series:WTREGEN'")).one()
@@ -150,6 +163,9 @@ def test_upgrade_from_011_schema_preserves_rows_and_second_apply_is_noop(pg_admi
         assert latest_view["publication_status"] == "UNVALIDATED" and float(latest_view["value"]) == 722000.0
         assert health_view["freshness_policy_version"] is None and quarantine == 0
         assert snap_view["snapshot_id"] == "legacy-snap" and snap_view["quality_status"] == "OK" and snap_view["content_sha256"] is None
+        # Pre-013 idea versions are INCOMPLETE by default (never approvable without a human revision).
+        assert legacy_idea["spec_completeness"] == "INCOMPLETE" and legacy_idea["missing_fields"] == [] and legacy_idea["economic_gate"] == "NOT_DEFINED"
+        assert str(legacy_idea["effective_holdout_start"]) == "2025-01-01"
         # Second application is a no-op.
         again = apply_migrations(MIGRATIONS, engine=engine)
         assert all(a.endswith("(skipped)") for a in again)

@@ -512,7 +512,8 @@ def render_morning_context() -> None:
     ideas = load_or_stop("research_ideas") or []
     st.subheader("Research ideas (registry)")
     if ideas:
-        st.dataframe(pd.DataFrame([{"Idea": i["idea_id"], "Title": i["title"], "Type": i["research_type"], "State": i["current_state"], "Version": i["current_version"], "Execution support": i.get("execution_support") or "—", "Spec hash": (i.get("current_spec_hash") or "")[:12], "Updated": i["updated_at"]} for i in ideas]), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame([{"Idea": i["idea_id"], "Title": i["title"], "Type": i["research_type"], "State": i["current_state"], "Version": i["current_version"], "Execution support": i.get("execution_support") or "—", "Spec": i.get("spec_completeness") or "—", "Missing": ", ".join(i.get("missing_fields") or []) or "—", "Holdout from": i.get("effective_holdout_start") or "—", "Economic gate": i.get("economic_gate") or "—", "Spec hash": (i.get("current_spec_hash") or "")[:12], "Updated": i["updated_at"]} for i in ideas]), use_container_width=True, hide_index=True)
+        st.caption("Approval requires a COMPLETE frozen spec; the registry never supplies acceptance thresholds (economic gate NOT_DEFINED unless a human recorded them). MANUAL_SPEC_REQUIRED means an engine exists but a human must author the StrategySpec.")
         st.caption("Ideas are dry-run only: approval binds to the exact spec hash; nothing is backtested or deployed from this page.")
     else:
         st.info("No research ideas registered. Register with `python -m jobs.research_ideas register --spec idea.json --actor <you>`.")
