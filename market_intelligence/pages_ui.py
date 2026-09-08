@@ -414,6 +414,13 @@ def render_morning_context() -> None:
     if strategies.get("strategies"):
         st.subheader("Strategy Monitor summary")
         st.dataframe(pd.DataFrame([{"Strategy": s["strategy_id"], "Research": s["research_status"], "Economic gate": s["economic_gate"], "Promotion": s["promotion_gate"], "Delivery": s["delivery_status"]} for s in strategies["strategies"]]), use_container_width=True, hide_index=True)
+    ideas = load_or_stop("research_ideas") or []
+    st.subheader("Research ideas (registry)")
+    if ideas:
+        st.dataframe(pd.DataFrame([{"Idea": i["idea_id"], "Title": i["title"], "Type": i["research_type"], "State": i["current_state"], "Version": i["current_version"], "Execution support": i.get("execution_support") or "—", "Spec hash": (i.get("current_spec_hash") or "")[:12], "Updated": i["updated_at"]} for i in ideas]), use_container_width=True, hide_index=True)
+        st.caption("Ideas are dry-run only: approval binds to the exact spec hash; nothing is backtested or deployed from this page.")
+    else:
+        st.info("No research ideas registered. Register with `python -m jobs.research_ideas register --spec idea.json --actor <you>`.")
     with st.expander("Deterministic JSON (internal, unfiltered)"):
         st.code(strict_dumps(body, indent=2), language="json")
     with st.expander("Snapshot history"):
