@@ -102,15 +102,18 @@ postgres_peer_works() {
 
 apply_readonly_sql_as_postgres() {
   local db_name="$1"
+  local sql_file="$ROOT/db/roles/market_intelligence_readonly.sql"
+  # The postgres OS user cannot read /root. Feed SQL on stdin; the current
+  # shell expands the password file and opens the SQL file.
   if command -v sudo >/dev/null 2>&1 && sudo -n -u postgres psql -d postgres -v ON_ERROR_STOP=1 -tAc "SELECT 1" >/dev/null 2>&1; then
     sudo -n -u postgres psql -d "$db_name" -v ON_ERROR_STOP=1 \
       -v ro_password="$(cat "$RO_PW_FILE")" \
-      -f "$ROOT/db/roles/market_intelligence_readonly.sql"
+      -f - < "$sql_file"
     return $?
   fi
   runuser -u postgres -- psql -d "$db_name" -v ON_ERROR_STOP=1 \
     -v ro_password="$(cat "$RO_PW_FILE")" \
-    -f "$ROOT/db/roles/market_intelligence_readonly.sql"
+    -f - < "$sql_file"
 }
 
 apply_readonly_role_sql() {
