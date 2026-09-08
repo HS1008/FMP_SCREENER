@@ -140,6 +140,7 @@ jobs:
           print("applied on clean DB:", first)
           assert first and not any(n.endswith("(skipped)") for n in first), first
           assert second and all(n.endswith("(skipped)") for n in second), "second apply must be a no-op, got {0}".format(second)
+          engine.dispose()
           with admin.connect() as conn:
               conn.execute(text('DROP DATABASE fmp_ci_migrations'))
           PY
