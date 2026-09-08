@@ -51,6 +51,11 @@ _UNITS_BY_KIND = {
 }
 
 
+def _round(value: float | None, places: int = 10) -> float | None:
+    """Trim binary float noise (e.g. 4.3500000000000005) before persisting."""
+    return None if value is None else round(float(value), places)
+
+
 @dataclass
 class MetricRow:
     metric_id: str
@@ -65,7 +70,7 @@ class MetricRow:
             "series_id": self.series_id,
             "category": self.category,
             "as_of": self.as_of,
-            "value": self.result.value,
+            "value": _round(self.result.value),
             "units": self.result.units,
             "transform_version": TRANSFORM_VERSION,
             "status": self.result.status,
@@ -191,21 +196,28 @@ def credit_snapshot_params(spec: SeriesSpec, obs: Mapping[date, Decimal | None])
         if n_total >= CREDIT_MIN_AVAILABLE_OBSERVATIONS:
             chosen_label = "AVAILABLE"
             chosen = window_statistics(obs, at, window_days=(at - valid_dates[0]).days + 1, min_observations=CREDIT_MIN_AVAILABLE_OBSERVATIONS, label="AVAILABLE")
-    history_status = "OK" if chosen_label in {"1Y", "3Y"} else ("AVAILABLE_ONLY" if chosen is not None and chosen.value is not None else "INSUFFICIENT_HISTORY")
+    if chosen_label == "3Y":
+        history_status = "OK"
+    elif chosen_label == "1Y":
+        history_status = "LIMITED_TO_1Y"  # provider history too short for the 3Y window; never relabeled
+    elif chosen is not None and chosen.value is not None:
+        history_status = "AVAILABLE_ONLY"
+    else:
+        history_status = "INSUFFICIENT_HISTORY"
     detail = chosen.as_detail() if chosen is not None else {"status": "INSUFFICIENT_HISTORY", "observations": n_total}
     detail["history_note"] = "Provider limits available history; percentiles cover the labeled window only."
     return {
         "series_id": spec.series_id,
         "bucket": spec.subcategory,
         "as_of": at,
-        "oas_bps": pct_to_bps(current),
-        "chg_1d": _bps_or_none(previous_observation_change(obs, at, units="bps", scale=100.0), require_one_session=True),
-        "chg_1w": _bps_or_none(calendar_change(obs, at, days=7, cadence="D", units="bps", scale=100.0)),
-        "chg_1m": _bps_or_none(calendar_change(obs, at, months=1, cadence="D", units="bps", scale=100.0)),
-        "chg_3m": _bps_or_none(calendar_change(obs, at, months=3, cadence="D", units="bps", scale=100.0)),
+        "oas_bps": _round(pct_to_bps(current)),
+        "chg_1d": _round(_bps_or_none(previous_observation_change(obs, at, units="bps", scale=100.0), require_one_session=True)),
+        "chg_1w": _round(_bps_or_none(calendar_change(obs, at, days=7, cadence="D", units="bps", scale=100.0))),
+        "chg_1m": _round(_bps_or_none(calendar_change(obs, at, months=1, cadence="D", units="bps", scale=100.0))),
+        "chg_3m": _round(_bps_or_none(calendar_change(obs, at, months=3, cadence="D", units="bps", scale=100.0))),
         "pwindow": chosen_label,
-        "percentile": chosen.value if chosen is not None else None,
-        "zscore": (chosen.detail.get("zscore") if chosen is not None else None),
+        "percentile": _round(chosen.value) if chosen is not None else None,
+        "zscore": _round(chosen.detail.get("zscore")) if chosen is not None else None,
         "window_obs": (chosen.detail.get("observations") if chosen is not None else n_total),
         "first_date": valid_dates[0] if valid_dates else None,
         "history_status": history_status,

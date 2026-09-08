@@ -96,18 +96,19 @@ def normalize_scalar(value: Any) -> Any:
             return None
         as_float = float(value)
         return int(value) if value == value.to_integral_value() and abs(as_float) < 1e15 else as_float
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, date):
-        return value.isoformat()
     pd = _pd()
     if pd is not None:
+        # pd.NaT subclasses datetime, so it must be checked before the datetime branch.
         if value is pd.NaT:
             return None
         if isinstance(value, pd.Timestamp):
             if pd.isna(value):
                 return None
             return value.isoformat()
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
     if hasattr(value, "item") and callable(value.item):  # numpy scalar
         try:
             return normalize_scalar(value.item())
