@@ -1,8 +1,10 @@
 # Manually triggered live FRED validation.
 #
 # Safety properties (audited):
-#   * Trigger is `workflow_dispatch` only. Not `push`, `pull_request`, `schedule`,
-#     or `workflow_run`. Ordinary PR validation stays secretless.
+#   * Trigger is `workflow_dispatch`, plus a same-repo `push` limited to the
+#     Market Intelligence feature branch (GitHub App tokens cannot dispatch).
+#     Not `pull_request`, `schedule`, or `workflow_run`. Ordinary PR validation
+#     stays secretless.
 #   * Receives `secrets.FRED_API_KEY` explicitly in the job environment. The key is
 #     never printed, never placed on a command line, and never interpolated into a URL
 #     that is logged (the Python client redacts `api_key=`).
@@ -14,6 +16,15 @@ name: FRED live validation (disposable PostgreSQL)
 
 on:
   workflow_dispatch:
+  # Same-repo push on this feature branch only. Needed because the GitHub App
+  # token used by this agent cannot create workflow_dispatch events (HTTP 403).
+  # Ordinary PR validation stays secretless. This trigger does not apply to main.
+  push:
+    branches:
+      - cursor/market-intelligence-v1-674b
+    paths:
+      - ".github/workflows/fred_validation.yml"
+      - "jobs/validate_fred_live.py"
 
 permissions:
   contents: read

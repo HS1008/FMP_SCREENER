@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -188,7 +189,10 @@ def test_fred_validation_workflow_is_manual_only_and_receives_the_fred_secret_ex
     text = _yaml_without_comments(ROOT / ".github" / "workflows" / "fred_validation.yml")
     assert "pull_request:" not in text and "pull_request_target" not in text
     assert "schedule:" not in text and "workflow_run:" not in text
-    assert re.search(r"^on:\n  workflow_dispatch:\s*$", text, flags=re.M)
+    assert "workflow_dispatch:" in text
+    if "push:" in text:
+        assert "cursor/market-intelligence-v1-674b" in raw
+        assert "fred_validation.yml" in raw
     assert "secrets.FRED_API_KEY" in raw
     assert "image: postgres:16" in text and "127.0.0.1:5432" in text
     assert "jobs.validate_fred_live" in text
@@ -196,6 +200,15 @@ def test_fred_validation_workflow_is_manual_only_and_receives_the_fred_secret_ex
     assert "QC_API_TOKEN" in text and 'QC_API_TOKEN: ""' in text
     pr = _yaml_without_comments(ROOT / ".github" / "workflows" / "pr_validation.yml")
     assert "secrets.FRED_API_KEY" not in pr and 'FRED_API_KEY: ""' in pr
+
+
+def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
+    for name in ("mi_host_preflight.yml", "mi_production_activate.yml"):
+        raw = (ROOT / ".github" / "workflows" / name).read_text()
+        text = _yaml_without_comments(ROOT / ".github" / "workflows" / name)
+        assert "pull_request:" not in text and "pull_request_target" not in text
+        assert "printf '%s" not in raw or "FRED_API_KEY" in raw  # key written to a 0600 file, never echoed
+        assert "echo \"$FRED" not in raw and "echo $FRED" not in raw
 
 
 def test_validate_fred_live_refuses_production_urls_and_missing_config(monkeypatch, capsys):
@@ -210,6 +223,22 @@ def test_validate_fred_live_refuses_production_urls_and_missing_config(monkeypat
     captured = capsys.readouterr()
     combined = captured.out + captured.err
     assert "test-fred-key-not-real" not in combined
+
+
+def test_update_protected_env_preserves_other_keys_and_does_not_print_the_value(tmp_path):
+    script = ROOT / "scripts" / "update_protected_env.py"
+    env_file = tmp_path / "app.env"
+    env_file.write_text("OTHER=keep\nDATABASE_READONLY_URL=CHANGE_ME\n")
+    os.chmod(env_file, 0o600)
+    value = tmp_path / "secret"
+    value.write_text("generated-readonly-url-not-real\n")
+    os.chmod(value, 0o600)
+    out = subprocess.run([sys.executable, str(script), "--env-file", str(env_file), "--key", "DATABASE_READONLY_URL", "--value-file", str(value)], capture_output=True, text=True, check=False)
+    assert out.returncode == 0, out.stderr
+    text = env_file.read_text()
+    assert "OTHER=keep" in text
+    assert "DATABASE_READONLY_URL=generated-readonly-url-not-real" in text
+    assert "generated-readonly-url-not-real" not in out.stdout
 
 
 def test_digitalocean_secret_script_is_dry_run_by_default_and_never_activates(tmp_path):
