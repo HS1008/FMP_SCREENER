@@ -1,0 +1,15 @@
+# Two weekday runs in New York time: after the 08:30 ET macro releases settle, and after the
+# Treasury/ICE daily closes are published (typically by ~18:00 ET). Weekends are skipped;
+# holiday-aware staleness is judged by the freshness assessor, not by the timer.
+[Unit]
+Description=Schedule FMP Market Intelligence refresh
+
+[Timer]
+OnCalendar=Mon..Fri 09:15 America/New_York
+OnCalendar=Mon..Fri 18:30 America/New_York
+RandomizedDelaySec=300
+Persistent=true
+Unit=fmp-mi-refresh.service
+
+[Install]
+WantedBy=timers.target

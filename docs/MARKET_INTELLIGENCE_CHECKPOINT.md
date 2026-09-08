@@ -63,6 +63,14 @@ Workflow trigger audit (before any push):
   tenor, corrupting every later discount factor (flat 4% par -> 1.99% zeros); now flat-extrapolates.
   `tests/test_bond_analytics.py` -> 14 passed.
 
+- P4 deploy: `deploy/market_intelligence/{fmp-mi-refresh.service,fmp-mi-refresh.timer,
+  fmp-ai-context-api.service,market_intelligence.env.example}`,
+  `scripts/install_market_intelligence_timers.sh` (dry run by default; `--apply [--with-api]`
+  writes units + enables; `--systemd-dir/--no-systemctl` for staging/tests; never edits other
+  units; deploy.yml untouched), `docs/MARKET_INTELLIGENCE.md` (capability matrix, contracts,
+  operator steps, limits). Units pass `systemd-analyze verify`; calendar spec validated with
+  `systemd-analyze calendar`. `tests/test_mi_deploy.py` -> 5 passed.
+
 ## Remaining blockers
 
 (appended as discovered)
