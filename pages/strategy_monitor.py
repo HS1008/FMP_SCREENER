@@ -19,7 +19,7 @@ from qc_research.ml_monitor_ui import (
     render_platform_section,
     render_stage2_section,
 )
-from qc_research.platform_presentation import display_strategy_name, picker_label
+from qc_research.platform_presentation import UNAVAILABLE, display_strategy_name, picker_label
 from qc_research.research_library import (
     filter_library,
     library_display_frame,
@@ -1171,7 +1171,15 @@ with filter_col:
 asset_options = ["All"]
 status_options = ["All", "Complete", "Incomplete", "Failed"]
 if library is not None and not library.empty:
-    asset_options.extend(sorted({str(value) for value in library["asset_class"].dropna() if str(value)}))
+    asset_options.extend(
+        sorted(
+            {
+                str(value)
+                for value in library["asset_class"].dropna()
+                if str(value) and str(value) != UNAVAILABLE
+            }
+        )
+    )
 with asset_col:
     asset_filter = st.selectbox("Asset class", asset_options, key="strategy_monitor_asset_class")
 with status_col:

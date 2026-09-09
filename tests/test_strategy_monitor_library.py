@@ -24,6 +24,7 @@ def test_monitor_has_library_filters_and_stable_selection():
     assert "strategy_monitor_last_strategy" in MONITOR
     assert "This page does not launch backtests" in MONITOR
     assert "arrow_safe_frame" in MONITOR
+    assert "UNAVAILABLE" in MONITOR
 
 
 def test_monitor_does_not_open_or_launch_holdout():
