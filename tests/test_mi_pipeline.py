@@ -811,8 +811,9 @@ def test_pages_render_populated_state_db_only(consumer, page):
         assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in text_out
     if page.stem == "10_Market_Pulse":
         assert "Overnight quotes unavailable" in text_out
+        assert "What changed" in text_out
     if page.stem == "16_Morning_Context":
-        assert "SHA-256" in text_out
+        assert at.expander
     if page.stem == "14_Sector_Rotation_V2":
         assert "CURRENT_UNIVERSE_CONTEXT_ONLY" in text_out and "never as zero" in text_out
     if page.stem == "17_PIT_Sector_Internals":

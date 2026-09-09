@@ -71,6 +71,8 @@ def test_ingest_preserves_capped_flags_revisions_and_does_not_fabricate_trades(m
                     "tradeReportDate": "2026-01-05",
                     "gradeCode": "IG",
                     "144AFlag": "N",
+                    "tradeYear": 2026,
+                    "tradeMonth": 1,
                     "totalTradeCount": 8,
                     "totalVolumeQuantity": 50.0,
                     "customerBuyParLessThan5YearsQuantity": 10.0,
@@ -105,6 +107,9 @@ def test_ingest_preserves_capped_flags_revisions_and_does_not_fabricate_trades(m
     assert "dealer-reported" in ctx["sentiment"]["customer_net"]["perspective"].lower()
     assert ctx["individual_trades"]["available"] is False
     assert ctx["capped_volume"]["rows"][0]["volume_is_capped"] is True
+    assert ctx["capped_volume"]["headline_eligible"] is True
+    assert ctx["capped_volume"]["rows"][0]["trade_year"] == "2026"
+    assert ctx["capped_volume"]["rows"][0]["trade_month"] == "1"
 
 
 def test_missing_observation_date_is_rejected_not_invented(mi_db):
@@ -118,6 +123,89 @@ def test_missing_observation_date_is_rejected_not_invented(mi_db):
             retrieved_at=__import__("datetime").datetime.now(__import__("datetime").timezone.utc),
         )
     assert counts["rejected"] == 1 and counts["inserted"] == 0
+
+
+def test_capped_volume_period_dimensions_are_distinct_identities(mi_db):
+    rows = []
+    for month in range(1, 13):
+        rows.append(
+            {
+                "tradeReportDate": "2026-01-05",
+                "gradeCode": "IG",
+                "144AFlag": "N",
+                "tradeYear": 2025,
+                "tradeMonth": month,
+                "totalTradeCount": month,
+                "totalVolumeQuantity": float(month),
+            }
+        )
+    client = FakeFinraClient({CORPORATE_CAPPED_VOLUME.dataset: rows, CORPORATE_BREADTH.dataset: [], CORPORATE_SENTIMENT.dataset: []})
+    report = ingest_finra(mi_db, client, today=date(2026, 1, 6), mode="full", datasets=[CORPORATE_CAPPED_VOLUME.dataset])
+    assert not report.failed
+    capped = next(item for item in report.results if item.dataset == CORPORATE_CAPPED_VOLUME.dataset)
+    assert capped.counts["inserted"] == 12
+    assert capped.counts["revised"] == 0
+    with mi_db.connect() as conn:
+        current = conn.execute(text("SELECT COUNT(*) FROM mi_finra_aggregate_observations WHERE dataset = :d AND is_current"), {"d": CORPORATE_CAPPED_VOLUME.dataset}).scalar()
+        ckpt = conn.execute(text("SELECT last_committed_observation_date FROM mi_finra_ingest_checkpoint WHERE dataset = :d"), {"d": CORPORATE_CAPPED_VOLUME.dataset}).scalar()
+        ctx = order_flow_context(conn, today=date(2026, 1, 6), include_history=False)
+    assert current == 12
+    assert ckpt == date(2026, 1, 5)
+    assert ctx["capped_volume"]["headline_eligible"] is True
+    periods = {row["reporting_period"] for row in ctx["capped_volume"]["rows"]}
+    assert "2025-01" in periods and "2025-12" in periods
+
+
+def test_rejected_rows_do_not_advance_checkpoint(mi_db):
+    client = FakeFinraClient(
+        {
+            CORPORATE_BREADTH.dataset: [{"productCategory": "all securities", "totalVolume": 1}],
+            CORPORATE_SENTIMENT.dataset: [],
+            CORPORATE_CAPPED_VOLUME.dataset: [],
+        }
+    )
+    report = ingest_finra(mi_db, client, today=date(2026, 1, 6), mode="full", datasets=[CORPORATE_BREADTH.dataset])
+    breadth = next(item for item in report.results if item.dataset == CORPORATE_BREADTH.dataset)
+    assert breadth.status == "PARTIAL"
+    assert breadth.counts["rejected"] == 1
+    with mi_db.connect() as conn:
+        ckpt = conn.execute(text("SELECT last_committed_observation_date FROM mi_finra_ingest_checkpoint WHERE dataset = :d"), {"d": CORPORATE_BREADTH.dataset}).scalar()
+        quarantined = conn.execute(text("SELECT COUNT(*) FROM mi_finra_aggregate_quarantine WHERE dataset = :d"), {"d": CORPORATE_BREADTH.dataset}).scalar()
+    assert ckpt is None
+    assert quarantined == 1
+
+
+def test_incomplete_capped_identity_is_withheld_from_headlines(mi_db):
+    from datetime import datetime, timezone
+
+    from market_intelligence.ingest_finra import supersede_incomplete_capped_identity
+
+    retrieved = datetime(2026, 1, 6, tzinfo=timezone.utc)
+    with mi_db.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO mi_finra_aggregate_observations (
+                    source_id, dataset, observation_date, category_key, grain_json, metrics_json,
+                    volume_is_capped, payload_hash, retrieved_at, revision_seq, is_current
+                ) VALUES (
+                    'FINRA_QUERY', :ds, DATE '2026-01-05', 'IG|N',
+                    '{"gradeCode":"IG","144AFlag":"N"}'::jsonb,
+                    '{"totalVolumeQuantity": 99}'::jsonb,
+                    TRUE, 'old', :seen, 1, TRUE
+                )
+                """
+            ),
+            {"ds": CORPORATE_CAPPED_VOLUME.dataset, "seen": retrieved},
+        )
+        ctx = order_flow_context(conn, today=date(2026, 1, 6), include_history=False)
+        assert ctx["capped_volume"]["headline_eligible"] is False
+        superseded = supersede_incomplete_capped_identity(conn, retrieved_at=retrieved)
+        assert superseded == 1
+        current = conn.execute(text("SELECT COUNT(*) FROM mi_finra_aggregate_observations WHERE dataset = :d AND is_current"), {"d": CORPORATE_CAPPED_VOLUME.dataset}).scalar()
+        history = conn.execute(text("SELECT COUNT(*) FROM mi_finra_aggregate_observations WHERE dataset = :d"), {"d": CORPORATE_CAPPED_VOLUME.dataset}).scalar()
+    assert current == 0
+    assert history == 1
 
 
 def test_query_page_fake_session_not_required_for_limitation_row(mi_db):

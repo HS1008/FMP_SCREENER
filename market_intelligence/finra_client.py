@@ -272,12 +272,19 @@ class FinraClient:
     def query_all(self, spec: FinraDatasetSpec, *, start: date | None = None, end: date | None = None, limit: int = DEFAULT_PAGE_LIMIT, max_pages: int = MAX_PAGES) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         offset = 0
+        last_page_full = False
         for _ in range(max_pages):
             page = self.query_page(spec, start=start, end=end, limit=limit, offset=offset)
             rows.extend(page.records)
+            last_page_full = page.record_count >= limit
             if page.record_count < limit:
-                break
+                return rows
             offset += page.record_count
+        if last_page_full:
+            raise FinraError(
+                "FINRA pagination incomplete: reached max_pages={0} with a full last page ({1} accumulated rows)".format(max_pages, len(rows)),
+                capability=CAP_TEMPORARILY_UNAVAILABLE,
+            )
         return rows
 
     def probe_dataset(self, spec: FinraDatasetSpec, *, retrieved_at: str, environment: str = "production") -> DatasetProbe:
@@ -321,6 +328,21 @@ class FinraClient:
             parsed = _parse_date(raw_date)
             if parsed is not None and (latest is None or parsed > latest):
                 latest = parsed
+        missing = [name for name in spec.required_fields if name not in fields]
+        if page.records and missing:
+            return DatasetProbe(
+                group=spec.group,
+                dataset=spec.dataset,
+                environment=environment,
+                http_status=page.http_status,
+                record_count=page.record_count,
+                capability_status=CAP_TEMPORARILY_UNAVAILABLE,
+                schema_fields=fields,
+                latest_observation_date=latest,
+                retrieved_at=retrieved_at,
+                coverage_note=spec.coverage_note,
+                error_redacted="probe rows missing required fields: {0}".format(", ".join(missing)),
+            )
         return DatasetProbe(
             group=spec.group,
             dataset=spec.dataset,
@@ -347,8 +369,13 @@ def _capability_for_status(status: int | None) -> str:
 
 
 def _as_records(payload: Any) -> list[dict[str, Any]]:
+    """Parse a FINRA Query API body. A JSON array (including empty) is valid.
+
+    An object is valid only when it wraps a list under data/records/content.
+    HTTP 200 plus `{}` or an unexpected object is not a successful empty dataset.
+    """
     if payload is None:
-        return []
+        raise FinraError("FINRA dataset response was null", capability=CAP_TEMPORARILY_UNAVAILABLE)
     if isinstance(payload, list):
         return [row for row in payload if isinstance(row, dict)]
     if isinstance(payload, dict):
@@ -356,8 +383,14 @@ def _as_records(payload: Any) -> list[dict[str, Any]]:
             inner = payload.get(key)
             if isinstance(inner, list):
                 return [row for row in inner if isinstance(row, dict)]
-        return []
-    return []
+        raise FinraError(
+            "FINRA dataset response had unexpected JSON shape",
+            capability=CAP_TEMPORARILY_UNAVAILABLE,
+        )
+    raise FinraError(
+        "FINRA dataset response was not a JSON array or object",
+        capability=CAP_TEMPORARILY_UNAVAILABLE,
+    )
 
 
 def _header_int(raw: str | None) -> int | None:

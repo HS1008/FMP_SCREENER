@@ -19,11 +19,13 @@ from market_intelligence.finra_catalog import (
     CAP_AVAILABLE,
     CAP_ENTITLEMENT_REQUIRED,
     CAP_TEMPORARILY_UNAVAILABLE,
+    CORPORATE_CAPPED_VOLUME,
     FINRA_ATTRIBUTION,
     FINRA_CATALOG_VERSION,
     FINRA_QUERY_SOURCE_ID,
     FINRA_TERMS,
     FINRA_TRACE_SOURCE_ID,
+    KIND_CAPPED_VOLUME,
     QUERY_DATASETS,
     QUERY_DATASETS_BY_NAME,
     TRACE_INDIVIDUAL,
@@ -211,6 +213,97 @@ def _write_checkpoint(conn, dataset: str, latest: date | None, overlap_days: int
     )
 
 
+IDENTITY_INCOMPLETE_GRAIN = "SUPERSEDED_INCOMPLETE_GRAIN"
+IDENTITY_CURRENT = "CURRENT"
+CAPPED_IDENTITY_REPLAY_DAYS = 400
+
+
+def _row_missing_required(spec: FinraDatasetSpec, row: Mapping[str, Any]) -> list[str]:
+    missing = []
+    for name in spec.required_fields:
+        value = row.get(name)
+        if value is None or str(value).strip() == "":
+            missing.append(name)
+    return missing
+
+
+def _quarantine_row(conn, spec: FinraDatasetSpec, row: Mapping[str, Any], *, reason: str, run_id: str, retrieved_at: datetime) -> None:
+    exists = conn.execute(text("SELECT 1 FROM information_schema.tables WHERE table_name = 'mi_finra_aggregate_quarantine'")).first()
+    if not exists:
+        return
+    obs_date = _parse_date(row.get(spec.date_field))
+    try:
+        key = category_key(spec, dict(row))
+    except Exception:  # noqa: BLE001
+        key = None
+    conn.execute(
+        text(
+            """
+            INSERT INTO mi_finra_aggregate_quarantine (
+                source_id, dataset, observation_date, category_key, reason, payload_json, retrieved_at, ingestion_run_id
+            ) VALUES (
+                :src, :ds, :d, :k, :reason, CAST(:payload AS JSONB), :retrieved, :run_id
+            )
+            """
+        ),
+        {
+            "src": spec.source_id,
+            "ds": spec.dataset,
+            "d": obs_date,
+            "k": key,
+            "reason": reason,
+            "payload": strict_dumps(dict(row)),
+            "retrieved": retrieved_at,
+            "run_id": run_id,
+        },
+    )
+
+
+def incomplete_capped_identity_count(conn) -> int:
+    exists = conn.execute(text("SELECT 1 FROM information_schema.tables WHERE table_name = 'mi_finra_aggregate_observations'")).first()
+    if not exists:
+        return 0
+    return int(
+        conn.execute(
+            text(
+                """
+                SELECT COUNT(*) FROM mi_finra_aggregate_observations
+                WHERE dataset = :d AND is_current
+                  AND (
+                    NOT (grain_json ? 'tradeYear')
+                    OR NOT (grain_json ? 'tradeMonth')
+                    OR NULLIF(grain_json->>'tradeYear', '') IS NULL
+                    OR NULLIF(grain_json->>'tradeMonth', '') IS NULL
+                  )
+                """
+            ),
+            {"d": CORPORATE_CAPPED_VOLUME.dataset},
+        ).scalar()
+        or 0
+    )
+
+
+def supersede_incomplete_capped_identity(conn, *, retrieved_at: datetime) -> int:
+    """Mark incomplete-grain current capped-volume rows as superseded. History is kept."""
+    has_status = conn.execute(text("SELECT 1 FROM information_schema.columns WHERE table_name = 'mi_finra_aggregate_observations' AND column_name = 'identity_status'")).first()
+    sql = """
+        UPDATE mi_finra_aggregate_observations
+        SET is_current = FALSE, superseded_at = :seen{status}
+        WHERE dataset = :d AND is_current
+          AND (
+            NOT (grain_json ? 'tradeYear')
+            OR NOT (grain_json ? 'tradeMonth')
+            OR NULLIF(grain_json->>'tradeYear', '') IS NULL
+            OR NULLIF(grain_json->>'tradeMonth', '') IS NULL
+          )
+    """.format(status=", identity_status = :status" if has_status else "")
+    params = {"seen": retrieved_at, "d": CORPORATE_CAPPED_VOLUME.dataset}
+    if has_status:
+        params["status"] = IDENTITY_INCOMPLETE_GRAIN
+    result = conn.execute(text(sql), params)
+    return int(result.rowcount or 0)
+
+
 def _metric_payload(spec: FinraDatasetSpec, row: Mapping[str, Any]) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
     for name in spec.numeric_fields:
@@ -231,15 +324,18 @@ def _grain(spec: FinraDatasetSpec, row: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def upsert_aggregate_rows(conn, spec: FinraDatasetSpec, records: list[Mapping[str, Any]], *, run_id: str, retrieved_at: datetime) -> dict[str, int]:
-    counts = {"received": 0, "inserted": 0, "revised": 0, "unchanged": 0, "rejected": 0}
+    counts = {"received": 0, "inserted": 0, "revised": 0, "unchanged": 0, "rejected": 0, "committed_dates": []}
     for raw in records:
         counts["received"] += 1
         nested = conn.begin_nested()
         try:
             obs_date = _parse_date(raw.get(spec.date_field))
-            if obs_date is None:
-                counts["rejected"] += 1
+            missing = _row_missing_required(spec, raw)
+            if obs_date is None or missing:
+                reason = "missing_observation_date" if obs_date is None else "missing_required_fields:{0}".format(",".join(missing))
                 nested.rollback()
+                _quarantine_row(conn, spec, raw, reason=reason, run_id=run_id, retrieved_at=retrieved_at)
+                counts["rejected"] += 1
                 continue
             grain = _grain(spec, raw)
             key = category_key(spec, dict(raw))
@@ -257,6 +353,7 @@ def upsert_aggregate_rows(conn, spec: FinraDatasetSpec, records: list[Mapping[st
             if current and current["payload_hash"] == payload_hash:
                 conn.execute(text("UPDATE mi_finra_aggregate_observations SET last_seen_at = :seen WHERE id = :id"), {"seen": retrieved_at, "id": current["id"]})
                 counts["unchanged"] += 1
+                counts["committed_dates"].append(obs_date)
                 nested.commit()
                 continue
             if current:
@@ -293,18 +390,25 @@ def upsert_aggregate_rows(conn, spec: FinraDatasetSpec, records: list[Mapping[st
                     "rev": revision,
                 },
             )
+            counts["committed_dates"].append(obs_date)
             nested.commit()
         except SQLAlchemyError:
             nested.rollback()
             counts["rejected"] += 1
             logger.exception("FINRA aggregate row rejected")
+            try:
+                _quarantine_row(conn, spec, raw, reason="sql_error", run_id=run_id, retrieved_at=retrieved_at)
+            except SQLAlchemyError:
+                logger.exception("FINRA quarantine insert failed")
     return counts
 
 
 def _window_for(conn, spec: FinraDatasetSpec, *, today: date, mode: str) -> tuple[date, date]:
     end = today
-    if mode == "full":
-        return today - timedelta(days=spec.backfill_calendar_days), end
+    replay_identity = spec.kind == KIND_CAPPED_VOLUME and incomplete_capped_identity_count(conn) > 0
+    if mode == "full" or replay_identity:
+        days = CAPPED_IDENTITY_REPLAY_DAYS if replay_identity else spec.backfill_calendar_days
+        return today - timedelta(days=days), end
     prior = _checkpoint_date(conn, spec.dataset)
     if prior is None:
         start = today - timedelta(days=spec.backfill_calendar_days)
@@ -328,50 +432,74 @@ def ingest_dataset(engine, client: FinraClient, spec: FinraDatasetSpec, *, paren
         return DatasetIngestResult(spec.dataset, RUN_FAILED, exc.capability or CAP_TEMPORARILY_UNAVAILABLE, http_status=exc.status, error=str(exc), run_id=run_id, request_window=window)
 
     schema_fields: list[str] = []
-    dates: list[date] = []
     for row in records:
         for key in row:
             if key not in schema_fields:
                 schema_fields.append(key)
-        parsed = _parse_date(row.get(spec.date_field))
-        if parsed is not None:
-            dates.append(parsed)
-    latest = max(dates) if dates else None
-    first = min(dates) if dates else None
+    missing_schema = [name for name in spec.required_fields if name not in schema_fields] if records else []
+    metadata_status = "VALIDATED"
+    if records and missing_schema:
+        metadata_status = "MISMATCH"
+    elif not records:
+        metadata_status = "UNVALIDATED"
     with engine.begin() as conn:
+        if spec.kind == KIND_CAPPED_VOLUME:
+            supersede_incomplete_capped_identity(conn, retrieved_at=retrieved_at)
         counts = upsert_aggregate_rows(conn, spec, records, run_id=run_id, retrieved_at=retrieved_at)
+        committed_dates = [d for d in counts.pop("committed_dates", []) if isinstance(d, date)]
+        latest = max(committed_dates) if committed_dates else None
+        first = min(committed_dates) if committed_dates else None
+        rejected = counts["rejected"]
+        received = counts["received"]
+        complete = rejected == 0 and metadata_status != "MISMATCH"
         upsert_capability(
             conn,
             spec=spec,
-            status=CAP_AVAILABLE,
+            status=CAP_AVAILABLE if complete else CAP_TEMPORARILY_UNAVAILABLE,
             http_status=200,
             record_count=len(records),
             schema_fields=schema_fields,
             latest=latest,
             coverage_note=spec.coverage_note,
-            success=True,
-            details={"window_start": window[0].isoformat(), "window_end": window[1].isoformat()},
+            success=complete,
+            details={
+                "window_start": window[0].isoformat(),
+                "window_end": window[1].isoformat(),
+                "metadata_status": metadata_status,
+                "missing_required_fields": missing_schema,
+            },
+            error_redacted=None if complete else ("required fields missing: {0}".format(", ".join(missing_schema)) if missing_schema else "{0} aggregate row(s) rejected".format(rejected)),
         )
-        rejected = counts["rejected"]
-        received = counts["received"]
         record_freshness(
             conn,
             source_id=spec.source_id,
             dataset=spec.dataset,
             cadence=spec.cadence,
-            transport_status="OK" if rejected == 0 else "PARTIAL",
+            transport_status="OK" if complete else "PARTIAL",
             latest_observation=latest,
-            success=rejected < received or received == 0,
-            error_redacted=None if rejected == 0 else "{0} aggregate row(s) rejected".format(rejected),
+            success=complete,
+            error_redacted=None if complete else ("required fields missing: {0}".format(", ".join(missing_schema)) if missing_schema else "{0} aggregate row(s) rejected".format(rejected)),
             run_id=run_id,
-            latest_observation_retrieved_at=retrieved_at,
-            metadata_status="VALIDATED",
+            latest_observation_retrieved_at=retrieved_at if latest is not None else None,
+            metadata_status=metadata_status,
         )
-        if latest is not None:
-            _write_checkpoint(conn, spec.dataset, latest, spec.overlap_days, {"received": received})
-        status = RUN_SUCCEEDED if rejected == 0 else RUN_PARTIAL
-        finish_run(conn, run_id, status=status, counts=counts, details={"window_start": window[0].isoformat(), "window_end": window[1].isoformat(), "schema_fields": schema_fields[:40]})
-    return DatasetIngestResult(spec.dataset, status, CAP_AVAILABLE, http_status=200, counts=counts, latest_observation=latest, first_observation=first, request_window=window, run_id=run_id)
+        if complete and latest is not None:
+            _write_checkpoint(conn, spec.dataset, latest, spec.overlap_days, {"received": received, "committed": len(committed_dates), "metadata_status": metadata_status})
+        status = RUN_SUCCEEDED if complete else RUN_PARTIAL
+        finish_run(
+            conn,
+            run_id,
+            status=status,
+            counts=counts,
+            details={
+                "window_start": window[0].isoformat(),
+                "window_end": window[1].isoformat(),
+                "schema_fields": schema_fields[:40],
+                "metadata_status": metadata_status,
+                "checkpoint_advanced": bool(complete and latest is not None),
+            },
+        )
+    return DatasetIngestResult(spec.dataset, status, CAP_AVAILABLE if complete else CAP_TEMPORARILY_UNAVAILABLE, http_status=200, counts=counts, latest_observation=latest, first_observation=first, request_window=window, run_id=run_id)
 
 
 def record_individual_trace_limitation(conn) -> None:

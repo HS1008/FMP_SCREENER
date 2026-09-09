@@ -432,9 +432,10 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
     industries = industries_context(conn)
     health = data_health_context(conn, today=capture_date)
     strategies = strategies_context(conn)
-    order_flow = order_flow_context(conn, today=capture_date)
+    order_flow = order_flow_context(conn, today=capture_date, include_history=False)
     compact_flow = None
     if order_flow:
+        capped = order_flow.get("capped_volume") or {}
         compact_flow = {
             "title": order_flow.get("title"),
             "coverage": [
@@ -444,7 +445,13 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
                     "http_status": row.get("http_status"),
                     "ingest_latest_observation_date": row.get("ingest_latest_observation_date"),
                     "probe_latest_observation_date": row.get("probe_latest_observation_date"),
-                    "observation_date": row.get("ingest_latest_observation_date") or row.get("probe_latest_observation_date"),
+                    # Daily Query API rows only: do not treat monthly capped publication dates as a 1D as-of.
+                    "observation_date": (
+                        row.get("ingest_latest_observation_date") or row.get("probe_latest_observation_date")
+                        if (row.get("dataset_cadence") or row.get("expected_cadence") or "D") == "D"
+                        else None
+                    ),
+                    "dataset_cadence": row.get("dataset_cadence"),
                     "transport_status": row.get("transport_status"),
                     "freshness_status": row.get("freshness_status"),
                     "coverage_note": row.get("coverage_note"),
@@ -455,6 +462,13 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
             "individual_trades": order_flow.get("individual_trades"),
             "breadth_latest": (order_flow.get("breadth") or {}).get("rows") or [],
             "customer_net": (order_flow.get("sentiment") or {}).get("customer_net"),
+            "capped_volume": {
+                "headline_eligible": bool(capped.get("headline_eligible")),
+                "identity_validated": bool(capped.get("identity_validated")),
+                "identity_note": capped.get("identity_note"),
+                "latest_observation_date": capped.get("latest_observation_date") if capped.get("headline_eligible") else None,
+                "rows": capped.get("rows") if capped.get("headline_eligible") else [],
+            },
             "not_an_order_book": True,
             "attribution": order_flow.get("attribution"),
             "export_scope": "INTERNAL_ONLY",

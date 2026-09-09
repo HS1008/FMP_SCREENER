@@ -72,8 +72,7 @@ def test_section_status_marks_stale_sector_as_of_without_calling_it_current():
     assert sec["captured_freshness"]["status"] == "STALE"
 
 
-@pytest.mark.usefixtures("pg_engine")
-def test_null_revision_invalidates_derived_metrics_and_recovers(pg_engine):
+def test_null_revision_invalidates_derived_metrics_and_recovers(mi_db):
     """Finding C: a valid→NULL revision must unpublish derived rows; a later valid revision restores them."""
     from market_intelligence.store import finish_run, start_run, upsert_macro_series, upsert_source_registry
 
@@ -81,7 +80,7 @@ def test_null_revision_invalidates_derived_metrics_and_recovers(pg_engine):
     spec = CATALOG_BY_ID[sid]
     d1, d2, d3 = date(2024, 12, 27), date(2024, 12, 30), date(2024, 12, 31)
     retrieved = datetime(2024, 12, 31, 16, 0, tzinfo=timezone.utc)
-    with pg_engine.begin() as conn:
+    with mi_db.begin() as conn:
         upsert_source_registry(conn, enabled={"FRED": True}, access={"FRED": "CONFIGURED"})
         upsert_macro_series(
             conn,
@@ -119,7 +118,7 @@ def test_null_revision_invalidates_derived_metrics_and_recovers(pg_engine):
     assert hist_before == 1
 
     since = retrieved
-    with pg_engine.begin() as conn:
+    with mi_db.begin() as conn:
         upsert_observations(
             conn,
             series_id=sid,
@@ -155,7 +154,7 @@ def test_null_revision_invalidates_derived_metrics_and_recovers(pg_engine):
     assert hist["status"] == STATUS_WITHDRAWN and hist["value"] is None
     assert latest["as_of"] == d2 and float(latest["value"]) == pytest.approx(4.20)
 
-    with pg_engine.begin() as conn:
+    with mi_db.begin() as conn:
         upsert_observations(
             conn,
             series_id=sid,

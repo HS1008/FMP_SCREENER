@@ -28,11 +28,14 @@ LIVE_MONITOR_REFRESH = "30s"
 _LAST_OK_DATA_KEY = "strategy_monitor_last_ok_data"
 
 
-st.set_page_config(
-    page_title="Strategy Monitor",
-    page_icon="📈",
-    layout="wide",
-)
+try:
+    st.set_page_config(
+        page_title="Strategy Monitor",
+        page_icon="📈",
+        layout="wide",
+    )
+except Exception:
+    pass
 
 st.title("Strategy Monitor")
 st.caption(

@@ -431,7 +431,7 @@ def ibkr_quotes_latest(conn) -> list[dict[str, Any]]:
     return _rows(conn, "SELECT * FROM mi_v_ibkr_quotes_latest ORDER BY instrument_id")
 
 
-def order_flow_context(conn, *, today: date | None = None, history_limit: int = 120) -> dict[str, Any]:
+def order_flow_context(conn, *, today: date | None = None, history_limit: int = 120, include_history: bool = True) -> dict[str, Any]:
     """Corporate bond trading activity from FINRA Query API aggregates stored in PostgreSQL."""
     from market_intelligence.finra_catalog import (
         BREADTH_DISPLAY_CATEGORIES,
@@ -557,24 +557,39 @@ def order_flow_context(conn, *, today: date | None = None, history_limit: int = 
     capped_latest = _latest_rows(CORPORATE_CAPPED_VOLUME.dataset)
     capped_date = capped_latest[0]["observation_date"] if capped_latest else None
     capped_rows = []
+    identity_complete = True if capped_latest else False
     for row in capped_latest:
+        trade_year = _grain_val(row, "tradeYear")
+        trade_month = _grain_val(row, "tradeMonth")
+        if trade_year in (None, "") or trade_month in (None, ""):
+            identity_complete = False
         capped_rows.append(
             {
                 "grade_code": _grain_val(row, "gradeCode"),
                 "rule_144a_flag": _grain_val(row, "144AFlag"),
+                "trade_year": trade_year,
+                "trade_month": trade_month,
                 "observation_date": row["observation_date"],
+                "reporting_period": (
+                    None
+                    if trade_year in (None, "") or trade_month in (None, "")
+                    else "{0}-{1:02d}".format(int(trade_year), int(trade_month))
+                    if str(trade_year).isdigit() and str(trade_month).isdigit()
+                    else "{0}-{1}".format(trade_year, trade_month)
+                ),
                 "total_trade_count": _metric(row, "totalTradeCount"),
                 "total_volume_quantity": _metric(row, "totalVolumeQuantity"),
                 "customer_buy_par_lt_5y": _metric(row, "customerBuyParLessThan5YearsQuantity"),
                 "customer_sell_par_lt_5y": _metric(row, "customerSellParLessThan5YearsQuantity"),
                 "volume_is_capped": True,
+                "identity_complete": trade_year not in (None, "") and trade_month not in (None, ""),
                 "retrieved_at": row.get("retrieved_at"),
                 "units_note": row.get("units_note"),
             }
         )
 
     history = []
-    if _view_exists(conn, "mi_v_finra_aggregate_history"):
+    if include_history and _view_exists(conn, "mi_v_finra_aggregate_history"):
         history = _rows(
             conn,
             """
@@ -627,6 +642,17 @@ def order_flow_context(conn, *, today: date | None = None, history_limit: int = 
             "rows": capped_rows,
             "units_note": CORPORATE_CAPPED_VOLUME.units_note,
             "capped_note": "Capped/reported source quantities are lower bounds where FINRA caps size. Not exact VWAP.",
+            "identity_validated": identity_complete,
+            "headline_eligible": identity_complete,
+            "identity_note": (
+                None
+                if identity_complete
+                else (
+                    "Capped-volume identity is not validated: current rows are missing "
+                    "tradeYear/tradeMonth. Figures are withheld from headlines until replay "
+                    "stores those reporting-period dimensions."
+                )
+            ),
         },
         "history": history,
         "loaded_interval": {
@@ -639,14 +665,21 @@ def order_flow_context(conn, *, today: date | None = None, history_limit: int = 
     }
 
 
+def order_flow_overview(conn, *, today: date | None = None) -> dict[str, Any]:
+    """Order-flow read model without history series (Overview / morning snapshot)."""
+    return order_flow_context(conn, today=today, include_history=False)
+
+
 def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
     health = source_health(conn, today=today)
     quarantine = _rows(conn, "SELECT * FROM mi_v_macro_quarantine_summary ORDER BY series_id, reason") if _view_exists(conn, "mi_v_macro_quarantine_summary") else []
+    finra_quarantine = _rows(conn, "SELECT * FROM mi_v_finra_aggregate_quarantine ORDER BY created_at DESC LIMIT 200") if _view_exists(conn, "mi_v_finra_aggregate_quarantine") else []
     return {
         "sources": health,
         "stale": [h for h in health if h.get("freshness_status") == "STALE"],
         "failed_transport": [h for h in health if h.get("transport_status") in ("FAILED", "METADATA_REJECTED", "PARTIAL")],
         "quarantine": quarantine,
+        "finra_quarantine": finra_quarantine,
         "export_scope": "INTERNAL_SUMMARY",
     }
 
