@@ -36,6 +36,18 @@ jobs:
             echo "Fetching latest code..."
             git fetch origin main
 
+            # Host-only edits of tracked files (e.g. an activator copied during
+            # Market Intelligence rollout) must not block fast-forward.
+            install -d -m 0700 /root/fmp_backups
+            git diff --name-only -z | while IFS= read -r -d '' f; do
+              if git diff --quiet HEAD origin/main -- "$f"; then
+                continue
+              fi
+              echo "host_dirty_would_block=$f"
+              cp "$f" "/root/fmp_backups/$(basename "$f").pre_pull"
+              git checkout -- "$f"
+            done
+
             echo "Updating server..."
             git pull --ff-only origin main
 

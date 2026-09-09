@@ -185,6 +185,9 @@ def test_pr_validation_workflow_is_secretless_and_uses_only_a_disposable_databas
     # The deployment workflow is untouched by validation and still the only path that mutates production.
     deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
     assert "pull_request" not in deploy and "branches:\n      - main" in deploy
+    assert "host_dirty_would_block=" in deploy
+    assert "git checkout --" in deploy
+    assert "/root/fmp_backups" in deploy
 
 
 def test_no_workflow_runs_untrusted_pr_code_with_credentials():
