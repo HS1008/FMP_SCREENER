@@ -16,6 +16,16 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 
+def find_selectbox(at, label: str):
+    """Return the named Streamlit selectbox. Do not assume widget order."""
+    boxes = list(getattr(at, "selectbox", None) or [])
+    for box in boxes:
+        if str(getattr(box, "label", "") or "") == label:
+            return box
+    names = [str(getattr(box, "label", "") or "") for box in boxes]
+    raise RuntimeError("Strategy Monitor missing {0} selectbox: {1}".format(label, names))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify TLT V0 Postgres → Monitor identity")
     parser.add_argument("--dry-run", action="store_true", help="Verify wrapped artifact only")
@@ -76,7 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         at.run()
         if at.exception:
             raise RuntimeError(at.exception)
-        names = list(at.selectbox[0].options) if at.selectbox else []
+        strategy_box = find_selectbox(at, "Strategy")
+        names = list(strategy_box.options)
         chosen = None
         for name in names:
             text = str(name)
@@ -86,7 +97,7 @@ def main(argv: list[str] | None = None) -> int:
         if chosen is None:
             print("Strategy Monitor selectbox missing TLTDurationMomentum: {0}".format(names))
             return 1
-        at.selectbox[0].set_value(chosen).run()
+        strategy_box.set_value(chosen).run()
         if at.exception:
             raise RuntimeError(at.exception)
         labels = [str(getattr(metric, "label", "") or "") for metric in at.metric]

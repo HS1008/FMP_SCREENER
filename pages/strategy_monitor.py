@@ -19,13 +19,14 @@ from qc_research.ml_monitor_ui import (
     render_platform_section,
     render_stage2_section,
 )
-from qc_research.platform_presentation import display_strategy_name, picker_label
+from qc_research.platform_presentation import UNAVAILABLE, display_strategy_name, picker_label
 from qc_research.research_library import (
     filter_library,
     library_display_frame,
     load_research_library,
     load_strategy_runs,
 )
+from qc_research.streamlit_tables import arrow_safe_frame
 
 
 logger = logging.getLogger(__name__)
@@ -1170,7 +1171,15 @@ with filter_col:
 asset_options = ["All"]
 status_options = ["All", "Complete", "Incomplete", "Failed"]
 if library is not None and not library.empty:
-    asset_options.extend(sorted({str(value) for value in library["asset_class"].dropna() if str(value)}))
+    asset_options.extend(
+        sorted(
+            {
+                str(value)
+                for value in library["asset_class"].dropna()
+                if str(value) and str(value) != UNAVAILABLE
+            }
+        )
+    )
 with asset_col:
     asset_filter = st.selectbox("Asset class", asset_options, key="strategy_monitor_asset_class")
 with status_col:
@@ -1200,7 +1209,7 @@ display = library_display_frame(visible_library, include_smoke=include_smoke)
 if display is not None and not display.empty:
     st.subheader("Research library")
     st.caption("Default run is the latest completed eligible non-holdout result — not the highest-performing run. Failed research stays visible. Completed is not approved.")
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(arrow_safe_frame(display), use_container_width=True, hide_index=True)
 
 visible = strategies.copy()
 if scope != "All" and "environment" in visible.columns:

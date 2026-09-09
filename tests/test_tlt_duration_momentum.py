@@ -154,6 +154,17 @@ def test_tlt_labels_and_cli_dry_run(monkeypatch):
 
     assert verify_main(["--dry-run", "--root", str(_tlt_path())]) == 0
     assert verify_main(["--dry-run", "--apptest-preview", "--root", str(_tlt_path())]) == 0
+    from qc_research.verify_tlt_monitor import find_selectbox
+
+    class _Box:
+        def __init__(self, label, options):
+            self.label = label
+            self.options = options
+
+    class _App:
+        selectbox = [_Box("Asset class", ["All", "Bond ETF", "Nan"]), _Box("Strategy", ["TLTDurationMomentum"])]
+
+    assert find_selectbox(_App(), "Strategy").options == ["TLTDurationMomentum"]
 
 
 def test_platform_section_treats_oos_window_lists_as_present():

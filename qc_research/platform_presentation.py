@@ -71,8 +71,12 @@ STATUS_LABELS = {
 
 
 def friendly_label(value: Any, table: Mapping[str, str] | None = None) -> str:
-    raw = str(value or "").strip()
-    if not raw or raw == UNAVAILABLE:
+    if value is None:
+        return UNAVAILABLE
+    if isinstance(value, float) and value != value:
+        return UNAVAILABLE
+    raw = str(value).strip()
+    if not raw or raw == UNAVAILABLE or raw.lower() in {"nan", "none", "nat"}:
         return UNAVAILABLE
     table = table or {}
     if raw in table:

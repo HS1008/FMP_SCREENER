@@ -5,6 +5,7 @@ from __future__ import annotations
 from qc_research.ml_monitor_ui import investor_wfo_frame, render_platform_view
 from qc_research.platform_ingest import DEFAULT_ARTIFACT_ROOT, monitor_view_from_artifacts, normalize_platform_file
 from qc_research.platform_presentation import (
+    UNAVAILABLE,
     format_inner_cv,
     format_model_choice,
     format_validation,
@@ -24,6 +25,8 @@ def test_friendly_labels_hide_raw_enums():
     assert friendly_label("COMPLETE") == "Research Complete"
     assert friendly_label("LOCKED") == "Holdout Locked"
     assert friendly_label("DELIVERED") == "Delivered"
+    assert friendly_label(float("nan")) == UNAVAILABLE
+    assert friendly_label("nan") == UNAVAILABLE
 
 
 def test_definition_and_winner_come_from_canonical_payload():
