@@ -94,6 +94,10 @@ def test_units_reference_real_entrypoints():
     deploy_yml = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
     assert "deploy/market_intelligence" not in deploy_yml
     assert "fmp-ibkr-ingest.service" in deploy_yml
+    assert "fmp_backups/checkout_preserve" in deploy_yml
+    assert "git checkout --" in deploy_yml
+    assert "git reset --hard" not in deploy_yml
+    assert "git clean -" not in deploy_yml
 
 
 # ---- operational verification: DST, unit semantics, secrets in process lines, CI triggers -------------------
