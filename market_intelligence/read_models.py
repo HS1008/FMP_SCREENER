@@ -419,6 +419,18 @@ def industries_context(conn) -> dict[str, Any]:
     return {"datasets": out}
 
 
+def ibkr_collector_status(conn) -> list[dict[str, Any]]:
+    if not _view_exists(conn, "mi_v_ibkr_collector_status"):
+        return []
+    return _rows(conn, "SELECT * FROM mi_v_ibkr_collector_status ORDER BY collector_id")
+
+
+def ibkr_quotes_latest(conn) -> list[dict[str, Any]]:
+    if not _view_exists(conn, "mi_v_ibkr_quotes_latest"):
+        return []
+    return _rows(conn, "SELECT * FROM mi_v_ibkr_quotes_latest ORDER BY instrument_id")
+
+
 def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
     health = source_health(conn, today=today)
     quarantine = _rows(conn, "SELECT * FROM mi_v_macro_quarantine_summary ORDER BY series_id, reason") if _view_exists(conn, "mi_v_macro_quarantine_summary") else []

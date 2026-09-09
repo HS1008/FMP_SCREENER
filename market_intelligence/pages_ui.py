@@ -503,6 +503,60 @@ def render_data_health() -> None:
             "Freshness (now) is re-evaluated against the database clock on {0} under {1}; it decays even when no job runs. 'Stale after' is the tolerance bound, not an official release date. "
             "A successful retrieval of old data is not fresh; a failed or metadata-rejected retrieval does not erase last valid data.".format(evaluated_on or "today", policy or "the freshness policy")
         )
+    st.subheader("IBKR Windows collector")
+    collectors = load_or_stop("ibkr_collector_status")
+    quotes = load_or_stop("ibkr_quotes_latest")
+    if not collectors:
+        st.info("No collector heartbeat has been received. Closing TWS preserves stored quotes; this page will show COLLECTOR_OFFLINE once a heartbeat goes stale.")
+    else:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Collector": c.get("collector_id"),
+                        "Reported": c.get("reported_state"),
+                        "Observed (server clock)": c.get("observed_state"),
+                        "Heartbeat age (s)": c.get("heartbeat_age_seconds"),
+                        "Last heartbeat": age_text(c.get("last_heartbeat_at")),
+                        "Last TWS connect": age_text(c.get("last_tws_connect_at")),
+                        "Last quote": age_text(c.get("last_quote_at")),
+                        "Last DB ingest": age_text(c.get("last_ingest_ok_at")),
+                        "Market data": c.get("market_data_type") or "UNAVAILABLE",
+                        "Delivery error": (c.get("last_delivery_error_redacted") or "")[:80],
+                    }
+                    for c in collectors
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("Observed state uses the database clock. If heartbeats stop (collector offline, sleep, or crash), the server marks COLLECTOR_OFFLINE; the collector cannot report its own outage.")
+    if quotes:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Instrument": q.get("display_name") or q.get("instrument_id"),
+                        "conId": q.get("con_id"),
+                        "Currency": q.get("currency") or "—",
+                        "Bid": q.get("bid"),
+                        "Ask": q.get("ask"),
+                        "Last": q.get("last_price"),
+                        "Close": q.get("close_price"),
+                        "Type": q.get("market_data_type") or "—",
+                        "Quote time": q.get("quote_ts") or "—",
+                        "Received": age_text(q.get("retrieved_at")),
+                        "Status": q.get("quote_status") or "—",
+                    }
+                    for q in quotes
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("Missing bid/ask/last remain empty (NULL). Closing TWS does not delete these rows; age is shown from stored timestamps.")
+    elif collectors:
+        st.info("Collector registered, but no IBKR quotes have been persisted yet.")
     quarantine = load_or_stop("data_health_context").get("quarantine") or []
     if quarantine:
         st.subheader("Quarantined observations (metadata gate / future dates)")

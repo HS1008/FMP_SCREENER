@@ -71,6 +71,8 @@ GRANT SELECT ON mi_v_macro_quarantine_summary TO mi_readonly;
 GRANT SELECT ON mi_v_pit_sector_artifacts TO mi_readonly;
 GRANT SELECT ON mi_v_pit_sector_internals_current TO mi_readonly;
 GRANT SELECT ON mi_v_pit_sector_internals_latest TO mi_readonly;
+GRANT SELECT ON mi_v_ibkr_collector_status TO mi_readonly;
+GRANT SELECT ON mi_v_ibkr_quotes_latest TO mi_readonly;
 
 -- Defensive session defaults for the role (defaults, not privileges: a session can still
 -- SET them back, which is why the GRANT surface above is what enforces read-only).
