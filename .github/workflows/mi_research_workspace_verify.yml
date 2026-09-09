@@ -163,6 +163,11 @@ jobs:
           cd /root/FMP_SCREENER
           /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase verify
           source venv/bin/activate
+          set -a
+          # Same files AppTest uses; values are not printed.
+          [ -f /root/FMP_SCREENER/.env ] && . /root/FMP_SCREENER/.env
+          [ -f /etc/fmp/market_intelligence.env ] && . /etc/fmp/market_intelligence.env
+          set +a
           python - <<'PY'
           from sqlalchemy import text
           from market_intelligence.readonly_db import readonly_connection
