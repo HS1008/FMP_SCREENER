@@ -274,6 +274,10 @@ def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
     assert "refresh_env_writer_url" in verify
     assert "activate_market_intelligence_host.sh" in verify
     assert "market_intelligence.env" in verify
+    assert "stale_source=" in verify
+    assert "failed_source=" in verify
+    assert "ibkr_quote_code=" in verify
+    assert "latest_observation_date" not in verify.split("python - <<'PY'", 1)[-1].split("PY", 1)[0]
 
 
 def test_activate_host_script_uses_admin_or_peer_for_role_sql():
