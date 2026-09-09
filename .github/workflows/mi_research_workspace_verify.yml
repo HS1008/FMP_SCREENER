@@ -171,16 +171,22 @@ jobs:
           python - <<'PY'
           from sqlalchemy import text
           from market_intelligence.readonly_db import readonly_connection
-          from market_intelligence.read_models import data_health_context, order_flow_context, ibkr_collector_status
+          from market_intelligence.read_models import data_health_context, ibkr_quotes_latest, order_flow_context, ibkr_collector_status
+          from market_intelligence.quote_status import derive_quote_status
           with readonly_connection() as conn:
               health = data_health_context(conn)
               flow = order_flow_context(conn, include_history=False)
               collectors = ibkr_collector_status(conn)
+              quotes = ibkr_quotes_latest(conn)
               grant = conn.execute(text("SELECT has_table_privilege(current_user, 'mi_v_finra_aggregate_quarantine', 'SELECT')")).scalar()
           print("readonly_quarantine_select={0}".format(bool(grant)))
           print("source_count={0}".format(len(health.get("sources") or [])))
           print("stale_count={0}".format(len(health.get("stale") or [])))
           print("failed_transport_count={0}".format(len(health.get("failed_transport") or [])))
+          for row in (health.get("stale") or []):
+              print("stale_source={0} dataset={1} cadence={2} transport={3}".format(row.get("source_id"), row.get("freshness_dataset") or row.get("dataset"), row.get("dataset_cadence") or row.get("cadence"), row.get("transport_status")))
+          for row in (health.get("failed_transport") or []):
+              print("failed_source={0} dataset={1} transport={2} access={3}".format(row.get("source_id"), row.get("freshness_dataset") or row.get("dataset"), row.get("transport_status"), row.get("access_status") or row.get("capability_status")))
           print("finra_quarantine_count={0}".format(len(health.get("finra_quarantine") or [])))
           capped = flow.get("capped_volume") or {}
           print("capped_identity_validated={0}".format(bool(capped.get("identity_validated"))))
@@ -189,6 +195,10 @@ jobs:
           print("breadth_row_count={0}".format(len((flow.get("breadth") or {}).get("rows") or [])))
           print("individual_trades_available={0}".format(bool((flow.get("individual_trades") or {}).get("available"))))
           print("ibkr_collector_count={0}".format(len(collectors or [])))
+          quote_state = derive_quote_status(collectors=collectors, quotes=quotes)
+          print("ibkr_quote_code={0}".format(quote_state.get("code")))
+          print("ibkr_quote_count={0}".format(quote_state.get("quote_count")))
+          print("ibkr_delay_class={0}".format(quote_state.get("delay_class")))
           for row in collectors or []:
               print("ibkr_observed={0}".format(row.get("observed_state")))
           PY

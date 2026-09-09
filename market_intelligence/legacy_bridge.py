@@ -14,7 +14,7 @@ Field / unit / benchmark mapping (``legacy_bridge_v1``):
     return correlation when present. Prices are FMP ``adjClose``; the RS ratio is a
     relative-price-ratio change, not an arithmetic excess return. Benchmark: SPY.
     From ``prices.parquet`` this bridge also computes ETF-level returns
-    (``ret_1w`` ... ``ret_12m`` fractions on adjClose), trend (``pct_vs_50dma``,
+    (``ret_1d`` ... ``ret_12m`` fractions on adjClose), trend (``pct_vs_50dma``,
     ``pct_vs_200dma``), and risk (``vol_63d_ann`` annualized daily std x sqrt(252),
     ``max_drawdown_252d``); these are ETF returns, not constituent portfolio returns.
 
@@ -109,7 +109,7 @@ RS_COLUMNS = {
     "RS vs 200 DMA %": "rs_vs_200dma",
     "Corr vs SPY": "corr_vs_spy_63d",
 }
-RETURN_WINDOWS = {"ret_1w": 5, "ret_1m": 21, "ret_3m": 63, "ret_6m": 126, "ret_12m": 252}
+RETURN_WINDOWS = {"ret_1d": 1, "ret_1w": 5, "ret_1m": 21, "ret_3m": 63, "ret_6m": 126, "ret_12m": 252}
 THEME_DIRS = {"ai": "AI", "semi_rotation": "Semiconductors"}
 THEME_BENCHMARKS = {"ai": "AIQ", "semi_rotation": "XLK"}
 READ_RETRIES = 2

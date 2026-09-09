@@ -14,7 +14,9 @@ import streamlit as st
 
 from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
 from market_intelligence.nulls import strict_dumps
-from market_intelligence.overview import build_what_changed
+from market_intelligence.overview import build_session_changes, build_what_changed
+from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
+from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.ui import (
     age_text,
@@ -102,11 +104,23 @@ def _material_warning(health: list[dict[str, Any]], extra: list[str] | None = No
     return " ".join(notes) if notes else None
 
 
-def _open_page(path: str, label: str) -> None:
-    try:
-        st.page_link(path, label=label)
-    except Exception:  # noqa: BLE001
-        st.caption(label)
+def open_registered_page(route_id: str, label: str) -> None:
+    """Link using the same registry as ``st.navigation``. No silent caption fallback.
+
+    Isolated wrapper AppTests (no navigation) omit the link rather than pretending
+    a broken path worked.
+    """
+    spec = PAGE_BY_ROUTE[route_id]
+    page = registered_page(route_id)
+    if page is not None:
+        st.page_link(page, label=label)
+        return
+    if navigation_active():
+        target = spec.file_path or spec.url_path
+        st.page_link(target, label=label)
+        return
+    # Standalone ``pages/*.py`` render: the production entry point is dashboard.py.
+    _ = spec
 
 
 # ---- Overview ---------------------------------------------------------------------------
@@ -129,7 +143,18 @@ def render_market_pulse() -> None:
         freshness=freshness,
         warning=_material_warning(health),
     )
-    st.caption("Overnight quotes unavailable: no live quote source is configured. Prior-session closes are not labeled as overnight.")
+    collectors = load_or_stop("ibkr_collector_status")
+    quotes = load_or_stop("ibkr_quotes_latest")
+    quote_state = derive_quote_status(collectors=collectors, quotes=quotes)
+    st.caption(overview_caption(quote_state))
+
+    session = build_session_changes(rates=rates, credit=credit, sectors=sectors, order_flow=order_flow)
+    st.subheader("Day to day")
+    st.caption("Prior-session moves only. Macro releases use their own publication lag and are listed under What changed.")
+    if session:
+        st.dataframe(pd.DataFrame([{"Area": row["area"], "Change": row["text"], "Period": row["period"]} for row in session]), use_container_width=True, hide_index=True)
+    else:
+        st.info("No prior-session changes are stored yet. Sector 1-day ETF returns appear after the next snapshot that includes ret_1d.")
 
     changed = build_what_changed(rates=rates, credit=credit, sectors=sectors, macro=macro, order_flow=order_flow)
     st.subheader("What changed")
@@ -149,9 +174,15 @@ def render_market_pulse() -> None:
         ig = next((row for row in buckets if row["bucket"] == "ig_broad"), buckets[0])
         headline_cols[1].metric("IG OAS", fmt(ig.get("oas_bps"), "bps").replace("+", ""), fmt_signed(ig.get("change_1d_bps"), "bps") if ig.get("change_1d_bps") is not None else None)
     if rs_rows:
-        ranked = sorted(rs_rows, key=lambda row: ((row.get("metrics") or {}).get("rs_chg_1m") is None, -((row.get("metrics") or {}).get("rs_chg_1m") or 0)))
-        lead = ranked[0]
-        headline_cols[2].metric("Sector lead (1M RS)", str(lead.get("sector_key") or "—"), fmt_signed((lead.get("metrics") or {}).get("rs_chg_1m"), "fraction") if (lead.get("metrics") or {}).get("rs_chg_1m") is not None else None)
+        day_ranked = [row for row in rs_rows if (row.get("metrics") or {}).get("ret_1d") is not None]
+        if day_ranked:
+            day_ranked = sorted(day_ranked, key=lambda row: -((row.get("metrics") or {}).get("ret_1d") or 0))
+            lead = day_ranked[0]
+            headline_cols[2].metric("Sector lead (1D)", str(lead.get("sector_key") or "—"), fmt_signed((lead.get("metrics") or {}).get("ret_1d"), "fraction") if (lead.get("metrics") or {}).get("ret_1d") is not None else None)
+        else:
+            ranked = sorted(rs_rows, key=lambda row: ((row.get("metrics") or {}).get("rs_chg_1m") is None, -((row.get("metrics") or {}).get("rs_chg_1m") or 0)))
+            lead = ranked[0]
+            headline_cols[2].metric("Sector lead (1M RS)", str(lead.get("sector_key") or "—"), fmt_signed((lead.get("metrics") or {}).get("rs_chg_1m"), "fraction") if (lead.get("metrics") or {}).get("rs_chg_1m") is not None else None)
     breadth = next((row for row in ((order_flow.get("breadth") or {}).get("rows") or []) if (row.get("product_category") or "").lower() == "all securities"), None)
     if breadth:
         headline_cols[3].metric("Bond activity (volume)", fmt(breadth.get("total_volume"), None), fmt_signed(breadth.get("volume_change"), None) if breadth.get("volume_change") is not None else None)
@@ -159,12 +190,13 @@ def render_market_pulse() -> None:
     st.subheader("Sector leadership and weakness")
     if rs_rows:
         frame = pd.DataFrame(
-            [{"Sector": row["sector_key"], "ETF proxy": row["instrument_id"], "As of": row["as_of"], "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m"), "1M return": (row["metrics"] or {}).get("ret_1m")} for row in rs_rows]
+            [{"Sector": row["sector_key"], "ETF proxy": row["instrument_id"], "As of": row["as_of"], "1D return": (row["metrics"] or {}).get("ret_1d"), "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m"), "1M return": (row["metrics"] or {}).get("ret_1m")} for row in rs_rows]
         ).sort_values("1M RS", ascending=False, na_position="last")
-        st.dataframe(styled_heatmap(frame, ["1W RS", "1M RS", "3M RS", "1M return"]), use_container_width=True, hide_index=True)
+        heat_cols = [name for name in ("1D return", "1W RS", "1M RS", "3M RS", "1M return") if name in frame.columns]
+        st.dataframe(styled_heatmap(frame, heat_cols), use_container_width=True, hide_index=True)
         heatmap_legend()
-        st.caption("Relative strength is the change in the ETF/SPY adjusted-close ratio, not an arithmetic excess return. ETF proxy, not a constituent aggregate.")
-        _open_page("pages/14_Sector_Rotation_V2.py", "Open Sectors")
+        st.caption("1D return is the last stored ETF session on adjusted close. Relative strength is the change in the ETF/SPY adjusted-close ratio, not an arithmetic excess return. ETF proxy, not a constituent aggregate. Missing 1D values are blank, not zero.")
+        open_registered_page("sectors", "Open Sectors")
     else:
         st.info("No sector snapshots stored.")
 
@@ -173,7 +205,7 @@ def render_market_pulse() -> None:
         cols = st.columns(len(curve))
         for i, row in enumerate(curve):
             cols[i].metric("{0}".format(row["tenor"]), fmt(row.get("yield_pct"), "pct"), fmt_signed(row.get("chg_prev_bps"), "bps") if row.get("chg_prev_bps") is not None else None)
-        _open_page("pages/12_Rates_Curve.py", "Open Rates")
+        open_registered_page("rates", "Open Rates")
     else:
         st.info("No Treasury curve data stored.")
 
@@ -183,7 +215,7 @@ def render_market_pulse() -> None:
         for i, row in enumerate(buckets):
             cols[i].metric(row["label"], fmt(row.get("oas_bps"), "bps").replace("+", ""), fmt_signed(row.get("change_1d_bps"), "bps") if row.get("change_1d_bps") is not None else None)
         st.caption(credit.get("attribution") or "")
-        _open_page("pages/13_Credit_Overview.py", "Open Credit")
+        open_registered_page("credit", "Open Credit")
     else:
         st.info("No credit index snapshots stored.")
 
@@ -198,7 +230,7 @@ def render_market_pulse() -> None:
             quick.append({"Group": CATEGORY_TITLES[cat], "Series": block.get("label"), "Latest": fmt(block["latest"].get("value"), None), "Change": _transform_text(headline), "Change kind": kind, "Observation": block["latest"].get("observation_date")})
     if quick:
         st.dataframe(pd.DataFrame(quick), use_container_width=True, hide_index=True)
-        _open_page("pages/11_Macro_Overview.py", "Open Macro")
+        open_registered_page("macro", "Open Macro")
     else:
         st.info("No macro observations stored.")
 
@@ -212,7 +244,7 @@ def render_market_pulse() -> None:
         capped = order_flow.get("capped_volume") or {}
         if not capped.get("headline_eligible"):
             st.caption(capped.get("identity_note") or "Capped-volume figures are withheld from headlines until reporting-period identity is validated.")
-        _open_page("pages/18_Order_Flow.py", "Open Order Flow")
+        open_registered_page("order_flow", "Open Order Flow")
     else:
         st.info("No corporate-bond activity aggregates stored.")
 
@@ -446,11 +478,11 @@ def render_sector_rotation_v2() -> None:
         if metric.startswith("Relative"):
             frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "1W": (row["metrics"] or {}).get("rs_chg_1w"), "1M": (row["metrics"] or {}).get("rs_chg_1m"), "3M": (row["metrics"] or {}).get("rs_chg_3m"), "6M": (row["metrics"] or {}).get("rs_chg_6m"), "12M": (row["metrics"] or {}).get("rs_chg_12m")} for row in rows])
             value_cols = ["1W", "1M", "3M", "6M", "12M"]
-            st.caption("Relative strength = change in the ETF/benchmark adjusted-close ratio.")
+            st.caption("Relative strength = change in the ETF/benchmark adjusted-close ratio. 1-day RS is not in the stored bundle.")
         else:
-            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "1M": (row["metrics"] or {}).get("ret_1m"), "3M": (row["metrics"] or {}).get("ret_3m"), "12M": (row["metrics"] or {}).get("ret_12m")} for row in rows])
-            value_cols = ["1M", "3M", "12M"]
-            st.caption("Absolute ETF returns on adjusted close. Not equal-weight or cap-weight constituent portfolios.")
+            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "1D": (row["metrics"] or {}).get("ret_1d"), "1W": (row["metrics"] or {}).get("ret_1w"), "1M": (row["metrics"] or {}).get("ret_1m"), "3M": (row["metrics"] or {}).get("ret_3m"), "12M": (row["metrics"] or {}).get("ret_12m")} for row in rows])
+            value_cols = ["1D", "1W", "1M", "3M", "12M"]
+            st.caption("Absolute ETF returns on adjusted close, including the last stored session (1D) when present. Missing values are blank, not zero. Not equal-weight or cap-weight constituent portfolios.")
         order = {name: i for i, name in enumerate(CANONICAL_SECTORS)}
         frame["_o"] = frame["Sector"].map(lambda name: order.get(name, 99))
         frame = frame.sort_values(["_o", "Sector"]).drop(columns="_o")
@@ -461,11 +493,12 @@ def render_sector_rotation_v2() -> None:
         chosen = st.selectbox("Sector drilldown", names, key="sector_drilldown")
         selected = next((row for row in rows if row["sector_key"] == chosen), rows[0])
         metrics = selected.get("metrics") or {}
-        cols = st.columns(4)
-        cols[0].metric("1M RS vs {0}".format(benchmark), fmt_signed(metrics.get("rs_chg_1m"), "fraction") if metrics.get("rs_chg_1m") is not None else "—")
-        cols[1].metric("1M ETF return", fmt_signed(metrics.get("ret_1m"), "fraction") if metrics.get("ret_1m") is not None else "—")
-        cols[2].metric("vs 50DMA", fmt_signed(metrics.get("pct_vs_50dma"), "fraction") if metrics.get("pct_vs_50dma") is not None else "—")
-        cols[3].metric("vs 200DMA", fmt_signed(metrics.get("pct_vs_200dma"), "fraction") if metrics.get("pct_vs_200dma") is not None else "—")
+        cols = st.columns(5)
+        cols[0].metric("1D ETF return", fmt_signed(metrics.get("ret_1d"), "fraction") if metrics.get("ret_1d") is not None else "—")
+        cols[1].metric("1M RS vs {0}".format(benchmark), fmt_signed(metrics.get("rs_chg_1m"), "fraction") if metrics.get("rs_chg_1m") is not None else "—")
+        cols[2].metric("1M ETF return", fmt_signed(metrics.get("ret_1m"), "fraction") if metrics.get("ret_1m") is not None else "—")
+        cols[3].metric("vs 50DMA", fmt_signed(metrics.get("pct_vs_50dma"), "fraction") if metrics.get("pct_vs_50dma") is not None else "—")
+        cols[4].metric("vs 200DMA", fmt_signed(metrics.get("pct_vs_200dma"), "fraction") if metrics.get("pct_vs_200dma") is not None else "—")
         stale = (selected.get("coverage") or {}).get("price_status")
         if stale == "STALE":
             st.warning("{0} last price predates the bundle as-of; windowed metrics stay blank rather than being relabelled current.".format(selected.get("instrument_id")))
@@ -592,6 +625,7 @@ def render_data_health() -> None:
         st.info("No sources registered yet.")
     if stale or failed:
         st.subheader("Needs attention")
+        st.caption("Freshness thresholds are unchanged. A legitimate release lag, missing entitlement, or offline laptop collector is named rather than hidden.")
         problem = stale + [row for row in failed if row not in stale]
         st.dataframe(
             pd.DataFrame(
@@ -599,10 +633,11 @@ def render_data_health() -> None:
                     {
                         "Source": row.get("provider") or row.get("source_id"),
                         "Dataset": row.get("freshness_dataset") or row.get("dataset"),
-                        "Status": row.get("freshness_status") or row.get("transport_status"),
+                        "Freshness": row.get("freshness_status") or "—",
+                        "Transport": row.get("transport_status") or "—",
                         "Latest observation": row.get("latest_observation_date") or "—",
                         "Last success": age_text(row.get("last_success_at")),
-                        "Detail": (row.get("last_error_redacted") or "")[:120] or "—",
+                        "Why it looks like this": exception_note(row),
                     }
                     for row in problem
                 ]
@@ -632,7 +667,9 @@ def render_data_health() -> None:
 
     collectors = load_or_stop("ibkr_collector_status")
     quotes = load_or_stop("ibkr_quotes_latest")
+    quote_state = derive_quote_status(collectors=collectors, quotes=quotes)
     st.subheader("Windows collector (IBKR)")
+    st.caption(overview_caption(quote_state))
     if not collectors:
         st.info("No collector heartbeat has been received. FRED and FINRA do not depend on this laptop.")
     else:

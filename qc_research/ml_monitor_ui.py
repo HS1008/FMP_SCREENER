@@ -12,6 +12,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
+from qc_research.metric_map import aggregation_label
 from qc_research.platform_presentation import (
     ASSET_LABELS,
     FAMILY_LABELS,
@@ -29,6 +30,7 @@ from qc_research.platform_presentation import (
     strategy_definition_from_payloads,
     tidy_number,
 )
+from qc_research.research_readout import build_readout, comparison_table, plain_status_line
 
 from qc_research.ml_aggregation import (
     COMPLETE,
@@ -635,6 +637,15 @@ def render_platform_view(view: dict[str, Any]) -> None:
     definition = dict(view.get("strategy_definition") or {})
     title = definition.get("display_name") or view.get("display_name") or view.get("strategy_id")
     st.subheader(title)
+    st.caption(
+        plain_status_line(
+            research_status=view.get("research_status") or view.get("research_state"),
+            economic_gate=view.get("economic_gate"),
+            promotion_gate=view.get("promotion_gate"),
+            holdout_status=view.get("holdout_status"),
+            delivery_status=view.get("delivery_status"),
+        )
+    )
     _chip_row(
         [
             friendly_label(view.get("research_status") or view.get("research_state")),
@@ -655,230 +666,257 @@ def render_platform_view(view: dict[str, Any]) -> None:
     else:
         st.caption("Dashboard delivery: {0}".format(friendly_label(view.get("delivery_status") or "DELIVERED")))
 
-    thesis = definition.get("thesis") or view.get("thesis")
-    if thesis and thesis != UNAVAILABLE:
-        st.markdown("**Thesis**")
-        st.write(thesis)
-    if definition.get("portfolio_behavior"):
-        st.markdown("**What the strategy does**")
-        st.write(definition["portfolio_behavior"])
-
-    overview = st.columns(2)
-    with overview[0]:
-        st.markdown("**Research mode**")
-        st.write(friendly_label(view.get("research_mode"), MODE_LABELS))
-        st.markdown("**Family**")
-        st.write(friendly_label(view.get("strategy_family"), FAMILY_LABELS))
-    with overview[1]:
-        st.markdown("**Instrument / universe**")
-        st.write(definition.get("instrument") or ", ".join(definition.get("universe") or []) or UNAVAILABLE)
-        st.markdown("**Holdout**")
-        st.write(friendly_label(view.get("holdout_status")))
-
-    mode = str(view.get("research_mode") or "")
-    st.subheader("Strategy Definition" if mode != "MANUAL" else "Strategy Rules")
-    if mode == "MANUAL":
-        _write_fields(
-            {
-                "Instrument / universe": definition.get("instrument") or definition.get("universe"),
-                "Signal rule": definition.get("signal_rule"),
-                "Entry": definition.get("entry"),
-                "Exit": definition.get("exit"),
-                "Sizing": definition.get("sizing"),
-                "Rebalance": definition.get("rebalance"),
-                "Leverage": definition.get("leverage"),
-                "Costs": definition.get("cost_model_id"),
-                "Execution timing": format_execution(definition.get("execution")),
-            }
-        )
-    else:
-        st.markdown("**Research Design**")
-        validation = definition.get("validation")
-        _write_fields(
-            {
-                "Features": ", ".join(str(item) for item in (definition.get("features") or [])),
-                "Lookback": definition.get("lookback"),
-                "Target": definition.get("target"),
-                "Models searched": ", ".join(
-                    str(item) for item in (definition.get("models_searched") or []) if isinstance(item, str)
-                ),
-                "Winner": format_model_choice(definition.get("winner") or view.get("selected_candidate")),
-                "Baseline": format_model_choice(definition.get("baseline") or view.get("baseline")),
-                "Validation": format_validation(validation),
-                "Inner CV": format_inner_cv(validation),
-                "Execution": format_execution(definition.get("execution")),
-                "Cost model": definition.get("cost_model_id") or view.get("cost_model"),
-            }
-        )
-
-    st.subheader("Key Results")
+    summary_tab, performance_tab, robustness_tab, details_tab = st.tabs(
+        ["Summary", "Performance", "Robustness / OOS", "Research Details"]
+    )
     metric_kind = str(view.get("metric_kind") or "mean_across_windows")
-    if metric_kind == "stitched_full_period":
-        st.caption("Full Non-Holdout OOS from stitched daily returns.")
-    else:
-        st.caption(HELP["mean_across_windows"])
     ml = dict(view.get("ml_metrics") or {})
-    r1 = st.columns(4)
-    r1[0].metric("CAGR", tidy_number(view.get("ml_cagr")), help=HELP["CAGR"])
-    r1[1].metric(
-        "Sharpe",
-        tidy_number(view.get("ml_sharpe") if view.get("ml_sharpe") is not None else view.get("sharpe")),
-        help=HELP["Sharpe"],
-    )
-    r1[2].metric(
-        "Sortino",
-        tidy_number(ml.get("sortino_ratio")) if ml.get("sortino_ratio") is not None else UNAVAILABLE,
-        help=HELP["Sortino"],
-    )
-    r1[3].metric(
-        "Max Drawdown",
-        tidy_number(ml.get("max_drawdown")) if ml.get("max_drawdown") is not None else UNAVAILABLE,
-        help=HELP["Max Drawdown"],
-    )
-    r2 = st.columns(4)
-    r2[0].metric("Net Return", tidy_number(ml.get("net_profit")) if ml.get("net_profit") is not None else UNAVAILABLE)
-    r2[1].metric("Trades", tidy_number(ml.get("trade_count"), digits=2) if ml.get("trade_count") is not None else UNAVAILABLE)
-    r2[2].metric("Fees / cost drag", tidy_number(ml.get("cost_drag"), digits=2) if ml.get("cost_drag") is not None else UNAVAILABLE)
-    r2[3].metric("Baseline Sharpe", tidy_number(view.get("baseline_sharpe")), help=HELP["Sharpe"])
-    r3 = st.columns(4)
-    r3[0].metric("ML-minus-baseline Sharpe", tidy_number(view.get("sharpe_diff")))
-    r3[1].metric("Baseline CAGR", tidy_number(view.get("baseline_cagr")), help=HELP["CAGR"])
-    r3[2].metric("Baseline", format_model_choice(view.get("baseline")))
-    r3[3].metric("Selected model", format_model_choice(view.get("selected_candidate")))
-    if metric_kind != "stitched_full_period":
+    oos_windows = view.get("oos_windows")
+    summary = dict(view.get("robustness_summary") or {})
+    mode = str(view.get("research_mode") or "")
+
+    with summary_tab:
+        thesis = definition.get("thesis") or view.get("thesis")
+        if thesis and thesis != UNAVAILABLE:
+            st.markdown("**Thesis**")
+            st.write(thesis)
+        if definition.get("portfolio_behavior"):
+            st.markdown("**What the strategy does**")
+            st.write(definition["portfolio_behavior"])
+
+        overview = st.columns(2)
+        with overview[0]:
+            st.markdown("**Research mode**")
+            st.write(friendly_label(view.get("research_mode"), MODE_LABELS))
+            st.markdown("**Family**")
+            st.write(friendly_label(view.get("strategy_family"), FAMILY_LABELS))
+        with overview[1]:
+            st.markdown("**Instrument / universe**")
+            st.write(definition.get("instrument") or ", ".join(definition.get("universe") or []) or UNAVAILABLE)
+            st.markdown("**Holdout**")
+            st.write(friendly_label(view.get("holdout_status")))
+
+        st.subheader("Strategy Definition" if mode != "MANUAL" else "Strategy Rules")
+        if mode == "MANUAL":
+            _write_fields(
+                {
+                    "Instrument / universe": definition.get("instrument") or definition.get("universe"),
+                    "Signal rule": definition.get("signal_rule"),
+                    "Entry": definition.get("entry"),
+                    "Exit": definition.get("exit"),
+                    "Sizing": definition.get("sizing"),
+                    "Rebalance": definition.get("rebalance"),
+                    "Leverage": definition.get("leverage"),
+                    "Costs": definition.get("cost_model_id"),
+                    "Execution timing": format_execution(definition.get("execution")),
+                }
+            )
+        else:
+            st.markdown("**Research Design**")
+            validation = definition.get("validation")
+            _write_fields(
+                {
+                    "Features": ", ".join(str(item) for item in (definition.get("features") or [])),
+                    "Lookback": definition.get("lookback"),
+                    "Target": definition.get("target"),
+                    "Models searched": ", ".join(
+                        str(item) for item in (definition.get("models_searched") or []) if isinstance(item, str)
+                    ),
+                    "Winner": format_model_choice(definition.get("winner") or view.get("selected_candidate")),
+                    "Baseline": format_model_choice(definition.get("baseline") or view.get("baseline")),
+                    "Validation": format_validation(validation),
+                    "Inner CV": format_inner_cv(validation),
+                    "Execution": format_execution(definition.get("execution")),
+                    "Cost model": definition.get("cost_model_id") or view.get("cost_model"),
+                }
+            )
+
+        readout = build_readout(view)
+        if readout:
+            st.markdown("**Readout**")
+            for line in readout:
+                st.write("• {0}".format(line))
+
+        # Keep production AppTest contract labels.
+        s1, s2, s3, s4 = st.columns(4)
+        s1.metric("Research status", view.get("research_status") or view.get("research_state"), help=HELP["promotion_gate"])
+        s2.metric("Economic gate", view.get("economic_gate"), help=HELP["economic_gate"])
+        s3.metric("Promotion gate", view.get("promotion_gate"), help=HELP["promotion_gate"])
+        s4.metric("Holdout status", view.get("holdout_status"), help=HELP["holdout"])
+        s5, s6, s7, s8 = st.columns(4)
+        s5.metric("OOS window count", view.get("window_count"), help=HELP["OOS"])
+        s6.metric("Holdout accessed", "no" if not view.get("holdout_accessed") else "yes", help=HELP["holdout"])
+        s7.metric("WFO window count", view.get("window_count"), help=HELP["WFO"])
+        s8.metric("Selected model", view.get("selected_candidate"))
+        if view.get("provenance") == "LOCAL_LICENSED":
+            st.info("Provenance is LOCAL_LICENSED optional local Lean data. This is not CLOUD_VALIDATED.")
+        if view.get("intercept_only_flag") is True:
+            st.warning(
+                "Winner is intercept-only. This is infrastructure evidence; economic_gate stays NOT_DEFINED."
+            )
         st.caption(
-            "Mean Across WFO Windows. Stitched Full Non-Holdout OOS equity is unavailable "
-            "for this record and is not fabricated."
+            "Research results stay visible regardless of promotion_gate. "
+            "HUMAN_REVIEW_REQUIRED is the promotion gate, not the research terminal. "
+            "2025+ / final holdout, paper, live, IBKR, and model promotion stay locked. "
+            "Completed research is not labeled approved."
         )
 
-    # Keep production AppTest contract labels.
-    s1, s2, s3, s4 = st.columns(4)
-    s1.metric("Research status", view.get("research_status") or view.get("research_state"), help=HELP["promotion_gate"])
-    s2.metric("Economic gate", view.get("economic_gate"), help=HELP["economic_gate"])
-    s3.metric("Promotion gate", view.get("promotion_gate"), help=HELP["promotion_gate"])
-    s4.metric("Holdout status", view.get("holdout_status"), help=HELP["holdout"])
-    s5, s6, s7, s8 = st.columns(4)
-    s5.metric("OOS window count", view.get("window_count"), help=HELP["OOS"])
-    s6.metric("Holdout accessed", "no" if not view.get("holdout_accessed") else "yes", help=HELP["holdout"])
-    s7.metric("WFO window count", view.get("window_count"), help=HELP["WFO"])
-    s8.metric("Selected model", view.get("selected_candidate"))
-    if view.get("provenance") == "LOCAL_LICENSED":
-        st.info("Provenance is LOCAL_LICENSED optional local Lean data. This is not CLOUD_VALIDATED.")
-    if view.get("intercept_only_flag") is True:
-        st.warning(
-            "Winner is intercept-only. This is infrastructure evidence; economic_gate stays NOT_DEFINED."
+    with performance_tab:
+        st.subheader("Key Results")
+        st.caption(aggregation_label(metric_kind) + ". " + (HELP["mean_across_windows"] if metric_kind != "stitched_full_period" else "Full Non-Holdout OOS from stitched daily returns."))
+        r1 = st.columns(4)
+        r1[0].metric("CAGR", tidy_number(view.get("ml_cagr")), help=HELP["CAGR"])
+        r1[1].metric(
+            "Sharpe",
+            tidy_number(view.get("ml_sharpe") if view.get("ml_sharpe") is not None else view.get("sharpe")),
+            help=HELP["Sharpe"],
         )
-    st.caption(
-        "Research results stay visible regardless of promotion_gate. "
-        "HUMAN_REVIEW_REQUIRED is the promotion gate, not the research terminal. "
-        "2025+ / final holdout, paper, live, IBKR, and model promotion stay locked."
-    )
-    _maybe_performance_charts(view)
-    oos_windows = view.get("oos_windows")
-    if oos_windows is not None and oos_windows != UNAVAILABLE:
-        st.subheader("Walk-forward")
-        frame = investor_wfo_frame(
-            oos_windows if isinstance(oos_windows, list) else [],
-            selected_trial_fallback=str(view.get("selected_candidate") or "") or None,
+        r1[2].metric(
+            "Sortino",
+            tidy_number(ml.get("sortino_ratio")) if ml.get("sortino_ratio") is not None else UNAVAILABLE,
+            help=HELP["Sortino"],
         )
-        if not frame.empty:
-            st.dataframe(frame, use_container_width=True, hide_index=True)
-        else:
-            st.write(oos_windows)
-        st.caption("Non-holdout windows only. 2025+ / final holdout remain sealed.")
-    summary = dict(view.get("robustness_summary") or {})
-    if summary:
-        st.subheader("Robustness")
-        b1, b2, b3, b4 = st.columns(4)
-        b1.metric("Selected model", format_model_choice(summary.get("selected_model") or view.get("selected_candidate")))
-        b2.metric("Selected in", summary.get("selected_in") or UNAVAILABLE)
-        b3.metric("Positive ML Sharpe", summary.get("positive_ml_sharpe") or UNAVAILABLE)
-        b4.metric("ML Sharpe > baseline", summary.get("ml_beats_baseline") or UNAVAILABLE)
-        c1, c2 = st.columns(2)
-        c1.metric("Parameter stability", summary.get("parameter_stability") or UNAVAILABLE)
-        c2.metric("Signal activity", summary.get("signal_activity") or UNAVAILABLE)
-        if summary.get("parameter_stability") == "High":
-            st.caption("The same candidate was selected in every window. This is selection stability, not an economic STABLE_PLATEAU.")
-    robustness = view.get("robustness")
-    if robustness is not None and robustness != UNAVAILABLE and robustness != {}:
-        with st.expander("Robustness technical details", expanded=False):
-            st.write(robustness)
-    st.subheader("Costs")
-    st.write(
-        {
-            "cost_model_id": view.get("cost_model"),
-            "fill_assumptions": view.get("fill_assumptions"),
-            "signal_timing": view.get("signal_timing"),
-        }
-    )
-    with st.expander("Model diagnostics", expanded=False):
+        r1[3].metric(
+            "Max Drawdown",
+            tidy_number(ml.get("max_drawdown")) if ml.get("max_drawdown") is not None else UNAVAILABLE,
+            help=HELP["Max Drawdown"],
+        )
+        r2 = st.columns(4)
+        r2[0].metric("Net Return", tidy_number(ml.get("net_profit")) if ml.get("net_profit") is not None else UNAVAILABLE)
+        r2[1].metric("Trades", tidy_number(ml.get("trade_count"), digits=2) if ml.get("trade_count") is not None else UNAVAILABLE)
+        r2[2].metric("Fees / cost drag", tidy_number(ml.get("cost_drag"), digits=2) if ml.get("cost_drag") is not None else UNAVAILABLE)
+        r2[3].metric("Baseline Sharpe", tidy_number(view.get("baseline_sharpe")), help=HELP["Sharpe"])
+        r3 = st.columns(4)
+        r3[0].metric("ML-minus-baseline Sharpe", tidy_number(view.get("sharpe_diff")))
+        r3[1].metric("Baseline CAGR", tidy_number(view.get("baseline_cagr")), help=HELP["CAGR"])
+        r3[2].metric("Baseline", format_model_choice(view.get("baseline")))
+        r3[3].metric("Selected model", format_model_choice(view.get("selected_candidate")))
+        if metric_kind != "stitched_full_period":
+            st.caption(
+                "Mean Across WFO Windows. Stitched Full Non-Holdout OOS equity is unavailable "
+                "for this record and is not fabricated. The average of window CAGRs is not whole-period CAGR."
+            )
+        compare = comparison_table(
+            strategy_metrics=ml,
+            baseline_metrics=view.get("baseline_metrics") or {},
+            deltas=view.get("ml_minus_baseline") or {},
+            metric_kind=metric_kind,
+            baseline_label="Baseline",
+        )
+        if compare:
+            st.markdown("**Strategy versus baseline**")
+            st.caption("Difference is shown only where both sides exist. CAGR differences are percentage points, not alpha.")
+            st.dataframe(pd.DataFrame(compare), use_container_width=True, hide_index=True)
+        _maybe_performance_charts(view)
+        if not (view.get("stitched_equity") or view.get("daily_returns") or view.get("oos_equity")):
+            st.caption("No canonical equity or return series is stored for a performance chart. The window table is the source of truth.")
+
+    with robustness_tab:
+        if oos_windows is not None and oos_windows != UNAVAILABLE:
+            st.subheader("Walk-forward")
+            frame = investor_wfo_frame(
+                oos_windows if isinstance(oos_windows, list) else [],
+                selected_trial_fallback=str(view.get("selected_candidate") or "") or None,
+            )
+            if not frame.empty:
+                st.dataframe(frame, use_container_width=True, hide_index=True)
+            else:
+                st.write(oos_windows)
+            st.caption("Non-holdout windows only. 2025+ / final holdout remain sealed. Missing windows are not counted as zero. Outperformance is not an economic acceptance decision.")
+        if summary:
+            st.subheader("Robustness")
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("Selected model", format_model_choice(summary.get("selected_model") or view.get("selected_candidate")))
+            b2.metric("Selected in", summary.get("selected_in") or UNAVAILABLE)
+            b3.metric("Positive ML Sharpe", summary.get("positive_ml_sharpe") or UNAVAILABLE)
+            b4.metric("ML Sharpe > baseline", summary.get("ml_beats_baseline") or UNAVAILABLE)
+            c1, c2 = st.columns(2)
+            c1.metric("Parameter stability", summary.get("parameter_stability") or UNAVAILABLE)
+            c2.metric("Signal activity", summary.get("signal_activity") or UNAVAILABLE)
+            if summary.get("parameter_stability") == "High":
+                st.caption("The same candidate was selected in every window. This is selection stability, not an economic STABLE_PLATEAU.")
+        robustness = view.get("robustness")
+        if robustness is not None and robustness != UNAVAILABLE and robustness != {}:
+            with st.expander("Robustness technical details", expanded=False):
+                st.write(robustness)
+        st.subheader("Costs")
         st.write(
             {
-                "models_searched": definition.get("models_searched") or UNAVAILABLE,
-                "winner": format_model_choice(definition.get("winner") or view.get("selected_candidate")),
-                "hyperparameters": definition.get("winner") or view.get("selected_candidate"),
-                "candidate_count": view.get("trial_count"),
-                "search_space_hash": short_id(view.get("search_space_hash"), keep=12),
-                "feature_schema": short_id(view.get("feature_schema_hash"), keep=12),
-                "parameter_stability": summary.get("parameter_stability"),
-                "intercept_only": view.get("intercept_only"),
+                "cost_model_id": view.get("cost_model"),
+                "fill_assumptions": view.get("fill_assumptions"),
+                "signal_timing": view.get("signal_timing"),
             }
         )
-        if view.get("search_space"):
-            st.write(view["search_space"])
-        if view.get("trials"):
-            st.write(view["trials"])
-            payload = view["trials"].get("payload") if isinstance(view["trials"], dict) else None
-            if isinstance(payload, dict) and payload.get("provenance") == "SYNTHETIC_TEST_ONLY":
-                st.error("Synthetic trial ledger cannot be research evidence.")
-    if view.get("pair"):
-        st.subheader("Pair diagnostics")
-        st.write(view["pair"])
-        inner = view["pair"].get("payload") if isinstance(view["pair"], dict) else view["pair"]
-        if isinstance(inner, dict) and inner.get("selection_used_oos"):
-            st.error("Pair selection used OOS — invalid research.")
-    if view.get("fixed_income"):
-        st.subheader("Fixed-income / DV01 diagnostics")
-        st.write(view["fixed_income"])
-        st.caption("Unsupported cash-bond metrics are Unavailable / Not applicable, never zero-filled.")
-    if view.get("roll"):
-        st.subheader("Roll diagnostics")
-        st.write(view["roll"])
-    with st.expander("Technical / audit details", expanded=False):
-        st.write(
-            {
-                "spec_hash": short_id(view.get("spec_hash")),
-                "search_space_hash": short_id(view.get("search_space_hash")),
-                "feature_schema_hash": short_id(view.get("feature_schema_hash")),
-                "lineage": view.get("lineage"),
-                "git_sha": short_id(view.get("git_sha")),
-                "history_provider": view.get("history_provider"),
-                "training_layer": view.get("training_layer"),
-                "object_store_key": short_id(view.get("object_store_key"), keep=16),
-                "data_download_used": view.get("data_read_used"),
-                "research_kind": view.get("research_kind"),
-                "symbol": view.get("symbol"),
-                "cost_model": view.get("cost_model"),
-            }
-        )
-        st.caption("Full identifiers")
-        st.write(
-            {
-                "spec_hash": view.get("spec_hash"),
-                "search_space_hash": view.get("search_space_hash"),
-                "feature_schema_hash": view.get("feature_schema_hash"),
-                "git_sha": view.get("git_sha"),
-                "winner_backtest_id": view.get("winner_backtest_id"),
-                "baseline_backtest_id": view.get("baseline_backtest_id"),
-                "train_backtest_id": view.get("train_backtest_id"),
-                "object_store_key": view.get("object_store_key"),
-            }
-        )
-        qc_rows = view.get("official_windows") or (oos_windows if isinstance(oos_windows, list) else [])
-        qc_frame = official_qc_id_frame(qc_rows if isinstance(qc_rows, list) else [])
-        if not qc_frame.empty:
-            st.caption("Official QC IDs")
-            st.dataframe(qc_frame, use_container_width=True, hide_index=True)
+
+    with details_tab:
+        with st.expander("Model diagnostics", expanded=False):
+            st.write(
+                {
+                    "models_searched": definition.get("models_searched") or UNAVAILABLE,
+                    "winner": format_model_choice(definition.get("winner") or view.get("selected_candidate")),
+                    "hyperparameters": definition.get("winner") or view.get("selected_candidate"),
+                    "candidate_count": view.get("trial_count"),
+                    "search_space_hash": short_id(view.get("search_space_hash"), keep=12),
+                    "feature_schema": short_id(view.get("feature_schema_hash"), keep=12),
+                    "parameter_stability": summary.get("parameter_stability"),
+                    "intercept_only": view.get("intercept_only"),
+                }
+            )
+            if view.get("search_space"):
+                st.write(view["search_space"])
+            if view.get("trials"):
+                st.write(view["trials"])
+                payload = view["trials"].get("payload") if isinstance(view["trials"], dict) else None
+                if isinstance(payload, dict) and payload.get("provenance") == "SYNTHETIC_TEST_ONLY":
+                    st.error("Synthetic trial ledger cannot be research evidence.")
+        if view.get("pair"):
+            st.subheader("Pair diagnostics")
+            st.write(view["pair"])
+            inner = view["pair"].get("payload") if isinstance(view["pair"], dict) else view["pair"]
+            if isinstance(inner, dict) and inner.get("selection_used_oos"):
+                st.error("Pair selection used OOS — invalid research.")
+        if view.get("fixed_income"):
+            st.subheader("Fixed-income / DV01 diagnostics")
+            st.write(view["fixed_income"])
+            st.caption("Unsupported cash-bond metrics are Unavailable / Not applicable, never zero-filled.")
+        if view.get("roll"):
+            st.subheader("Roll diagnostics")
+            st.write(view["roll"])
+        with st.expander("Technical / audit details", expanded=False):
+            st.write(
+                {
+                    "spec_hash": short_id(view.get("spec_hash")),
+                    "search_space_hash": short_id(view.get("search_space_hash")),
+                    "feature_schema_hash": short_id(view.get("feature_schema_hash")),
+                    "lineage": view.get("lineage"),
+                    "git_sha": short_id(view.get("git_sha")),
+                    "history_provider": view.get("history_provider"),
+                    "training_layer": view.get("training_layer"),
+                    "object_store_key": short_id(view.get("object_store_key"), keep=16),
+                    "data_download_used": view.get("data_read_used"),
+                    "research_kind": view.get("research_kind"),
+                    "symbol": view.get("symbol"),
+                    "cost_model": view.get("cost_model"),
+                }
+            )
+            st.caption("Full identifiers")
+            st.write(
+                {
+                    "spec_hash": view.get("spec_hash"),
+                    "search_space_hash": view.get("search_space_hash"),
+                    "feature_schema_hash": view.get("feature_schema_hash"),
+                    "git_sha": view.get("git_sha"),
+                    "winner_backtest_id": view.get("winner_backtest_id"),
+                    "baseline_backtest_id": view.get("baseline_backtest_id"),
+                    "train_backtest_id": view.get("train_backtest_id"),
+                    "object_store_key": view.get("object_store_key"),
+                }
+            )
+            qc_rows = view.get("official_windows") or (oos_windows if isinstance(oos_windows, list) else [])
+            qc_frame = official_qc_id_frame(qc_rows if isinstance(qc_rows, list) else [])
+            if not qc_frame.empty:
+                st.caption("Official QC IDs")
+                st.dataframe(qc_frame, use_container_width=True, hide_index=True)
 
 
 def render_platform_section(strategy_id: str, *, engine=None) -> None:

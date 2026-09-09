@@ -46,6 +46,50 @@ def _level(value: Any, units: str, *, digits: int = 2) -> str:
     return "{0:,.{1}f}".format(number, digits)
 
 
+def build_session_changes(
+    *,
+    rates: dict[str, Any] | None = None,
+    credit: dict[str, Any] | None = None,
+    sectors: dict[str, Any] | None = None,
+    order_flow: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
+    """Prior-session / single-day moves only. Macro releases are excluded."""
+    items: list[dict[str, str]] = []
+    items.extend(_sector_session_changes(sectors or {}))
+    items.extend(_rate_changes(rates or {}))
+    items.extend(_credit_changes(credit or {}))
+    items.extend(_order_flow_changes(order_flow or {}))
+    return items
+
+
+def _sector_session_changes(sectors: dict[str, Any]) -> list[dict[str, str]]:
+    rows = list((sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or [])
+    ranked: list[tuple[float, dict[str, Any]]] = []
+    for row in rows:
+        metrics = row.get("metrics") or {}
+        ret = _num(metrics.get("ret_1d"))
+        if ret is None:
+            continue
+        ranked.append((ret, row))
+    if not ranked:
+        return []
+    ranked.sort(key=lambda item: item[0], reverse=True)
+    lead_ret, lead = ranked[0]
+    lag_ret, lag = ranked[-1]
+    as_of = lead.get("as_of") or lag.get("as_of") or "—"
+    text = (
+        "{0} {1} and {2} {3} on the latest stored ETF session (as of {4}). "
+        "These are one-session adjusted-close returns, not 1-month relative strength."
+    ).format(
+        lead.get("sector_key") or lead.get("instrument_id"),
+        _signed_pct(lead_ret),
+        lag.get("sector_key") or lag.get("instrument_id"),
+        _signed_pct(lag_ret),
+        as_of,
+    )
+    return [{"area": "Sectors", "text": text, "period": "prior session", "detail": "Sectors"}]
+
+
 def build_what_changed(
     *,
     rates: dict[str, Any] | None = None,

@@ -472,40 +472,27 @@ def render_legacy_fmp_dashboard() -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Market Intelligence", page_icon="📊", layout="wide")
-    from market_intelligence.pages_ui import (
-        render_credit_overview,
-        render_data_health,
-        render_macro_overview,
-        render_market_pulse,
-        render_morning_context,
-        render_order_flow,
-        render_pit_sector_internals,
-        render_rates_curve,
-        render_sector_rotation_v2,
+    from market_intelligence import pages_ui
+    from market_intelligence.page_registry import (
+        NAV_SECTIONS,
+        PAGE_SPECS,
+        resolve_render,
+        set_registered_pages,
     )
 
-    navigation = st.navigation(
-        {
-            "Overview": [st.Page(render_market_pulse, title="Overview", default=True)],
-            "Markets": [
-                st.Page(render_sector_rotation_v2, title="Sectors"),
-                st.Page(render_rates_curve, title="Rates"),
-                st.Page(render_credit_overview, title="Credit"),
-                st.Page(render_order_flow, title="Order Flow"),
-            ],
-            "Economy": [st.Page(render_macro_overview, title="Macro")],
-            "Research": [
-                st.Page("pages/strategy_monitor.py", title="Strategy Monitor"),
-                st.Page("pages/09_Power_Producer_Watchlist.py", title="Power Producers"),
-            ],
-            "System": [
-                st.Page(render_data_health, title="Data Health"),
-                st.Page(render_morning_context, title="Morning Brief"),
-                st.Page(render_pit_sector_internals, title="Methodology"),
-                st.Page(render_legacy_fmp_dashboard, title="Legacy FMP comparison"),
-            ],
-        }
-    )
+    registered: dict[str, object] = {}
+    grouped: dict[str, list] = {section: [] for section in NAV_SECTIONS}
+    for spec in PAGE_SPECS:
+        target = resolve_render(
+            spec,
+            pages_ui=pages_ui,
+            dashboard_renders={"render_legacy_fmp_dashboard": render_legacy_fmp_dashboard},
+        )
+        page = st.Page(target, title=spec.title, url_path=spec.url_path, default=spec.default)
+        registered[spec.route_id] = page
+        grouped.setdefault(spec.section, []).append(page)
+    set_registered_pages(registered)
+    navigation = st.navigation(grouped)
     navigation.run()
 
 

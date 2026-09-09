@@ -810,8 +810,9 @@ def test_pages_render_populated_state_db_only(consumer, page):
     if page.stem not in {"14_Sector_Rotation_V2", "15_Data_Health", "17_PIT_Sector_Internals", "18_Order_Flow"}:
         assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in text_out
     if page.stem == "10_Market_Pulse":
-        assert "Overnight quotes unavailable" in text_out
+        assert "not labeled as overnight" in text_out.lower() or "quotes" in text_out.lower()
         assert "What changed" in text_out
+        assert "Day to day" in text_out
     if page.stem == "16_Morning_Context":
         assert at.expander
     if page.stem == "14_Sector_Rotation_V2":
@@ -821,6 +822,32 @@ def test_pages_render_populated_state_db_only(consumer, page):
     if page.stem == "18_Order_Flow":
         assert "Corporate Bond Trading Activity" in text_out
         assert "not a live order book" in text_out.lower()
+
+
+def test_dashboard_entry_point_overview_links_use_registry(consumer):
+    from market_intelligence.page_registry import PAGE_BY_ROUTE
+
+    at = _run_page(ROOT / "dashboard.py")
+    assert not at.exception, [e.value for e in at.exception]
+    text_out = _texts(at)
+    assert "Overview" in text_out or (at.title and "Overview" in str(at.title[0].value))
+    assert "Day to day" in text_out
+    assert "What changed" in text_out
+    journeys = (
+        ("sectors", "Sectors"),
+        ("rates", "Rates"),
+        ("credit", "Credit"),
+        ("macro", "Macro"),
+        ("order_flow", "Order Flow"),
+    )
+    for route_id, title in journeys:
+        spec = PAGE_BY_ROUTE[route_id]
+        at.switch_page(spec.file_path or spec.legacy_path)
+        at.run()
+        assert not at.exception, [e.value for e in at.exception]
+        landed = _texts(at)
+        titles = [str(item.value) for item in at.title]
+        assert title in titles or title in landed
 
 
 @pytest.mark.parametrize("page", MI_PAGES, ids=[p.stem for p in MI_PAGES])

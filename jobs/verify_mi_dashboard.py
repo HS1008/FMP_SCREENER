@@ -17,6 +17,7 @@ from market_intelligence.nulls import strict_dumps
 
 ROOT = Path(__file__).resolve().parents[1]
 PAGES = [
+    ROOT / "dashboard.py",
     ROOT / "pages" / "10_Market_Pulse.py",
     ROOT / "pages" / "11_Macro_Overview.py",
     ROOT / "pages" / "12_Rates_Curve.py",

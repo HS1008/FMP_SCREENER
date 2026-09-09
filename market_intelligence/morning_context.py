@@ -30,9 +30,12 @@ from market_intelligence import CODE_VERSION
 from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CATALOG_VERSION, CREDIT_SERIES, CURVE_TENORS
 from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness
 from market_intelligence.nulls import canonical_sha256, normalize_payload, strict_dumps
+from market_intelligence.quote_status import derive_quote_status, morning_overnight_section
 from market_intelligence.read_models import (
     credit_context,
     data_health_context,
+    ibkr_collector_status,
+    ibkr_quotes_latest,
     industries_context,
     macro_context,
     order_flow_context,
@@ -86,7 +89,7 @@ _IDENTITY_KEYS = {
 _NUMERIC_VALUE_KEYS = {
     "value", "oas_bps", "yield_pct", "chg_prev_bps", "chg_1w_bps", "chg_1m_bps", "chg_3m_bps",
     "change_1d_bps", "change_1w_bps", "change_1m_bps", "change_3m_bps", "percentile", "zscore",
-    "rs_chg_1w", "rs_chg_1m", "rs_chg_3m", "rs_chg_6m", "rs_chg_12m", "ret_1m", "ret_1w", "ret_3m",
+    "rs_chg_1w", "rs_chg_1m", "rs_chg_3m", "rs_chg_6m", "rs_chg_12m", "ret_1d", "ret_1m", "ret_1w", "ret_3m",
 }
 
 # Per-section cadence used to judge captured staleness against the capture time (summary only).
@@ -316,7 +319,13 @@ def section_status(name: str, data: Any, *, required: list[str], capture_date: d
     }
 
 
-def _market_section(sectors: dict[str, Any], rates: dict[str, Any]) -> dict[str, Any] | None:
+def _market_section(
+    sectors: dict[str, Any],
+    rates: dict[str, Any],
+    *,
+    collectors: list[dict[str, Any]] | None = None,
+    quotes: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
     rs_rows = (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []
     leadership = []
     for row in rs_rows:
@@ -330,6 +339,7 @@ def _market_section(sectors: dict[str, Any], rates: dict[str, Any]) -> dict[str,
                 "rs_chg_1w": metrics.get("rs_chg_1w"),
                 "rs_chg_1m": metrics.get("rs_chg_1m"),
                 "rs_chg_3m": metrics.get("rs_chg_3m"),
+                "ret_1d": metrics.get("ret_1d"),
                 "ret_1m": metrics.get("ret_1m"),
                 "benchmark": row.get("benchmark"),
                 "value_basis": row.get("value_basis"),
@@ -345,7 +355,7 @@ def _market_section(sectors: dict[str, Any], rates: dict[str, Any]) -> dict[str,
     if not leadership and not curve:
         return None
     return {
-        "overnight_quotes": {"status": SECTION_UNAVAILABLE, "reason": "No live quote source is configured (IBKR market data disabled). Yesterday's close is not labeled overnight."},
+        "overnight_quotes": morning_overnight_section(derive_quote_status(collectors=collectors, quotes=quotes)),
         "sector_leadership_rs_vs_spy": leadership,
         "leadership_order": "sector_key (identity order; not ranked)",
         "us_10y": ten_year,
@@ -479,7 +489,7 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
     rates_data = rates if any(c.get("yield_pct") is not None for c in rates.get("curve", [])) else None
     sections = {
         "data_health": section_status("data_health", {"sources": health.get("sources")} if health.get("sources") else None, required=["sources"], capture_date=capture_date, empty_reason="No sources registered yet; run jobs.market_intelligence_refresh.", presence="registry"),
-        "market": section_status("market", _market_section(sectors, rates), required=["sector_leadership_rs_vs_spy", "us_10y"], capture_date=capture_date, empty_reason="No sector or rates data available."),
+        "market": section_status("market", _market_section(sectors, rates, collectors=ibkr_collector_status(conn), quotes=ibkr_quotes_latest(conn)), required=["sector_leadership_rs_vs_spy", "us_10y"], capture_date=capture_date, empty_reason="No sector or rates data available."),
         "macro": section_status("macro", macro_data, required=["categories"], capture_date=capture_date, empty_reason="No FRED macro observations stored (FRED_API_KEY not configured or refresh not run)."),
         "rates": section_status("rates", rates_data, required=["curve", "slopes"], capture_date=capture_date, empty_reason="No Treasury curve observations stored."),
         "liquidity": section_status("liquidity", _liquidity_section(macro), required=["series"], capture_date=capture_date, empty_reason="No liquidity series stored."),
