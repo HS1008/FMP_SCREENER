@@ -263,7 +263,7 @@ def test_ai_context_env_example_has_no_provider_secrets():
 
 
 def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
-    for name in ("mi_host_preflight.yml", "mi_production_activate.yml"):
+    for name in ("mi_host_preflight.yml", "mi_production_activate.yml", "mi_research_workspace_verify.yml"):
         raw = (ROOT / ".github" / "workflows" / name).read_text()
         text = _yaml_without_comments(ROOT / ".github" / "workflows" / name)
         assert "pull_request:" not in text and "pull_request_target" not in text
