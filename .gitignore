@@ -210,6 +210,9 @@ venv/
 # Host-only database dumps. Never keep them inside the git checkout.
 /backups/
 
+# Host-provisioned credential files (0600). Never commit.
+/.secrets/
+
 # Research-delivery visibility reports written by the ingest workflow (runtime only).
 delivery/
 

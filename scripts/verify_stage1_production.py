@@ -71,12 +71,13 @@ ALLOWED_SERVER_ONLY_FILES = frozenset(
         "test_db.py",
         "update_dashboard.sh",
         "backups/",
+        ".secrets/",
     }
 )
 
-# Host dumps that accidentally land under the checkout. Not a Stage 1
-# methodology change — only an operational exception for backup files.
-ALLOWED_UNTRACKED_PREFIXES = ("backups/",)
+# Host dumps and provisioned credential files that live beside the checkout.
+# Not a Stage 1 methodology change — operational artifacts only.
+ALLOWED_UNTRACKED_PREFIXES = ("backups/", ".secrets/")
 
 
 def redact(text: str) -> str:

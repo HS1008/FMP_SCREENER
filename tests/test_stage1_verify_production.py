@@ -324,6 +324,18 @@ def test_working_tree_allows_host_backup_directory_only():
     assert "extra/backups/" in other["unexpected_untracked"]
 
 
+def test_working_tree_allows_host_secrets_directory_only():
+    directory = evaluate_working_tree("?? .secrets/\n")
+    assert directory["ok"] is True
+    assert directory["allowed_untracked"] == [".secrets/"]
+    nested = evaluate_working_tree("?? .secrets/fred_api_key\n")
+    assert nested["ok"] is True
+    assert nested["allowed_untracked"] == [".secrets/fred_api_key"]
+    other = evaluate_working_tree("?? extra/.secrets/\n")
+    assert other["ok"] is False
+    assert "extra/.secrets/" in other["unexpected_untracked"]
+
+
 def test_production_verification_and_cron_share_the_same_backtest_sync_lock():
     from jobs.sync_quantconnect import (
         BACKTEST_SYNC_LOCK_RELATIVE,
