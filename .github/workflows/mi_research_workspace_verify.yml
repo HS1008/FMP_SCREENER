@@ -25,6 +25,8 @@ jobs:
       DO_HOST: ${{ secrets.DO_HOST }}
       DO_USER: ${{ secrets.DO_USER }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Configure SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
@@ -41,6 +43,12 @@ jobs:
             ConnectTimeout 20
           EOF
           chmod 600 ~/.ssh/config
+
+      - name: Install fixed activator without adding untracked checkout files
+        run: |
+          scp -q scripts/activate_market_intelligence_host.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh'
 
       - name: Confirm deployed SHA and apply 019 if objects are missing
         run: |
@@ -97,7 +105,7 @@ jobs:
           echo "refresh_after=$(systemctl show fmp-mi-refresh.service -p After --value || true)"
           echo "refresh_wants=$(systemctl show fmp-mi-refresh.service -p Wants --value || true)"
           echo "api_unit=$(systemctl is-active fmp-ai-context-api.service 2>/dev/null || echo absent)"
-          echo "api_listen=$(ss -ltn 2>/dev/null | awk '$4 ~ /127.0.0.1:8765/ {print \"loopback\"; found=1} $4 ~ /0.0.0.0:8765/ {print \"public\"; found=1} END {if (!found) print \"none\"}')"
+          echo "api_listen=$(ss -ltn 2>/dev/null | awk '$4 ~ /127.0.0.1:8765/ {print "loopback"; found=1} $4 ~ /0.0.0.0:8765/ {print "public"; found=1} END {if (!found) print "none"}')"
           health="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/health || true)"
           ready="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/v1/ready || true)"
           echo "api_health=${health}"
@@ -118,9 +126,34 @@ jobs:
         run: |
           ssh "$DO_USER@$DO_HOST" << 'EOF'
           set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("/etc/fmp/market_intelligence.env").read_text(encoding="utf-8")
+          present = False
+          placeholder = False
+          for line in text.splitlines():
+              if line.startswith("MARKET_INTELLIGENCE_DATABASE_URL="):
+                  value = line.split("=", 1)[1]
+                  present = bool(value.strip())
+                  placeholder = "CHANGE_ME" in value
+          print("refresh_env_writer_url={0}".format("placeholder" if placeholder else ("present" if present else "absent")))
+          PY
+          set +e
           systemctl start fmp-mi-refresh.service
+          start_rc=$?
+          set -e
+          echo "refresh_start_rc=${start_rc}"
           echo "refresh_result=$(systemctl show fmp-mi-refresh.service -p Result --value || true)"
           echo "refresh_exec=$(systemctl show fmp-mi-refresh.service -p ExecMainStatus --value || true)"
+          echo "refresh_journal_sanitized:"
+          journalctl -u fmp-mi-refresh.service -n 60 --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'error|traceback|address already|permission|modulenotfound|importerror|failed|started|CONFIGURATION|writer|lock|exit' \
+            | grep -viE 'postgres(ql)?://|bearer |password=|api_key|token=|FINRA_CLIENT|FRED_API|DATABASE_URL|MARKET_INTELLIGENCE_DATABASE' \
+            || true
+          if [ "$start_rc" -ne 0 ]; then
+            echo "FAIL: scheduled refresh unit did not start"
+            exit 1
+          fi
           EOF
 
       - name: Re-AppTest and report sanitized source/identity status

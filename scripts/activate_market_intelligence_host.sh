@@ -224,14 +224,45 @@ phase_provision() {
     echo "FAIL: writer database settings missing from dashboard env"
     exit 3
   fi
-  # Copy writer URL into the MI env file so the refresh unit has it, without printing.
-  if [ -n "${DATABASE_URL:-}" ]; then
-    printf '%s\n' "$DATABASE_URL" > /tmp/mi_writer_url
-    chmod 600 /tmp/mi_writer_url
-    python3 "$ROOT/scripts/update_protected_env.py" \
-      --env-file "$ENV_FILE" --key MARKET_INTELLIGENCE_DATABASE_URL --value-file /tmp/mi_writer_url
-    rm -f /tmp/mi_writer_url
+  # The refresh unit loads only /etc/fmp/market_intelligence.env, not the dashboard
+  # .env. Copy a writer URL from DATABASE_URL or DB_* so systemd has a writer identity.
+  if [ -f "$ROOT/scripts/materialize_mi_writer_url.py" ]; then
+    python3 "$ROOT/scripts/materialize_mi_writer_url.py" --output /tmp/mi_writer_url
+  else
+    python3 - <<'PY'
+import os, pathlib, urllib.parse
+def usable(value):
+    text = (value or "").strip()
+    return "" if (not text or "CHANGE_ME" in text) else text
+url = usable(os.environ.get("MARKET_INTELLIGENCE_DATABASE_URL"))
+source = "dedicated"
+if not url:
+    url = usable(os.environ.get("DATABASE_URL"))
+    source = "database_url"
+if not url:
+    host = (os.environ.get("DB_HOST") or "").strip()
+    name = (os.environ.get("DB_NAME") or "").strip()
+    user = (os.environ.get("DB_USER") or "").strip()
+    if host and name and user:
+        url = "postgresql://{0}:{1}@{2}:{3}/{4}".format(
+            urllib.parse.quote(user, safe=""),
+            urllib.parse.quote(os.environ.get("DB_PASSWORD") or "", safe=""),
+            host,
+            (os.environ.get("DB_PORT") or "5432").strip() or "5432",
+            name,
+        )
+        source = "db_star"
+if not url:
+    print("writer_url_source=missing")
+    raise SystemExit(3)
+pathlib.Path("/tmp/mi_writer_url").write_text(url + "\n", encoding="utf-8")
+os.chmod("/tmp/mi_writer_url", 0o600)
+print("writer_url_source={0}".format(source))
+PY
   fi
+  python3 "$ROOT/scripts/update_protected_env.py" \
+    --env-file "$ENV_FILE" --key MARKET_INTELLIGENCE_DATABASE_URL --value-file /tmp/mi_writer_url
+  rm -f /tmp/mi_writer_url
   RO_PW_FILE="$RO_PW_FILE" python3 - <<'PY'
 import os, pathlib, urllib.parse
 pw = pathlib.Path(os.environ["RO_PW_FILE"]).read_text(encoding="utf-8").strip()
