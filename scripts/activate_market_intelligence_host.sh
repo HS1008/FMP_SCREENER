@@ -326,16 +326,46 @@ phase_verify() {
   echo "verify complete"
 }
 
+sanitize_unit_journal() {
+  local unit="$1"
+  journalctl -u "$unit" -n 40 --no-pager -o cat 2>/dev/null \
+    | grep -Ei 'error|traceback|address already|permission|modulenotfound|importerror|failed|started|uvicorn|listening|application startup' \
+    | grep -viE 'postgres(ql)?://|bearer |password=|api_key|token=' \
+    || true
+}
+
+wait_for_local_api() {
+  local i code
+  for i in $(seq 1 40); do
+    code="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/health || true)"
+    echo "api_health_wait=${i} code=${code}"
+    if [ "$code" = "200" ]; then
+      return 0
+    fi
+    sleep 1
+  done
+  echo "api_unit=$(systemctl is-active fmp-ai-context-api.service || true)"
+  echo "api_listen=$(ss -ltn 2>/dev/null | awk '$4 ~ /127.0.0.1:8765/ {print \"yes\"; found=1} END {if (!found) print \"no\"}')"
+  echo "api_journal_sanitized:"
+  sanitize_unit_journal fmp-ai-context-api.service
+  return 1
+}
+
 phase_schedule() {
   echo "PHASE schedule"
   bash "$ROOT/scripts/install_market_intelligence_timers.sh" --apply --with-api --root "$ROOT" --env-file "$ENV_FILE"
   systemctl is-enabled fmp-mi-refresh.timer
   systemctl is-active fmp-ai-context-api.service
   systemctl list-timers fmp-mi-refresh.timer --no-pager
+  if ! wait_for_local_api; then
+    echo "FAIL: private AI API did not become ready on 127.0.0.1:8765"
+    exit 4
+  fi
   no_token="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/v1/ready || true)"
   echo "ai_ready_without_token=${no_token}"
   if [ "$no_token" != "401" ]; then
     echo "FAIL: private AI API did not return 401 without a token"
+    sanitize_unit_journal fmp-ai-context-api.service
     exit 4
   fi
   with_token="$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -344,6 +374,7 @@ phase_schedule() {
   echo "ai_ready_with_token=${with_token}"
   if [ "$with_token" != "200" ]; then
     echo "FAIL: private AI API did not return 200 with the configured token"
+    sanitize_unit_journal fmp-ai-context-api.service
     exit 4
   fi
   echo "schedule complete"
