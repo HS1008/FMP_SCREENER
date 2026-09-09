@@ -14,14 +14,17 @@ import streamlit as st
 
 from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
 from market_intelligence.nulls import strict_dumps
+from market_intelligence.overview import build_what_changed
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.ui import (
     age_text,
+    compact_as_of,
     fmt,
     fmt_signed,
     freshness_chip,
     heatmap_legend,
     history_chart,
+    implied_prior_yield,
     load_or_stop,
     page_header,
     styled_heatmap,
@@ -37,6 +40,7 @@ CATEGORY_TITLES = {
     "liquidity": "Liquidity",
     "credit": "Credit",
 }
+PRIMARY_MACRO = ("growth", "labor", "inflation", "liquidity")
 TRANSFORM_LABELS = {
     "yoy_pct": "YoY",
     "ann3m_pct": "3M annualized",
@@ -76,599 +80,707 @@ def _transform_text(entry: dict[str, Any] | None) -> str:
     return text
 
 
-def _sources_summary(health: list[dict[str, Any]]) -> pd.DataFrame:
-    rows = []
-    for h in health:
-        rows.append(
-            {
-                "Source": h.get("source_id"),
-                "Dataset": h.get("freshness_dataset") or h.get("dataset"),
-                "Enabled": "yes" if h.get("enabled") else "no",
-                "Access": h.get("access_status"),
-                "Cadence": h.get("dataset_cadence") or "—",
-                "Transport": transport_chip(h.get("transport_status")),
-                "Freshness (now)": freshness_chip(h.get("freshness_status")),
-                "Latest obs": h.get("latest_observation_date") or "—",
-                "Last success": age_text(h.get("last_success_at")),
-            }
-        )
-    return pd.DataFrame(rows)
+def _worst_freshness(health: list[dict[str, Any]]) -> str | None:
+    statuses = [str(row.get("freshness_status") or "").upper() for row in health]
+    if "STALE" in statuses:
+        return "STALE"
+    if "UNKNOWN" in statuses or not statuses:
+        return "UNKNOWN"
+    if "FRESH" in statuses:
+        return "FRESH"
+    return statuses[0] if statuses else None
 
 
-# ---- Market Pulse ---------------------------------------------------------------------------
+def _material_warning(health: list[dict[str, Any]], extra: list[str] | None = None) -> str | None:
+    notes = list(extra or [])
+    stale = [row for row in health if str(row.get("freshness_status") or "").upper() == "STALE"]
+    failed = [row for row in health if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED"}]
+    if stale:
+        notes.append("{0} source(s) are stale relative to their release cadence.".format(len(stale)))
+    if failed:
+        notes.append("{0} source(s) failed the last retrieval. Last valid stored values are shown.".format(len(failed)))
+    return " ".join(notes) if notes else None
+
+
+def _open_page(path: str, label: str) -> None:
+    try:
+        st.page_link(path, label=label)
+    except Exception:  # noqa: BLE001
+        st.caption(label)
+
+
+# ---- Overview ---------------------------------------------------------------------------
 
 def render_market_pulse() -> None:
-    page_header("Market Pulse", "Source health plus the latest available macro, rates, credit and sector changes. PostgreSQL read-only; no provider calls.")
     health = load_or_stop("source_health")
     rates = load_or_stop("rates_context")
     credit = load_or_stop("credit_context")
     sectors = load_or_stop("sectors_context")
     macro = load_or_stop("macro_context")
+    order_flow = load_or_stop("order_flow_overview")
+    as_of, freshness = compact_as_of(
+        [row.get("latest_observation_date") for row in health] + [row.get("as_of") for row in (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []],
+        freshness=_worst_freshness(health),
+    )
+    page_header(
+        "Overview",
+        "What changed across sectors, rates, credit, the economy, and reported bond activity.",
+        as_of=as_of,
+        freshness=freshness,
+        warning=_material_warning(health),
+    )
+    st.caption("Overnight quotes unavailable: no live quote source is configured. Prior-session closes are not labeled as overnight.")
 
-    st.subheader("Source health")
-    top_level = [h for h in health if h.get("freshness_dataset") in (None, "fred_series_observations", "precomputed_sector_bundles", h.get("dataset"))]
-    if not top_level:
-        st.info("No sources registered. Run `python -m jobs.market_intelligence_refresh --all-configured` on the backend.")
+    changed = build_what_changed(rates=rates, credit=credit, sectors=sectors, macro=macro, order_flow=order_flow)
+    st.subheader("What changed")
+    if changed:
+        st.dataframe(pd.DataFrame([{"Area": row["area"], "Change": row["text"], "Period": row["period"]} for row in changed]), use_container_width=True, hide_index=True)
     else:
-        st.dataframe(_sources_summary(top_level), use_container_width=True, hide_index=True)
+        st.info("No stored observations yet.")
 
-    st.subheader("Overnight")
-    st.info("Overnight quotes unavailable: no live quote source is configured. Prior-session closes are not labeled as overnight.")
-
-    st.subheader("Rates")
-    curve = [c for c in rates.get("curve", []) if c.get("yield_pct") is not None]
-    if not curve:
-        st.info("No Treasury curve data stored.")
-    else:
-        cols = st.columns(min(4, len(curve)))
-        for i, c in enumerate([x for x in curve if x["tenor"] in {"3M", "2Y", "10Y", "30Y"}][:4]):
-            with cols[i % len(cols)]:
-                st.metric("{0} Treasury ({1})".format(c["tenor"], c["observation_date"]), fmt(c["yield_pct"], "pct"), fmt_signed(c.get("chg_prev_bps"), "bps") if c.get("chg_prev_bps") is not None else None, help="Yield in percent; delta vs prior session in basis points.")
-        slopes = rates.get("slopes") or {}
-        slope_cols = st.columns(4)
-        for i, (name, entry) in enumerate(slopes.items()):
-            with slope_cols[i % 4]:
-                st.metric("Slope {0}".format(name.replace("Y", "Y-", 1) if name[0].isdigit() else name), _transform_text(entry), help="Long minus short tenor on a common observation date, in bps.")
-        if rates.get("curve_dates_mixed"):
-            st.warning("Curve tenors carry different observation dates: {0}".format(", ".join(rates.get("curve_observation_dates", []))))
-
-    st.subheader("Credit (internal view)")
-    buckets = credit.get("buckets") or []
-    if not buckets:
-        st.info("No credit index snapshots stored.")
-    else:
-        broad = [b for b in buckets if b["bucket"] in {"ig_broad", "hy_broad"}]
-        cols = st.columns(max(1, len(broad)))
-        for i, b in enumerate(broad):
-            with cols[i]:
-                st.metric("{0} ({1})".format(b["label"], b["as_of"]), fmt(b["oas_bps"], "bps").replace("+", ""), fmt_signed(b.get("change_1d_bps"), "bps") if b.get("change_1d_bps") is not None else None, help="OAS in bps; 1D change only when the prior observation is one session earlier.")
-        st.caption(credit.get("attribution") or "")
-
-    st.subheader("Inflation & labor")
-    cats = macro.get("categories") or {}
-    quick = []
-    for cat in ("inflation", "labor", "growth"):
-        for block in cats.get(cat, []):
-            transforms = block.get("transforms") or {}
-            headline = transforms.get("yoy_pct") or transforms.get("mom_change") or transforms.get("qoq_saar_pct") or transforms.get("wow_change")
-            quick.append({"Series": block.get("label"), "Latest": fmt(block["latest"].get("value"), None), "Units": block["latest"].get("units"), "Obs date": block["latest"].get("observation_date"), "Headline": _transform_text(headline), "Headline kind": next((TRANSFORM_LABELS.get(k) for k in ("yoy_pct", "mom_change", "qoq_saar_pct", "wow_change") if k in transforms), "—")})
-    if quick:
-        st.dataframe(pd.DataFrame(quick), use_container_width=True, hide_index=True)
-    else:
-        st.info("No macro observations stored.")
-
-    st.subheader("Sector leadership (1M relative strength vs SPY)")
+    curve = [row for row in rates.get("curve", []) if row.get("tenor") in {"2Y", "10Y", "30Y"} and row.get("yield_pct") is not None]
+    buckets = [row for row in (credit.get("buckets") or []) if row.get("bucket") in {"ig_broad", "hy_broad"}]
     rs_rows = (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []
-    if not rs_rows:
-        st.info("No sector rotation snapshots stored (legacy bridge not run).")
-    else:
+    headline_cols = st.columns(4)
+    if curve:
+        ten = next((row for row in curve if row["tenor"] == "10Y"), curve[0])
+        headline_cols[0].metric("10Y yield", fmt(ten.get("yield_pct"), "pct"), fmt_signed(ten.get("chg_prev_bps"), "bps") if ten.get("chg_prev_bps") is not None else None)
+    if buckets:
+        ig = next((row for row in buckets if row["bucket"] == "ig_broad"), buckets[0])
+        headline_cols[1].metric("IG OAS", fmt(ig.get("oas_bps"), "bps").replace("+", ""), fmt_signed(ig.get("change_1d_bps"), "bps") if ig.get("change_1d_bps") is not None else None)
+    if rs_rows:
+        ranked = sorted(rs_rows, key=lambda row: ((row.get("metrics") or {}).get("rs_chg_1m") is None, -((row.get("metrics") or {}).get("rs_chg_1m") or 0)))
+        lead = ranked[0]
+        headline_cols[2].metric("Sector lead (1M RS)", str(lead.get("sector_key") or "—"), fmt_signed((lead.get("metrics") or {}).get("rs_chg_1m"), "fraction") if (lead.get("metrics") or {}).get("rs_chg_1m") is not None else None)
+    breadth = next((row for row in ((order_flow.get("breadth") or {}).get("rows") or []) if (row.get("product_category") or "").lower() == "all securities"), None)
+    if breadth:
+        headline_cols[3].metric("Bond activity (volume)", fmt(breadth.get("total_volume"), None), fmt_signed(breadth.get("volume_change"), None) if breadth.get("volume_change") is not None else None)
+
+    st.subheader("Sector leadership and weakness")
+    if rs_rows:
         frame = pd.DataFrame(
-            [{"Sector / theme": r["sector_key"], "ETF": r["instrument_id"], "As of": r["as_of"], "1W RS": (r["metrics"] or {}).get("rs_chg_1w"), "1M RS": (r["metrics"] or {}).get("rs_chg_1m"), "3M RS": (r["metrics"] or {}).get("rs_chg_3m"), "1M return": (r["metrics"] or {}).get("ret_1m")} for r in rs_rows]
+            [{"Sector": row["sector_key"], "ETF proxy": row["instrument_id"], "As of": row["as_of"], "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m"), "1M return": (row["metrics"] or {}).get("ret_1m")} for row in rs_rows]
         ).sort_values("1M RS", ascending=False, na_position="last")
         st.dataframe(styled_heatmap(frame, ["1W RS", "1M RS", "3M RS", "1M return"]), use_container_width=True, hide_index=True)
         heatmap_legend()
-        st.caption("Relative strength = change in the ETF/SPY adjusted-close ratio (not an arithmetic excess return). Source: FMP legacy bundles.")
+        st.caption("Relative strength is the change in the ETF/SPY adjusted-close ratio, not an arithmetic excess return. ETF proxy, not a constituent aggregate.")
+        _open_page("pages/14_Sector_Rotation_V2.py", "Open Sectors")
+    else:
+        st.info("No sector snapshots stored.")
+
+    st.subheader("Treasury yields")
+    if curve:
+        cols = st.columns(len(curve))
+        for i, row in enumerate(curve):
+            cols[i].metric("{0}".format(row["tenor"]), fmt(row.get("yield_pct"), "pct"), fmt_signed(row.get("chg_prev_bps"), "bps") if row.get("chg_prev_bps") is not None else None)
+        _open_page("pages/12_Rates_Curve.py", "Open Rates")
+    else:
+        st.info("No Treasury curve data stored.")
+
+    st.subheader("Credit spreads")
+    if buckets:
+        cols = st.columns(len(buckets))
+        for i, row in enumerate(buckets):
+            cols[i].metric(row["label"], fmt(row.get("oas_bps"), "bps").replace("+", ""), fmt_signed(row.get("change_1d_bps"), "bps") if row.get("change_1d_bps") is not None else None)
+        st.caption(credit.get("attribution") or "")
+        _open_page("pages/13_Credit_Overview.py", "Open Credit")
+    else:
+        st.info("No credit index snapshots stored.")
+
+    st.subheader("Economy")
+    cats = macro.get("categories") or {}
+    quick = []
+    for cat in PRIMARY_MACRO:
+        for block in cats.get(cat, []):
+            transforms = block.get("transforms") or {}
+            headline = transforms.get("yoy_pct") or transforms.get("qoq_saar_pct") or transforms.get("mom_change") or transforms.get("chg_4w") or transforms.get("wow_change")
+            kind = next((TRANSFORM_LABELS.get(key) for key in ("yoy_pct", "qoq_saar_pct", "mom_change", "chg_4w", "wow_change") if key in transforms), "—")
+            quick.append({"Group": CATEGORY_TITLES[cat], "Series": block.get("label"), "Latest": fmt(block["latest"].get("value"), None), "Change": _transform_text(headline), "Change kind": kind, "Observation": block["latest"].get("observation_date")})
+    if quick:
+        st.dataframe(pd.DataFrame(quick), use_container_width=True, hide_index=True)
+        _open_page("pages/11_Macro_Overview.py", "Open Macro")
+    else:
+        st.info("No macro observations stored.")
+
+    st.subheader("Bond trading activity")
+    if breadth:
+        st.caption("Reported TRACE activity, not a live order book.")
+        cols = st.columns(3)
+        cols[0].metric("Reported volume", fmt(breadth.get("total_volume"), None), fmt_signed(breadth.get("volume_change"), None) if breadth.get("volume_change") is not None else None)
+        cols[1].metric("Trade count", fmt(breadth.get("total_trades"), None), fmt_signed(breadth.get("trade_count_change"), None) if breadth.get("trade_count_change") is not None else None)
+        cols[2].metric("Session", str(breadth.get("observation_date") or "—"))
+        capped = order_flow.get("capped_volume") or {}
+        if not capped.get("headline_eligible"):
+            st.caption(capped.get("identity_note") or "Capped-volume figures are withheld from headlines until reporting-period identity is validated.")
+        _open_page("pages/18_Order_Flow.py", "Open Order Flow")
+    else:
+        st.info("No corporate-bond activity aggregates stored.")
 
 
-# ---- Macro Overview ---------------------------------------------------------------------------
+# ---- Macro ---------------------------------------------------------------------------
 
 def render_macro_overview() -> None:
-    page_header("Macro Overview", "Growth, labor, inflation, policy, liquidity and credit from canonical PostgreSQL. Latest values, versioned transforms, history.")
     macro = load_or_stop("macro_context")
-    credit = load_or_stop("credit_context")
     cats = macro.get("categories") or {}
+    dates = [block.get("latest", {}).get("observation_date") for blocks in cats.values() for block in blocks]
+    page_header(
+        "Macro",
+        "Growth, labor, inflation, and liquidity. Observation dates are the period being measured, not the retrieval time.",
+        as_of=compact_as_of(dates)[0],
+    )
     if not cats:
-        st.info("No FRED observations stored yet. Configure `FRED_API_KEY` on the backend and run `python -m jobs.market_intelligence_refresh --fred --build-analytics`.")
+        st.info("No macro observations stored yet.")
         return
-    missing = macro.get("series_without_data") or []
-    if missing:
-        st.warning("{0} catalog series have no stored data: {1}".format(len(missing), ", ".join(missing[:12]) + (" …" if len(missing) > 12 else "")))
-    for cat in ("growth", "labor", "inflation", "policy", "rates", "liquidity"):
+    if macro.get("series_without_data"):
+        with st.expander("Catalog series without stored observations"):
+            st.write(", ".join(macro["series_without_data"]))
+
+    chosen_default = None
+    for cat in PRIMARY_MACRO:
         blocks = cats.get(cat) or []
         if not blocks:
             continue
-        st.subheader(CATEGORY_TITLES.get(cat, cat.title()))
+        st.subheader(CATEGORY_TITLES[cat])
         rows = []
         for block in blocks:
             transforms = block.get("transforms") or {}
-            row = {"Series": block.get("label") or block["series_id"], "ID": block["series_id"], "Latest": fmt(block["latest"].get("value"), None), "Units": block["latest"].get("units") or block.get("catalog_units"), "Obs date": block["latest"].get("observation_date"), "Freq": block.get("frequency"), "SA": block.get("seasonal_adjustment"), "Aggregation": block.get("aggregation") or "—", "Vintage": block.get("vintage_kind")}
-            display = transforms.get("level_display")
-            if display is not None and display.get("value") is not None:
-                row["Display"] = "{0} {1}".format(fmt(display.get("value"), None), display.get("units") or "")
-            for key in ("yoy_pct", "ann3m_pct", "ann6m_pct", "mom_pct", "qoq_saar_pct", "mom_change", "mom_change_pp", "yoy_change_pp", "wow_change", "chg_4w", "avg_4w", "chg_prev_bps", "chg_1w_bps", "chg_1m_bps", "chg_3m_bps"):
-                if key in transforms:
-                    row[TRANSFORM_LABELS.get(key, key)] = _transform_text(transforms[key])
-            if block.get("publication_status") and block.get("publication_status") != "PUBLISHED":
-                row["Publication"] = "{0} ({1})".format(block.get("publication_status"), block.get("metadata_status"))
+            chosen_default = chosen_default or block["series_id"]
+            row = {
+                "Series": block.get("label") or block["series_id"],
+                "Latest": fmt(block["latest"].get("value"), None),
+                "Units": block["latest"].get("units") or block.get("catalog_units"),
+                "Observation": block["latest"].get("observation_date"),
+                "Change": _transform_text(transforms.get("yoy_pct") or transforms.get("qoq_saar_pct") or transforms.get("mom_change") or transforms.get("chg_4w") or transforms.get("wow_change") or transforms.get("chg_prev")),
+            }
             rows.append(row)
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        quarantined = [b["series_id"] for b in blocks if b.get("publication_status") and b.get("publication_status") != "PUBLISHED"]
+        quarantined = [block["series_id"] for block in blocks if block.get("publication_status") and block.get("publication_status") != "PUBLISHED"]
         if quarantined:
-            st.warning("Metadata gate: {0} show the last validated data only; the latest retrieval was quarantined (see Data Health).".format(", ".join(quarantined)))
+            st.warning("The latest retrieval for {0} was quarantined; last validated values remain.".format(", ".join(quarantined)))
         if cat == "liquidity":
-            st.caption("Balances differ in dating (Wednesday levels for WALCL vs week averages ending Wednesday for WTREGEN/WRESBAL vs daily RRPONTSYD) and scale (provider units are millions or billions; 'Display' is an explicit versioned conversion, the stored level keeps provider units); no composite liquidity score is computed.")
+            st.caption("Balances differ in dating and scale. Display conversions keep provider units in storage; no composite liquidity score is computed.")
         if cat == "inflation":
-            st.caption("YoY = 100·(I_t/I_{t−12} − 1); 3M annualized = 100·((I_t/I_{t−3})⁴ − 1); 6M annualized = 100·((I_t/I_{t−6})² − 1); exact calendar alignment, no forward fill.")
-    buckets = credit.get("buckets") or []
-    if buckets:
-        st.subheader("Credit")
-        st.dataframe(pd.DataFrame([{"Bucket": b["label"], "As of": b["as_of"], "OAS (bps)": fmt(b["oas_bps"], None, digits=0), "1D": fmt_signed(b["change_1d_bps"], "bps"), "1W": fmt_signed(b["change_1w_bps"], "bps"), "1M": fmt_signed(b["change_1m_bps"], "bps"), "Window": b["percentile_window"] or "—", "Percentile": fmt(b["percentile"], "pctile"), "History": b["history_status"]} for b in buckets]), use_container_width=True, hide_index=True)
-        st.caption(credit.get("attribution") or "")
+            st.caption("YoY = 100·(I_t/I_{t−12} − 1); 3M annualized = 100·((I_t/I_{t−3})⁴ − 1). Exact calendar alignment, no forward fill.")
+
+    with st.expander("Policy rates and Treasury catalog"):
+        extra_rows = []
+        for cat in ("policy", "rates"):
+            for block in cats.get(cat) or []:
+                extra_rows.append({"Group": CATEGORY_TITLES[cat], "Series": block.get("label"), "Latest": fmt(block["latest"].get("value"), None), "Observation": block["latest"].get("observation_date")})
+        if extra_rows:
+            st.dataframe(pd.DataFrame(extra_rows), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No additional policy or Treasury catalog rows on this page. See Rates.")
+
+    with st.expander("Series definitions and transforms"):
+        detail = []
+        for cat, blocks in cats.items():
+            for block in blocks:
+                transforms = block.get("transforms") or {}
+                row = {"Series": block.get("label"), "ID": block["series_id"], "Freq": block.get("frequency"), "SA": block.get("seasonal_adjustment"), "Vintage": block.get("vintage_kind")}
+                for key, label in TRANSFORM_LABELS.items():
+                    if key in transforms:
+                        row[label] = _transform_text(transforms[key])
+                detail.append(row)
+        if detail:
+            st.dataframe(pd.DataFrame(detail), use_container_width=True, hide_index=True)
 
     st.subheader("History")
-    all_ids = sorted({b["series_id"] for blocks in cats.values() for b in blocks})
-    chosen = st.selectbox("Series", all_ids, index=all_ids.index("CPIAUCSL") if "CPIAUCSL" in all_ids else 0, format_func=lambda s: "{0} — {1}".format(s, CATALOG_BY_ID[s].label if s in CATALOG_BY_ID else s))
-    history = load_or_stop("observation_history", chosen)
-    spec = CATALOG_BY_ID.get(chosen)
-    history_chart(history, x="observation_date", y="value", title="{0} ({1})".format(spec.label if spec else chosen, chosen), units=(spec.expected_units_contains[0] if spec and spec.expected_units_contains else None))
-    if spec:
-        st.caption("Source: {0} · {1}".format(spec.source_url, spec.notes or ""))
+    all_ids = sorted({block["series_id"] for blocks in cats.values() for block in blocks})
+    if all_ids:
+        chosen = st.selectbox("Series", all_ids, index=all_ids.index(chosen_default) if chosen_default in all_ids else 0, format_func=lambda series_id: "{0} — {1}".format(series_id, CATALOG_BY_ID[series_id].label if series_id in CATALOG_BY_ID else series_id))
+        history = load_or_stop("observation_history", chosen)
+        spec = CATALOG_BY_ID.get(chosen)
+        history_chart(history, x="observation_date", y="value", title="{0}".format(spec.label if spec else chosen), units=(spec.expected_units_contains[0] if spec and spec.expected_units_contains else None))
 
 
-# ---- Rates & Curve ---------------------------------------------------------------------------
+# ---- Rates ---------------------------------------------------------------------------
 
 def render_rates_curve() -> None:
-    page_header("Rates & Curve", "Treasury nominal curve, real yields, inflation compensation and slopes. Yields in percent; changes in basis points.")
     rates = load_or_stop("rates_context")
     curve = rates.get("curve") or []
-    present = [c for c in curve if c.get("yield_pct") is not None]
+    present = [row for row in curve if row.get("yield_pct") is not None]
+    page_header(
+        "Rates",
+        "Treasury curve in percent; changes in basis points.",
+        as_of=compact_as_of([row.get("observation_date") for row in present])[0],
+        warning="Tenors have different observation dates: {0}.".format(", ".join(rates.get("curve_observation_dates") or [])) if rates.get("curve_dates_mixed") else None,
+    )
     if not present:
-        st.info("No Treasury curve observations stored. Run the FRED refresh on the backend.")
+        st.info("No Treasury curve observations stored.")
         return
-    if rates.get("curve_dates_mixed"):
-        st.warning("Tenors have different latest observation dates ({0}); the curve is shown per tenor date, not mixed.".format(", ".join(rates["curve_observation_dates"])))
     frame = pd.DataFrame(present)
-    frame["tenor_order"] = frame["tenor"].map({t: i for i, t in enumerate(CURVE_TENORS)})
+    frame["tenor_order"] = frame["tenor"].map({tenor: i for i, tenor in enumerate(CURVE_TENORS)})
     frame = frame.sort_values("tenor_order")
+    compare = st.radio("Compare with", ["None", "Prior session", "1 week", "1 month"], horizontal=True, key="rates_compare")
+    change_key = {"Prior session": "chg_prev_bps", "1 week": "chg_1w_bps", "1 month": "chg_1m_bps"}.get(compare)
     try:
         import plotly.graph_objects as go
 
-        fig = go.Figure(go.Scatter(x=frame["tenor"], y=frame["yield_pct"], mode="lines+markers", name="Yield (%)"))
-        fig.update_layout(height=340, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="percent")
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=frame["tenor"], y=frame["yield_pct"], mode="lines+markers", name="Latest yield (%)"))
+        if change_key:
+            prior = [implied_prior_yield(row.get("yield_pct"), row.get(change_key)) for row in frame.to_dict("records")]
+            if any(value is not None for value in prior):
+                fig.add_trace(go.Scatter(x=frame["tenor"], y=prior, mode="lines+markers", name=compare, line=dict(dash="dash")))
+        fig.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="percent", legend=dict(orientation="h"))
         st.plotly_chart(fig, use_container_width=True)
     except ImportError:  # pragma: no cover
         st.line_chart(frame.set_index("tenor")["yield_pct"])
-    table = pd.DataFrame(
-        [{"Tenor": c["tenor"], "Yield (%)": fmt(c["yield_pct"], "pct"), "Obs date": c["observation_date"], "vs prior (bps)": fmt_signed(c.get("chg_prev_bps"), "bps"), "1W (bps)": fmt_signed(c.get("chg_1w_bps"), "bps"), "1M (bps)": fmt_signed(c.get("chg_1m_bps"), "bps"), "3M (bps)": fmt_signed(c.get("chg_3m_bps"), "bps")} for c in present]
-    )
-    st.dataframe(table, use_container_width=True, hide_index=True)
-    missing_tenors = [c["tenor"] for c in curve if c.get("yield_pct") is None]
-    if missing_tenors:
-        st.caption("Tenors without data (not extrapolated): {0}".format(", ".join(missing_tenors)))
 
-    st.subheader("Slopes")
+    headline = [row for row in present if row["tenor"] in {"2Y", "10Y", "30Y"}]
+    cols = st.columns(max(1, len(headline)))
+    for i, row in enumerate(headline):
+        cols[i].metric("{0}".format(row["tenor"]), fmt(row.get("yield_pct"), "pct"), fmt_signed(row.get("chg_prev_bps"), "bps") if row.get("chg_prev_bps") is not None else None)
+
     slopes = rates.get("slopes") or {}
-    cols = st.columns(4)
-    for i, (name, entry) in enumerate(slopes.items()):
-        with cols[i % 4]:
-            st.metric(name, _transform_text(entry), help="Long minus short on a common observation date; missing legs reported, never mixed dates.")
-            if entry and entry.get("comparison", {}).get("missing_legs"):
-                st.caption("Missing legs: {0}".format(", ".join(entry["comparison"]["missing_legs"])))
+    slope_2s10s = slopes.get("2s10s") or slopes.get("2Y10Y") or next(iter(slopes.values()), None)
+    if slope_2s10s:
+        st.metric("2s10s slope", _transform_text(slope_2s10s), help="Long minus short tenor on a common observation date, in basis points.")
 
-    for title, key in (("Real yields (TIPS)", "real_yields"), ("Inflation compensation (breakevens — market-implied, not survey)", "inflation_compensation"), ("Policy rates", "policy")):
-        blocks = rates.get(key) or []
-        if not blocks:
-            continue
-        st.subheader(title)
-        st.dataframe(pd.DataFrame([{"Series": b.get("label"), "ID": b["series_id"], "Level (%)": fmt(b["latest"].get("value"), "pct"), "Obs date": b["latest"].get("observation_date"), "vs prior (bps)": _transform_text((b.get("transforms") or {}).get("chg_prev_bps")), "1W (bps)": _transform_text((b.get("transforms") or {}).get("chg_1w_bps")), "1M (bps)": _transform_text((b.get("transforms") or {}).get("chg_1m_bps"))} for b in blocks]), use_container_width=True, hide_index=True)
-    st.caption(rates.get("units_note") or "")
-
-
-# ---- Credit Overview -------------------------------------------------------------------------
-
-def render_credit_overview() -> None:
-    page_header("Credit Overview", "ICE BofA option-adjusted spreads via FRED: IG/HY and rating buckets, changes, and available-window distributions. Internal view; redistribution restricted.")
-    credit = load_or_stop("credit_context")
-    buckets = credit.get("buckets") or []
-    if not buckets:
-        st.info("No credit index snapshots stored. Run the FRED refresh with analytics on the backend.")
-        return
-    broad = [b for b in buckets if b["bucket"] in {"ig_broad", "hy_broad"}]
-    cols = st.columns(max(1, len(broad)))
-    for i, b in enumerate(broad):
-        with cols[i]:
-            st.metric("{0} ({1})".format(b["label"], b["as_of"]), "{0:.0f} bps".format(b["oas_bps"]) if b.get("oas_bps") is not None else "—", fmt_signed(b.get("change_1d_bps"), "bps") if b.get("change_1d_bps") is not None else None)
-    st.dataframe(
-        pd.DataFrame([{"Bucket": b["label"], "Series": b["series_id"], "As of": b["as_of"], "OAS (bps)": fmt(b["oas_bps"], None, digits=0), "1D": fmt_signed(b["change_1d_bps"], "bps"), "1W": fmt_signed(b["change_1w_bps"], "bps"), "1M": fmt_signed(b["change_1m_bps"], "bps"), "3M": fmt_signed(b["change_3m_bps"], "bps"), "Window": b["percentile_window"] or "—", "Percentile": fmt(b["percentile"], "pctile"), "Z-score": fmt(b["zscore"], None), "Obs in window": b["window_observations"], "History from": b["history_first_date"], "History": b["history_status"]} for b in buckets]),
-        use_container_width=True,
-        hide_index=True,
-    )
-    st.caption(credit.get("coverage_note") or "")
-    st.caption(credit.get("attribution") or "")
-    st.subheader("History")
-    ids = [b["series_id"] for b in buckets]
-    chosen = st.selectbox("Series", ids, format_func=lambda s: CATALOG_BY_ID[s].label if s in CATALOG_BY_ID else s)
-    history = load_or_stop("metric_history", "{0}.oas_bps".format(chosen))
-    history_chart(history, x="as_of", y="value", title="{0} OAS (bps)".format(CATALOG_BY_ID[chosen].label if chosen in CATALOG_BY_ID else chosen), units="bps")
-
-
-# ---- Sector Rotation V2 ----------------------------------------------------------------------
-
-def render_sector_rotation_v2() -> None:
-    page_header("Sector Rotation V2", "Source-aware sector heatmap from canonical snapshots (legacy FMP bridge today; QC diagnostics when published). No live provider calls.", fred=False)
-    sectors = load_or_stop("sectors_context")
-    datasets = sectors.get("datasets") or {}
-    if not datasets:
-        st.info("No sector snapshots stored. Run `python -m jobs.ingest_legacy_sector_precomputed` on the backend after the nightly bundles exist.")
-        return
-    rs_rows = datasets.get("ETF_RS_VS_SPY") or []
-    if rs_rows:
-        benchmarks = sorted({r.get("benchmark") for r in rs_rows if r.get("benchmark")})
-        benchmark = st.selectbox("Benchmark (stored, compatible metrics only)", benchmarks) if len(benchmarks) > 1 else (benchmarks[0] if benchmarks else None)
-        rows = [r for r in rs_rows if r.get("benchmark") == benchmark]
-        as_ofs = sorted({r["as_of"] for r in rows if r.get("as_of")})
-        st.caption("Relative strength vs {0} · as of {1} · basis: {2} · values are fractions shown as percent".format(benchmark, ", ".join(as_ofs), rows[0].get("return_basis") if rows else "—"))
-        frame = pd.DataFrame(
-            [{"Sector / theme": r["sector_key"], "Kind": r["entity_kind"], "ETF": r["instrument_id"], "1W RS": (r["metrics"] or {}).get("rs_chg_1w"), "1M RS": (r["metrics"] or {}).get("rs_chg_1m"), "3M RS": (r["metrics"] or {}).get("rs_chg_3m"), "6M RS": (r["metrics"] or {}).get("rs_chg_6m"), "12M RS": (r["metrics"] or {}).get("rs_chg_12m"), "RS vs 50DMA": (r["metrics"] or {}).get("rs_vs_50dma"), "RS vs 200DMA": (r["metrics"] or {}).get("rs_vs_200dma")} for r in rows]
-        )
-        order = {s: i for i, s in enumerate(CANONICAL_SECTORS)}
-        frame["_o"] = frame["Sector / theme"].map(lambda s: order.get(s, 99))
-        frame = frame.sort_values(["_o", "Sector / theme"]).drop(columns="_o")
-        value_cols = ["1W RS", "1M RS", "3M RS", "6M RS", "12M RS", "RS vs 50DMA", "RS vs 200DMA"]
-        st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
-        heatmap_legend()
-        st.subheader("ETF trend & risk (from bundle prices)")
-        trend = pd.DataFrame(
-            [
-                {
-                    "Sector / theme": r["sector_key"],
-                    "ETF": r["instrument_id"],
-                    "1M return": (r["metrics"] or {}).get("ret_1m"),
-                    "3M return": (r["metrics"] or {}).get("ret_3m"),
-                    "12M return": (r["metrics"] or {}).get("ret_12m"),
-                    "vs 50DMA": (r["metrics"] or {}).get("pct_vs_50dma"),
-                    "vs 200DMA": (r["metrics"] or {}).get("pct_vs_200dma"),
-                    "Vol 63d (ann)": (r["metrics"] or {}).get("vol_63d_ann"),
-                    "Max DD 252d": (r["metrics"] or {}).get("max_drawdown_252d"),
-                    "DD coverage": ((r.get("coverage") or {}).get("price_metrics") or {}).get("max_drawdown_252d"),
-                    "Price status": (r.get("coverage") or {}).get("price_status"),
-                    "Last price": (r.get("coverage") or {}).get("last_price_date"),
-                }
-                for r in rows
-            ]
-        )
-        st.dataframe(styled_heatmap(trend, ["1M return", "3M return", "12M return", "vs 50DMA", "vs 200DMA"]), use_container_width=True, hide_index=True)
-        stale = [r["instrument_id"] for r in rows if (r.get("coverage") or {}).get("price_status") == "STALE"]
-        if stale:
-            st.warning("Stale instruments (last price before the bundle as_of): {0}. Their windowed metrics are NULL rather than relabelled current.".format(", ".join(str(s) for s in stale)))
-        st.caption("ETF returns on FMP adjusted close (dividend-adjusted, price-ratio basis); these are ETF returns, not constituent portfolio returns. Windows are counted on the bundle session calendar; a metric is blank unless its full window is present (PARTIAL = a few NULL sessions inside the window).")
-    disp = datasets.get("CONSTITUENT_DISPERSION") or []
-    if disp:
-        st.subheader("Breadth, dispersion & concentration (current universe, context only)")
-        st.warning("Constituent metrics use the FMP profile-bulk *current* universe and current market caps: CURRENT_UNIVERSE_CONTEXT_ONLY, research-ineligible, not point-in-time.")
+    with st.expander("Tenor table and other slopes"):
         st.dataframe(
-            pd.DataFrame([{"Sector": r["sector_key"], "As of": r["as_of"], "Universe": (r.get("coverage") or {}).get("universe_size"), "Valid 200DMA": (r.get("coverage") or {}).get("count_valid_200dma"), "Stale constituents": (r.get("coverage") or {}).get("stale_constituents"), "Denominator": (r.get("coverage") or {}).get("denominator_status"), "% > 50DMA": fmt((r["metrics"] or {}).get("pct_above_50dma"), "fraction").replace("+", ""), "% > 200DMA": fmt((r["metrics"] or {}).get("pct_above_200dma"), "fraction").replace("+", ""), "EW std": fmt((r["metrics"] or {}).get("equal_weight_std"), None, digits=3), "CW std": fmt((r["metrics"] or {}).get("cap_weight_std"), None, digits=3), "Median 1M ret": fmt_signed((r["metrics"] or {}).get("median_return_1m"), "fraction"), "Top5 weight": fmt((r["metrics"] or {}).get("top5_weight"), "fraction").replace("+", ""), "HHI": fmt((r["metrics"] or {}).get("hhi"), None, digits=3)} for r in disp]),
+            pd.DataFrame([{"Tenor": row["tenor"], "Yield (%)": fmt(row["yield_pct"], "pct"), "Observation": row["observation_date"], "vs prior (bps)": fmt_signed(row.get("chg_prev_bps"), "bps"), "1W (bps)": fmt_signed(row.get("chg_1w_bps"), "bps"), "1M (bps)": fmt_signed(row.get("chg_1m_bps"), "bps"), "3M (bps)": fmt_signed(row.get("chg_3m_bps"), "bps")} for row in present]),
             use_container_width=True,
             hide_index=True,
         )
-    st.subheader("Industry detail")
-    industries = load_or_stop("industries_context")
-    ind_datasets = industries.get("datasets") or {}
-    if not ind_datasets:
-        st.info("No industry snapshots stored.")
+        missing_tenors = [row["tenor"] for row in curve if row.get("yield_pct") is None]
+        if missing_tenors:
+            st.caption("Tenors without data (not extrapolated): {0}".format(", ".join(missing_tenors)))
+        slope_cols = st.columns(max(1, len(slopes)))
+        for i, (name, entry) in enumerate(slopes.items()):
+            slope_cols[i % len(slope_cols)].metric(name, _transform_text(entry))
+
+    for title, key in (("Real yields (TIPS)", "real_yields"), ("Inflation compensation (market-implied, not survey)", "inflation_compensation"), ("Policy rates", "policy")):
+        blocks = rates.get(key) or []
+        if not blocks:
+            continue
+        with st.expander(title):
+            st.dataframe(pd.DataFrame([{"Series": block.get("label"), "Level (%)": fmt(block["latest"].get("value"), "pct"), "Observation": block["latest"].get("observation_date"), "vs prior (bps)": _transform_text((block.get("transforms") or {}).get("chg_prev_bps")), "1W (bps)": _transform_text((block.get("transforms") or {}).get("chg_1w_bps")), "1M (bps)": _transform_text((block.get("transforms") or {}).get("chg_1m_bps"))} for block in blocks]), use_container_width=True, hide_index=True)
+    st.caption(rates.get("units_note") or "")
+
+
+# ---- Credit ---------------------------------------------------------------------------
+
+def render_credit_overview() -> None:
+    credit = load_or_stop("credit_context")
+    buckets = credit.get("buckets") or []
+    page_header(
+        "Credit",
+        "ICE BofA option-adjusted spreads. Internal view; redistribution restricted.",
+        as_of=compact_as_of([row.get("as_of") for row in buckets])[0],
+    )
+    if not buckets:
+        st.info("No credit index snapshots stored.")
         return
-    ds = st.selectbox("Industry dataset", sorted(ind_datasets))
-    parents = sorted(ind_datasets[ds])
-    parent = st.selectbox("Sector / theme", parents)
-    items = ind_datasets[ds][parent]
-    if ds in {"INDUSTRY_RS_VS_SECTOR_ETF", "THEME_RS"}:
-        frame = pd.DataFrame([{"Industry": r["industry_key"], "ETF": r["instrument_id"], "As of": r["as_of"], "Benchmark": r["benchmark"], "1W RS": (r["metrics"] or {}).get("rs_chg_1w"), "1M RS": (r["metrics"] or {}).get("rs_chg_1m"), "3M RS": (r["metrics"] or {}).get("rs_chg_3m"), "RS vs 50DMA": (r["metrics"] or {}).get("rs_vs_50dma"), "RS vs 200DMA": (r["metrics"] or {}).get("rs_vs_200dma")} for r in items])
-        st.dataframe(styled_heatmap(frame, ["1W RS", "1M RS", "3M RS", "RS vs 50DMA", "RS vs 200DMA"]), use_container_width=True, hide_index=True)
-        st.caption("Industry ETF baskets are proxies, not exact mutually exclusive classifications.")
-    else:
-        frame = pd.DataFrame([{"Industry": r["industry_key"], "As of": r["as_of"], "Companies": (r["metrics"] or {}).get("company_count"), "EW 1M": (r["metrics"] or {}).get("equal_weight_return_1m"), "CW 1M (current caps)": (r["metrics"] or {}).get("cap_weight_return_1m"), "% > 50DMA": (r["metrics"] or {}).get("pct_above_50dma"), "% > 200DMA": (r["metrics"] or {}).get("pct_above_200dma")} for r in items])
-        st.dataframe(styled_heatmap(frame, ["EW 1M", "CW 1M (current caps)"]), use_container_width=True, hide_index=True)
-    heatmap_legend()
+    broad = [row for row in buckets if row["bucket"] in {"ig_broad", "hy_broad"}]
+    cols = st.columns(max(1, len(broad)))
+    for i, row in enumerate(broad):
+        cols[i].metric(row["label"], "{0:.0f} bps".format(row["oas_bps"]) if row.get("oas_bps") is not None else "—", fmt_signed(row.get("change_1d_bps"), "bps") if row.get("change_1d_bps") is not None else None)
+    st.caption(credit.get("attribution") or "")
+
+    rating = [row for row in buckets if row["bucket"] not in {"ig_broad", "hy_broad"}]
+    if rating:
+        st.subheader("Rating buckets")
+        st.dataframe(
+            pd.DataFrame([{"Bucket": row["label"], "As of": row["as_of"], "OAS (bps)": fmt(row["oas_bps"], None, digits=0), "1D": fmt_signed(row["change_1d_bps"], "bps"), "1W": fmt_signed(row["change_1w_bps"], "bps"), "1M": fmt_signed(row["change_1m_bps"], "bps")} for row in rating]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    ids = [row["series_id"] for row in buckets]
+    chosen = st.selectbox("History", ids, format_func=lambda series_id: CATALOG_BY_ID[series_id].label if series_id in CATALOG_BY_ID else series_id)
+    history = load_or_stop("metric_history", "{0}.oas_bps".format(chosen))
+    history_chart(history, x="as_of", y="value", title="{0} OAS (bps)".format(CATALOG_BY_ID[chosen].label if chosen in CATALOG_BY_ID else chosen), units="bps")
+
+    with st.expander("Percentiles, z-scores, and history windows"):
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Bucket": row["label"],
+                        "Window": row["percentile_window"] or "—",
+                        "Percentile": fmt(row["percentile"], "pctile") if row.get("window_observations") else "—",
+                        "Z-score": fmt(row["zscore"], None) if row.get("window_observations") else "—",
+                        "Observations": row["window_observations"] or "—",
+                        "History from": row["history_first_date"] or "—",
+                        "History": row["history_status"],
+                    }
+                    for row in buckets
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(credit.get("coverage_note") or "")
+        st.caption("Percentiles and z-scores appear only when the labeled lookback has enough stored history.")
 
 
-# ---- PIT Sector Internals ---------------------------------------------------------------------
+# ---- Sectors ---------------------------------------------------------------------------
+
+def render_sector_rotation_v2() -> None:
+    sectors = load_or_stop("sectors_context")
+    datasets = sectors.get("datasets") or {}
+    rs_rows = datasets.get("ETF_RS_VS_SPY") or []
+    page_header(
+        "Sectors",
+        "Sector comparison from stored snapshots. ETF proxies versus SPY unless another benchmark is selected.",
+        fred=False,
+        as_of=compact_as_of([row.get("as_of") for row in rs_rows])[0],
+    )
+    if not datasets:
+        st.info("No sector snapshots stored.")
+        return
+    pit = load_or_stop("pit_sector_context")
+    if not pit.get("available"):
+        st.caption("Point-in-time constituent internals are not ingested. Current-universe breadth below is a snapshot, not PIT.")
+
+    if rs_rows:
+        benchmarks = sorted({row.get("benchmark") for row in rs_rows if row.get("benchmark")})
+        benchmark = st.selectbox("Benchmark", benchmarks) if len(benchmarks) > 1 else (benchmarks[0] if benchmarks else "SPY")
+        rows = [row for row in rs_rows if row.get("benchmark") == benchmark]
+        metric = st.radio("Heatmap metric", ["Relative strength vs benchmark", "Absolute ETF return"], horizontal=True, key="sector_metric")
+        as_ofs = sorted({row["as_of"] for row in rows if row.get("as_of")})
+        basis = rows[0].get("return_basis") if rows else "—"
+        st.caption("Benchmark {0} · as of {1} · {2} · ETF proxy, not a constituent aggregate.".format(benchmark, ", ".join(as_ofs), basis))
+        if metric.startswith("Relative"):
+            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "1W": (row["metrics"] or {}).get("rs_chg_1w"), "1M": (row["metrics"] or {}).get("rs_chg_1m"), "3M": (row["metrics"] or {}).get("rs_chg_3m"), "6M": (row["metrics"] or {}).get("rs_chg_6m"), "12M": (row["metrics"] or {}).get("rs_chg_12m")} for row in rows])
+            value_cols = ["1W", "1M", "3M", "6M", "12M"]
+            st.caption("Relative strength = change in the ETF/benchmark adjusted-close ratio.")
+        else:
+            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "1M": (row["metrics"] or {}).get("ret_1m"), "3M": (row["metrics"] or {}).get("ret_3m"), "12M": (row["metrics"] or {}).get("ret_12m")} for row in rows])
+            value_cols = ["1M", "3M", "12M"]
+            st.caption("Absolute ETF returns on adjusted close. Not equal-weight or cap-weight constituent portfolios.")
+        order = {name: i for i, name in enumerate(CANONICAL_SECTORS)}
+        frame["_o"] = frame["Sector"].map(lambda name: order.get(name, 99))
+        frame = frame.sort_values(["_o", "Sector"]).drop(columns="_o")
+        st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
+        heatmap_legend()
+
+        names = [row["sector_key"] for row in rows]
+        chosen = st.selectbox("Sector drilldown", names, key="sector_drilldown")
+        selected = next((row for row in rows if row["sector_key"] == chosen), rows[0])
+        metrics = selected.get("metrics") or {}
+        cols = st.columns(4)
+        cols[0].metric("1M RS vs {0}".format(benchmark), fmt_signed(metrics.get("rs_chg_1m"), "fraction") if metrics.get("rs_chg_1m") is not None else "—")
+        cols[1].metric("1M ETF return", fmt_signed(metrics.get("ret_1m"), "fraction") if metrics.get("ret_1m") is not None else "—")
+        cols[2].metric("vs 50DMA", fmt_signed(metrics.get("pct_vs_50dma"), "fraction") if metrics.get("pct_vs_50dma") is not None else "—")
+        cols[3].metric("vs 200DMA", fmt_signed(metrics.get("pct_vs_200dma"), "fraction") if metrics.get("pct_vs_200dma") is not None else "—")
+        stale = (selected.get("coverage") or {}).get("price_status")
+        if stale == "STALE":
+            st.warning("{0} last price predates the bundle as-of; windowed metrics stay blank rather than being relabelled current.".format(selected.get("instrument_id")))
+
+        with st.expander("ETF trend and risk"):
+            trend = pd.DataFrame(
+                [
+                    {
+                        "Sector": row["sector_key"],
+                        "ETF": row["instrument_id"],
+                        "1M return": (row["metrics"] or {}).get("ret_1m"),
+                        "3M return": (row["metrics"] or {}).get("ret_3m"),
+                        "12M return": (row["metrics"] or {}).get("ret_12m"),
+                        "vs 50DMA": (row["metrics"] or {}).get("pct_vs_50dma"),
+                        "vs 200DMA": (row["metrics"] or {}).get("pct_vs_200dma"),
+                    }
+                    for row in rows
+                ]
+            )
+            st.dataframe(styled_heatmap(trend, ["1M return", "3M return", "12M return", "vs 50DMA", "vs 200DMA"]), use_container_width=True, hide_index=True)
+            st.caption("ETF returns on FMP adjusted close. Windows use the bundle session calendar; a metric is blank unless its full window is present.")
+
+    disp = datasets.get("CONSTITUENT_DISPERSION") or []
+    if disp:
+        st.caption("Current-universe breadth is available (CURRENT_UNIVERSE_CONTEXT_ONLY, not point-in-time).")
+        with st.expander("Current-universe breadth (not point-in-time)"):
+            st.warning("CURRENT_UNIVERSE_CONTEXT_ONLY: constituent metrics use the current FMP profile universe and current market caps. Research-ineligible; not point-in-time.")
+            st.dataframe(
+                pd.DataFrame([{"Sector": row["sector_key"], "As of": row["as_of"], "Universe": (row.get("coverage") or {}).get("universe_size"), "% > 50DMA": fmt((row["metrics"] or {}).get("pct_above_50dma"), "fraction").replace("+", ""), "% > 200DMA": fmt((row["metrics"] or {}).get("pct_above_200dma"), "fraction").replace("+", ""), "EW std": fmt((row["metrics"] or {}).get("equal_weight_std"), None, digits=3), "CW std": fmt((row["metrics"] or {}).get("cap_weight_std"), None, digits=3), "Top5 weight": fmt((row["metrics"] or {}).get("top5_weight"), "fraction").replace("+", "")} for row in disp]),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    if st.toggle("Industry tables", value=False, key="sector_industries"):
+        industries = load_or_stop("industries_context")
+        ind_datasets = industries.get("datasets") or {}
+        if not ind_datasets:
+            st.info("No industry snapshots stored.")
+        else:
+            dataset = st.selectbox("Industry dataset", sorted(ind_datasets))
+            parents = sorted(ind_datasets[dataset])
+            parent = st.selectbox("Sector / theme", parents)
+            items = ind_datasets[dataset][parent]
+            if dataset in {"INDUSTRY_RS_VS_SECTOR_ETF", "THEME_RS"}:
+                frame = pd.DataFrame([{"Industry": row["industry_key"], "ETF": row["instrument_id"], "As of": row["as_of"], "Benchmark": row["benchmark"], "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m")} for row in items])
+                st.dataframe(styled_heatmap(frame, ["1W RS", "1M RS", "3M RS"]), use_container_width=True, hide_index=True)
+                st.caption("Industry ETF baskets are proxies, not exact mutually exclusive classifications.")
+            else:
+                frame = pd.DataFrame([{"Industry": row["industry_key"], "As of": row["as_of"], "Companies": (row["metrics"] or {}).get("company_count"), "EW 1M": (row["metrics"] or {}).get("equal_weight_return_1m"), "CW 1M (current caps)": (row["metrics"] or {}).get("cap_weight_return_1m")} for row in items])
+                st.dataframe(styled_heatmap(frame, ["EW 1M", "CW 1M (current caps)"]), use_container_width=True, hide_index=True)
+            heatmap_legend()
+
+
+# ---- PIT / methodology ------------------------------------------------------------------
 
 def render_pit_sector_internals() -> None:
-    page_header("PIT Sector Internals", "Decision-time sector aggregates from hash-verified sector_internals_v1 artifacts (isolated quant-strategies producer). Pre-holdout only. No live provider calls, no constituent data.", fred=False)
     ctx = load_or_stop("pit_sector_context")
+    page_header("Sector methodology", "Point-in-time sector internals when an artifact has been ingested. Pre-holdout only.", fred=False)
     if not ctx.get("available"):
         reason = ctx.get("reason") or "NO_ARTIFACT_INGESTED"
         if reason == "MIGRATION_PENDING":
-            st.info("No PIT sector views yet (migration 014 pending). Nothing is fabricated.")
+            st.info("No PIT sector views yet. Nothing is fabricated.")
         else:
-            st.info("No sector_internals_v1 artifact ingested. Build one locally with the quant-strategies producer, then run `python -m jobs.ingest_pit_sector_internals --artifact <file>` on the backend.")
+            st.info("No point-in-time sector internals have been ingested.")
         return
     latest = ctx.get("latest") or []
     artifacts = ctx.get("artifacts") or []
-    provenances = sorted({str(r.get("provenance")) for r in latest})
-    if any(p not in {"REAL_QC", "LOCAL_LICENSED", "REAL_HISTORICAL_PRE_2025"} for p in provenances):
+    provenances = sorted({str(row.get("provenance")) for row in latest})
+    if any(value not in {"REAL_QC", "LOCAL_LICENSED", "REAL_HISTORICAL_PRE_2025"} for value in provenances):
         st.warning("Provenance {0}: research_eligible = FALSE. Synthetic/test artifacts are never research evidence; they demonstrate the consumer path only.".format(", ".join(provenances)))
-    boundaries = sorted({str(a.get("effective_holdout_start")) for a in artifacts if a.get("effective_holdout_start")})
-    st.caption("Method {0} · latest decision date {1} · effective holdout boundary {2} · every stored row is dated strictly before the boundary.".format(", ".join(sorted({str(r.get("method_version")) for r in latest})), max(str(r.get("decision_date")) for r in latest), ", ".join(boundaries) or "—"))
     k = latest[0].get("return_sessions") if latest else None
     frame = pd.DataFrame(
         [
             {
-                "Sector": r.get("sector"),
-                "Decision date": r.get("decision_date"),
-                "Members": r.get("constituent_count"),
-                "Priced": r.get("priced_count"),
-                "% > 20d": r.get("pct_above_20d"),
-                "% > 50d": r.get("pct_above_50d"),
-                "% > 100d": r.get("pct_above_100d"),
-                "% > 200d": r.get("pct_above_200d"),
-                "Median {0}d".format(k): r.get("median_return"),
-                "EW {0}d".format(k): r.get("ew_return"),
-                "CW {0}d".format(k): r.get("cw_return"),
-                "EW-CW": r.get("ew_minus_cw"),
-                "Held EW {0}d".format(k): r.get("held_ew_return"),
-                "Dispersion": fmt(r.get("dispersion"), None, digits=4),
-                "Return n": r.get("return_denominator"),
-                "CW status": r.get("cw_status"),
-                "Held status": r.get("held_status"),
-                "HHI": fmt(r.get("hhi_cap"), None, digits=3),
-                "Top5 share": fmt(r.get("top5_cap_share"), "fraction").replace("+", ""),
-                "Conc. status": r.get("concentration_status"),
-                "Rev": r.get("revision_seq"),
+                "Sector": row.get("sector"),
+                "Decision date": row.get("decision_date"),
+                "Members": row.get("constituent_count"),
+                "% > 50d": row.get("pct_above_50d"),
+                "% > 200d": row.get("pct_above_200d"),
+                "EW {0}d".format(k): row.get("ew_return"),
+                "CW {0}d".format(k): row.get("cw_return"),
+                "Held EW {0}d".format(k): row.get("held_ew_return"),
             }
-            for r in latest
+            for row in latest
         ]
     )
-    value_cols = ["% > 20d", "% > 50d", "% > 100d", "% > 200d", "Median {0}d".format(k), "EW {0}d".format(k), "CW {0}d".format(k), "EW-CW", "Held EW {0}d".format(k)]
+    value_cols = ["% > 50d", "% > 200d", "EW {0}d".format(k), "CW {0}d".format(k), "Held EW {0}d".format(k)]
     st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
     heatmap_legend()
-    st.caption("Breadth = share of decision-time members above their own W-session simple moving average (denominator = members with full W-session history). Trailing returns are statistics of *current* decision-time members; 'Held EW' is the equal-weight portfolio formed at d-K from members known then (reclassification/universe exit = last still-member close; inferred delisting without declared proceeds NULLs the held return). CW uses point-in-time caps at the window start and is NULL when cap coverage is insufficient; it is never substituted with current caps.")
-    st.subheader("History (stored rows, current revisions)")
-    history = ctx.get("history") or {}
-    if history:
-        sector = st.selectbox("Sector", sorted(history))
-        rows = history.get(sector) or []
-        metric = st.selectbox("Metric", ["pct_above_50d", "pct_above_200d", "median_return", "ew_return", "cw_return", "held_ew_return", "dispersion", "hhi_cap"])
-        history_chart(rows, x="decision_date", y=metric, title="{0} · {1}".format(sector, metric), units="fraction")
-        st.caption("{0} stored decision dates for {1}; NULL points are gaps in coverage (insufficient history or cap coverage), never zeros.".format(len(rows), sector))
-    st.subheader("Ingested artifacts")
-    if artifacts:
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "SHA-256": str(a.get("artifact_sha256"))[:16] + "…",
-                        "Method": a.get("method_version"),
-                        "Provenance": a.get("provenance"),
-                        "Research eligible": "yes" if a.get("research_eligible") else "no",
-                        "Idea": a.get("contract_idea_id") or "—",
-                        "Window": "{0} → {1}".format(a.get("window_start"), a.get("window_end")),
-                        "Sessions": a.get("sessions"),
-                        "Rows": a.get("row_count"),
-                        "Boundary": a.get("effective_holdout_start"),
-                        "Ingested": age_text(a.get("ingested_at")),
-                    }
-                    for a in artifacts
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-    st.caption(ctx.get("note") or "")
+    with st.expander("Method, coverage statuses, and ingested artifacts"):
+        st.caption("Method {0} · latest decision date {1} · holdout boundary {2}.".format(", ".join(sorted({str(row.get("method_version")) for row in latest})), max(str(row.get("decision_date")) for row in latest), ", ".join(sorted({str(item.get("effective_holdout_start")) for item in artifacts if item.get("effective_holdout_start")}) or [])))
+        st.caption("Breadth uses decision-time members. CW uses point-in-time caps and is never substituted with current caps. research_eligible = FALSE unless provenance is a real licensed/QC artifact.")
+        if artifacts:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "SHA-256": str(item.get("artifact_sha256"))[:16] + "…",
+                            "Method": item.get("method_version"),
+                            "Provenance": item.get("provenance"),
+                            "Research eligible": "yes" if item.get("research_eligible") else "no",
+                            "Window": "{0} → {1}".format(item.get("window_start"), item.get("window_end")),
+                            "Boundary": item.get("effective_holdout_start"),
+                            "Ingested": age_text(item.get("ingested_at")),
+                        }
+                        for item in artifacts
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
 
-# ---- Data Health -----------------------------------------------------------------------------
+# ---- Data Health -----------------------------------------------------------------------
 
 def render_data_health() -> None:
-    page_header("Data Health", "Operational status of every source and dataset: configuration, transport, freshness, counts and recent ingestion runs. Not an investment signal.", fred=False)
     health = load_or_stop("source_health")
     runs = load_or_stop("recent_runs", 200)
+    ctx = load_or_stop("data_health_context")
+    page_header("Data Health", "Actionable exceptions first. Healthy sources are summarized compactly.", fred=False)
+    stale = [row for row in health if str(row.get("freshness_status") or "").upper() == "STALE"]
+    failed = [row for row in health if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED", "PARTIAL"}]
     if not health:
-        st.info("No sources registered yet. The first `jobs.market_intelligence_refresh` run registers sources (disabled sources appear as explicit skips).")
-    else:
-        frame = pd.DataFrame(
-            [
-                {
-                    "Source": h.get("source_id"),
-                    "Provider": h.get("provider"),
-                    "Dataset": h.get("freshness_dataset") or h.get("dataset"),
-                    "Enabled": "yes" if h.get("enabled") else "no",
-                    "Access": h.get("access_status"),
-                    "Cadence": h.get("dataset_cadence") or "—",
-                    "Transport": transport_chip(h.get("transport_status")),
-                    "Metadata": h.get("metadata_status") or "—",
-                    "Freshness (now)": freshness_chip(h.get("freshness_status")),
-                    "Freshness (at ingest)": freshness_chip(h.get("stored_freshness_status")),
-                    "Latest obs": h.get("latest_observation_date") or "—",
-                    "Age (d)": h.get("age_days"),
-                    "Tolerance (d)": h.get("tolerance_days"),
-                    "Stale after": h.get("stale_after_estimate") or "—",
-                    "Obs retrieved": age_text(h.get("latest_observation_retrieved_at")),
-                    "Last attempt": age_text(h.get("last_attempt_at")),
-                    "Last success": age_text(h.get("last_success_at")),
-                    "Error": (h.get("last_error_redacted") or "")[:80],
-                    "Export scope": h.get("usage_scope"),
-                }
-                for h in health
-            ]
+        st.info("No sources registered yet.")
+    if stale or failed:
+        st.subheader("Needs attention")
+        problem = stale + [row for row in failed if row not in stale]
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Source": row.get("provider") or row.get("source_id"),
+                        "Dataset": row.get("freshness_dataset") or row.get("dataset"),
+                        "Status": row.get("freshness_status") or row.get("transport_status"),
+                        "Latest observation": row.get("latest_observation_date") or "—",
+                        "Last success": age_text(row.get("last_success_at")),
+                        "Detail": (row.get("last_error_redacted") or "")[:120] or "—",
+                    }
+                    for row in problem
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
         )
-        st.dataframe(frame, use_container_width=True, hide_index=True)
-        evaluated_on = next((h.get("evaluated_on") for h in health if h.get("evaluated_on")), None)
-        policy = next((h.get("freshness_policy_version") for h in health if h.get("freshness_policy_version")), None)
-        st.caption(
-            "Transport (did the last retrieval succeed?), metadata (did provider units/frequency/identity validate?) and freshness (is the latest observation within the cadence tolerance?) are tracked separately. "
-            "Freshness (now) is re-evaluated against the database clock on {0} under {1}; it decays even when no job runs. 'Stale after' is the tolerance bound, not an official release date. "
-            "A successful retrieval of old data is not fresh; a failed or metadata-rejected retrieval does not erase last valid data.".format(evaluated_on or "today", policy or "the freshness policy")
+    healthy = [row for row in health if row not in stale and row not in failed]
+    if healthy:
+        st.subheader("Healthy sources")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Source": row.get("provider") or row.get("source_id"),
+                        "Dataset": row.get("freshness_dataset") or row.get("dataset"),
+                        "Latest observation": row.get("latest_observation_date") or "—",
+                        "Last success": age_text(row.get("last_success_at")),
+                        "Freshness": freshness_chip(row.get("freshness_status")),
+                    }
+                    for row in healthy
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
         )
-    st.subheader("IBKR Windows collector")
+
     collectors = load_or_stop("ibkr_collector_status")
     quotes = load_or_stop("ibkr_quotes_latest")
+    st.subheader("Windows collector (IBKR)")
     if not collectors:
-        st.info("No collector heartbeat has been received. Closing TWS preserves stored quotes; this page will show COLLECTOR_OFFLINE once a heartbeat goes stale.")
+        st.info("No collector heartbeat has been received. FRED and FINRA do not depend on this laptop.")
     else:
         st.dataframe(
             pd.DataFrame(
                 [
                     {
-                        "Collector": c.get("collector_id"),
-                        "Reported": c.get("reported_state"),
-                        "Observed (server clock)": c.get("observed_state"),
-                        "Heartbeat age (s)": c.get("heartbeat_age_seconds"),
-                        "Last heartbeat": age_text(c.get("last_heartbeat_at")),
-                        "Last TWS connect": age_text(c.get("last_tws_connect_at")),
-                        "Last quote": age_text(c.get("last_quote_at")),
-                        "Last DB ingest": age_text(c.get("last_ingest_ok_at")),
-                        "Market data": c.get("market_data_type") or "UNAVAILABLE",
-                        "Delivery error": (c.get("last_delivery_error_redacted") or "")[:80],
+                        "Collector": row.get("collector_id"),
+                        "Observed": row.get("observed_state"),
+                        "Heartbeat age (s)": row.get("heartbeat_age_seconds"),
+                        "Last quote": age_text(row.get("last_quote_at")),
+                        "Last ingest": age_text(row.get("last_ingest_ok_at")),
+                        "Delivery error": (row.get("last_delivery_error_redacted") or "")[:80] or "—",
                     }
-                    for c in collectors
+                    for row in collectors
                 ]
             ),
             use_container_width=True,
             hide_index=True,
         )
-        st.caption("Observed state uses the database clock. If heartbeats stop (collector offline, sleep, or crash), the server marks COLLECTOR_OFFLINE; the collector cannot report its own outage.")
+        st.caption("If the Windows laptop sleeps, TWS stops sending heartbeats and the server marks the collector offline. That is not a FINRA or FRED backend failure.")
     if quotes:
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Instrument": q.get("display_name") or q.get("instrument_id"),
-                        "conId": q.get("con_id"),
-                        "Currency": q.get("currency") or "—",
-                        "Bid": q.get("bid"),
-                        "Ask": q.get("ask"),
-                        "Last": q.get("last_price"),
-                        "Close": q.get("close_price"),
-                        "Type": q.get("market_data_type") or "—",
-                        "Quote time": q.get("quote_ts") or "—",
-                        "Received": age_text(q.get("retrieved_at")),
-                        "Status": q.get("quote_status") or "—",
-                    }
-                    for q in quotes
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption("Missing bid/ask/last remain empty (NULL). Closing TWS does not delete these rows; age is shown from stored timestamps.")
+        with st.expander("Latest stored IBKR quotes"):
+            st.dataframe(pd.DataFrame([{"Instrument": row.get("display_name") or row.get("instrument_id"), "Bid": row.get("bid"), "Ask": row.get("ask"), "Last": row.get("last_price"), "Status": row.get("quote_status") or "—", "Received": age_text(row.get("retrieved_at"))} for row in quotes]), use_container_width=True, hide_index=True)
     elif collectors:
-        st.info("Collector registered, but no IBKR quotes have been persisted yet.")
-    quarantine = load_or_stop("data_health_context").get("quarantine") or []
-    if quarantine:
-        st.subheader("Quarantined observations (metadata gate / future dates)")
-        st.dataframe(pd.DataFrame(quarantine), use_container_width=True, hide_index=True)
-        st.caption("Rows retrieved under failed metadata validation or with impossible dates are kept here for diagnosis and are never promoted to current observations or metrics. Last valid published data remains visible on the other pages.")
-    st.subheader("Recent ingestion runs (30 days)")
-    if not runs:
-        st.info("No ingestion runs recorded.")
-    else:
-        st.dataframe(pd.DataFrame([{"Run": r["run_id"], "Source": r["source_id"], "Dataset": r["dataset"], "Status": r["status"], "Started": r["started_at"], "Finished": r["finished_at"], "Received": r["rows_received"], "Inserted": r["rows_inserted"], "Revised": r["rows_revised"], "Unchanged": r["rows_unchanged"], "Rejected": r["rows_rejected"], "Retries": r["retry_count"], "Dry run": r["dry_run"], "Error": (r["error_redacted"] or "")[:80]} for r in runs]), use_container_width=True, hide_index=True)
-    st.subheader("Research delivery")
+        st.caption("Collector registered, but no quotes have been persisted yet.")
+
+    quarantine = ctx.get("quarantine") or []
+    finra_quarantine = ctx.get("finra_quarantine") or []
+    if quarantine or finra_quarantine:
+        with st.expander("Quarantined rows"):
+            if quarantine:
+                st.dataframe(pd.DataFrame(quarantine), use_container_width=True, hide_index=True)
+            if finra_quarantine:
+                st.dataframe(pd.DataFrame(finra_quarantine), use_container_width=True, hide_index=True)
+
+    with st.expander("Ingestion diagnostics"):
+        if runs:
+            st.dataframe(pd.DataFrame([{"Run": row["run_id"], "Source": row["source_id"], "Dataset": row["dataset"], "Status": row["status"], "Received": row["rows_received"], "Inserted": row["rows_inserted"], "Revised": row["rows_revised"], "Rejected": row["rows_rejected"], "Error": (row["error_redacted"] or "")[:80]} for row in runs]), use_container_width=True, hide_index=True)
+        detail = pd.DataFrame(
+            [
+                {
+                    "Source": row.get("source_id"),
+                    "Dataset": row.get("freshness_dataset") or row.get("dataset"),
+                    "Transport": transport_chip(row.get("transport_status")),
+                    "Metadata": row.get("metadata_status") or "—",
+                    "Cadence": row.get("dataset_cadence") or "—",
+                    "Age (d)": row.get("age_days"),
+                    "Error": (row.get("last_error_redacted") or "")[:80],
+                }
+                for row in health
+            ]
+        )
+        if not detail.empty:
+            st.dataframe(detail, use_container_width=True, hide_index=True)
+
     strategies = load_or_stop("strategies_context")
     rows = strategies.get("strategies") or []
-    if rows:
-        st.dataframe(pd.DataFrame([{"Strategy": s["strategy_id"], "Kind": s["research_kind"], "Research": s["research_status"], "Economic gate": s["economic_gate"], "Promotion": s["promotion_gate"], "Holdout": s["holdout_status"], "Delivery": s["delivery_status"], "Last seen": s["last_seen_at"]} for s in rows]), use_container_width=True, hide_index=True)
-    else:
-        st.info("No research runs in PostgreSQL.")
+    with st.expander("Research delivery"):
+        if rows:
+            st.dataframe(pd.DataFrame([{"Strategy": row["strategy_id"], "Research": row["research_status"], "Economic gate": row["economic_gate"], "Delivery": row["delivery_status"]} for row in rows]), use_container_width=True, hide_index=True)
+        else:
+            st.caption("No research runs in PostgreSQL.")
 
 
-# ---- Morning Context ------------------------------------------------------------------------
+# ---- Morning Brief ---------------------------------------------------------------------
 
 def render_morning_context() -> None:
-    page_header("Morning Context", "Latest published morning_context snapshot: human-readable sections plus the deterministic JSON and its identity. Built by the backend (current-only; no historical reconstruction); no LLM.", fred=True)
     snapshot = load_or_stop("morning_latest")
     index = load_or_stop("morning_index", 20)
+    page_header("Morning Brief", "Deterministic snapshot of stored analytics. No generated commentary.")
     if not snapshot:
-        st.info("No morning context snapshot has been published. Run `python -m jobs.build_morning_context` on the backend.")
+        st.info("No morning brief has been published.")
         return
     body = snapshot.get("snapshot_json") or {}
-    cols = st.columns(4)
-    cols[0].metric("Snapshot", snapshot["snapshot_id"])
-    cols[1].metric("Generated", str(snapshot["generated_at"])[:19])
-    cols[2].metric("Cutoff", str(snapshot["cutoff_at"])[:19])
-    cols[3].metric("Completeness", snapshot["completeness"])
     from market_intelligence.read_models import snapshot_age
 
     age = snapshot_age(snapshot)
-    quality = snapshot.get("quality_status") or "OK"
-    st.caption(
-        "SHA-256: `{0}` · content SHA-256: `{1}` · schema {2} · quality {3} · snapshot age {4} ({5} h; aging after {6} h, stale after {7} h). "
-        "generated_at is builder wall-clock; cutoff_at is the DB capture time (REPEATABLE READ); every metric keeps its own observation date. "
-        "Captured health inside the body is frozen at capture; the age shown here is evaluated now.".format(
-            snapshot["snapshot_sha256"], snapshot.get("content_sha256") or "n/a", snapshot["schema_version"], quality, age.get("snapshot_age_status"), age.get("age_hours"), age.get("aging_after_hours"), age.get("stale_after_hours")
-        )
-    )
+    cols = st.columns(3)
+    cols[0].metric("Generated", str(snapshot["generated_at"])[:19])
+    cols[1].metric("Completeness", snapshot["completeness"])
+    cols[2].metric("Age", "{0} ({1} h)".format(age.get("snapshot_age_status"), age.get("age_hours")))
     if age.get("snapshot_age_status") == "STALE":
-        st.warning("The latest published snapshot is stale for delivery purposes (no newer snapshot has been published). Captured values are unchanged; check Data Health and the backend timer.")
+        st.warning("This brief is stale for delivery. Captured values are unchanged; see Data Health.")
+    quality = snapshot.get("quality_status") or "OK"
     if quality != "OK":
-        st.warning("Quality flag on this snapshot: {0} — {1}".format(quality, snapshot.get("quality_note") or ""))
+        st.warning("Quality flag: {0} — {1}".format(quality, snapshot.get("quality_note") or ""))
+
     status = body.get("sections_status") or {}
     st.dataframe(
         pd.DataFrame(
             [
                 {
-                    "Section": k,
-                    "Status": v.get("status"),
-                    "Latest obs": v.get("latest_observation_date") or "—",
-                    "Captured freshness": ((v.get("captured_freshness") or {}).get("status") or "—") if isinstance(v, dict) else "—",
-                    "Cadence": ((v.get("captured_freshness") or {}).get("cadence") or "—") if isinstance(v, dict) else "—",
-                    "Reason": v.get("reason") or "",
+                    "Section": name.replace("_", " ").title(),
+                    "Status": row.get("status"),
+                    "Latest observation": row.get("latest_observation_date") or "—",
+                    "Freshness": ((row.get("captured_freshness") or {}).get("status") or "—") if isinstance(row, dict) else "—",
+                    "Note": row.get("reason") or "",
                 }
-                for k, v in status.items()
+                for name, row in status.items()
             ]
         ),
         use_container_width=True,
         hide_index=True,
     )
-    captured = body.get("captured_health") or {}
-    if captured.get("quarantined_series") or captured.get("stale_sources") or captured.get("failed_transport"):
-        st.caption("Captured health at cutoff: {0} stale source(s), {1} failed/rejected transport(s), quarantined series: {2}.".format(len(captured.get("stale_sources") or []), len(captured.get("failed_transport") or []), ", ".join(captured.get("quarantined_series") or []) or "none"))
     sections = body.get("sections") or {}
     market = (sections.get("market") or {}).get("data") or {}
     if market:
         st.subheader("Market")
-        st.write(market.get("overnight_quotes", {}).get("reason", ""))
+        st.caption(market.get("overnight_quotes", {}).get("reason", "") or "Overnight quotes unavailable.")
         lead = market.get("sector_leadership_rs_vs_spy") or market.get("sector_leadership_1m_rs_vs_spy") or []
         if lead:
-            lead = sorted(lead, key=lambda r: (r.get("rs_chg_1m") is None, -(r.get("rs_chg_1m") or 0)))  # ranked locally; the body stores identity order
-        if lead:
-            st.dataframe(styled_heatmap(pd.DataFrame([{"Sector / theme": r["sector_key"], "ETF": r["instrument_id"], "As of": r["as_of"], "1W RS": r["rs_chg_1w"], "1M RS": r["rs_chg_1m"], "3M RS": r["rs_chg_3m"], "1M return": r["ret_1m"]} for r in lead]), ["1W RS", "1M RS", "3M RS", "1M return"]), use_container_width=True, hide_index=True)
+            lead = sorted(lead, key=lambda row: (row.get("rs_chg_1m") is None, -(row.get("rs_chg_1m") or 0)))
+            st.dataframe(styled_heatmap(pd.DataFrame([{"Sector": row["sector_key"], "ETF": row["instrument_id"], "As of": row["as_of"], "1W RS": row["rs_chg_1w"], "1M RS": row["rs_chg_1m"], "3M RS": row["rs_chg_3m"], "1M return": row["ret_1m"]} for row in lead]), ["1W RS", "1M RS", "3M RS", "1M return"]), use_container_width=True, hide_index=True)
     rates = (sections.get("rates") or {}).get("data") or {}
     if rates.get("curve"):
         st.subheader("Rates")
-        st.dataframe(pd.DataFrame([{"Tenor": c["tenor"], "Yield (%)": fmt(c["yield_pct"], "pct"), "Obs date": c["observation_date"], "vs prior (bps)": fmt_signed(c.get("chg_prev_bps"), "bps"), "1M (bps)": fmt_signed(c.get("chg_1m_bps"), "bps")} for c in rates["curve"] if c.get("yield_pct") is not None]), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame([{"Tenor": row["tenor"], "Yield (%)": fmt(row["yield_pct"], "pct"), "Observation": row["observation_date"], "vs prior (bps)": fmt_signed(row.get("chg_prev_bps"), "bps")} for row in rates["curve"] if row.get("yield_pct") is not None]), use_container_width=True, hide_index=True)
     credit = (sections.get("credit") or {}).get("data") or {}
     if credit.get("buckets"):
-        st.subheader("Credit (internal)")
-        st.dataframe(pd.DataFrame([{"Bucket": b["label"], "As of": b["as_of"], "OAS (bps)": fmt(b["oas_bps"], None, digits=0), "1D": fmt_signed(b["change_1d_bps"], "bps"), "1M": fmt_signed(b["change_1m_bps"], "bps"), "Percentile": fmt(b["percentile"], "pctile"), "Window": b["percentile_window"] or "—"} for b in credit["buckets"]]), use_container_width=True, hide_index=True)
-    strategies = (sections.get("strategy_monitor_summary") or {}).get("data") or {}
-    if strategies.get("strategies"):
-        st.subheader("Strategy Monitor summary")
-        st.dataframe(pd.DataFrame([{"Strategy": s["strategy_id"], "Research": s["research_status"], "Economic gate": s["economic_gate"], "Promotion": s["promotion_gate"], "Delivery": s["delivery_status"]} for s in strategies["strategies"]]), use_container_width=True, hide_index=True)
+        st.subheader("Credit")
+        st.dataframe(pd.DataFrame([{"Bucket": row["label"], "As of": row["as_of"], "OAS (bps)": fmt(row["oas_bps"], None, digits=0), "1D": fmt_signed(row["change_1d_bps"], "bps")} for row in credit["buckets"] if row.get("bucket") in {"ig_broad", "hy_broad"} or row.get("oas_bps") is not None][:8]), use_container_width=True, hide_index=True)
+    flow = (sections.get("order_flow") or {}).get("data") or {}
+    if flow:
+        st.subheader("Order Flow")
+        st.caption("Reported TRACE activity, not a live order book.")
+        breadth = flow.get("breadth_latest") or []
+        headline = next((row for row in breadth if (row.get("product_category") or "").lower() == "all securities"), None)
+        if headline:
+            cols = st.columns(3)
+            cols[0].metric("Reported volume", fmt(headline.get("total_volume"), None), fmt_signed(headline.get("volume_change"), None) if headline.get("volume_change") is not None else None)
+            cols[1].metric("Trade count", fmt(headline.get("total_trades"), None), fmt_signed(headline.get("trade_count_change"), None) if headline.get("trade_count_change") is not None else None)
+            cols[2].metric("Session", str(headline.get("observation_date") or "—"))
+        capped = flow.get("capped_volume") or {}
+        if capped and not capped.get("headline_eligible"):
+            st.caption(capped.get("identity_note") or "Capped-volume headlines are withheld until identity is validated.")
+
     ideas = load_or_stop("research_ideas") or []
-    st.subheader("Research ideas (registry)")
     if ideas:
-        st.dataframe(pd.DataFrame([{"Idea": i["idea_id"], "Title": i["title"], "Type": i["research_type"], "State": i["current_state"], "Version": i["current_version"], "Execution support": i.get("execution_support") or "—", "Spec": i.get("spec_completeness") or "—", "Missing": ", ".join(i.get("missing_fields") or []) or "—", "Holdout from": i.get("effective_holdout_start") or "—", "Economic gate": i.get("economic_gate") or "—", "Spec hash": (i.get("current_spec_hash") or "")[:12], "Updated": i["updated_at"]} for i in ideas]), use_container_width=True, hide_index=True)
-        st.caption("Approval requires a COMPLETE frozen spec; the registry never supplies acceptance thresholds (economic gate NOT_DEFINED unless a human recorded them). MANUAL_SPEC_REQUIRED means an engine exists but a human must author the StrategySpec.")
-        st.caption("Ideas are dry-run only: approval binds to the exact spec hash; nothing is backtested or deployed from this page.")
-    else:
-        st.info("No research ideas registered. Register with `python -m jobs.research_ideas register --spec idea.json --actor <you>`.")
-    with st.expander("Deterministic JSON (internal, unfiltered)"):
+        with st.expander("Research idea registry"):
+            st.dataframe(pd.DataFrame([{"Idea": row["idea_id"], "Title": row["title"], "State": row["current_state"], "Economic gate": row.get("economic_gate") or "—"} for row in ideas]), use_container_width=True, hide_index=True)
+    with st.expander("Technical snapshot (SHA-256, schema, JSON)"):
+        st.caption("SHA-256: `{0}` · content SHA-256: `{1}` · schema {2}.".format(snapshot["snapshot_sha256"], snapshot.get("content_sha256") or "n/a", snapshot["schema_version"]))
         st.code(strict_dumps(body, indent=2), language="json")
-    with st.expander("Snapshot history"):
         st.dataframe(pd.DataFrame(index), use_container_width=True, hide_index=True)
 
+
+# ---- Order Flow ------------------------------------------------------------------------
 
 def order_flow_coverage_frame(coverage: list[dict[str, Any]]) -> pd.DataFrame:
     """Coverage table with uniform text columns (mixed HTTP int/null breaks Streamlit/pyarrow)."""
@@ -676,103 +788,49 @@ def order_flow_coverage_frame(coverage: list[dict[str, Any]]) -> pd.DataFrame:
         [
             {
                 "Provider": "FINRA",
-                "Dataset": c.get("dataset"),
-                "Group": c.get("group_name"),
-                "Kind": "aggregate" if c.get("dataset") != "TRACE_INDIVIDUAL_TRANSACTIONS" else "individual trades",
-                "Capability": display_cell(c.get("capability_status")),
-                "HTTP": display_cell(c.get("http_status")),
-                "Probe records": display_cell(c.get("probe_record_count")),
-                "Latest obs": display_cell(c.get("ingest_latest_observation_date") or c.get("probe_latest_observation_date")),
-                "Last retrieval": age_text(c.get("ingest_last_success_at") or c.get("probe_last_success_at")),
-                "Last probe": age_text(c.get("last_probe_at")),
-                "Transport": transport_chip(c.get("transport_status")),
-                "Freshness": freshness_chip(c.get("freshness_status")),
-                "Cadence": display_cell(c.get("dataset_cadence")),
-                "Access": display_cell(c.get("source_access_status")),
+                "Dataset": row.get("dataset"),
+                "Group": row.get("group_name"),
+                "Kind": "aggregate" if row.get("dataset") != "TRACE_INDIVIDUAL_TRANSACTIONS" else "individual trades",
+                "Capability": display_cell(row.get("capability_status")),
+                "HTTP": display_cell(row.get("http_status")),
+                "Probe records": display_cell(row.get("probe_record_count")),
+                "Latest obs": display_cell(row.get("ingest_latest_observation_date") or row.get("probe_latest_observation_date")),
+                "Last retrieval": age_text(row.get("ingest_last_success_at") or row.get("probe_last_success_at")),
+                "Last probe": age_text(row.get("last_probe_at")),
+                "Transport": transport_chip(row.get("transport_status")),
+                "Freshness": freshness_chip(row.get("freshness_status")),
+                "Cadence": display_cell(row.get("dataset_cadence")),
+                "Access": display_cell(row.get("source_access_status")),
             }
-            for c in coverage
+            for row in coverage
         ]
     )
 
 
 def render_order_flow() -> None:
-    page_header(
-        "Order Flow",
-        "Corporate Bond Trading Activity from FINRA TRACE-derived Query API aggregates stored in PostgreSQL. "
-        "Not a live order book. No provider calls from this page.",
-        fred=False,
-    )
     ctx = load_or_stop("order_flow_context")
-    st.subheader("Corporate Bond Trading Activity")
-    st.info(ctx.get("coverage_explanation") or "")
-    st.caption(ctx.get("attribution") or "")
-
-    coverage = list(ctx.get("coverage") or [])
-    st.subheader("Coverage and freshness")
-    if not coverage:
-        coverage = [
-            {
-                "dataset": "FINRA Query API",
-                "group_name": "fixedIncomeMarket",
-                "capability_status": "NEVER_ATTEMPTED",
-                "coverage_note": "Backend has not recorded a FINRA probe yet.",
-            }
-        ]
-    st.dataframe(
-            order_flow_coverage_frame(coverage),
-            use_container_width=True,
-            hide_index=True,
-        )
-    notes = [c.get("coverage_note") for c in coverage if c.get("coverage_note")]
-    if notes:
-        st.caption(notes[0])
-    loaded = ctx.get("loaded_interval") or {}
-    if loaded.get("min_observation_date"):
-        st.caption(
-            "Loaded aggregate interval: {0} through {1} ({2} current rows). Publication is end-of-day/delayed as FINRA publishes; a partial session is not compared with a full day without that label.".format(
-                loaded.get("min_observation_date"), loaded.get("max_observation_date"), loaded.get("row_count")
-            )
-        )
-
-    st.subheader("Aggregate activity")
     breadth = ctx.get("breadth") or {}
     rows = breadth.get("rows") or []
+    page_header(
+        "Order Flow",
+        "Corporate Bond Trading Activity — reported TRACE aggregates, not a live order book.",
+        fred=False,
+        as_of=str(breadth.get("latest_observation_date") or "—") if breadth.get("latest_observation_date") else None,
+    )
+    st.caption(ctx.get("coverage_explanation") or "These are reported activity measures, not a live order book.")
+    st.caption(ctx.get("attribution") or "")
+
     if rows:
-        headline = [r for r in rows if (r.get("product_category") or "").lower() == "all securities"]
-        show = headline[0] if headline else rows[0]
+        headline = next((row for row in rows if (row.get("product_category") or "").lower() == "all securities"), rows[0])
         cols = st.columns(4)
-        cols[0].metric("Latest session", str(show.get("observation_date") or "—"))
-        cols[1].metric("Reported volume", fmt(show.get("total_volume"), None), fmt_signed(show.get("volume_change"), None) if show.get("volume_change") is not None else None)
-        cols[2].metric("Trade count", fmt(show.get("total_trades"), None), fmt_signed(show.get("trade_count_change"), None) if show.get("trade_count_change") is not None else None)
-        adv, dec = show.get("advances"), show.get("declines")
-        net = None if adv is None or dec is None else adv - dec
-        cols[3].metric("Advances − declines", fmt(net, None))
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Category": r.get("product_category"),
-                        "Obs date": r.get("observation_date"),
-                        "Prior obs": r.get("prior_observation_date") or "—",
-                        "Volume": fmt(r.get("total_volume"), None),
-                        "Δ volume vs prior": fmt_signed(r.get("volume_change"), None) if r.get("volume_change") is not None else "—",
-                        "Trades": fmt(r.get("total_trades"), None),
-                        "Advances": fmt(r.get("advances"), None),
-                        "Declines": fmt(r.get("declines"), None),
-                        "Unchanged": fmt(r.get("unchanged"), None),
-                        "52w highs": fmt(r.get("fifty_two_week_high"), None),
-                        "52w lows": fmt(r.get("fifty_two_week_low"), None),
-                    }
-                    for r in rows
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(breadth.get("units_note") or "")
-        st.caption(breadth.get("overlap_note") or "")
+        cols[0].metric("Latest session", str(headline.get("observation_date") or "—"))
+        cols[1].metric("Reported volume", fmt(headline.get("total_volume"), None), fmt_signed(headline.get("volume_change"), None) if headline.get("volume_change") is not None else None)
+        cols[2].metric("Trade count", fmt(headline.get("total_trades"), None), fmt_signed(headline.get("trade_count_change"), None) if headline.get("trade_count_change") is not None else None)
+        adv, dec = headline.get("advances"), headline.get("declines")
+        cols[3].metric("Advances − declines", fmt(None if adv is None or dec is None else adv - dec, None))
         history = ctx.get("history") or []
-        chart_rows = []
+        volume_rows = []
+        trade_rows = []
         for item in history:
             metrics = item.get("metrics_json") or {}
             if isinstance(metrics, str):
@@ -781,103 +839,99 @@ def render_order_flow() -> None:
                 metrics = _json.loads(metrics)
             if (item.get("category_key") or "").lower() != "all securities":
                 continue
-            chart_rows.append({"observation_date": item.get("observation_date"), "totalVolume": metrics.get("totalVolume"), "totalTrades": metrics.get("totalTrades")})
-        if chart_rows:
-            frame = pd.DataFrame(chart_rows)
-            st.line_chart(frame.set_index("observation_date")[["totalVolume", "totalTrades"]], use_container_width=True)
-            st.caption("History is current revisions only. Rolling comparison is vs the prior available session for the same productCategory, not vs a partial session unlabeled as such.")
+            volume_rows.append({"observation_date": item.get("observation_date"), "reported_volume": metrics.get("totalVolume")})
+            trade_rows.append({"observation_date": item.get("observation_date"), "trade_count": metrics.get("totalTrades")})
+        if volume_rows:
+            history_chart(volume_rows, x="observation_date", y="reported_volume", title="Reported volume", units="source units")
+        if trade_rows:
+            history_chart(trade_rows, x="observation_date", y="trade_count", title="Trade count", units="trades")
     else:
         st.info("No corporate market-breadth aggregates stored.")
 
-    st.subheader("Source-defined sentiment and customer perspective")
     sentiment = ctx.get("sentiment") or {}
-    sent_rows = sentiment.get("rows") or []
-    if sent_rows:
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Trade type": r.get("trade_type"),
-                        "Product category": r.get("product_category"),
-                        "Obs date": r.get("observation_date"),
-                        "Volume": fmt(r.get("total_volume"), None),
-                        "Trades": fmt(r.get("total_trades"), None),
-                        "Transactions": fmt(r.get("total_transactions"), None),
-                    }
-                    for r in sent_rows
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-        net = sentiment.get("customer_net")
-        if net:
-            st.metric(
-                "Customer net volume (dealer-reported)",
-                fmt(net.get("customer_net_volume"), None),
-                help=net.get("perspective"),
-            )
-            st.caption(net.get("perspective") or "")
-        st.caption(sentiment.get("units_note") or "")
-    else:
-        st.info("No corporate market-sentiment aggregates stored. Directional customer buy/sell is shown only when FINRA publishes those productCategory rows.")
+    net = sentiment.get("customer_net")
+    if net:
+        st.metric("Customer net volume (dealer-reported)", fmt(net.get("customer_net_volume"), None), help=net.get("perspective"))
+        st.caption(net.get("perspective") or "")
 
-    st.subheader("Capped / reported volume")
+    with st.expander("Category tables"):
+        if rows:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Category": row.get("product_category"),
+                            "Observation": row.get("observation_date"),
+                            "Volume": fmt(row.get("total_volume"), None),
+                            "Δ volume": fmt_signed(row.get("volume_change"), None) if row.get("volume_change") is not None else "—",
+                            "Trades": fmt(row.get("total_trades"), None),
+                            "Advances": fmt(row.get("advances"), None),
+                            "Declines": fmt(row.get("declines"), None),
+                        }
+                        for row in rows
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            st.caption(breadth.get("overlap_note") or "")
+        sent_rows = sentiment.get("rows") or []
+        if sent_rows:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Trade type": row.get("trade_type"),
+                            "Product category": row.get("product_category"),
+                            "Observation": row.get("observation_date"),
+                            "Volume": fmt(row.get("total_volume"), None),
+                            "Trades": fmt(row.get("total_trades"), None),
+                        }
+                        for row in sent_rows
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
     capped = ctx.get("capped_volume") or {}
     cap_rows = capped.get("rows") or []
-    if cap_rows:
-        st.warning(capped.get("capped_note") or "Capped volume is a reported/lower-bound measure.")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Grade": r.get("grade_code"),
-                        "144A": r.get("rule_144a_flag"),
-                        "Obs date": r.get("observation_date"),
-                        "Trade count": fmt(r.get("total_trade_count"), None),
-                        "Capped volume qty": fmt(r.get("total_volume_quantity"), None),
-                        "Customer buy par <5y": fmt(r.get("customer_buy_par_lt_5y"), None),
-                        "Customer sell par <5y": fmt(r.get("customer_sell_par_lt_5y"), None),
-                    }
-                    for r in cap_rows
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption(capped.get("units_note") or "")
-    else:
-        st.info("No capped-volume aggregates stored.")
-
-    st.subheader("Individual trade explorer")
-    individual = ctx.get("individual_trades") or {}
-    if individual.get("available"):
-        st.dataframe(pd.DataFrame([{"status": "available"}]), use_container_width=True, hide_index=True)
-    else:
-        st.warning(
-            "Individual TRACE transactions are not available ({0}). {1}".format(
-                individual.get("capability_status") or "ENTITLEMENT_REQUIRED",
-                individual.get("note") or "",
+    with st.expander("Capped / reported volume"):
+        if not capped.get("headline_eligible"):
+            st.warning(capped.get("identity_note") or "Capped-volume identity is not validated for headlines.")
+        if cap_rows:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Grade": row.get("grade_code"),
+                            "144A": row.get("rule_144a_flag"),
+                            "Reporting period": row.get("reporting_period") or "—",
+                            "Publication date": row.get("observation_date"),
+                            "Trade count": fmt(row.get("total_trade_count"), None),
+                            "Capped volume qty": fmt(row.get("total_volume_quantity"), None),
+                        }
+                        for row in cap_rows
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
             )
-        )
+            st.caption(capped.get("capped_note") or "")
+        else:
+            st.caption("No capped-volume aggregates stored.")
 
-    st.subheader("Context")
-    st.caption("Credit Overview shows ICE BofA OAS in basis points via FRED. Rates Curve shows Treasury yields in percent. Those units are not mixed into TRACE volume or trade counts.")
-    credit = load_or_stop("credit_context")
-    rates = load_or_stop("rates_context")
-    buckets = [b for b in (credit.get("buckets") or []) if b.get("bucket") in {"ig_broad", "hy_broad"}]
-    if buckets:
-        cols = st.columns(max(1, len(buckets)))
-        for i, b in enumerate(buckets):
-            with cols[i]:
-                st.metric("{0} OAS".format(b["label"]), fmt(b.get("oas_bps"), "bps").replace("+", ""), fmt_signed(b.get("change_1d_bps"), "bps") if b.get("change_1d_bps") is not None else None)
-    curve = [c for c in (rates.get("curve") or []) if c.get("tenor") in {"2Y", "10Y"} and c.get("yield_pct") is not None]
-    if curve:
-        cols = st.columns(max(1, len(curve)))
-        for i, c in enumerate(curve):
-            with cols[i]:
-                st.metric("{0} Treasury".format(c["tenor"]), fmt(c.get("yield_pct"), "pct"))
-    st.caption("No trading recommendation is generated from this page.")
+    individual = ctx.get("individual_trades") or {}
+    if not individual.get("available"):
+        st.caption("Individual TRACE transactions are not available through this Query API entitlement.")
+    coverage = list(ctx.get("coverage") or [])
+    with st.expander("Dataset coverage and limitations"):
+        if not coverage:
+            coverage = [{"dataset": "FINRA Query API", "group_name": "fixedIncomeMarket", "capability_status": "NEVER_ATTEMPTED", "coverage_note": "Backend has not recorded a FINRA probe yet."}]
+        st.dataframe(order_flow_coverage_frame(coverage), use_container_width=True, hide_index=True)
+        notes = [row.get("coverage_note") for row in coverage if row.get("coverage_note")]
+        if notes:
+            st.caption(notes[0])
 
 
 __all__ = [
@@ -889,6 +943,7 @@ __all__ = [
     "render_market_pulse",
     "render_morning_context",
     "render_order_flow",
+    "render_pit_sector_internals",
     "render_rates_curve",
     "render_sector_rotation_v2",
 ]

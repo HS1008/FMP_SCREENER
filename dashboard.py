@@ -413,9 +413,8 @@ def _spawn_background_sector_warm(api_key: str, active_page: str) -> None:
         _WARM_THREAD.start()
 
 
-def main() -> None:
-    st.set_page_config(page_title="FMP Sector Dashboard", layout="wide")
-    st.title("FMP Sector Dashboard")
+def render_legacy_fmp_dashboard() -> None:
+    st.title("Legacy FMP comparison")
     ttl_h = _CACHE_TTL_SECONDS / 3600.0
     col_cap, col_btn = st.columns([5, 1])
     with col_cap:
@@ -469,6 +468,45 @@ def main() -> None:
                 ).start()
             else:
                 _spawn_background_sector_warm(api_key, page)
+
+
+def main() -> None:
+    st.set_page_config(page_title="Market Intelligence", page_icon="📊", layout="wide")
+    from market_intelligence.pages_ui import (
+        render_credit_overview,
+        render_data_health,
+        render_macro_overview,
+        render_market_pulse,
+        render_morning_context,
+        render_order_flow,
+        render_pit_sector_internals,
+        render_rates_curve,
+        render_sector_rotation_v2,
+    )
+
+    navigation = st.navigation(
+        {
+            "Overview": [st.Page(render_market_pulse, title="Overview", default=True)],
+            "Markets": [
+                st.Page(render_sector_rotation_v2, title="Sectors"),
+                st.Page(render_rates_curve, title="Rates"),
+                st.Page(render_credit_overview, title="Credit"),
+                st.Page(render_order_flow, title="Order Flow"),
+            ],
+            "Economy": [st.Page(render_macro_overview, title="Macro")],
+            "Research": [
+                st.Page("pages/strategy_monitor.py", title="Strategy Monitor"),
+                st.Page("pages/09_Power_Producer_Watchlist.py", title="Power Producers"),
+            ],
+            "System": [
+                st.Page(render_data_health, title="Data Health"),
+                st.Page(render_morning_context, title="Morning Brief"),
+                st.Page(render_pit_sector_internals, title="Methodology"),
+                st.Page(render_legacy_fmp_dashboard, title="Legacy FMP comparison"),
+            ],
+        }
+    )
+    navigation.run()
 
 
 if __name__ == "__main__":

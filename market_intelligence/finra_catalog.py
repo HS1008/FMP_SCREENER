@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 
 FINRA_QUERY_SOURCE_ID = "FINRA_QUERY"
 FINRA_TRACE_SOURCE_ID = "FINRA_TRACE"
-FINRA_CATALOG_VERSION = "finra_query_v1"
+FINRA_CATALOG_VERSION = "finra_query_v2"
 FINRA_GROUP = "fixedIncomeMarket"
 FINRA_API_BASE = "https://api.finra.org"
 FINRA_TOKEN_URL = "https://ews.fip.finra.org/fip/rest/ews/oauth2/access_token?grant_type=client_credentials"
@@ -61,6 +61,11 @@ class FinraDatasetSpec:
     probe_limit: int = 5
     mock_dataset: str | None = None
     extra_fields: tuple[str, ...] = field(default_factory=tuple)
+
+    @property
+    def required_fields(self) -> tuple[str, ...]:
+        """Fields that must be present for a row to be identity-complete."""
+        return (self.date_field,) + self.grain_fields
 
 
 CORPORATE_BREADTH = FinraDatasetSpec(
@@ -133,8 +138,8 @@ CORPORATE_CAPPED_VOLUME = FinraDatasetSpec(
     title="Corporate And Agency Capped Volume",
     kind=KIND_CAPPED_VOLUME,
     date_field=DATE_FIELD,
-    category_fields=("gradeCode", "144AFlag"),
-    grain_fields=("gradeCode", "144AFlag"),
+    category_fields=("gradeCode", "144AFlag", "tradeYear", "tradeMonth"),
+    grain_fields=("gradeCode", "144AFlag", "tradeYear", "tradeMonth"),
     numeric_fields=(
         "totalTradeCount",
         "totalVolumeQuantity",
@@ -179,11 +184,13 @@ CORPORATE_CAPPED_VOLUME = FinraDatasetSpec(
     cadence="M",
     coverage_note=(
         "Capped/reported TRACE volume for corporate and agency debt, split by FINRA "
-        "gradeCode (IG, HY, AGCY) and 144AFlag. Live Query API rows use month-start "
-        "tradeReportDate values; treat this dataset as monthly, not a partial session. "
-        "Totals are lower-bound/capped measures where FINRA caps size. Do not describe "
+        "gradeCode (IG, HY, AGCY), 144AFlag, tradeYear, and tradeMonth. tradeReportDate "
+        "is the publication/report date and can repeat across distinct reporting periods; "
+        "it is not the grain by itself. Treat the dataset as monthly. Totals are "
+        "lower-bound/capped measures where FINRA caps size. Do not describe "
         "size-weighted statistics as exact VWAP. Do not add IG+HY+AGCY 144A/non-144A "
-        "rows as if they were a single tape."
+        "rows as if they were a single tape. Figures are not headline-eligible until "
+        "current rows carry tradeYear and tradeMonth in the stored identity."
     ),
     units_note=(
         "Source fields as published by FINRA Query API corporatesAndAgenciesCappedVolume. "
