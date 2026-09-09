@@ -77,6 +77,8 @@ def test_migration_is_idempotent_and_additive():
         "014_pit_sector_internals.sql",
         "015_metric_latest_skips_withdrawn.sql",
         "016_ibkr_collector.sql",
+        "017_finra_order_flow.sql",
+        "018_ibkr_callback_freshness.sql",
     ]
     assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})

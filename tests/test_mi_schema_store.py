@@ -27,7 +27,7 @@ pytestmark = pytest.mark.usefixtures("pg_engine")
 
 def test_new_migrations_are_additive_and_numbered_after_007():
     names = sorted(p.name for p in MIGRATIONS.glob("*.sql"))
-    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013", "014", "015", "016"))]
+    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018"))]
     assert new == [
         "008_market_intelligence_core.sql",
         "009_market_intelligence_analytics.sql",
@@ -38,6 +38,8 @@ def test_new_migrations_are_additive_and_numbered_after_007():
         "014_pit_sector_internals.sql",
         "015_metric_latest_skips_withdrawn.sql",
         "016_ibkr_collector.sql",
+        "017_finra_order_flow.sql",
+        "018_ibkr_callback_freshness.sql",
     ]
     for name in new:
         sql = (MIGRATIONS / name).read_text(encoding="utf-8").upper()
@@ -50,7 +52,7 @@ def test_new_migrations_are_additive_and_numbered_after_007():
 def test_migrations_applied_once_and_second_application_is_noop(pg_engine):
     with pg_engine.connect() as conn:
         applied = {r[0] for r in conn.execute(text("SELECT filename FROM schema_migrations"))}
-    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql", "013_research_idea_completeness.sql", "014_pit_sector_internals.sql", "015_metric_latest_skips_withdrawn.sql", "016_ibkr_collector.sql"} <= applied
+    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql", "013_research_idea_completeness.sql", "014_pit_sector_internals.sql", "015_metric_latest_skips_withdrawn.sql", "016_ibkr_collector.sql", "017_finra_order_flow.sql", "018_ibkr_callback_freshness.sql"} <= applied
     files = sorted(MIGRATIONS.glob("*.sql"))
     assert pending_migration_files(files, applied) == []
     # Second application must be a no-op (idempotent) and leave research tables intact.
@@ -190,6 +192,9 @@ def test_schema_objects_exist(pg_engine):
         "mi_morning_context_snapshots", "mi_research_ideas", "mi_research_idea_versions", "mi_research_idea_transitions",
         "mi_research_idea_approvals", "mi_research_idea_tests", "mi_bond_securities", "mi_bond_quotes", "mi_bond_trades", "mi_bond_analytics",
         "mi_collector_status",
+        "mi_finra_dataset_capability",
+        "mi_finra_ingest_checkpoint",
+        "mi_finra_aggregate_observations",
     }
     with pg_engine.connect() as conn:
         tables = {r[0] for r in conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_name LIKE 'mi\\_%' AND table_type='BASE TABLE'"))}
@@ -197,7 +202,7 @@ def test_schema_objects_exist(pg_engine):
         # Pre-existing research tables untouched.
         research = {r[0] for r in conn.execute(text("SELECT table_name FROM information_schema.tables WHERE table_name IN ('research_runs','research_experiments','strategies')"))}
     assert expected_tables <= tables
-    assert {"mi_v_source_health", "mi_v_macro_latest", "mi_v_credit_latest", "mi_v_morning_context_latest", "mi_v_strategy_research_summary", "mi_v_research_ideas", "mi_v_pit_sector_artifacts", "mi_v_pit_sector_internals_current", "mi_v_pit_sector_internals_latest", "mi_v_ibkr_collector_status", "mi_v_ibkr_quotes_latest"} <= views
+    assert {"mi_v_source_health", "mi_v_macro_latest", "mi_v_credit_latest", "mi_v_morning_context_latest", "mi_v_strategy_research_summary", "mi_v_research_ideas", "mi_v_pit_sector_artifacts", "mi_v_pit_sector_internals_current", "mi_v_pit_sector_internals_latest", "mi_v_ibkr_collector_status", "mi_v_ibkr_quotes_latest", "mi_v_order_flow_coverage", "mi_v_finra_aggregate_current"} <= views
     assert {"research_runs", "strategies"} <= research
 
 

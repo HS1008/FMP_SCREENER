@@ -11,6 +11,9 @@ from ibkr_collector.values import BLOCKED_ECLIENT_METHODS, classify_error, finit
 
 logger = logging.getLogger("ibkr_collector.client")
 
+MAX_ERRORS = 200
+MAX_RAW_TICKS = 100
+
 
 class OrderMethodBlocked(RuntimeError):
     """Raised if any order, account, position, or execution API is invoked."""
@@ -92,6 +95,12 @@ class _ReadOnlyCallbacks:
         }
         with self._lock:
             self.errors.append(rec)
+            if len(self.errors) > MAX_ERRORS:
+                self.errors = self.errors[-MAX_ERRORS:]
+            if kind == "entitlement" and reqId is not None:
+                bucket = self.ticks.setdefault(reqId, {})
+                bucket["entitlement_error"] = True
+                bucket["entitlement_code"] = int(errorCode)
         if kind == "info":
             logger.info("tws info code=%s req=%s", errorCode, reqId)
         elif kind == "entitlement":
@@ -136,6 +145,12 @@ class _ReadOnlyCallbacks:
             self.symbol_samples[reqId] = rows
         self.wait_event(reqId, self.symbol_samples_done).set()
 
+    def _note_callback(self, reqId: int) -> None:
+        from ibkr_collector.values import utcnow
+
+        bucket = self.ticks.setdefault(reqId, {})
+        bucket["last_callback_at"] = utcnow().isoformat()
+
     def marketDataType(self, reqId: int, marketDataType: int) -> None:
         with self._lock:
             self.market_data_types[reqId] = int(marketDataType)
@@ -151,6 +166,9 @@ class _ReadOnlyCallbacks:
             tick_id = tickType
         with self._lock:
             self.raw_ticks.append({"req_id": reqId, "kind": "price", "tick_type": tick_id, "price": finite_or_none(price)})
+            if len(self.raw_ticks) > MAX_RAW_TICKS:
+                self.raw_ticks = self.raw_ticks[-MAX_RAW_TICKS:]
+            self._note_callback(reqId)
         field = PRICE_TICKS.get(tick_id) if isinstance(tick_id, int) else None
         if not field:
             return
@@ -170,6 +188,7 @@ class _ReadOnlyCallbacks:
         with self._lock:
             bucket = self.ticks.setdefault(reqId, {})
             bucket[field] = value
+            self._note_callback(reqId)
 
     def tickString(self, reqId: int, tickType: int, value: str) -> None:
         from ibkr_collector.values import TIMESTAMP_TICKS
@@ -180,6 +199,7 @@ class _ReadOnlyCallbacks:
         with self._lock:
             bucket = self.ticks.setdefault(reqId, {})
             bucket[field] = value or None
+            self._note_callback(reqId)
 
     def tickSnapshotEnd(self, reqId: int) -> None:
         with self._lock:

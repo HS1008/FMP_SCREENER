@@ -1,6 +1,6 @@
 # Read-only AI context API. Binds to localhost only; fails closed without AI_CONTEXT_API_TOKEN and
 # DATABASE_READONLY_URL (the mi_readonly role). Front with a private/TLS reverse proxy if remote
-# access is ever required. Placeholders: __ROOT__ __USER__ __ENV_FILE__
+# Placeholders: __ROOT__ __USER__ __API_ENV_FILE__
 [Unit]
 Description=FMP Market Intelligence read-only AI context API
 After=network-online.target postgresql.service
@@ -10,7 +10,7 @@ Wants=network-online.target
 Type=simple
 User=__USER__
 WorkingDirectory=__ROOT__
-EnvironmentFile=-__ENV_FILE__
+EnvironmentFile=-__API_ENV_FILE__
 Environment=AI_CONTEXT_API_HOST=127.0.0.1
 Environment=AI_CONTEXT_API_PORT=8765
 ExecStart=__ROOT__/venv/bin/python -m uvicorn ai_context_api:app --host ${AI_CONTEXT_API_HOST} --port ${AI_CONTEXT_API_PORT} --no-access-log --proxy-headers

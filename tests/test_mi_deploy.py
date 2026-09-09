@@ -29,11 +29,14 @@ def fake_host(tmp_path: Path) -> dict[str, Path]:
     env_file = tmp_path / "market_intelligence.env"
     env_file.write_text("FRED_API_KEY=placeholder\n")
     os.chmod(env_file, 0o600)
-    return {"root": root, "systemd": tmp_path / "systemd", "env": env_file}
+    api_env = tmp_path / "ai_context_api.env"
+    api_env.write_text("AI_CONTEXT_API_TOKEN=placeholder\nDATABASE_READONLY_URL=postgresql://mi_readonly:CHANGE_ME@127.0.0.1:5432/fmp\n")
+    os.chmod(api_env, 0o600)
+    return {"root": root, "systemd": tmp_path / "systemd", "env": env_file, "api_env": api_env}
 
 
 def test_dry_run_is_default_and_writes_nothing(fake_host):
-    result = _run("--root", str(fake_host["root"]), "--systemd-dir", str(fake_host["systemd"]), "--env-file", str(fake_host["env"]), "--with-api", cwd=ROOT)
+    result = _run("--root", str(fake_host["root"]), "--systemd-dir", str(fake_host["systemd"]), "--env-file", str(fake_host["env"]), "--api-env-file", str(fake_host["api_env"]), "--with-api", cwd=ROOT)
     assert result.returncode == 0, result.stderr
     assert "DRY RUN" in result.stdout
     assert not fake_host["systemd"].exists()
@@ -46,7 +49,7 @@ def test_apply_renders_units_idempotently_and_never_touches_other_units(fake_hos
     fake_host["systemd"].mkdir()
     other = fake_host["systemd"] / "fmp-dashboard.service"
     other.write_text("[Unit]\nDescription=existing dashboard\n")
-    args = ["--root", str(fake_host["root"]), "--systemd-dir", str(fake_host["systemd"]), "--env-file", str(fake_host["env"]), "--with-api", "--apply", "--no-systemctl"]
+    args = ["--root", str(fake_host["root"]), "--systemd-dir", str(fake_host["systemd"]), "--env-file", str(fake_host["env"]), "--api-env-file", str(fake_host["api_env"]), "--with-api", "--apply", "--no-systemctl"]
     first = _run(*args, cwd=ROOT)
     assert first.returncode == 0, first.stderr
     written = sorted(p.name for p in fake_host["systemd"].iterdir())
@@ -58,6 +61,8 @@ def test_apply_renders_units_idempotently_and_never_touches_other_units(fake_hos
     assert "EnvironmentFile=-{0}".format(fake_host["env"]) in service
     api = (fake_host["systemd"] / "fmp-ai-context-api.service").read_text()
     assert "--host ${AI_CONTEXT_API_HOST}" in api and "AI_CONTEXT_API_HOST=127.0.0.1" in api
+    assert "EnvironmentFile=-{0}".format(fake_host["api_env"]) in api
+    assert "FRED_API_KEY" not in api
     second = _run(*args, cwd=ROOT)
     assert second.stdout.count("(unchanged)") == 3
 
@@ -76,7 +81,7 @@ def test_env_example_has_only_placeholders_and_documents_every_consumed_variable
         cleaned = value.split("#")[0].strip().strip('"')
         assert cleaned in {"", "0", "127.0.0.1", "8765", "5432", "fmp", "fmp_writer", "FMP Research ops@example.com", "/root/FMP_SCREENER/outputs/precomputed"} or "CHANGE_ME" in cleaned, (name, value)
     names = {n for n, _ in assigned}
-    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MARKET_INTELLIGENCE_DATABASE_URL"):
+    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL"):
         assert required in names
 
 
@@ -126,7 +131,7 @@ def test_timer_calendar_follows_new_york_dst_and_skips_weekends(base_time, spec,
 
 
 def test_rendered_units_pass_systemd_verify_and_encode_lock_restart_and_port_semantics(fake_host):
-    out = _run("--apply", "--with-api", "--no-systemctl", "--root", str(fake_host["root"]), "--user", "svc", "--env-file", str(fake_host["env"]), "--systemd-dir", str(fake_host["systemd"]), cwd=ROOT)
+    out = _run("--apply", "--with-api", "--no-systemctl", "--root", str(fake_host["root"]), "--user", "svc", "--env-file", str(fake_host["env"]), "--api-env-file", str(fake_host["api_env"]), "--systemd-dir", str(fake_host["systemd"]), cwd=ROOT)
     assert out.returncode == 0, out.stderr
     refresh = (fake_host["systemd"] / "fmp-mi-refresh.service").read_text()
     api = (fake_host["systemd"] / "fmp-ai-context-api.service").read_text()
@@ -140,7 +145,11 @@ def test_rendered_units_pass_systemd_verify_and_encode_lock_restart_and_port_sem
     assert "Restart=on-failure" in api and "ProtectSystem=strict" in api and "CapabilityBoundingSet=" in api
     # Secrets come from the protected EnvironmentFile; no credential appears on any command line.
     for unit in (refresh, api, timer):
-        assert "EnvironmentFile=-{0}".format(fake_host["env"]) in unit or unit is timer
+        if unit is api:
+            assert "EnvironmentFile=-{0}".format(fake_host["api_env"]) in unit
+            assert "EnvironmentFile=-{0}".format(fake_host["env"]) not in unit
+        elif unit is refresh:
+            assert "EnvironmentFile=-{0}".format(fake_host["env"]) in unit
         for line in unit.splitlines():
             if line.startswith("ExecStart="):
                 assert not re.search(r"(password|token|api_key|postgres(ql)?://)", line, flags=re.I), line
@@ -204,6 +213,51 @@ def test_fred_validation_workflow_is_manual_only_and_receives_the_fred_secret_ex
     assert "secrets.FRED_API_KEY" not in pr and 'FRED_API_KEY: ""' in pr
 
 
+def test_finra_validation_workflow_is_manual_or_feature_branch_and_receives_finra_secrets_explicitly():
+    raw = (ROOT / ".github" / "workflows" / "finra_validation.yml").read_text()
+    text = _yaml_without_comments(ROOT / ".github" / "workflows" / "finra_validation.yml")
+    assert "pull_request:" not in text and "pull_request_target" not in text
+    assert "schedule:" not in text and "workflow_run:" not in text
+    assert "workflow_dispatch:" in text
+    assert "cursor/order-flow-finra-ibkr-674b" in raw
+    assert "secrets.FINRA_CLIENT_ID" in raw and "secrets.FINRA_CLIENT_SECRET" in raw
+    assert "image: postgres:16" in text and "127.0.0.1:5432" in text
+    assert "jobs.validate_finra_live" in text
+    assert "digitalocean" not in text.lower()
+    assert "traqs" not in text.lower()
+    pr = _yaml_without_comments(ROOT / ".github" / "workflows" / "pr_validation.yml")
+    assert "secrets.FINRA_CLIENT_ID" not in pr and "secrets.FINRA_CLIENT_SECRET" not in pr
+
+
+def test_validate_finra_live_refuses_production_urls_and_missing_config(monkeypatch, capsys):
+    from jobs.validate_finra_live import EXIT_CONFIG, EXIT_REFUSED, run
+
+    monkeypatch.delenv("FINRA_CLIENT_ID", raising=False)
+    monkeypatch.delenv("FINRA_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("FINRA_API_CLIENT_ID", raising=False)
+    monkeypatch.delenv("FINRA_API_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("FMP_TEST_DATABASE_URL", raising=False)
+    assert run([]) == EXIT_CONFIG
+    monkeypatch.setenv("FINRA_CLIENT_ID", "test-finra-id-not-real")
+    monkeypatch.setenv("FINRA_CLIENT_SECRET", "test-finra-secret-not-real")
+    monkeypatch.setenv("FMP_TEST_DATABASE_URL", "postgresql://user:pw@db.ondigitalocean.com:25060/fmp")
+    assert run([]) == EXIT_REFUSED
+    captured = capsys.readouterr()
+    combined = captured.out + captured.err
+    assert "test-finra-id-not-real" not in combined
+    assert "test-finra-secret-not-real" not in combined
+
+
+def test_ai_context_env_example_has_no_provider_secrets():
+    example = (TEMPLATES / "ai_context_api.env.example").read_text()
+    assert "FRED_API_KEY" not in example
+    assert "FINRA_CLIENT" not in example
+    assert "IBKR_INGEST" not in example
+    assert "MARKET_INTELLIGENCE_DATABASE_URL" not in example
+    assert "AI_CONTEXT_API_TOKEN" in example
+    assert "DATABASE_READONLY_URL" in example
+
+
 def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
     for name in ("mi_host_preflight.yml", "mi_production_activate.yml"):
         raw = (ROOT / ".github" / "workflows" / name).read_text()
@@ -223,6 +277,9 @@ def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     assert "--phase probe" in text
     assert "run_with_heartbeat" in text
     assert "ingest-analytics" in text
+    assert "ingest-finra" in text
+    assert "ai_context_api.env" in text
+    assert "materialize_ai_context_env.py" in text
     assert "wait_for_local_api" in text
     assert "127.0.0.1:8765/health" in text
     assert '-f -' in text
@@ -240,7 +297,9 @@ def test_activate_workflow_installs_fixed_script_and_keeps_existing_secrets():
     assert "--phase probe" in raw
     assert "existing secret files are not overwritten" in raw
     assert "ServerAliveInterval 15" in raw
-    assert "--phase ingest-analytics" in raw
+    assert "ingest-finra" in raw
+    assert "FINRA_CLIENT_ID" in raw
+    assert "cursor/order-flow-activate-674b" in raw
     assert "[schedule-only]" in raw
     assert "eb20bb84209c1a1aa1896063d91803b6eb2bd591" not in raw
     assert "pull_request:" not in text

@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - cursor/mi-production-activate-674b
+      - cursor/order-flow-activate-674b
   workflow_dispatch:
 
 permissions:
@@ -30,6 +31,8 @@ jobs:
       DO_HOST: ${{ secrets.DO_HOST }}
       DO_USER: ${{ secrets.DO_USER }}
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      FINRA_CLIENT_ID: ${{ secrets.FINRA_CLIENT_ID }}
+      FINRA_CLIENT_SECRET: ${{ secrets.FINRA_CLIENT_SECRET }}
     steps:
       - name: Refuse to continue without the FRED secret
         run: |
@@ -79,7 +82,11 @@ jobs:
           EOF
           scp -q scripts/activate_market_intelligence_host.sh \
             "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh"
-          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh'
+          scp -q scripts/materialize_ai_context_env.py \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/materialize_ai_context_env.py"
+          scp -q scripts/install_market_intelligence_timers.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/install_market_intelligence_timers.sh"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh /root/FMP_SCREENER/scripts/materialize_ai_context_env.py /root/FMP_SCREENER/scripts/install_market_intelligence_timers.sh'
 
       - name: Probe host admin/peer path for CREATE ROLE (no secrets)
         run: |
@@ -117,7 +124,24 @@ jobs:
             shred -u /tmp/ai_context_api_token || rm -f /tmp/ai_context_api_token
             echo "ai token file installed"
           fi
+          if [ -n "${FINRA_CLIENT_ID:-}" ] && [ -n "${FINRA_CLIENT_SECRET:-}" ]; then
+            if ssh "$DO_USER@$DO_HOST" 'test -s /root/FMP_SCREENER/.secrets/finra_client_id && test -s /root/FMP_SCREENER/.secrets/finra_client_secret'; then
+              echo "finra credential files already present (not overwritten)"
+            else
+              install -m 0600 /dev/null /tmp/finra_client_id
+              install -m 0600 /dev/null /tmp/finra_client_secret
+              printf '%s\n' "$FINRA_CLIENT_ID" > /tmp/finra_client_id
+              printf '%s\n' "$FINRA_CLIENT_SECRET" > /tmp/finra_client_secret
+              scp -q /tmp/finra_client_id "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/finra_client_id"
+              scp -q /tmp/finra_client_secret "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/finra_client_secret"
+              shred -u /tmp/finra_client_id /tmp/finra_client_secret || rm -f /tmp/finra_client_id /tmp/finra_client_secret
+              echo "finra credential files installed"
+            fi
+          else
+            echo "FINRA repository secrets unavailable; Query API ingest will be skipped"
+          fi
           ssh "$DO_USER@$DO_HOST" 'chmod 0600 /root/FMP_SCREENER/.secrets/fred_api_key /root/FMP_SCREENER/.secrets/mi_readonly.pw /root/FMP_SCREENER/.secrets/ai_context_api_token'
+          ssh "$DO_USER@$DO_HOST" 'chmod 0600 /root/FMP_SCREENER/.secrets/finra_client_id /root/FMP_SCREENER/.secrets/finra_client_secret 2>/dev/null || true'
 
       - name: Provision FRED key, read-only role, and private API token
         run: |
@@ -128,6 +152,11 @@ jobs:
         run: |
           ssh "$DO_USER@$DO_HOST" \
             '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-fred'
+
+      - name: FINRA Query API aggregate ingest (bounded)
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-finra'
 
       - name: Legacy sector ingest
         run: |
@@ -211,7 +240,11 @@ jobs:
         run: |
           scp -q scripts/activate_market_intelligence_host.sh \
             "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh"
-          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh'
+          scp -q scripts/materialize_ai_context_env.py \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/materialize_ai_context_env.py"
+          scp -q scripts/install_market_intelligence_timers.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/install_market_intelligence_timers.sh"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh /root/FMP_SCREENER/scripts/materialize_ai_context_env.py /root/FMP_SCREENER/scripts/install_market_intelligence_timers.sh'
 
       - name: Enable refresh timer and localhost AI context API
         run: |

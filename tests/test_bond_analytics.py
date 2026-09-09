@@ -368,7 +368,7 @@ def test_adapters_are_disabled_or_configuration_required_and_refuse_to_fetch():
     assert not any(name.lower().startswith(("place", "order", "submit")) for name in dir(adapters.IBKRMarketDataAdapter))
     trace = adapters.TraceAdapter()
     assert trace.probe({"MI_TRACE_ENABLED": "1"}).access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
-    assert trace.probe({"MI_TRACE_ENABLED": "1", "FINRA_API_CLIENT_ID": "x", "FINRA_API_CLIENT_SECRET": "y"}).access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert trace.probe({"MI_TRACE_ENABLED": "1", "FINRA_API_CLIENT_ID": "x", "FINRA_API_CLIENT_SECRET": "y"}).access_status == adapters.ACCESS_CONFIGURED
     with pytest.raises(adapters.AdapterDisabled):
         trace.fetch_trades(["912828ZT0"], env={"MI_TRACE_ENABLED": "1", "FINRA_API_CLIENT_ID": "x", "FINRA_API_CLIENT_SECRET": "y"})
 

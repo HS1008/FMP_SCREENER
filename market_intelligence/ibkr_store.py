@@ -104,7 +104,7 @@ def upsert_instrument(
         {
             "id": instrument_id,
             "name": display_name or symbol,
-            "asset": "ETF" if sec_type == "STK" else sec_type,
+            "asset": _asset_type(sec_type),
             "sec": sec_type,
             "ccy": currency,
             "exch": exchange,
@@ -130,7 +130,12 @@ def upsert_instrument(
         )
 
 
-def ingest_quotes(conn, records: list[Mapping[str, Any]], *, collector_id: str) -> dict[str, int]:
+def _asset_type(sec_type: str) -> str:
+    mapping = {"STK": "EQUITY", "ETF": "ETF", "BOND": "BOND", "FUND": "FUND", "IND": "INDEX"}
+    return mapping.get(sec_type or "", sec_type or "UNK")
+
+
+def ingest_quotes(conn, records: list[Mapping[str, Any]], *, collector_id: str) -> dict[str, Any]:
     ensure_ibkr_source(conn)
     conn.execute(
         text(
@@ -144,24 +149,33 @@ def ingest_quotes(conn, records: list[Mapping[str, Any]], *, collector_id: str) 
     )
     run_id = start_run(conn, source_id=IBKR_SOURCE_ID, dataset="market_quotes")
     received = inserted = unchanged = rejected = 0
-    latest_ts = None
+    results: list[dict[str, Any]] = []
+    latest_callback = None
     for raw in records:
         received += 1
+        record_id = str(raw.get("record_id") or "")
+        nested = conn.begin_nested()
         try:
             inserted_flag = _insert_quote(conn, raw, run_id=run_id)
-        except Exception:
+            nested.commit()
+        except Exception as exc:
+            nested.rollback()
+            reason = exc.__class__.__name__
+            results.append({"record_id": record_id, "outcome": "rejected", "reason": reason})
             rejected += 1
             continue
         if inserted_flag:
             inserted += 1
+            results.append({"record_id": record_id, "outcome": "committed", "reason": None})
         else:
             unchanged += 1
-        ts = raw.get("quote_ts")
-        if ts and (latest_ts is None or str(ts) > str(latest_ts)):
-            latest_ts = ts
+            results.append({"record_id": record_id, "outcome": "duplicate", "reason": None})
+        callback = raw.get("last_callback_at") or raw.get("source_ts")
+        if callback and (latest_callback is None or str(callback) > str(latest_callback)):
+            latest_callback = callback
     latest_date = None
-    if latest_ts:
-        parsed = datetime.fromisoformat(str(latest_ts).replace("Z", "+00:00"))
+    if latest_callback:
+        parsed = datetime.fromisoformat(str(latest_callback).replace("Z", "+00:00"))
         latest_date = parsed.date()
     finish_run(
         conn,
@@ -189,13 +203,23 @@ def ingest_quotes(conn, records: list[Mapping[str, Any]], *, collector_id: str) 
             UPDATE mi_collector_status SET
                 last_ingest_ok_at = CASE WHEN :ok THEN NOW() ELSE last_ingest_ok_at END,
                 last_quote_at = COALESCE(CAST(:last_quote AS TIMESTAMPTZ), last_quote_at),
+                last_callback_at = COALESCE(CAST(:last_callback AS TIMESTAMPTZ), last_callback_at),
                 updated_at = NOW()
             WHERE collector_id = :cid
             """
         ),
-        {"ok": inserted + unchanged > 0, "last_quote": latest_ts, "cid": collector_id},
+        {"ok": inserted + unchanged > 0, "last_quote": latest_callback, "last_callback": latest_callback, "cid": collector_id},
     )
-    return {"received": received, "inserted": inserted, "unchanged": unchanged, "rejected": rejected, "run_id": run_id}
+    return {
+        "received": received,
+        "inserted": inserted,
+        "unchanged": unchanged,
+        "rejected": rejected,
+        "committed": inserted,
+        "duplicate": unchanged,
+        "run_id": run_id,
+        "results": results,
+    }
 
 
 def _num(value: Any):
@@ -236,11 +260,12 @@ def _insert_quote(conn, raw: Mapping[str, Any], *, run_id: str) -> bool:
             INSERT INTO mi_market_quotes (
                 instrument_id, source_id, quote_ts, bid, ask, last_price, mid, bid_size, ask_size,
                 currency, delay_status, quote_status, retrieved_at, ingestion_run_id,
-                con_id, market_data_type, provenance, source_ts, last_size, close_price, record_id
+                con_id, market_data_type, provenance, source_ts, last_size, close_price, record_id, last_callback_at
             ) VALUES (
                 :instrument_id, :source_id, CAST(:quote_ts AS TIMESTAMPTZ), :bid, :ask, :last, :mid, :bid_size, :ask_size,
                 :currency, :delay_status, :quote_status, CAST(:retrieved_at AS TIMESTAMPTZ), :run_id,
-                :con_id, :mdt, CAST(:provenance AS JSONB), CAST(:source_ts AS TIMESTAMPTZ), :last_size, :close_price, :record_id
+                :con_id, :mdt, CAST(:provenance AS JSONB), CAST(:source_ts AS TIMESTAMPTZ), :last_size, :close_price, :record_id,
+                CAST(:last_callback_at AS TIMESTAMPTZ)
             )
             ON CONFLICT DO NOTHING
             """
@@ -267,6 +292,7 @@ def _insert_quote(conn, raw: Mapping[str, Any], *, run_id: str) -> bool:
             "last_size": _num(raw.get("last_size")),
             "close_price": _num(raw.get("close_price")),
             "record_id": raw.get("record_id"),
+            "last_callback_at": raw.get("last_callback_at"),
         },
     )
     return bool(result.rowcount)
@@ -285,12 +311,13 @@ def upsert_heartbeat(conn, payload: Mapping[str, Any]) -> None:
             """
             INSERT INTO mi_collector_status (
                 collector_id, source_id, reported_state, last_heartbeat_at, last_socket_ok_at,
-                last_api_handshake_at, last_tws_connect_at, last_quote_at, last_delivery_error_redacted,
-                market_data_type, client_id, watchlist_json, details_json, updated_at
+                last_api_handshake_at, last_tws_connect_at, last_quote_at, last_callback_at,
+                last_delivery_error_redacted, market_data_type, client_id, watchlist_json, details_json,
+                queue_overflow_count, updated_at
             ) VALUES (
                 :cid, :src, :state, NOW(), CAST(:socket AS TIMESTAMPTZ), CAST(:handshake AS TIMESTAMPTZ),
-                CAST(:tws AS TIMESTAMPTZ), CAST(:quote AS TIMESTAMPTZ), :err, :mdt, :client_id,
-                CAST(:watchlist AS JSONB), CAST(:details AS JSONB), NOW()
+                CAST(:tws AS TIMESTAMPTZ), CAST(:quote AS TIMESTAMPTZ), CAST(:callback AS TIMESTAMPTZ),
+                :err, :mdt, :client_id, CAST(:watchlist AS JSONB), CAST(:details AS JSONB), :overflow, NOW()
             )
             ON CONFLICT (collector_id) DO UPDATE SET
                 source_id = EXCLUDED.source_id,
@@ -300,11 +327,13 @@ def upsert_heartbeat(conn, payload: Mapping[str, Any]) -> None:
                 last_api_handshake_at = COALESCE(EXCLUDED.last_api_handshake_at, mi_collector_status.last_api_handshake_at),
                 last_tws_connect_at = COALESCE(EXCLUDED.last_tws_connect_at, mi_collector_status.last_tws_connect_at),
                 last_quote_at = COALESCE(EXCLUDED.last_quote_at, mi_collector_status.last_quote_at),
+                last_callback_at = COALESCE(EXCLUDED.last_callback_at, mi_collector_status.last_callback_at),
                 last_delivery_error_redacted = EXCLUDED.last_delivery_error_redacted,
                 market_data_type = COALESCE(EXCLUDED.market_data_type, mi_collector_status.market_data_type),
                 client_id = COALESCE(EXCLUDED.client_id, mi_collector_status.client_id),
                 watchlist_json = COALESCE(EXCLUDED.watchlist_json, mi_collector_status.watchlist_json),
                 details_json = EXCLUDED.details_json,
+                queue_overflow_count = COALESCE(EXCLUDED.queue_overflow_count, mi_collector_status.queue_overflow_count),
                 updated_at = NOW()
             """
         ),
@@ -316,10 +345,12 @@ def upsert_heartbeat(conn, payload: Mapping[str, Any]) -> None:
             "handshake": payload.get("last_api_handshake_at"),
             "tws": payload.get("last_tws_connect_at"),
             "quote": payload.get("last_quote_at"),
+            "callback": payload.get("last_callback_at") or payload.get("last_quote_at"),
             "err": payload.get("last_delivery_error_redacted"),
             "mdt": mdt,
             "client_id": payload.get("client_id"),
             "watchlist": strict_dumps(payload.get("watchlist") or []),
             "details": strict_dumps(payload.get("details") or {}),
+            "overflow": (payload.get("details") or {}).get("queue_overflow_count") if isinstance(payload.get("details"), dict) else None,
         },
     )

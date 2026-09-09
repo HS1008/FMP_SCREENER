@@ -431,6 +431,214 @@ def ibkr_quotes_latest(conn) -> list[dict[str, Any]]:
     return _rows(conn, "SELECT * FROM mi_v_ibkr_quotes_latest ORDER BY instrument_id")
 
 
+def order_flow_context(conn, *, today: date | None = None, history_limit: int = 120) -> dict[str, Any]:
+    """Corporate bond trading activity from FINRA Query API aggregates stored in PostgreSQL."""
+    from market_intelligence.finra_catalog import (
+        BREADTH_DISPLAY_CATEGORIES,
+        CORPORATE_BREADTH,
+        CORPORATE_CAPPED_VOLUME,
+        CORPORATE_SENTIMENT,
+        FINRA_ATTRIBUTION,
+        SENTIMENT_CUSTOMER_BUY,
+        SENTIMENT_CUSTOMER_SELL,
+        TRACE_INDIVIDUAL,
+    )
+
+    today = _today(conn, today)
+    coverage = _rows(conn, "SELECT * FROM mi_v_order_flow_coverage ORDER BY group_name, dataset") if _view_exists(conn, "mi_v_order_flow_coverage") else []
+    current = _rows(conn, "SELECT * FROM mi_v_finra_aggregate_current ORDER BY dataset, observation_date DESC, category_key") if _view_exists(conn, "mi_v_finra_aggregate_current") else []
+    trades = _rows(conn, "SELECT source_trade_id FROM mi_v_trace_individual_trades LIMIT 1") if _view_exists(conn, "mi_v_trace_individual_trades") else []
+    by_dataset: dict[str, list[dict[str, Any]]] = {}
+    for row in current:
+        by_dataset.setdefault(row["dataset"], []).append(row)
+
+    def _latest_rows(dataset: str) -> list[dict[str, Any]]:
+        rows = by_dataset.get(dataset) or []
+        if not rows:
+            return []
+        latest = max(r["observation_date"] for r in rows if r.get("observation_date"))
+        return [r for r in rows if r.get("observation_date") == latest]
+
+    def _prior_rows(dataset: str, latest_date) -> list[dict[str, Any]]:
+        rows = by_dataset.get(dataset) or []
+        earlier = [r["observation_date"] for r in rows if r.get("observation_date") and r["observation_date"] < latest_date]
+        if not earlier:
+            return []
+        prior = max(earlier)
+        return [r for r in rows if r.get("observation_date") == prior]
+
+    def _metric(row: dict[str, Any], name: str):
+        metrics = row.get("metrics_json") or {}
+        if isinstance(metrics, str):
+            import json as _json
+
+            metrics = _json.loads(metrics)
+        return metrics.get(name)
+
+    def _grain_val(row: dict[str, Any], name: str):
+        grain = row.get("grain_json") or {}
+        if isinstance(grain, str):
+            import json as _json
+
+            grain = _json.loads(grain)
+        return grain.get(name)
+
+    breadth_latest = _latest_rows(CORPORATE_BREADTH.dataset)
+    breadth_date = breadth_latest[0]["observation_date"] if breadth_latest else None
+    breadth_prior = _prior_rows(CORPORATE_BREADTH.dataset, breadth_date) if breadth_date else []
+    prior_by_cat = {_grain_val(r, "productCategory"): r for r in breadth_prior}
+    breadth_cards = []
+    for row in breadth_latest:
+        cat = _grain_val(row, "productCategory")
+        prior = prior_by_cat.get(cat)
+        volume = _metric(row, "totalVolume")
+        trades_n = _metric(row, "totalTrades")
+        prior_volume = _metric(prior, "totalVolume") if prior else None
+        prior_trades = _metric(prior, "totalTrades") if prior else None
+        breadth_cards.append(
+            {
+                "product_category": cat,
+                "observation_date": row["observation_date"],
+                "prior_observation_date": prior["observation_date"] if prior else None,
+                "total_volume": volume,
+                "total_trades": trades_n,
+                "advances": _metric(row, "advances"),
+                "declines": _metric(row, "declines"),
+                "unchanged": _metric(row, "unchanged"),
+                "fifty_two_week_high": _metric(row, "fiftyTwoWeekHigh"),
+                "fifty_two_week_low": _metric(row, "fiftyTwoWeekLow"),
+                "volume_change": None if volume is None or prior_volume is None else volume - prior_volume,
+                "trade_count_change": None if trades_n is None or prior_trades is None else trades_n - prior_trades,
+                "volume_is_capped": bool(row.get("volume_is_capped")),
+                "retrieved_at": row.get("retrieved_at"),
+                "revision_seq": row.get("revision_seq"),
+                "units_note": row.get("units_note"),
+            }
+        )
+    breadth_cards.sort(key=lambda r: (BREADTH_DISPLAY_CATEGORIES.index(r["product_category"]) if r["product_category"] in BREADTH_DISPLAY_CATEGORIES else 99, r["product_category"] or ""))
+
+    sentiment_latest = _latest_rows(CORPORATE_SENTIMENT.dataset)
+    sentiment_date = sentiment_latest[0]["observation_date"] if sentiment_latest else None
+    sentiment_rows = []
+    customer_buy = None
+    customer_sell = None
+    for row in sentiment_latest:
+        product = (_grain_val(row, "productCategory") or "").lower()
+        trade_type = _grain_val(row, "tradeType")
+        item = {
+            "trade_type": trade_type,
+            "product_category": _grain_val(row, "productCategory"),
+            "observation_date": row["observation_date"],
+            "total_volume": _metric(row, "totalVolume"),
+            "total_trades": _metric(row, "totalTrades"),
+            "total_transactions": _metric(row, "totalTransactions"),
+            "retrieved_at": row.get("retrieved_at"),
+        }
+        sentiment_rows.append(item)
+        if (trade_type or "").lower() == "all securities" and product == SENTIMENT_CUSTOMER_BUY:
+            customer_buy = item
+        if (trade_type or "").lower() == "all securities" and product == SENTIMENT_CUSTOMER_SELL:
+            customer_sell = item
+    customer_net = None
+    if customer_buy and customer_sell and customer_buy.get("total_volume") is not None and customer_sell.get("total_volume") is not None:
+        customer_net = {
+            "observation_date": sentiment_date,
+            "customer_buy_volume": customer_buy["total_volume"],
+            "customer_sell_volume": customer_sell["total_volume"],
+            "customer_net_volume": customer_buy["total_volume"] - customer_sell["total_volume"],
+            "perspective": (
+                "Dealer-reported customer side from FINRA corporateMarketSentiment "
+                "(productCategory customer buy vs customer sell, tradeType all securities). "
+                "Not buyer initiation, not institutional identity, and not a fund-flow estimate. "
+                "Every trade has a buyer and a seller."
+            ),
+        }
+
+    capped_latest = _latest_rows(CORPORATE_CAPPED_VOLUME.dataset)
+    capped_date = capped_latest[0]["observation_date"] if capped_latest else None
+    capped_rows = []
+    for row in capped_latest:
+        capped_rows.append(
+            {
+                "grade_code": _grain_val(row, "gradeCode"),
+                "rule_144a_flag": _grain_val(row, "144AFlag"),
+                "observation_date": row["observation_date"],
+                "total_trade_count": _metric(row, "totalTradeCount"),
+                "total_volume_quantity": _metric(row, "totalVolumeQuantity"),
+                "customer_buy_par_lt_5y": _metric(row, "customerBuyParLessThan5YearsQuantity"),
+                "customer_sell_par_lt_5y": _metric(row, "customerSellParLessThan5YearsQuantity"),
+                "volume_is_capped": True,
+                "retrieved_at": row.get("retrieved_at"),
+                "units_note": row.get("units_note"),
+            }
+        )
+
+    history = []
+    if _view_exists(conn, "mi_v_finra_aggregate_history"):
+        history = _rows(
+            conn,
+            """
+            SELECT observation_date, category_key, metrics_json, volume_is_capped
+            FROM mi_v_finra_aggregate_history
+            WHERE dataset = :ds AND is_current
+            ORDER BY observation_date
+            """,
+            {"ds": CORPORATE_BREADTH.dataset},
+        )
+        if history_limit and len(history) > history_limit * 8:
+            cutoff_dates = sorted({r["observation_date"] for r in history})[-history_limit:]
+            keep = set(cutoff_dates)
+            history = [r for r in history if r["observation_date"] in keep]
+
+    individual_available = bool(trades)
+    loaded_dates = [r["observation_date"] for r in current if r.get("observation_date")]
+    return {
+        "title": "Corporate Bond Trading Activity",
+        "not_an_order_book": True,
+        "coverage_explanation": (
+            "Reported TRACE activity aggregates from the FINRA Query API, delayed/end-of-day "
+            "as published by FINRA. This is not a live order book, Level 2 depth, aggressor "
+            "direction, hidden liquidity, or unexecuted orders."
+        ),
+        "attribution": FINRA_ATTRIBUTION,
+        "coverage": coverage,
+        "individual_trades": {
+            "available": individual_available,
+            "capability_status": "AVAILABLE" if individual_available else "ENTITLEMENT_REQUIRED",
+            "note": TRACE_INDIVIDUAL.coverage_note,
+        },
+        "breadth": {
+            "dataset": CORPORATE_BREADTH.dataset,
+            "latest_observation_date": breadth_date,
+            "rows": breadth_cards,
+            "units_note": CORPORATE_BREADTH.units_note,
+            "overlap_note": "productCategory rows overlap; IG/HY/convertibles are not additive to all securities.",
+        },
+        "sentiment": {
+            "dataset": CORPORATE_SENTIMENT.dataset,
+            "latest_observation_date": sentiment_date,
+            "rows": sentiment_rows,
+            "customer_net": customer_net,
+            "units_note": CORPORATE_SENTIMENT.units_note,
+        },
+        "capped_volume": {
+            "dataset": CORPORATE_CAPPED_VOLUME.dataset,
+            "latest_observation_date": capped_date,
+            "rows": capped_rows,
+            "units_note": CORPORATE_CAPPED_VOLUME.units_note,
+            "capped_note": "Capped/reported source quantities are lower bounds where FINRA caps size. Not exact VWAP.",
+        },
+        "history": history,
+        "loaded_interval": {
+            "min_observation_date": min(loaded_dates) if loaded_dates else None,
+            "max_observation_date": max(loaded_dates) if loaded_dates else None,
+            "row_count": len(current),
+        },
+        "evaluated_on": today.isoformat(),
+        "export_scope": "INTERNAL_ONLY",
+    }
+
+
 def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
     health = source_health(conn, today=today)
     quarantine = _rows(conn, "SELECT * FROM mi_v_macro_quarantine_summary ORDER BY series_id, reason") if _view_exists(conn, "mi_v_macro_quarantine_summary") else []
@@ -478,6 +686,7 @@ __all__ = [
     "credit_context",
     "credit_latest",
     "data_health_context",
+    "order_flow_context",
     "snapshot_age",
     "industries_context",
     "industry_latest",

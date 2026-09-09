@@ -663,12 +663,218 @@ def render_morning_context() -> None:
         st.dataframe(pd.DataFrame(index), use_container_width=True, hide_index=True)
 
 
+def render_order_flow() -> None:
+    page_header(
+        "Order Flow",
+        "Corporate Bond Trading Activity from FINRA TRACE-derived Query API aggregates stored in PostgreSQL. "
+        "Not a live order book. No provider calls from this page.",
+        fred=False,
+    )
+    ctx = load_or_stop("order_flow_context")
+    st.subheader("Corporate Bond Trading Activity")
+    st.info(ctx.get("coverage_explanation") or "")
+    st.caption(ctx.get("attribution") or "")
+
+    coverage = list(ctx.get("coverage") or [])
+    st.subheader("Coverage and freshness")
+    if not coverage:
+        coverage = [
+            {
+                "dataset": "FINRA Query API",
+                "group_name": "fixedIncomeMarket",
+                "capability_status": "NEVER_ATTEMPTED",
+                "coverage_note": "Backend has not recorded a FINRA probe yet.",
+            }
+        ]
+    st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Provider": "FINRA",
+                        "Dataset": c.get("dataset"),
+                        "Group": c.get("group_name"),
+                        "Kind": "aggregate" if c.get("dataset") != "TRACE_INDIVIDUAL_TRANSACTIONS" else "individual trades",
+                        "Capability": c.get("capability_status"),
+                        "HTTP": c.get("http_status") if c.get("http_status") is not None else "—",
+                        "Probe records": c.get("probe_record_count") if c.get("probe_record_count") is not None else "—",
+                        "Latest obs": c.get("ingest_latest_observation_date") or c.get("probe_latest_observation_date") or "—",
+                        "Last retrieval": age_text(c.get("ingest_last_success_at") or c.get("probe_last_success_at")),
+                        "Last probe": age_text(c.get("last_probe_at")),
+                        "Transport": transport_chip(c.get("transport_status")),
+                        "Freshness": freshness_chip(c.get("freshness_status")),
+                        "Cadence": c.get("dataset_cadence") or "—",
+                        "Access": c.get("source_access_status") or "—",
+                    }
+                    for c in coverage
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    notes = [c.get("coverage_note") for c in coverage if c.get("coverage_note")]
+    if notes:
+        st.caption(notes[0])
+    loaded = ctx.get("loaded_interval") or {}
+    if loaded.get("min_observation_date"):
+        st.caption(
+            "Loaded aggregate interval: {0} through {1} ({2} current rows). Publication is end-of-day/delayed as FINRA publishes; a partial session is not compared with a full day without that label.".format(
+                loaded.get("min_observation_date"), loaded.get("max_observation_date"), loaded.get("row_count")
+            )
+        )
+
+    st.subheader("Aggregate activity")
+    breadth = ctx.get("breadth") or {}
+    rows = breadth.get("rows") or []
+    if rows:
+        headline = [r for r in rows if (r.get("product_category") or "").lower() == "all securities"]
+        show = headline[0] if headline else rows[0]
+        cols = st.columns(4)
+        cols[0].metric("Latest session", str(show.get("observation_date") or "—"))
+        cols[1].metric("Reported volume", fmt(show.get("total_volume"), None), fmt_signed(show.get("volume_change"), None) if show.get("volume_change") is not None else None)
+        cols[2].metric("Trade count", fmt(show.get("total_trades"), None), fmt_signed(show.get("trade_count_change"), None) if show.get("trade_count_change") is not None else None)
+        adv, dec = show.get("advances"), show.get("declines")
+        net = None if adv is None or dec is None else adv - dec
+        cols[3].metric("Advances − declines", fmt(net, None))
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Category": r.get("product_category"),
+                        "Obs date": r.get("observation_date"),
+                        "Prior obs": r.get("prior_observation_date") or "—",
+                        "Volume": fmt(r.get("total_volume"), None),
+                        "Δ volume vs prior": fmt_signed(r.get("volume_change"), None) if r.get("volume_change") is not None else "—",
+                        "Trades": fmt(r.get("total_trades"), None),
+                        "Advances": fmt(r.get("advances"), None),
+                        "Declines": fmt(r.get("declines"), None),
+                        "Unchanged": fmt(r.get("unchanged"), None),
+                        "52w highs": fmt(r.get("fifty_two_week_high"), None),
+                        "52w lows": fmt(r.get("fifty_two_week_low"), None),
+                    }
+                    for r in rows
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(breadth.get("units_note") or "")
+        st.caption(breadth.get("overlap_note") or "")
+        history = ctx.get("history") or []
+        chart_rows = []
+        for item in history:
+            metrics = item.get("metrics_json") or {}
+            if isinstance(metrics, str):
+                import json as _json
+
+                metrics = _json.loads(metrics)
+            if (item.get("category_key") or "").lower() != "all securities":
+                continue
+            chart_rows.append({"observation_date": item.get("observation_date"), "totalVolume": metrics.get("totalVolume"), "totalTrades": metrics.get("totalTrades")})
+        if chart_rows:
+            frame = pd.DataFrame(chart_rows)
+            st.line_chart(frame.set_index("observation_date")[["totalVolume", "totalTrades"]], use_container_width=True)
+            st.caption("History is current revisions only. Rolling comparison is vs the prior available session for the same productCategory, not vs a partial session unlabeled as such.")
+    else:
+        st.info("No corporate market-breadth aggregates stored.")
+
+    st.subheader("Source-defined sentiment and customer perspective")
+    sentiment = ctx.get("sentiment") or {}
+    sent_rows = sentiment.get("rows") or []
+    if sent_rows:
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Trade type": r.get("trade_type"),
+                        "Product category": r.get("product_category"),
+                        "Obs date": r.get("observation_date"),
+                        "Volume": fmt(r.get("total_volume"), None),
+                        "Trades": fmt(r.get("total_trades"), None),
+                        "Transactions": fmt(r.get("total_transactions"), None),
+                    }
+                    for r in sent_rows
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        net = sentiment.get("customer_net")
+        if net:
+            st.metric(
+                "Customer net volume (dealer-reported)",
+                fmt(net.get("customer_net_volume"), None),
+                help=net.get("perspective"),
+            )
+            st.caption(net.get("perspective") or "")
+        st.caption(sentiment.get("units_note") or "")
+    else:
+        st.info("No corporate market-sentiment aggregates stored. Directional customer buy/sell is shown only when FINRA publishes those productCategory rows.")
+
+    st.subheader("Capped / reported volume")
+    capped = ctx.get("capped_volume") or {}
+    cap_rows = capped.get("rows") or []
+    if cap_rows:
+        st.warning(capped.get("capped_note") or "Capped volume is a reported/lower-bound measure.")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Grade": r.get("grade_code"),
+                        "144A": r.get("rule_144a_flag"),
+                        "Obs date": r.get("observation_date"),
+                        "Trade count": fmt(r.get("total_trade_count"), None),
+                        "Capped volume qty": fmt(r.get("total_volume_quantity"), None),
+                        "Customer buy par <5y": fmt(r.get("customer_buy_par_lt_5y"), None),
+                        "Customer sell par <5y": fmt(r.get("customer_sell_par_lt_5y"), None),
+                    }
+                    for r in cap_rows
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption(capped.get("units_note") or "")
+    else:
+        st.info("No capped-volume aggregates stored.")
+
+    st.subheader("Individual trade explorer")
+    individual = ctx.get("individual_trades") or {}
+    if individual.get("available"):
+        st.dataframe(pd.DataFrame([{"status": "available"}]), use_container_width=True, hide_index=True)
+    else:
+        st.warning(
+            "Individual TRACE transactions are not available ({0}). {1}".format(
+                individual.get("capability_status") or "ENTITLEMENT_REQUIRED",
+                individual.get("note") or "",
+            )
+        )
+
+    st.subheader("Context")
+    st.caption("Credit Overview shows ICE BofA OAS in basis points via FRED. Rates Curve shows Treasury yields in percent. Those units are not mixed into TRACE volume or trade counts.")
+    credit = load_or_stop("credit_context")
+    rates = load_or_stop("rates_context")
+    buckets = [b for b in (credit.get("buckets") or []) if b.get("bucket") in {"ig_broad", "hy_broad"}]
+    if buckets:
+        cols = st.columns(max(1, len(buckets)))
+        for i, b in enumerate(buckets):
+            with cols[i]:
+                st.metric("{0} OAS".format(b["label"]), fmt(b.get("oas_bps"), "bps").replace("+", ""), fmt_signed(b.get("change_1d_bps"), "bps") if b.get("change_1d_bps") is not None else None)
+    curve = [c for c in (rates.get("curve") or []) if c.get("tenor") in {"2Y", "10Y"} and c.get("yield_pct") is not None]
+    if curve:
+        cols = st.columns(max(1, len(curve)))
+        for i, c in enumerate(curve):
+            with cols[i]:
+                st.metric("{0} Treasury".format(c["tenor"]), fmt(c.get("yield_pct"), "pct"))
+    st.caption("No trading recommendation is generated from this page.")
+
+
 __all__ = [
     "render_credit_overview",
     "render_data_health",
     "render_macro_overview",
     "render_market_pulse",
     "render_morning_context",
+    "render_order_flow",
     "render_rates_curve",
     "render_sector_rotation_v2",
 ]

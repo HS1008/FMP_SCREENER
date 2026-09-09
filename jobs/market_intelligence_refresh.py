@@ -72,6 +72,20 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "catalog_version": CATALOG_VERSION,
             }
         )
+    from market_intelligence.finra_catalog import FINRA_QUERY_SOURCE_ID
+    from market_intelligence.finra_client import configured_from_env as finra_configured_from_env
+
+    finra_configured = finra_configured_from_env(env)
+    if args.finra or want_all:
+        steps.append(
+            {
+                "step": "finra",
+                "source_id": FINRA_QUERY_SOURCE_ID,
+                "configured": finra_configured,
+                "action": ("ingest" if finra_configured else "skip_unconfigured") if (want_all or finra_configured) else "fail_unconfigured",
+                "mode": args.mode,
+            }
+        )
     if args.legacy_sector or want_all:
         steps.append(
             {
@@ -108,6 +122,7 @@ def _writer_configured(env: dict[str, str]) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Market Intelligence refresh")
     parser.add_argument("--fred", action="store_true", help="Ingest the FRED catalog")
+    parser.add_argument("--finra", action="store_true", help="Ingest FINRA Query API corporate-bond aggregates")
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--build-analytics", action="store_true", help="Recompute versioned analytics")
     parser.add_argument("--build-morning", action="store_true", help="Build and publish a morning context snapshot")
@@ -128,8 +143,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.legacy_sector, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
-        parser.error("choose at least one of --fred/--legacy-sector/--build-analytics/--build-morning/--all-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--build-analytics/--build-morning/--all-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -168,7 +183,12 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
 
 
 def _probe(engine) -> dict[str, Any]:
-    probe: dict[str, Any] = {"fred_api_key_present": api_key_from_env() is not None}
+    from market_intelligence.finra_client import configured_from_env as finra_configured_from_env
+
+    probe: dict[str, Any] = {
+        "fred_api_key_present": api_key_from_env() is not None,
+        "finra_credentials_present": finra_configured_from_env(),
+    }
     try:
         if engine is None:
             from market_intelligence.writer_db import writer_engine
@@ -191,11 +211,17 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
     failures = 0
     as_of = date.fromisoformat(args.as_of) if args.as_of else None
     fred_key = api_key_from_env(env)
+    from market_intelligence.finra_catalog import FINRA_QUERY_SOURCE_ID, FINRA_TRACE_SOURCE_ID
+    from market_intelligence.finra_client import configured_from_env as finra_configured_from_env
+
+    finra_key = finra_configured_from_env(env)
     legacy_step = next((s for s in the_plan["steps"] if s["step"] == "legacy_sector"), None)
-    enabled = {FRED_SOURCE_ID: fred_key is not None, LEGACY_SOURCE_ID: bool(legacy_step and legacy_step["configured"])}
+    enabled = {FRED_SOURCE_ID: fred_key is not None, LEGACY_SOURCE_ID: bool(legacy_step and legacy_step["configured"]), FINRA_QUERY_SOURCE_ID: finra_key}
     access = {
         FRED_SOURCE_ID: "CONFIGURED" if fred_key else "CONFIGURATION_REQUIRED",
         LEGACY_SOURCE_ID: "CONFIGURED" if enabled[LEGACY_SOURCE_ID] else "CONFIGURATION_REQUIRED",
+        FINRA_QUERY_SOURCE_ID: "CONFIGURED" if finra_key else "CONFIGURATION_REQUIRED",
+        FINRA_TRACE_SOURCE_ID: "ENTITLEMENT_REQUIRED",
     }
     from market_intelligence.adapters import IBKR_SOURCE_ID, probe_all
 
@@ -203,11 +229,17 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
     for source_id, probe in adapter_status.items():
         if source_id == IBKR_SOURCE_ID:
             continue  # Windows collector owns this row; FRED refresh must not clobber it
-        enabled[source_id] = False  # never part of the scheduled refresh, even when configured
+        if source_id in {FINRA_QUERY_SOURCE_ID, FINRA_TRACE_SOURCE_ID}:
+            continue
+        enabled[source_id] = False
         access[source_id] = probe.access_status
     status["external_adapters"] = {sid: {"access_status": p.access_status, "reason": p.reason} for sid, p in adapter_status.items()}
     with engine.begin() as conn:
         upsert_source_registry(conn, enabled=enabled, access=access, preserve={IBKR_SOURCE_ID})
+        from market_intelligence.ingest_finra import ensure_finra_sources, record_individual_trace_limitation
+
+        ensure_finra_sources(conn, query_enabled=bool(finra_key), query_access=access[FINRA_QUERY_SOURCE_ID])
+        record_individual_trace_limitation(conn)
         parent_run_id = start_run(conn, source_id="ORCHESTRATOR", dataset="market_intelligence_refresh")
 
     for step in the_plan["steps"]:
@@ -229,6 +261,16 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
 
                 client = fred_client_factory() if fred_client_factory else FredClient(fred_key)
                 report = ingest_fred_catalog(engine, client, series_ids=args.series or None, mode=args.mode, parent_run_id=parent_run_id, today=as_of)
+                status["results"][name] = report.as_dict()
+                if report.failed:
+                    failures += 1
+            elif name == "finra":
+                from market_intelligence.finra_client import FinraClient, credentials_from_env
+                from market_intelligence.ingest_finra import ingest_finra
+
+                client_id, client_secret = credentials_from_env(env)
+                client = FinraClient(client_id, client_secret)
+                report = ingest_finra(engine, client, parent_run_id=parent_run_id, today=as_of, mode=args.mode)
                 status["results"][name] = report.as_dict()
                 if report.failed:
                     failures += 1

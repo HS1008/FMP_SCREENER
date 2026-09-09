@@ -31,6 +31,7 @@ ALLOWED_QUOTE_KEYS = frozenset(
         "delay_status",
         "quote_status",
         "provenance",
+        "last_callback_at",
     }
 )
 ALLOWED_HEARTBEAT_KEYS = frozenset(
@@ -41,6 +42,7 @@ ALLOWED_HEARTBEAT_KEYS = frozenset(
         "last_api_handshake_at",
         "last_tws_connect_at",
         "last_quote_at",
+        "last_callback_at",
         "market_data_type",
         "client_id",
         "watchlist",
@@ -60,6 +62,7 @@ ALLOWED_STATES = frozenset(
         "DISCONNECTED",
         "ENTITLEMENT_ERROR",
         "DELIVERY_FAILURE",
+        "COLLECTOR_OFFLINE",
     }
 )
 MAX_BATCH = 100
@@ -149,10 +152,11 @@ def validate_quote(raw: Any) -> dict[str, Any]:
         "delay_status": raw.get("delay_status") or mdt,
         "quote_status": raw.get("quote_status") or "OK",
         "provenance": provenance,
+        "last_callback_at": _iso(raw.get("last_callback_at"), optional=True),
     }
 
 
-def validate_quote_batch(body: Any) -> tuple[str, list[dict[str, Any]]]:
+def validate_quote_batch(body: Any) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]]]:
     if not isinstance(body, dict):
         raise PayloadError("body must be an object")
     extra = set(body) - {"collector_id", "quotes"}
@@ -166,7 +170,23 @@ def validate_quote_batch(body: Any) -> tuple[str, list[dict[str, Any]]]:
         raise PayloadError("quotes must be a non-empty list")
     if len(quotes) > MAX_BATCH:
         raise PayloadError("batch exceeds {0} quotes".format(MAX_BATCH))
-    return collector_id, [validate_quote(row) for row in quotes]
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for row in quotes:
+        try:
+            accepted.append(validate_quote(row))
+        except PayloadError as exc:
+            record_id = ""
+            if isinstance(row, dict):
+                record_id = str(row.get("record_id") or "")
+            rejected.append({"record_id": record_id, "outcome": "rejected", "reason": str(exc)[:200]})
+    if not accepted and rejected:
+        # Entire batch is invalid records; still a 200 at the HTTP layer once the caller
+        # uses the tolerant path. Keep a structured result.
+        return collector_id, [], rejected
+    if not accepted:
+        raise PayloadError("quotes must be a non-empty list")
+    return collector_id, accepted, rejected
 
 
 def validate_heartbeat(body: Any) -> dict[str, Any]:
@@ -207,6 +227,7 @@ def validate_heartbeat(body: Any) -> dict[str, Any]:
         "last_api_handshake_at": _iso(body.get("last_api_handshake_at"), optional=True),
         "last_tws_connect_at": _iso(body.get("last_tws_connect_at"), optional=True),
         "last_quote_at": _iso(body.get("last_quote_at"), optional=True),
+        "last_callback_at": _iso(body.get("last_callback_at"), optional=True),
         "market_data_type": body.get("market_data_type"),
         "client_id": client_id,
         "watchlist": clean_watch,

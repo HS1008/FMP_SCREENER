@@ -8,7 +8,8 @@
 # Options:
 #   --root DIR          checkout root (default /root/FMP_SCREENER)
 #   --user NAME         service user (default root)
-#   --env-file PATH     EnvironmentFile (default /etc/fmp/market_intelligence.env)
+#   --env-file PATH     EnvironmentFile for the refresh job (default /etc/fmp/market_intelligence.env)
+#   --api-env-file PATH EnvironmentFile for the AI context API (default /etc/fmp/ai_context_api.env)
 #   --systemd-dir DIR   where units are written (default /etc/systemd/system)
 #   --no-systemctl      write files but skip daemon-reload/enable/start (for tests and staging)
 #
@@ -20,6 +21,7 @@ set -euo pipefail
 ROOT="/root/FMP_SCREENER"
 SERVICE_USER="root"
 ENV_FILE="/etc/fmp/market_intelligence.env"
+API_ENV_FILE="/etc/fmp/ai_context_api.env"
 SYSTEMD_DIR="/etc/systemd/system"
 APPLY=0
 WITH_API=0
@@ -30,6 +32,7 @@ while [ $# -gt 0 ]; do
     --root) ROOT="$2"; shift 2 ;;
     --user) SERVICE_USER="$2"; shift 2 ;;
     --env-file) ENV_FILE="$2"; shift 2 ;;
+    --api-env-file) API_ENV_FILE="$2"; shift 2 ;;
     --systemd-dir) SYSTEMD_DIR="$2"; shift 2 ;;
     --apply) APPLY=1; shift ;;
     --dry-run) APPLY=0; shift ;;
@@ -48,19 +51,22 @@ if [ "$WITH_API" = 1 ]; then
 fi
 
 render() {
-  sed -e "s#__ROOT__#${ROOT}#g" -e "s#__USER__#${SERVICE_USER}#g" -e "s#__ENV_FILE__#${ENV_FILE}#g" "$TEMPLATES/$1"
+  sed -e "s#__ROOT__#${ROOT}#g" -e "s#__USER__#${SERVICE_USER}#g" -e "s#__ENV_FILE__#${ENV_FILE}#g" -e "s#__API_ENV_FILE__#${API_ENV_FILE}#g" "$TEMPLATES/$1"
 }
 
 mode="DRY RUN (no changes)"
 [ "$APPLY" = 1 ] && mode="APPLY"
 echo "Market Intelligence timer installer: $mode"
-echo "  root=$ROOT user=$SERVICE_USER env_file=$ENV_FILE systemd_dir=$SYSTEMD_DIR with_api=$WITH_API"
+echo "  root=$ROOT user=$SERVICE_USER env_file=$ENV_FILE api_env_file=$API_ENV_FILE systemd_dir=$SYSTEMD_DIR with_api=$WITH_API"
 echo
 
 # Preflight: report, do not fix.
 status=0
 [ -x "$ROOT/venv/bin/python" ] || { echo "  WARN: $ROOT/venv/bin/python not found (venv missing?)"; status=1; }
 [ -f "$ENV_FILE" ] || echo "  WARN: $ENV_FILE missing; copy deploy/market_intelligence/market_intelligence.env.example and fill it (chmod 0600)"
+if [ "$WITH_API" = 1 ]; then
+  [ -f "$API_ENV_FILE" ] || echo "  WARN: $API_ENV_FILE missing; copy deploy/market_intelligence/ai_context_api.env.example (read-only DB URL + API token only)"
+fi
 if [ -f "$ENV_FILE" ]; then
   perms="$(stat -c '%a' "$ENV_FILE" 2>/dev/null || echo '?')"
   case "$perms" in 600|400) ;; *) echo "  WARN: $ENV_FILE has mode $perms; expected 0600" ;; esac

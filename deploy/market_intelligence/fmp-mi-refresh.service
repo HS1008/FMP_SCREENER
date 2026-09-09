@@ -1,7 +1,7 @@
 # Market Intelligence scheduled refresh (oneshot; driven by fmp-mi-refresh.timer).
 # Rendered by scripts/install_market_intelligence_timers.sh; placeholders: __ROOT__ __USER__ __ENV_FILE__
 [Unit]
-Description=FMP Market Intelligence refresh (FRED + legacy bridge + analytics + morning context)
+Description=FMP Market Intelligence refresh (FRED + FINRA Query aggregates + legacy bridge + analytics + morning context)
 After=network-online.target postgresql.service
 Wants=network-online.target
 

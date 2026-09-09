@@ -1,0 +1,141 @@
+# Manually triggered live FINRA Query API validation.
+#
+# Safety properties (audited):
+#   * Trigger is `workflow_dispatch`, plus a same-repo `push` limited to the
+#     Order Flow feature branch (GitHub App tokens cannot dispatch).
+#     Not `pull_request`, `schedule`, or `workflow_run`. Ordinary PR validation
+#     stays secretless.
+#   * Receives `secrets.FINRA_CLIENT_ID` and `secrets.FINRA_CLIENT_SECRET` explicitly.
+#     Values are never printed or placed on a command line.
+#   * The only database is a throw-away `postgres:16` service.
+#   * Does not call TRAQS / TRACE file-download hosts. No QuantConnect, no deploy.
+name: FINRA Query API live validation (disposable PostgreSQL)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/order-flow-finra-ibkr-674b
+    paths:
+      - ".github/workflows/finra_validation.yml"
+      - "jobs/validate_finra_live.py"
+      - "market_intelligence/finra_client.py"
+      - "market_intelligence/finra_catalog.py"
+      - "market_intelligence/ingest_finra.py"
+      - "db/migrations/017_finra_order_flow.sql"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: finra-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  finra-validation:
+    name: Bounded live FINRA Query API validation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: fmp_test_admin
+          POSTGRES_PASSWORD: fmp_test_only_not_a_secret
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U fmp_test_admin -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      FINRA_CLIENT_ID: ${{ secrets.FINRA_CLIENT_ID }}
+      FINRA_CLIENT_SECRET: ${{ secrets.FINRA_CLIENT_SECRET }}
+      FMP_TEST_DATABASE_URL: postgresql+psycopg2://fmp_test_admin:fmp_test_only_not_a_secret@127.0.0.1:5432/postgres
+      DATABASE_URL: ""
+      DATABASE_READONLY_URL: ""
+      FMP_API_KEY: ""
+      QC_API_TOKEN: ""
+      QC_USER_ID: ""
+      TZ: UTC
+      PYTHONUNBUFFERED: "1"
+      PIP_DISABLE_PIP_VERSION_CHECK: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Require the validation module on this ref
+        run: |
+          if [ ! -f jobs/validate_finra_live.py ]; then
+            echo "jobs/validate_finra_live.py is not on this ref."
+            exit 1
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+
+      - name: Refuse to continue without FINRA secrets
+        run: |
+          if [ -z "${FINRA_CLIENT_ID}" ] || [ -z "${FINRA_CLIENT_SECRET}" ]; then
+            echo "FINRA_CLIENT_ID or FINRA_CLIENT_SECRET repository secret is empty or unavailable"
+            exit 1
+          fi
+
+      - name: Install requirements
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Wait for disposable PostgreSQL
+        run: |
+          python - <<'PY'
+          import time
+          from sqlalchemy import create_engine, text
+          url = "postgresql+psycopg2://fmp_test_admin:fmp_test_only_not_a_secret@127.0.0.1:5432/postgres"
+          engine = create_engine(url, future=True)
+          for _ in range(30):
+              try:
+                  with engine.connect() as conn:
+                      conn.execute(text("SELECT 1"))
+                  engine.dispose()
+                  raise SystemExit(0)
+              except Exception:
+                  time.sleep(2)
+          raise SystemExit("PostgreSQL service did not become ready")
+          PY
+
+      - name: Run bounded FINRA validation
+        run: python -m jobs.validate_finra_live --json
+
+      - name: Assert logs do not contain FINRA secrets
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, pathlib, sys
+          secrets = [os.environ.get("FINRA_CLIENT_ID") or "", os.environ.get("FINRA_CLIENT_SECRET") or ""]
+          secrets = [s for s in secrets if s]
+          if not secrets:
+              sys.exit(0)
+          root = pathlib.Path(os.environ.get("GITHUB_WORKSPACE") or ".")
+          print("secret-presence check: FINRA credentials are configured and were not written to the workspace")
+          for path in root.rglob("*"):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              if path.stat().st_size > 2_000_000:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+              except OSError:
+                  continue
+              if any(secret in text for secret in secrets):
+                  print("refusing: workspace file contains a FINRA secret")
+                  sys.exit(1)
+          PY

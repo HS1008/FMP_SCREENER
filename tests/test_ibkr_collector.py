@@ -50,6 +50,13 @@ def test_queue_is_idempotent_and_bounded(tmp_path: Path):
     assert ids == ["r2", "r3", "r4"]
     q.ack(["r2"])
     assert q.size() == 2
+    q2 = OutboundQueue(tmp_path / "q2.sqlite", max_records=2)
+    for i in range(4):
+        q2.put({"record_id": "x{0}".format(i), "n": i})
+    assert q2.size() == 2
+    assert q2.overflow_count == 2
+    q2.quarantine(["x2"], "poison")
+    assert q2.size() == 1
 
 
 def test_instance_lock_prevents_duplicates(tmp_path: Path):
@@ -64,11 +71,16 @@ def test_instance_lock_prevents_duplicates(tmp_path: Path):
 
 
 def test_quote_batch_rejects_orders_and_unknown_fields():
-    with pytest.raises(PayloadError):
-        validate_quote_batch({"collector_id": "x", "quotes": [{"record_id": "a", "symbol": "SPY", "quote_ts": "2026-01-01T00:00:00+00:00", "place_order": True}]})
+    cid, rows, rejected = validate_quote_batch(
+        {
+            "collector_id": "x",
+            "quotes": [{"record_id": "a", "symbol": "SPY", "quote_ts": "2026-01-01T00:00:00+00:00", "place_order": True}],
+        }
+    )
+    assert cid == "x" and rows == [] and rejected[0]["outcome"] == "rejected"
     with pytest.raises(PayloadError):
         validate_quote_batch({"collector_id": "x", "sql": "drop", "quotes": []})
-    cid, rows = validate_quote_batch(
+    cid, rows, rejected = validate_quote_batch(
         {
             "collector_id": "harin-laptop",
             "quotes": [
@@ -89,6 +101,7 @@ def test_quote_batch_rejects_orders_and_unknown_fields():
         }
     )
     assert cid == "harin-laptop" and rows[0]["bid"] == 500.1 and rows[0]["last_price"] is None
+    assert rejected == []
 
 
 def test_heartbeat_rejects_account_fields():
@@ -103,6 +116,54 @@ def test_heartbeat_rejects_account_fields():
         }
     )
     assert payload["reported_state"] == "WAITING_FOR_TWS"
+
+
+def test_heartbeat_allows_collector_offline():
+    payload = validate_heartbeat({"collector_id": "harin-laptop", "reported_state": "COLLECTOR_OFFLINE", "client_id": 71})
+    assert payload["reported_state"] == "COLLECTOR_OFFLINE"
+
+
+def test_ack_keeps_rejected_and_missing_results(tmp_path):
+    from ibkr_collector.runner import CollectorRuntime
+
+    runtime = CollectorRuntime.__new__(CollectorRuntime)
+    runtime.queue = OutboundQueue(tmp_path / "ack.sqlite", max_records=10)
+    runtime.queue.put({"record_id": "a"})
+    runtime.queue.put({"record_id": "b"})
+    runtime.queue.put({"record_id": "c"})
+    runtime.last_delivery_error = None
+    runtime.state = "CONNECTED"
+    runtime._set_state = lambda state: setattr(runtime, "state", state)
+    batch = [{"record_id": "a"}, {"record_id": "b"}, {"record_id": "c"}]
+    runtime._ack_quote_response(
+        batch,
+        {
+            "results": [
+                {"record_id": "a", "outcome": "committed"},
+                {"record_id": "b", "outcome": "rejected", "reason": "poison"},
+            ]
+        },
+    )
+    pending = [row["record_id"] for row in runtime.queue.peek(10)]
+    assert pending == ["c"]
+    quarantined = runtime.queue._conn.execute("SELECT record_id FROM outbound WHERE status='quarantined'").fetchall()
+    assert quarantined == [("b",)]
+
+
+def test_provision_token_does_not_print_the_token(tmp_path, monkeypatch, capsys):
+    from ibkr_collector import service_windows
+
+    stored = []
+    monkeypatch.setattr(service_windows, "write_ingest_token", lambda token: stored.append(token))
+    path = tmp_path / "tok"
+    path.write_text("super-secret-ingest-token\n", encoding="utf-8")
+    assert service_windows.provision_token(str(path)) == 0
+    out = capsys.readouterr()
+    assert stored == ["super-secret-ingest-token"]
+    assert "super-secret-ingest-token" not in out.out
+    assert "super-secret-ingest-token" not in out.err
+    source = Path(__file__).resolve().parents[1] / "ibkr_collector" / "service_windows.py"
+    assert "sys.stdout.write(token" not in source.read_text(encoding="utf-8")
 
 
 def test_socket_probe_reports_closed_port():

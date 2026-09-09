@@ -35,6 +35,7 @@ from market_intelligence.read_models import (
     data_health_context,
     industries_context,
     macro_context,
+    order_flow_context,
     rates_context,
     sectors_context,
     strategies_context,
@@ -49,6 +50,7 @@ SECTION_ORDER = (
     "rates",
     "liquidity",
     "credit",
+    "order_flow",
     "sectors",
     "industries",
     "strategy_monitor_summary",
@@ -88,7 +90,7 @@ _NUMERIC_VALUE_KEYS = {
 }
 
 # Per-section cadence used to judge captured staleness against the capture time (summary only).
-_SECTION_CADENCE = {"market": "D", "rates": "D", "credit": "D", "sectors": "D", "industries": "D", "liquidity": "W", "macro": "M"}
+_SECTION_CADENCE = {"market": "D", "rates": "D", "credit": "D", "order_flow": "D", "sectors": "D", "industries": "D", "liquidity": "W", "macro": "M"}
 
 # Catalog series that must be present and individually fresh for a section to be OK.
 _MACRO_REQUIRED = tuple(s.series_id for s in CATALOG if s.category in {"growth", "labor", "inflation", "policy"})
@@ -298,6 +300,9 @@ def section_status(name: str, data: Any, *, required: list[str], capture_date: d
     if stale_series:
         status = SECTION_STALE if status == SECTION_OK else SECTION_PARTIAL
         reasons.append("required series stale at capture: {0}".format(", ".join(stale_series)))
+    elif freshness is not None and freshness.status == "STALE":
+        status = SECTION_STALE if status == SECTION_OK else SECTION_PARTIAL
+        reasons.append("section observation dates stale at capture")
     return {
         "status": status,
         "reason": "; ".join(reasons) if reasons else None,
@@ -427,6 +432,33 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
     industries = industries_context(conn)
     health = data_health_context(conn, today=capture_date)
     strategies = strategies_context(conn)
+    order_flow = order_flow_context(conn, today=capture_date)
+    compact_flow = None
+    if order_flow:
+        compact_flow = {
+            "title": order_flow.get("title"),
+            "coverage": [
+                {
+                    "dataset": row.get("dataset"),
+                    "capability_status": row.get("capability_status"),
+                    "http_status": row.get("http_status"),
+                    "ingest_latest_observation_date": row.get("ingest_latest_observation_date"),
+                    "probe_latest_observation_date": row.get("probe_latest_observation_date"),
+                    "observation_date": row.get("ingest_latest_observation_date") or row.get("probe_latest_observation_date"),
+                    "transport_status": row.get("transport_status"),
+                    "freshness_status": row.get("freshness_status"),
+                    "coverage_note": row.get("coverage_note"),
+                }
+                for row in (order_flow.get("coverage") or [])
+            ],
+            "loaded_interval": order_flow.get("loaded_interval"),
+            "individual_trades": order_flow.get("individual_trades"),
+            "breadth_latest": (order_flow.get("breadth") or {}).get("rows") or [],
+            "customer_net": (order_flow.get("sentiment") or {}).get("customer_net"),
+            "not_an_order_book": True,
+            "attribution": order_flow.get("attribution"),
+            "export_scope": "INTERNAL_ONLY",
+        }
 
     macro_categories = {k: v for k, v in (macro.get("categories") or {}).items() if k in {"growth", "labor", "inflation", "policy"}}
     macro_data = {"categories": macro_categories, "series_without_data": macro.get("series_without_data"), "quarantined_series": _quarantined_series(macro), "attribution": macro.get("attribution")} if macro_categories else None
@@ -438,6 +470,7 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
         "rates": section_status("rates", rates_data, required=["curve", "slopes"], capture_date=capture_date, empty_reason="No Treasury curve observations stored."),
         "liquidity": section_status("liquidity", _liquidity_section(macro), required=["series"], capture_date=capture_date, empty_reason="No liquidity series stored."),
         "credit": section_status("credit", credit if credit.get("buckets") else None, required=["buckets"], capture_date=capture_date, empty_reason="No credit index snapshots stored."),
+        "order_flow": section_status("order_flow", compact_flow, required=["coverage"], capture_date=capture_date, empty_reason="No FINRA capability coverage stored.", presence="registry"),
         "sectors": section_status("sectors", sectors if sectors.get("datasets") else None, required=["datasets"], capture_date=capture_date, empty_reason="No sector snapshots stored (legacy bridge not run)."),
         "industries": section_status("industries", industries if industries.get("datasets") else None, required=["datasets"], capture_date=capture_date, empty_reason="No industry snapshots stored."),
         "strategy_monitor_summary": section_status("strategy_monitor_summary", strategies if strategies.get("strategies") else None, required=["strategies"], capture_date=capture_date, empty_reason="No research runs in PostgreSQL.", presence="registry"),

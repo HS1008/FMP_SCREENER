@@ -5,12 +5,14 @@
 #   scripts/activate_market_intelligence_host.sh --phase probe
 #   scripts/activate_market_intelligence_host.sh --phase provision
 #   scripts/activate_market_intelligence_host.sh --phase ingest
-#   scripts/activate_market_intelligence_host.sh --phase ingest-fred|ingest-legacy|ingest-analytics|ingest-morning
+#   scripts/activate_market_intelligence_host.sh --phase ingest-fred|ingest-finra|ingest-legacy|ingest-analytics|ingest-morning
 #   scripts/activate_market_intelligence_host.sh --phase verify
 #   scripts/activate_market_intelligence_host.sh --phase schedule
 #
 # Required files (0600) when provisioning:
 #   /root/FMP_SCREENER/.secrets/fred_api_key
+#   /root/FMP_SCREENER/.secrets/finra_client_id
+#   /root/FMP_SCREENER/.secrets/finra_client_secret
 #   /root/FMP_SCREENER/.secrets/mi_readonly.pw
 #   /root/FMP_SCREENER/.secrets/ai_context_api_token
 #
@@ -24,8 +26,11 @@ ENV_FILE="/etc/fmp/market_intelligence.env"
 DASHBOARD_ENV="/root/FMP_SCREENER/.env"
 PHASE=""
 FRED_KEY_FILE="/root/FMP_SCREENER/.secrets/fred_api_key"
+FINRA_ID_FILE="/root/FMP_SCREENER/.secrets/finra_client_id"
+FINRA_SECRET_FILE="/root/FMP_SCREENER/.secrets/finra_client_secret"
 RO_PW_FILE="/root/FMP_SCREENER/.secrets/mi_readonly.pw"
 AI_TOKEN_FILE="/root/FMP_SCREENER/.secrets/ai_context_api_token"
+API_ENV_FILE="/etc/fmp/ai_context_api.env"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,6 +39,8 @@ while [ $# -gt 0 ]; do
     --dashboard-env) DASHBOARD_ENV="$2"; shift 2 ;;
     --phase) PHASE="$2"; shift 2 ;;
     --fred-key-file) FRED_KEY_FILE="$2"; shift 2 ;;
+    --finra-id-file) FINRA_ID_FILE="$2"; shift 2 ;;
+    --finra-secret-file) FINRA_SECRET_FILE="$2"; shift 2 ;;
     --readonly-pw-file) RO_PW_FILE="$2"; shift 2 ;;
     --ai-token-file) AI_TOKEN_FILE="$2"; shift 2 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
@@ -166,6 +173,8 @@ phase_probe() {
   echo "dashboard_env_present=$([ -f "$DASHBOARD_ENV" ] && echo yes || echo no)"
   echo "mi_env_present=$([ -f "$ENV_FILE" ] && echo yes || echo no)"
   echo "fred_key_file=$([ -s "$FRED_KEY_FILE" ] && echo present || echo absent)"
+  echo "finra_id_file=$([ -s "$FINRA_ID_FILE" ] && echo present || echo absent)"
+  echo "finra_secret_file=$([ -s "$FINRA_SECRET_FILE" ] && echo present || echo absent)"
   echo "readonly_pw_file=$([ -s "$RO_PW_FILE" ] && echo present || echo absent)"
   echo "ai_token_file=$([ -s "$AI_TOKEN_FILE" ] && echo present || echo absent)"
   if [ -z "${DATABASE_URL:-}" ] && { [ -z "${DB_HOST:-}" ] || [ -z "${DB_NAME:-}" ]; }; then
@@ -245,7 +254,33 @@ PY
     --env-file "$ENV_FILE" --key DATABASE_READONLY_URL --value-file /tmp/mi_readonly_url
   python3 "$ROOT/scripts/update_protected_env.py" \
     --env-file "$DASHBOARD_ENV" --key DATABASE_READONLY_URL --value-file /tmp/mi_readonly_url
+
+  if [ -s "$FINRA_ID_FILE" ] && [ -s "$FINRA_SECRET_FILE" ]; then
+    python3 "$ROOT/scripts/update_protected_env.py" \
+      --env-file "$ENV_FILE" --key FINRA_CLIENT_ID --value-file "$FINRA_ID_FILE"
+    python3 "$ROOT/scripts/update_protected_env.py" \
+      --env-file "$ENV_FILE" --key FINRA_CLIENT_SECRET --value-file "$FINRA_SECRET_FILE"
+    printf '1\n' > /tmp/mi_finra_enabled
+    chmod 600 /tmp/mi_finra_enabled
+    python3 "$ROOT/scripts/update_protected_env.py" \
+      --env-file "$ENV_FILE" --key MI_FINRA_ENABLED --value-file /tmp/mi_finra_enabled
+    rm -f /tmp/mi_finra_enabled
+    echo "finra_query_credentials=present"
+  else
+    echo "finra_query_credentials=absent"
+  fi
+
+  python3 "$ROOT/scripts/materialize_ai_context_env.py" \
+    --source "$ENV_FILE" \
+    --dest "$API_ENV_FILE" \
+    --create-from "$ROOT/deploy/market_intelligence/ai_context_api.env.example"
+  python3 "$ROOT/scripts/update_protected_env.py" \
+    --env-file "$API_ENV_FILE" --key AI_CONTEXT_API_TOKEN --value-file "$AI_TOKEN_FILE" \
+    --create-from "$ROOT/deploy/market_intelligence/ai_context_api.env.example"
+  python3 "$ROOT/scripts/update_protected_env.py" \
+    --env-file "$API_ENV_FILE" --key DATABASE_READONLY_URL --value-file /tmp/mi_readonly_url
   rm -f /tmp/mi_readonly_url
+  chmod 0600 "$API_ENV_FILE"
 
   load_writer_env
   echo "Applying mi_readonly grants via admin/peer (password file, not printed)"
@@ -284,6 +319,17 @@ phase_ingest_fred() {
   run_with_heartbeat fred_ingest python -m jobs.market_intelligence_refresh --fred --mode full --wait-lock --json
 }
 
+phase_ingest_finra() {
+  echo "PHASE ingest-finra"
+  load_writer_env
+  python -m jobs.apply_migrations
+  if [ -z "${FINRA_CLIENT_ID:-${FINRA_API_CLIENT_ID:-}}" ] || [ -z "${FINRA_CLIENT_SECRET:-${FINRA_API_CLIENT_SECRET:-}}" ]; then
+    echo "FINRA Query API credentials absent — Order Flow will show CONFIGURATION_REQUIRED/NEVER_ATTEMPTED"
+    return 0
+  fi
+  run_with_heartbeat finra_ingest python -m jobs.market_intelligence_refresh --finra --mode full --wait-lock --json
+}
+
 phase_ingest_legacy() {
   echo "PHASE ingest-legacy"
   load_writer_env
@@ -311,6 +357,7 @@ phase_ingest_morning() {
 phase_ingest() {
   echo "PHASE ingest"
   phase_ingest_fred
+  phase_ingest_finra
   phase_ingest_legacy
   phase_ingest_analytics
   phase_ingest_morning
@@ -353,7 +400,7 @@ wait_for_local_api() {
 
 phase_schedule() {
   echo "PHASE schedule"
-  bash "$ROOT/scripts/install_market_intelligence_timers.sh" --apply --with-api --root "$ROOT" --env-file "$ENV_FILE"
+  bash "$ROOT/scripts/install_market_intelligence_timers.sh" --apply --with-api --root "$ROOT" --env-file "$ENV_FILE" --api-env-file "$API_ENV_FILE"
   systemctl is-enabled fmp-mi-refresh.timer
   systemctl is-active fmp-ai-context-api.service
   systemctl list-timers fmp-mi-refresh.timer --no-pager
@@ -385,6 +432,7 @@ case "$PHASE" in
   provision) phase_provision ;;
   ingest) phase_ingest ;;
   ingest-fred) phase_ingest_fred ;;
+  ingest-finra) phase_ingest_finra ;;
   ingest-legacy) phase_ingest_legacy ;;
   ingest-analytics) phase_ingest_analytics ;;
   ingest-morning) phase_ingest_morning ;;
@@ -394,5 +442,5 @@ case "$PHASE" in
     phase_verify
     ;;
   schedule) phase_schedule ;;
-  *) echo "usage: --phase probe|provision|ingest|ingest-fred|ingest-legacy|ingest-analytics|ingest-morning|verify|schedule" >&2; exit 64 ;;
+  *) echo "usage: --phase probe|provision|ingest|ingest-fred|ingest-finra|ingest-legacy|ingest-analytics|ingest-morning|verify|schedule" >&2; exit 64 ;;
 esac
