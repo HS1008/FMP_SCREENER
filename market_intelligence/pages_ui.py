@@ -60,6 +60,13 @@ TRANSFORM_LABELS = {
 }
 
 
+def display_cell(value: Any) -> str:
+    """Render a table cell as text so Streamlit/pyarrow never mixes ints with '—'."""
+    if value is None or value == "":
+        return "—"
+    return str(value)
+
+
 def _transform_text(entry: dict[str, Any] | None) -> str:
     if not entry:
         return "—"
@@ -663,6 +670,31 @@ def render_morning_context() -> None:
         st.dataframe(pd.DataFrame(index), use_container_width=True, hide_index=True)
 
 
+def order_flow_coverage_frame(coverage: list[dict[str, Any]]) -> pd.DataFrame:
+    """Coverage table with uniform text columns (mixed HTTP int/null breaks Streamlit/pyarrow)."""
+    return pd.DataFrame(
+        [
+            {
+                "Provider": "FINRA",
+                "Dataset": c.get("dataset"),
+                "Group": c.get("group_name"),
+                "Kind": "aggregate" if c.get("dataset") != "TRACE_INDIVIDUAL_TRANSACTIONS" else "individual trades",
+                "Capability": display_cell(c.get("capability_status")),
+                "HTTP": display_cell(c.get("http_status")),
+                "Probe records": display_cell(c.get("probe_record_count")),
+                "Latest obs": display_cell(c.get("ingest_latest_observation_date") or c.get("probe_latest_observation_date")),
+                "Last retrieval": age_text(c.get("ingest_last_success_at") or c.get("probe_last_success_at")),
+                "Last probe": age_text(c.get("last_probe_at")),
+                "Transport": transport_chip(c.get("transport_status")),
+                "Freshness": freshness_chip(c.get("freshness_status")),
+                "Cadence": display_cell(c.get("dataset_cadence")),
+                "Access": display_cell(c.get("source_access_status")),
+            }
+            for c in coverage
+        ]
+    )
+
+
 def render_order_flow() -> None:
     page_header(
         "Order Flow",
@@ -687,27 +719,7 @@ def render_order_flow() -> None:
             }
         ]
     st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Provider": "FINRA",
-                        "Dataset": c.get("dataset"),
-                        "Group": c.get("group_name"),
-                        "Kind": "aggregate" if c.get("dataset") != "TRACE_INDIVIDUAL_TRANSACTIONS" else "individual trades",
-                        "Capability": c.get("capability_status"),
-                        "HTTP": c.get("http_status") if c.get("http_status") is not None else "—",
-                        "Probe records": c.get("probe_record_count") if c.get("probe_record_count") is not None else "—",
-                        "Latest obs": c.get("ingest_latest_observation_date") or c.get("probe_latest_observation_date") or "—",
-                        "Last retrieval": age_text(c.get("ingest_last_success_at") or c.get("probe_last_success_at")),
-                        "Last probe": age_text(c.get("last_probe_at")),
-                        "Transport": transport_chip(c.get("transport_status")),
-                        "Freshness": freshness_chip(c.get("freshness_status")),
-                        "Cadence": c.get("dataset_cadence") or "—",
-                        "Access": c.get("source_access_status") or "—",
-                    }
-                    for c in coverage
-                ]
-            ),
+            order_flow_coverage_frame(coverage),
             use_container_width=True,
             hide_index=True,
         )
@@ -869,6 +881,8 @@ def render_order_flow() -> None:
 
 
 __all__ = [
+    "display_cell",
+    "order_flow_coverage_frame",
     "render_credit_overview",
     "render_data_health",
     "render_macro_overview",
