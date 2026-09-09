@@ -368,21 +368,47 @@ def _capability_for_status(status: int | None) -> str:
     return CAP_TEMPORARILY_UNAVAILABLE
 
 
+def _records_from_list(rows: list[Any]) -> list[dict[str, Any]]:
+    """Accept only dict entries. Malformed members reject the page.
+
+    An otherwise valid JSON array that contains nulls, strings, or other non-objects
+    is incomplete: dropping those entries would silently lose coverage and must not
+    advance a completed checkpoint.
+    """
+    valid: list[dict[str, Any]] = []
+    rejected = 0
+    for row in rows:
+        if isinstance(row, dict):
+            valid.append(row)
+        else:
+            rejected += 1
+    if rejected:
+        raise FinraError(
+            "FINRA dataset response contained {0} malformed array entries; "
+            "refusing incomplete page ({1} valid dicts kept only for diagnostics)".format(
+                rejected, len(valid)
+            ),
+            capability=CAP_TEMPORARILY_UNAVAILABLE,
+        )
+    return valid
+
+
 def _as_records(payload: Any) -> list[dict[str, Any]]:
     """Parse a FINRA Query API body. A JSON array (including empty) is valid.
 
     An object is valid only when it wraps a list under data/records/content.
     HTTP 200 plus `{}` or an unexpected object is not a successful empty dataset.
+    Non-dict entries inside an otherwise valid array are not silently discarded.
     """
     if payload is None:
         raise FinraError("FINRA dataset response was null", capability=CAP_TEMPORARILY_UNAVAILABLE)
     if isinstance(payload, list):
-        return [row for row in payload if isinstance(row, dict)]
+        return _records_from_list(payload)
     if isinstance(payload, dict):
         for key in ("data", "records", "content"):
             inner = payload.get(key)
             if isinstance(inner, list):
-                return [row for row in inner if isinstance(row, dict)]
+                return _records_from_list(inner)
         raise FinraError(
             "FINRA dataset response had unexpected JSON shape",
             capability=CAP_TEMPORARILY_UNAVAILABLE,

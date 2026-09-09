@@ -116,6 +116,41 @@ def test_pagination_truncation_is_an_error_not_silent_success():
     assert exc.value.capability == "TEMPORARILY_UNAVAILABLE"
 
 
+def test_malformed_array_entries_reject_the_page():
+    session = FakeSession(
+        [
+            FakeResponse(200, {"access_token": "tok", "expires_in": 3600}),
+            FakeResponse(
+                200,
+                [
+                    {"tradeReportDate": "2026-01-02", "productCategory": "all securities", "totalVolume": 1},
+                    "garbage",
+                    None,
+                    {"tradeReportDate": "2026-01-03", "productCategory": "all securities", "totalVolume": 2},
+                ],
+            ),
+        ]
+    )
+    client = FinraClient("id", "secret", session=session, sleep=lambda _s: None)
+    with pytest.raises(FinraError) as exc:
+        client.query_page(CORPORATE_BREADTH, limit=5, offset=0)
+    assert "malformed array entries" in str(exc.value).lower()
+    assert exc.value.capability == "TEMPORARILY_UNAVAILABLE"
+
+
+def test_wrapped_list_with_malformed_entries_is_also_rejected():
+    session = FakeSession(
+        [
+            FakeResponse(200, {"access_token": "tok", "expires_in": 3600}),
+            FakeResponse(200, {"data": [{"tradeReportDate": "2026-01-02"}, 3]}),
+        ]
+    )
+    client = FinraClient("id", "secret", session=session, sleep=lambda _s: None)
+    with pytest.raises(FinraError) as exc:
+        client.query_page(CORPORATE_BREADTH, limit=5, offset=0)
+    assert "malformed" in str(exc.value).lower()
+
+
 def test_unexpected_object_payload_is_not_an_empty_success():
     session = FakeSession(
         [

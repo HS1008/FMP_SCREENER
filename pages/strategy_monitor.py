@@ -20,6 +20,12 @@ from qc_research.ml_monitor_ui import (
     render_stage2_section,
 )
 from qc_research.platform_presentation import display_strategy_name, picker_label
+from qc_research.research_library import (
+    filter_library,
+    library_display_frame,
+    load_research_library,
+    load_strategy_runs,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -39,9 +45,9 @@ except Exception:
 
 st.title("Strategy Monitor")
 st.caption(
-    "QuantConnect strategy status, paper performance, positions, execution, "
-    "and backtest monitoring. Live monitor data updates automatically as new "
-    "synchronized results become available."
+    "Read-only research library and backtest results from PostgreSQL. "
+    "This page does not launch backtests, train models, approve strategies, or place orders. "
+    "Live monitor data updates automatically as new synchronized results become available."
 )
 
 
@@ -1152,7 +1158,8 @@ if strategies.empty:
     st.warning("No strategies are registered.")
     st.stop()
 
-filter_col, picker_col, auto_col = st.columns([2, 4, 1])
+library = load_research_library(engine)
+filter_col, asset_col, status_col, smoke_col, auto_col = st.columns([2, 2, 2, 2, 1])
 with filter_col:
     scope = st.radio(
         "Show",
@@ -1160,6 +1167,41 @@ with filter_col:
         horizontal=True,
         key="strategy_monitor_scope",
     )
+asset_options = ["All"]
+status_options = ["All", "Complete", "Incomplete", "Failed"]
+if library is not None and not library.empty:
+    asset_options.extend(sorted({str(value) for value in library["asset_class"].dropna() if str(value)}))
+with asset_col:
+    asset_filter = st.selectbox("Asset class", asset_options, key="strategy_monitor_asset_class")
+with status_col:
+    status_filter = st.selectbox("Research status", status_options, key="strategy_monitor_research_status")
+with smoke_col:
+    include_smoke = st.checkbox(
+        "Include smoke tests",
+        value=False,
+        key="strategy_monitor_include_smoke",
+        help="Smoke tests stay out of the default summary. They remain accessible here.",
+    )
+with auto_col:
+    st.checkbox(
+        "Auto refresh",
+        value=True,
+        key="strategy_monitor_auto_refresh",
+        help="Update live monitor data every 30 seconds without reloading the page.",
+    )
+
+visible_library = filter_library(
+    library,
+    asset_class=asset_filter,
+    research_status=status_filter,
+    include_smoke=include_smoke,
+)
+display = library_display_frame(visible_library, include_smoke=include_smoke)
+if display is not None and not display.empty:
+    st.subheader("Research library")
+    st.caption("Default run is the latest completed eligible non-holdout result — not the highest-performing run. Failed research stays visible. Completed is not approved.")
+    st.dataframe(display, use_container_width=True, hide_index=True)
+
 visible = strategies.copy()
 if scope != "All" and "environment" in visible.columns:
     env = visible["environment"].fillna("").astype(str).str.lower()
@@ -1172,25 +1214,50 @@ if scope != "All" and "environment" in visible.columns:
         visible = visible[env.eq("research") | kind.eq("platform_research")]
     else:
         visible = visible[env.eq(scope.lower())]
+if visible_library is not None and not visible_library.empty:
+    allowed = set(visible_library["strategy_id"].astype(str))
+    scoped = visible[visible["strategy_id"].astype(str).isin(allowed)]
+    if not scoped.empty:
+        visible = scoped
 if visible.empty:
     visible = strategies
 labels = {
     str(row["strategy_id"]): picker_label(row)
     for _, row in visible.iterrows()
 }
-with picker_col:
-    selected_id = st.selectbox(
-        "Strategy",
-        list(labels.keys()),
-        format_func=lambda sid: labels.get(sid, sid),
-        key="strategy_monitor_selected_strategy",
-    )
-with auto_col:
-    st.checkbox(
-        "Auto refresh",
-        value=True,
-        key="strategy_monitor_auto_refresh",
-        help="Update live monitor data every 30 seconds without reloading the page.",
+selected_id = st.selectbox(
+    "Strategy",
+    list(labels.keys()),
+    format_func=lambda sid: labels.get(sid, sid),
+    key="strategy_monitor_selected_strategy",
+)
+previous = st.session_state.get("strategy_monitor_last_strategy")
+if previous is not None and str(previous) != str(selected_id):
+    for stale_key in (
+        "strategy_monitor_platform_research_run",
+        "strategy_monitor_stage2_research_run",
+        "strategy_monitor_research_run",
+        "strategy_monitor_experiment_backtest",
+        "stage1_equity_select",
+        "smoke_test_select",
+    ):
+        st.session_state.pop(stale_key, None)
+st.session_state["strategy_monitor_last_strategy"] = selected_id
+runs = load_strategy_runs(engine, selected_id)
+if runs is not None and not runs.empty and len(runs) > 1:
+    run_labels = []
+    for _, run in runs.iterrows():
+        run_id = str(run.get("research_run_id") or "")
+        stamp = str(run.get("last_seen_at") or "")[:19]
+        holdout = str(run.get("holdout_status") or "")
+        status = str(run.get("run_status") or "")
+        run_labels.append("{0} · {1} · {2}{3}".format(run_id, status or "unknown", stamp or "no timestamp", " · holdout" if holdout == "ACCESSED" else ""))
+    st.selectbox(
+        "Run / version",
+        list(runs["research_run_id"].astype(str)),
+        format_func=lambda rid: next((label for label, value in zip(run_labels, runs["research_run_id"].astype(str)) if str(value) == str(rid)), rid),
+        key="strategy_monitor_run_version",
+        help="Defaults stay with the latest completed eligible non-holdout run in each research family. This list does not rank by performance.",
     )
 
 strategy = visible[visible["strategy_id"].astype(str) == str(selected_id)].iloc[0]
