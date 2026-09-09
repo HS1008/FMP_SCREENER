@@ -1,0 +1,27 @@
+# Private IBKR ingest API. Bind to a Tailscale address only. Never expose publicly.
+# Placeholders: __ROOT__ __USER__ __ENV_FILE__
+[Unit]
+Description=FMP private IBKR market-data ingest API
+After=network-online.target postgresql.service tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__ROOT__
+EnvironmentFile=-__ENV_FILE__
+Environment=IBKR_INGEST_HOST=100.91.192.77
+Environment=IBKR_INGEST_PORT=8771
+ExecStart=__ROOT__/venv/bin/python -m uvicorn ibkr_ingest.app:app --host ${IBKR_INGEST_HOST} --port ${IBKR_INGEST_PORT} --no-access-log
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=__ROOT__/outputs
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

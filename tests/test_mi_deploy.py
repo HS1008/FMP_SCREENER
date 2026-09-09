@@ -86,7 +86,9 @@ def test_units_reference_real_entrypoints():
     api = (TEMPLATES / "fmp-ai-context-api.service").read_text()
     assert (ROOT / "ai_context_api.py").exists() and "ai_context_api:app" in api
     assert "SuccessExitStatus=0 2 75" in refresh
-    assert "deploy/market_intelligence" not in (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    deploy_yml = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    assert "deploy/market_intelligence" not in deploy_yml
+    assert "fmp-ibkr-ingest.service" in deploy_yml
 
 
 # ---- operational verification: DST, unit semantics, secrets in process lines, CI triggers -------------------

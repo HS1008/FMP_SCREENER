@@ -197,15 +197,17 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
         FRED_SOURCE_ID: "CONFIGURED" if fred_key else "CONFIGURATION_REQUIRED",
         LEGACY_SOURCE_ID: "CONFIGURED" if enabled[LEGACY_SOURCE_ID] else "CONFIGURATION_REQUIRED",
     }
-    from market_intelligence.adapters import probe_all
+    from market_intelligence.adapters import IBKR_SOURCE_ID, probe_all
 
     adapter_status = probe_all(env)
     for source_id, probe in adapter_status.items():
+        if source_id == IBKR_SOURCE_ID:
+            continue  # Windows collector owns this row; FRED refresh must not clobber it
         enabled[source_id] = False  # never part of the scheduled refresh, even when configured
         access[source_id] = probe.access_status
     status["external_adapters"] = {sid: {"access_status": p.access_status, "reason": p.reason} for sid, p in adapter_status.items()}
     with engine.begin() as conn:
-        upsert_source_registry(conn, enabled=enabled, access=access)
+        upsert_source_registry(conn, enabled=enabled, access=access, preserve={IBKR_SOURCE_ID})
         parent_run_id = start_run(conn, source_id="ORCHESTRATOR", dataset="market_intelligence_refresh")
 
     for step in the_plan["steps"]:

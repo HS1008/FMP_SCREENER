@@ -340,7 +340,7 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "expected_cadence": "INTRADAY",
         "usage_scope": EXPORT_INTERNAL_ONLY,
         "attribution": "Interactive Brokers market data (entitlement dependent).",
-        "terms_notes": "Disabled. Interface + mocks only; no orders.",
+        "terms_notes": "Windows-local read-only TWS collector. Server never opens a TWS socket. No orders.",
         "units_metadata": {},
     },
     {

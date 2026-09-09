@@ -1,0 +1,5 @@
+# Official Interactive Brokers TWS API Python client (10.50+).
+# Install from the IBKR zip, not PyPI's stale ibapi 9.81:
+#   https://interactivebrokers.github.io/downloads/twsapi_macunix.1050.01.zip
+#   pip install <extracted>/IBJts/source/pythonclient
+# The collector otherwise uses the Python standard library only.

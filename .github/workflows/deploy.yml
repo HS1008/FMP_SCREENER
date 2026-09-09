@@ -59,5 +59,10 @@ jobs:
             echo "Verifying Streamlit service..."
             systemctl is-active --quiet fmp-dashboard
 
+            if systemctl cat fmp-ibkr-ingest.service >/dev/null 2>&1; then
+              echo "Restarting private IBKR ingest API..."
+              systemctl restart fmp-ibkr-ingest.service
+            fi
+
             echo "Deployment complete."
           EOF

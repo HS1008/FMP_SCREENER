@@ -70,15 +70,15 @@ class IBKRMarketDataAdapter:
 
     source_id = IBKR_SOURCE_ID
     ENABLE_FLAG = "MI_IBKR_MARKET_DATA_ENABLED"
-    CAPABILITIES = {"quotes": "planned (delayed/entitled snapshot only)", "bars": "planned", "orders": "never"}
+    CAPABILITIES = {"quotes": "windows-local delayed/live snapshot via TWS", "bars": "not in this collector", "orders": "never"}
 
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
         return AdapterStatus(
             source_id=self.source_id,
             access_status=ACCESS_DISABLED,
             enabled=False,
-            reason="no IBKR client implementation is shipped; entitlements and a gateway session are required and the flag {0} is ignored until then".format(self.ENABLE_FLAG),
-            required_configuration=("IBKR gateway session", "market data entitlement", self.ENABLE_FLAG),
+            reason="server-side TWS fetch is disabled; quotes are produced by the Windows-local collector against the user's existing TWS session. This host never opens a TWS socket. Orders are never implemented.",
+            required_configuration=("existing TWS session on the collector host", "market data entitlement", "IBKR ingest API"),
             capabilities=dict(self.CAPABILITIES),
         )
 

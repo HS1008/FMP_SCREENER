@@ -57,7 +57,8 @@ write endpoint, or writes from an AI actor.
 | PIT sector consumer: hash/schema/units/definitions/PIT flags/date-gate validation, revision-aware canonical ingest, artifact registry, views, page 17 | IMPLEMENTED_AND_TESTED | `pit_sector.py`, `jobs.ingest_pit_sector_internals`, migration 014 | consumes local artifact files only; SYNTHETIC_TEST_ONLY artifacts are `research_eligible = FALSE` |
 | Bond analytics `bond_analytics_v2`: verified brackets + re-pricing tolerance, honest domains (`UNSUPPORTED_*` statuses), first-coupon stubs, LAST never labelled MID, Z-spread only with documented curve + repricing | IMPLEMENTED_AND_TESTED (analytical cross-checks) | `bonds.py`, `jobs.bond_analytics` | no bond terms/quotes are ingested: every bond is a skip until a source exists |
 | Bond OAS / callable duration / floaters | NOT_IMPLEMENTED (flagged `UNSUPPORTED_NO_OPTION_MODEL`) | `bonds.py` | needs an option / floating-rate model |
-| IBKR market data / orders | DISABLED_BY_POLICY | `adapters.py` | no client shipped; no order surface exists |
+| IBKR market data (quotes) | IMPLEMENTED_AND_TESTED (Windows collector + ingest); live TWS handshake verified | `ibkr_collector/`, `ibkr_ingest/`, migration 016 | existing TWS session; delayed data if unentitled |
+| IBKR orders / account / positions | DISABLED_BY_POLICY | `adapters.py`, `ibkr_collector/readonly_client.py` | no order surface exists |
 | FINRA TRACE | DISABLED_BY_POLICY -> ENTITLEMENT_REQUIRED when enabled | `adapters.py` | `MI_TRACE_ENABLED` + FINRA credentials (still no client) |
 | SEC EDGAR reference | CONFIGURATION_REQUIRED (opt-in) | `adapters.py` | `SEC_USER_AGENT` with contact + `MI_EDGAR_ENABLED=1`; never called by the timer |
 | Systemd timer + API service templates, dry-run installer; DST/units verified with `systemd-analyze` | IMPLEMENTED_AND_TESTED (templates) | `deploy/market_intelligence/`, `scripts/install_market_intelligence_timers.sh` | operator runs `--apply`; deploy.yml does not |
@@ -126,7 +127,7 @@ Access statuses written to `mi_source_registry.access_status` and shown on Data 
 Prerequisites already present: `/root/FMP_SCREENER` checkout with `venv`, PostgreSQL, the
 `fmp-dashboard` service, deploy.yml applying migrations on push to `main`.
 
-1. Merge the FMP PR. The existing deploy applies migrations 008-015 (additive, no data change) and
+1. Merge the FMP PR. The existing deploy applies migrations 008-016 (additive, no data change) and
    restarts Streamlit. Pages 10-17 appear and report `DATABASE_READONLY_URL` missing until step 3.
    Rollback of a bad merge = revert + redeploy; the `mi_*` tables can stay (no view or table is dropped).
 2. Environment file:
@@ -191,11 +192,27 @@ Prerequisites already present: `/root/FMP_SCREENER` checkout with `venv`, Postgr
    repository variables `QS_ARTIFACT_SOURCE_REF` / `QS_ARTIFACT_SOURCE_PATH` to an already-published
    ref/path; never point them at a research branch to "repair" delivery.
 
+10. Windows-local IBKR collector (optional; uses the existing TWS session, never IB Gateway or
+    an IBKR password). After migration 016 is on the host:
+    * Re-run `db/roles/market_intelligence_readonly.sql` (new `mi_v_ibkr_*` grants).
+    * Create `mi_ibkr_ingest` (not `quantuser` / admin): `psql -d quant_monitor -v DBNAME=quant_monitor -v ingest_password="$(cat /etc/fmp/mi_ibkr_ingest.pw)" -f db/roles/ibkr_ingest.sql`.
+    * Copy `deploy/market_intelligence/ibkr_ingest.env.example` to `/etc/fmp/ibkr_ingest.env` (0600);
+      set `IBKR_INGEST_TOKEN` from Windows Credential Manager target `FMP_SCREENER/ibkr-ingest` and
+      `IBKR_INGEST_DATABASE_URL` for `mi_ibkr_ingest@127.0.0.1/quant_monitor`. Bind
+      `IBKR_INGEST_HOST=100.91.192.77` `IBKR_INGEST_PORT=8771` (Tailscale only; TWS stays localhost).
+    * `scripts/install_ibkr_ingest.sh --apply`. Deploy.yml restarts this unit only if it already exists.
+    * On the Windows collector host, from the repo with the collector venv:
+      `python -m ibkr_collector install` then `start` / `stop` / `status` / `uninstall`.
+      Uninstall removes the logon task only; PostgreSQL rows stay.
+    Data Health (`pages/15_Data_Health`) shows heartbeat age from the database clock
+    (`COLLECTOR_OFFLINE` if heartbeats are older than 90s). Closing TWS does not delete stored quotes.
+
 Rollback / recovery (canonical data preserved): `systemctl disable --now fmp-mi-refresh.timer`
 and `fmp-ai-context-api.service`; revert the merge if needed. Migrations are additive: no table,
 column or view is dropped, so no data is lost and re-applying is a no-op. Quarantined payloads stay
 in `mi_macro_observation_quarantine` for diagnosis. Superseded morning snapshots remain readable via
-`mi_v_morning_context_index`.
+`mi_v_morning_context_index`. `systemctl disable --now fmp-ibkr-ingest.service` stops private ingest
+without deleting `mi_market_quotes` / `mi_collector_status`.
 
 ## Verification procedure (what the tests and CI do; repeatable by an operator)
 

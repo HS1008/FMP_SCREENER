@@ -837,7 +837,7 @@ def test_pages_import_no_provider_modules():
     code = "import sys, market_intelligence.pages_ui; print('\\n'.join(sorted(sys.modules)))"
     out = subprocess.run([sys.executable, "-c", code], cwd=str(ROOT), capture_output=True, text=True, check=True, env={**os.environ, "DATABASE_READONLY_URL": ""}).stdout.split()
     loaded = set(out)
-    for banned in ("data_loader", "precomputed_loader", "nightly_refresh", "db.connection", "market_intelligence.writer_db", "market_intelligence.fred_client", "market_intelligence.legacy_bridge", "market_intelligence.store", "jobs.sync_quantconnect", "requests"):
+    for banned in ("data_loader", "precomputed_loader", "nightly_refresh", "db.connection", "market_intelligence.writer_db", "market_intelligence.fred_client", "market_intelligence.legacy_bridge", "market_intelligence.store", "market_intelligence.ibkr_store", "ibkr_collector", "ibkr_ingest", "jobs.sync_quantconnect", "requests"):
         assert banned not in loaded, banned
     assert "market_intelligence.readonly_db" in loaded
     _ = importlib

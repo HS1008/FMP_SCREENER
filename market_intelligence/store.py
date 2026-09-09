@@ -46,13 +46,18 @@ def _json(value: Any) -> str | None:
 
 # ---- registry ----------------------------------------------------------------------
 
-def upsert_source_registry(conn, entries: Iterable[Mapping[str, Any]] | None = None, *, enabled: Mapping[str, bool] | None = None, access: Mapping[str, str] | None = None) -> int:
+def upsert_source_registry(conn, entries: Iterable[Mapping[str, Any]] | None = None, *, enabled: Mapping[str, bool] | None = None, access: Mapping[str, str] | None = None, preserve: Iterable[str] | None = None) -> int:
     entries = list(entries if entries is not None else SOURCE_REGISTRY_DEFAULTS)
     enabled = enabled or {}
     access = access or {}
+    preserve_ids = set(preserve or ())
     count = 0
     for entry in entries:
         sid = entry["source_id"]
+        if sid in preserve_ids:
+            exists = conn.execute(text("SELECT 1 FROM mi_source_registry WHERE source_id = :s"), {"s": sid}).first()
+            if exists:
+                continue
         conn.execute(
             text(
                 """
