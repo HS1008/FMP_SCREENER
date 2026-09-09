@@ -38,7 +38,7 @@ def test_registry_covers_required_routes_and_sections():
     urls = [spec.url_path for spec in PAGE_SPECS]
     assert len(urls) == len(set(urls))
     assert PAGE_BY_ROUTE["sectors"].url_path == "Sector_Rotation_V2"
-    assert PAGE_BY_ROUTE["overview"].legacy_path == "pages/10_Market_Pulse.py"
+    assert PAGE_BY_ROUTE["overview"].legacy_path == PAGE_BY_ROUTE["overview"].file_path == "pages/10_Market_Pulse.py"
 
 
 def test_dashboard_builds_navigation_from_registry():
@@ -70,9 +70,10 @@ def test_resolve_render_uses_same_callables_as_wrappers():
     from market_intelligence import pages_ui
     from market_intelligence.page_registry import resolve_render
 
-    assert resolve_render(PAGE_BY_ROUTE["rates"], pages_ui=pages_ui) is pages_ui.render_rates_curve
-    assert resolve_render(PAGE_BY_ROUTE["sectors"], pages_ui=pages_ui) is pages_ui.render_sector_rotation_v2
+    assert resolve_render(PAGE_BY_ROUTE["rates"], pages_ui=pages_ui) == "pages/12_Rates_Curve.py"
+    assert resolve_render(PAGE_BY_ROUTE["sectors"], pages_ui=pages_ui) == "pages/14_Sector_Rotation_V2.py"
     assert resolve_render(PAGE_BY_ROUTE["strategy_monitor"], pages_ui=pages_ui) == "pages/strategy_monitor.py"
+    assert PAGE_BY_ROUTE["rates"].file_path == PAGE_BY_ROUTE["rates"].legacy_path
 
 
 def test_registered_pages_are_explicit_and_empty_until_dashboard_main():

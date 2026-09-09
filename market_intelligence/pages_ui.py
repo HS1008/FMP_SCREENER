@@ -116,7 +116,9 @@ def open_registered_page(route_id: str, label: str) -> None:
         st.page_link(page, label=label)
         return
     if navigation_active():
-        raise RuntimeError("Navigation is active but route {0} is not registered".format(route_id))
+        target = spec.file_path or spec.url_path
+        st.page_link(target, label=label)
+        return
     # Standalone ``pages/*.py`` render: the production entry point is dashboard.py.
     _ = spec
 

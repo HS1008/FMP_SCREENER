@@ -32,6 +32,7 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         "Market_Pulse",
         render_name="render_market_pulse",
         legacy_path="pages/10_Market_Pulse.py",
+        file_path="pages/10_Market_Pulse.py",
         default=True,
     ),
     PageSpec(
@@ -41,6 +42,7 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         "Sector_Rotation_V2",
         render_name="render_sector_rotation_v2",
         legacy_path="pages/14_Sector_Rotation_V2.py",
+        file_path="pages/14_Sector_Rotation_V2.py",
     ),
     PageSpec(
         "rates",
@@ -49,6 +51,7 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         "Rates_Curve",
         render_name="render_rates_curve",
         legacy_path="pages/12_Rates_Curve.py",
+        file_path="pages/12_Rates_Curve.py",
     ),
     PageSpec(
         "credit",
@@ -57,6 +60,7 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         "Credit_Overview",
         render_name="render_credit_overview",
         legacy_path="pages/13_Credit_Overview.py",
+        file_path="pages/13_Credit_Overview.py",
     ),
     PageSpec(
         "order_flow",
@@ -65,6 +69,7 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         "Order_Flow",
         render_name="render_order_flow",
         legacy_path="pages/18_Order_Flow.py",
+        file_path="pages/18_Order_Flow.py",
     ),
     PageSpec(
         "macro",
@@ -73,6 +78,7 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         "Macro_Overview",
         render_name="render_macro_overview",
         legacy_path="pages/11_Macro_Overview.py",
+        file_path="pages/11_Macro_Overview.py",
     ),
     PageSpec(
         "strategy_monitor",
@@ -99,6 +105,7 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         "Data_Health",
         render_name="render_data_health",
         legacy_path="pages/15_Data_Health.py",
+        file_path="pages/15_Data_Health.py",
     ),
     PageSpec(
         "morning_brief",
@@ -107,6 +114,7 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         "Morning_Context",
         render_name="render_morning_context",
         legacy_path="pages/16_Morning_Context.py",
+        file_path="pages/16_Morning_Context.py",
     ),
     PageSpec(
         "methodology",
@@ -115,6 +123,7 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         "PIT_Sector_Internals",
         render_name="render_pit_sector_internals",
         legacy_path="pages/17_PIT_Sector_Internals.py",
+        file_path="pages/17_PIT_Sector_Internals.py",
     ),
     PageSpec(
         "legacy_fmp",
