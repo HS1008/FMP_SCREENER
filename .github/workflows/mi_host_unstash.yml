@@ -1,0 +1,84 @@
+# One-shot: finish the #22 deploy that git pull blocked because the host
+# still had a copied Market Intelligence activator. Not pull_request.
+# Do not merge this branch to main; lasting fix is deploy.yml on PR #20.
+name: Unblock host deploy after local activator overlay
+
+on:
+  push:
+    branches:
+      - cursor/mi-host-unstash-674b
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mi-host-unstash
+  cancel-in-progress: false
+
+jobs:
+  unstash_and_deploy:
+    name: Backup dirty activator, pull main, restart dashboard
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      DO_HOST: ${{ secrets.DO_HOST }}
+      DO_USER: ${{ secrets.DO_USER }}
+    steps:
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            ServerAliveInterval 15
+            ServerAliveCountMax 120
+            ConnectTimeout 20
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Backup blocking host edits, fast-forward main, migrate, restart
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          set -euo pipefail
+          cd /root/FMP_SCREENER
+          echo "host_head_before=$(git rev-parse HEAD)"
+          git fetch origin main
+          install -d -m 0700 /root/fmp_backups
+          git diff --name-only -z | while IFS= read -r -d '' f; do
+            if git diff --quiet HEAD origin/main -- "$f"; then
+              continue
+            fi
+            echo "host_dirty_would_block=$f"
+            cp "$f" "/root/fmp_backups/$(basename "$f").pre_pull"
+            git checkout -- "$f"
+          done
+          git pull --ff-only origin main
+          echo "host_head_after=$(git rev-parse HEAD)"
+          echo "host_oneline=$(git log -1 --oneline)"
+          source venv/bin/activate
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          python -m jobs.apply_migrations
+          bash scripts/install_backtest_sync_cron.sh /root/FMP_SCREENER
+          systemctl restart fmp-dashboard
+          systemctl is-active --quiet fmp-dashboard
+          echo "dashboard=active"
+          if systemctl cat fmp-ibkr-ingest.service >/dev/null 2>&1; then
+            systemctl restart fmp-ibkr-ingest.service
+          fi
+          if [ -x scripts/activate_market_intelligence_host.sh ] && [ -s .secrets/mi_readonly.pw ]; then
+            scripts/activate_market_intelligence_host.sh --phase provision
+          fi
+          if [ -x scripts/install_market_intelligence_timers.sh ] && [ -f /etc/fmp/market_intelligence.env ]; then
+            bash scripts/install_market_intelligence_timers.sh --apply --with-api --root /root/FMP_SCREENER --env-file /etc/fmp/market_intelligence.env
+          fi
+          python -m jobs.verify_mi_dashboard --json || echo "WARN: AppTest reported failure after #22 deploy"
+          echo "UNSTASH_DEPLOY_OK"
+          EOF
