@@ -23,37 +23,47 @@ class OutboundQueue:
                 payload TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 attempts INTEGER NOT NULL DEFAULT 0,
-                last_error TEXT
+                last_error TEXT,
+                status TEXT NOT NULL DEFAULT 'pending'
             )
             """
         )
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(outbound)").fetchall()}
+        if "status" not in cols:
+            self._conn.execute("ALTER TABLE outbound ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'")
+        self.overflow_count = 0
         self._conn.commit()
 
-    def put(self, record: dict[str, Any]) -> None:
+    def put(self, record: dict[str, Any]) -> str:
         payload = json.dumps(record, default=str)
         self._conn.execute(
             """
-            INSERT INTO outbound (record_id, payload, created_at) VALUES (?, ?, ?)
+            INSERT INTO outbound (record_id, payload, created_at, status) VALUES (?, ?, ?, 'pending')
             ON CONFLICT(record_id) DO NOTHING
             """,
             (record["record_id"], payload, utcnow().isoformat()),
         )
-        self._trim()
+        dropped = self._trim()
         self._conn.commit()
+        if dropped:
+            return "overflow_dropped"
+        return "queued"
 
-    def _trim(self) -> None:
-        count = self._conn.execute("SELECT COUNT(*) FROM outbound").fetchone()[0]
+    def _trim(self) -> int:
+        count = self._conn.execute("SELECT COUNT(*) FROM outbound WHERE status = 'pending'").fetchone()[0]
         if count <= self.max_records:
-            return
+            return 0
         drop = count - self.max_records
         self._conn.execute(
-            "DELETE FROM outbound WHERE record_id IN (SELECT record_id FROM outbound ORDER BY created_at ASC LIMIT ?)",
+            "DELETE FROM outbound WHERE record_id IN (SELECT record_id FROM outbound WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?)",
             (drop,),
         )
+        self.overflow_count += drop
+        return drop
 
     def peek(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = self._conn.execute(
-            "SELECT payload FROM outbound ORDER BY created_at ASC LIMIT ?",
+            "SELECT payload FROM outbound WHERE status = 'pending' ORDER BY created_at ASC LIMIT ?",
             (int(limit),),
         ).fetchall()
         return [json.loads(row[0]) for row in rows]
@@ -71,5 +81,12 @@ class OutboundQueue:
         )
         self._conn.commit()
 
+    def quarantine(self, record_ids: list[str], error: str) -> None:
+        self._conn.executemany(
+            "UPDATE outbound SET status = 'quarantined', attempts = attempts + 1, last_error = ? WHERE record_id = ?",
+            [(error[:200], rid) for rid in record_ids],
+        )
+        self._conn.commit()
+
     def size(self) -> int:
-        return int(self._conn.execute("SELECT COUNT(*) FROM outbound").fetchone()[0])
+        return int(self._conn.execute("SELECT COUNT(*) FROM outbound WHERE status = 'pending'").fetchone()[0])

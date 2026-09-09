@@ -67,6 +67,7 @@ def test_quote_ingest_is_idempotent_and_keeps_nulls(ingest_client, mi_db):
         "close_price": 499.9,
         "market_data_type": "DELAYED",
         "quote_status": "PARTIAL",
+        "last_callback_at": "2026-09-09T13:59:58+00:00",
         "provenance": {"collector_id": "harin-laptop", "client_id": 71, "tws_host": "127.0.0.1"},
     }
     r1 = ingest_client.post("/v1/quotes", headers=headers, json={"collector_id": "harin-laptop", "quotes": [quote]})
@@ -82,6 +83,81 @@ def test_quote_ingest_is_idempotent_and_keeps_nulls(ingest_client, mi_db):
         assert int(row["con_id"]) == 756733
         ingest = conn.execute(text("SELECT last_ingest_ok_at FROM mi_v_ibkr_collector_status WHERE collector_id='harin-laptop'")).scalar()
         assert ingest is not None
+        callback = conn.execute(text("SELECT last_callback_at FROM mi_v_ibkr_quotes_latest")).scalar()
+        assert callback is not None
+
+
+def test_mixed_batch_quarantines_poison_and_keeps_valid(ingest_client, mi_db):
+    headers = {"Authorization": "Bearer test-ingest-token"}
+    good = {
+        "record_id": "good-1",
+        "symbol": "SPY",
+        "sec_type": "STK",
+        "quote_ts": "2026-09-09T14:01:00+00:00",
+        "market_data_type": "DELAYED",
+        "bid": 1.0,
+        "ask": 1.1,
+    }
+    poison = {"record_id": "bad-1", "symbol": "SPY", "quote_ts": "2026-09-09T14:01:00+00:00", "place_order": True}
+    later = {
+        "record_id": "good-2",
+        "symbol": "QQQ",
+        "sec_type": "STK",
+        "quote_ts": "2026-09-09T14:01:01+00:00",
+        "market_data_type": "DELAYED",
+        "bid": 2.0,
+        "ask": 2.1,
+    }
+    r = ingest_client.post("/v1/quotes", headers=headers, json={"collector_id": "harin-laptop", "quotes": [good, poison, later]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["inserted"] == 2
+    assert body["rejected"] == 1
+    outcomes = {row["record_id"]: row["outcome"] for row in body["results"]}
+    assert outcomes["good-1"] == "committed"
+    assert outcomes["bad-1"] == "rejected"
+    assert outcomes["good-2"] == "committed"
+    with mi_db.connect() as conn:
+        symbols = {row[0] for row in conn.execute(text("SELECT i.display_name FROM mi_v_ibkr_quotes_latest q JOIN mi_market_instruments i ON i.instrument_id = q.instrument_id"))}
+        assert symbols == {"SPY", "QQQ"}
+        asset = conn.execute(text("SELECT asset_type FROM mi_market_instruments WHERE display_name='SPY'")).scalar()
+        assert asset == "EQUITY"
+
+
+def test_savepoint_isolates_invalid_timestamp(mi_db):
+    from market_intelligence.ibkr_store import ingest_quotes
+
+    records = [
+        {
+            "record_id": "ok-ts",
+            "symbol": "SPY",
+            "sec_type": "STK",
+            "quote_ts": "2026-09-09T14:02:00+00:00",
+            "market_data_type": "DELAYED",
+            "bid": 1.0,
+        },
+        {
+            "record_id": "bad-ts",
+            "symbol": "QQQ",
+            "sec_type": "STK",
+            "quote_ts": "not-a-timestamp",
+            "market_data_type": "DELAYED",
+            "bid": 2.0,
+        },
+        {
+            "record_id": "ok-ts-2",
+            "symbol": "IWM",
+            "sec_type": "STK",
+            "quote_ts": "2026-09-09T14:02:01+00:00",
+            "market_data_type": "DELAYED",
+            "bid": 3.0,
+        },
+    ]
+    with mi_db.begin() as conn:
+        result = ingest_quotes(conn, records, collector_id="harin-laptop")
+    assert result["inserted"] == 2
+    assert result["rejected"] == 1
+    assert [row["outcome"] for row in result["results"]] == ["committed", "rejected", "committed"]
 
 
 def test_quote_batch_limit(ingest_client):

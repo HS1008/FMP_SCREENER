@@ -127,6 +127,7 @@ class CollectorRuntime:
         self.last_handshake_at = None
         self.last_tws_connect_at = None
         self.last_quote_at = None
+        self.last_callback_at = None
         self.last_delivery_error = None
         self.market_data_type = "UNAVAILABLE"
         self.client = None
@@ -153,10 +154,15 @@ class CollectorRuntime:
             "last_api_handshake_at": self.last_handshake_at,
             "last_tws_connect_at": self.last_tws_connect_at,
             "last_quote_at": self.last_quote_at,
+            "last_callback_at": self.last_callback_at,
             "market_data_type": self.market_data_type,
             "client_id": self.cfg.client_id,
             "watchlist": [row["symbol"] for row in self.cfg.watchlist],
-            "details": {"queue_depth": self.queue.size(), "subscriptions": len(self.subs)},
+            "details": {
+                "queue_depth": self.queue.size(),
+                "queue_overflow_count": getattr(self.queue, "overflow_count", 0),
+                "subscriptions": len(self.subs),
+            },
             "last_delivery_error_redacted": self.last_delivery_error,
         }
 
@@ -180,23 +186,44 @@ class CollectorRuntime:
         if not batch:
             return
         try:
-            self.delivery.send_quotes(self.cfg.collector_id, batch)
-            self.queue.ack([row["record_id"] for row in batch])
+            response = self.delivery.send_quotes(self.cfg.collector_id, batch)
+            self._ack_quote_response(batch, response)
             self.last_delivery_error = None
         except DeliveryError as exc:
             self.queue.fail([row["record_id"] for row in batch], str(exc))
             self.last_delivery_error = str(exc)[:200]
             self._set_state("DELIVERY_FAILURE")
 
+    def _ack_quote_response(self, batch: list[dict[str, Any]], response: dict[str, Any]) -> None:
+        results = response.get("results") if isinstance(response, dict) else None
+        if not isinstance(results, list):
+            self.queue.fail([row["record_id"] for row in batch], "missing_per_record_results")
+            self.last_delivery_error = "missing_per_record_results"
+            self._set_state("DELIVERY_FAILURE")
+            return
+        by_id = {str(row.get("record_id") or ""): row for row in results if isinstance(row, dict)}
+        ack_ids: list[str] = []
+        for item in batch:
+            record_id = item["record_id"]
+            outcome = (by_id.get(record_id) or {}).get("outcome")
+            reason = str((by_id.get(record_id) or {}).get("reason") or outcome or "missing_ack")[:200]
+            if outcome in {"committed", "duplicate"}:
+                ack_ids.append(record_id)
+            elif outcome == "rejected":
+                self.queue.quarantine([record_id], reason)
+            else:
+                self.queue.fail([record_id], reason)
+        self.queue.ack(ack_ids)
+
     def _snapshot_quotes(self) -> None:
         if not self.client:
             return
         now = utcnow()
-        entitlement = any(e.get("kind") == "entitlement" for e in self.client.errors[-20:])
         types = []
         for key, sub in self.subs.items():
             req_id = sub["req_id"]
             ticks = dict(self.client.ticks.get(req_id) or {})
+            entitlement = bool(ticks.get("entitlement_error"))
             md_code = self.client.market_data_types.get(req_id, ticks.get("market_data_type"))
             if md_code is None and ticks.get("delayed_ticks"):
                 md_label = "DELAYED"
@@ -217,6 +244,7 @@ class CollectorRuntime:
                 "quote_ts": now.isoformat(),
                 "source_ts": _source_ts(ticks.get("last_timestamp")),
                 "retrieved_at": now.isoformat(),
+                "last_callback_at": ticks.get("last_callback_at"),
                 "bid": ticks.get("bid"),
                 "ask": ticks.get("ask"),
                 "last_price": ticks.get("last"),
@@ -239,18 +267,26 @@ class CollectorRuntime:
                 "IBKR:{0}".format(sub["con_id"]) if sub.get("con_id") else None
             )
             payload["record_id"] = _record_id(payload)
+            callback_at = ticks.get("last_callback_at")
+            if callback_at:
+                if self.last_callback_at is None or str(callback_at) > str(self.last_callback_at):
+                    self.last_callback_at = callback_at
+                # last_quote_at tracks a genuine TWS callback, never snapshot assembly time.
+                self.last_quote_at = callback_at
             if any(payload.get(k) is not None for k in ("bid", "ask", "last_price", "close_price")):
-                self.last_quote_at = now.isoformat()
                 fingerprint = quote_value_fingerprint(payload)
                 if self._last_quote_fp.get(key) != fingerprint:
-                    self.queue.put(payload)
+                    put_status = self.queue.put(payload)
                     self._last_quote_fp[key] = fingerprint
+                    if put_status == "overflow_dropped":
+                        logger.warning("outbound queue overflow; oldest pending quote dropped")
         if types:
             preferred = [t for t in ("LIVE", "DELAYED", "FROZEN", "DELAYED_FROZEN", "UNAVAILABLE") if t in types]
             self.market_data_type = preferred[0] if preferred else "UNAVAILABLE"
-        if entitlement and self.state == "CONNECTED":
+        any_entitlement = any(bool((self.client.ticks.get(sub["req_id"]) or {}).get("entitlement_error")) for sub in self.subs.values())
+        if any_entitlement and self.state == "CONNECTED":
             self._set_state("ENTITLEMENT_ERROR")
-        elif self.state == "ENTITLEMENT_ERROR" and not entitlement:
+        elif self.state == "ENTITLEMENT_ERROR" and not any_entitlement:
             self._set_state("CONNECTED")
 
     def _qualify_and_subscribe(self) -> None:

@@ -79,18 +79,29 @@ def _run_schtasks(args: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run([SCHTASKS, *args], capture_output=True, text=True, check=False)
 
 
-def _ensure_token() -> str:
+def _ensure_token() -> str | None:
     existing = read_ingest_token()
     if existing:
         return existing
-    token = os.urandom(32).hex()
-    write_ingest_token(token)
-    sys.stdout.write(
-        "Stored a new ingest token in Windows Credential Manager ({0}). "
-        "Copy it once into /etc/fmp/ibkr_ingest.env as IBKR_INGEST_TOKEN on fmp-dashboard.\n".format("FMP_SCREENER/ibkr-ingest")
+    sys.stderr.write(
+        "No ingest token in Windows Credential Manager. Copy the server token into a local "
+        "0600 file (not via chat) and run: python -m ibkr_collector provision-token --from-file PATH\n"
     )
-    sys.stdout.write(token + "\n")
-    return token
+    return None
+
+
+def provision_token(from_file: str) -> int:
+    path = Path(from_file)
+    if not path.is_file():
+        sys.stderr.write("token file not found\n")
+        return 3
+    token = path.read_text(encoding="utf-8").strip()
+    if not token or any(ch.isspace() for ch in token):
+        sys.stderr.write("token file is empty or contains whitespace\n")
+        return 3
+    write_ingest_token(token)
+    sys.stdout.write("Ingest token stored in Windows Credential Manager. Delete the source file.\n")
+    return 0
 
 
 def install() -> int:
@@ -104,7 +115,8 @@ def install() -> int:
     if not pythonw.is_file():
         sys.stderr.write("Collector venv pythonw missing at {0}\n".format(pythonw))
         return 3
-    _ensure_token()
+    if not _ensure_token():
+        return 3
     user = getpass.getuser()
     xml_path = default_data_dir() / "task.xml"
     xml_path.parent.mkdir(parents=True, exist_ok=True)
@@ -165,7 +177,7 @@ def uninstall() -> int:
     return 0 if result.returncode in {0, 1} else result.returncode
 
 
-def dispatch(command: str) -> int:
+def dispatch(command: str, *, from_file: str | None = None) -> int:
     if command == "install":
         return install()
     if command == "start":
@@ -176,4 +188,9 @@ def dispatch(command: str) -> int:
         return status()
     if command == "uninstall":
         return uninstall()
+    if command == "provision-token":
+        if not from_file:
+            sys.stderr.write("provision-token requires --from-file PATH\n")
+            return 3
+        return provision_token(from_file)
     raise SystemExit("unknown command")

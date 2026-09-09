@@ -70,8 +70,14 @@ ALLOWED_SERVER_ONLY_FILES = frozenset(
     {
         "test_db.py",
         "update_dashboard.sh",
+        "backups/",
+        ".secrets/",
     }
 )
+
+# Host dumps and provisioned credential files that live beside the checkout.
+# Not a Stage 1 methodology change — operational artifacts only.
+ALLOWED_UNTRACKED_PREFIXES = ("backups/", ".secrets/")
 
 
 def redact(text: str) -> str:
@@ -120,7 +126,7 @@ def evaluate_working_tree(porcelain: str) -> dict[str, Any]:
         if xy == "!!":
             continue
         if xy == "??":
-            if path in ALLOWED_SERVER_ONLY_FILES:
+            if path in ALLOWED_SERVER_ONLY_FILES or path.startswith(ALLOWED_UNTRACKED_PREFIXES):
                 allowed_untracked.append(path)
             else:
                 unexpected_untracked.append(path)

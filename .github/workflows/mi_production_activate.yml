@@ -11,6 +11,7 @@ on:
   push:
     branches:
       - cursor/mi-production-activate-674b
+      - cursor/order-flow-activate-674b
   workflow_dispatch:
 
 permissions:
@@ -23,12 +24,15 @@ concurrency:
 jobs:
   activate:
     name: Provision, ingest, verify, schedule
+    if: ${{ github.event_name == 'workflow_dispatch' || !contains(github.event.head_commit.message, '[schedule-only]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 90
     env:
       DO_HOST: ${{ secrets.DO_HOST }}
       DO_USER: ${{ secrets.DO_USER }}
       FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      FINRA_CLIENT_ID: ${{ secrets.FINRA_CLIENT_ID }}
+      FINRA_CLIENT_SECRET: ${{ secrets.FINRA_CLIENT_SECRET }}
     steps:
       - name: Refuse to continue without the FRED secret
         run: |
@@ -36,6 +40,8 @@ jobs:
             echo "FRED_API_KEY repository secret is empty or unavailable"
             exit 1
           fi
+
+      - uses: actions/checkout@v4
 
       - name: Configure SSH
         env:
@@ -46,8 +52,15 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
           ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            ServerAliveInterval 15
+            ServerAliveCountMax 120
+            ConnectTimeout 20
+          EOF
+          chmod 600 ~/.ssh/config
 
-      - name: Confirm deployed commit and existing backup
+      - name: Confirm deployed checkout, move leftover dumps, install fixed activator
         run: |
           ssh "$DO_USER@$DO_HOST" << 'EOF'
           set -euo pipefail
@@ -55,38 +68,183 @@ jobs:
           echo "deployed_head=$(git rev-parse HEAD)"
           echo "deployed_oneline=$(git log -1 --oneline)"
           echo "dashboard=$(systemctl is-active fmp-dashboard || true)"
-          ls -1 /root/FMP_SCREENER/backups/fmp_pre_mi_*.dump 2>/dev/null | tail -3 || echo "WARN: no preflight dump found"
-          test -x /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh
+          # Keep dumps outside the git checkout so Stage 1 working-tree verify stays clean.
+          install -d -m 0700 /root/fmp_backups
+          if [ -d /root/FMP_SCREENER/backups ]; then
+            mv /root/FMP_SCREENER/backups/fmp_pre_mi_*.dump /root/fmp_backups/ 2>/dev/null || true
+            mv /root/FMP_SCREENER/backups/fmp_pre_mi_*.state.txt /root/fmp_backups/ 2>/dev/null || true
+            rmdir /root/FMP_SCREENER/backups 2>/dev/null || true
+          fi
+          ls -1 /root/fmp_backups/fmp_pre_mi_*.dump 2>/dev/null | tail -3 || echo "WARN: no preflight dump found"
+          test -f /root/FMP_SCREENER/db/roles/market_intelligence_readonly.sql
+          test -f /root/FMP_SCREENER/pages/16_Morning_Context.py
+          systemctl is-active --quiet fmp-dashboard
           EOF
+          scp -q scripts/activate_market_intelligence_host.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh"
+          scp -q scripts/materialize_ai_context_env.py \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/materialize_ai_context_env.py"
+          scp -q scripts/install_market_intelligence_timers.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/install_market_intelligence_timers.sh"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh /root/FMP_SCREENER/scripts/materialize_ai_context_env.py /root/FMP_SCREENER/scripts/install_market_intelligence_timers.sh'
 
-      - name: Transfer protected secret files (not logged)
+      - name: Probe host admin/peer path for CREATE ROLE (no secrets)
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase probe'
+
+      - name: Transfer protected secret files if missing (existing secret files are not overwritten)
         run: |
           umask 077
           ssh "$DO_USER@$DO_HOST" 'install -d -m 0700 /root/FMP_SCREENER/.secrets'
-          install -m 0600 /dev/null /tmp/fred_api_key
-          printf '%s\n' "$FRED_API_KEY" > /tmp/fred_api_key
-          openssl rand -base64 32 | tr -d '\n' > /tmp/mi_readonly.pw
-          openssl rand -hex 32 > /tmp/ai_context_api_token
-          chmod 600 /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token
-          scp -q /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token \
-            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/"
+          if ssh "$DO_USER@$DO_HOST" 'test -s /root/FMP_SCREENER/.secrets/fred_api_key'; then
+            echo "fred key file already present (not overwritten)"
+          else
+            install -m 0600 /dev/null /tmp/fred_api_key
+            printf '%s\n' "$FRED_API_KEY" > /tmp/fred_api_key
+            scp -q /tmp/fred_api_key "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/fred_api_key"
+            shred -u /tmp/fred_api_key || rm -f /tmp/fred_api_key
+            echo "fred key file installed"
+          fi
+          if ssh "$DO_USER@$DO_HOST" 'test -s /root/FMP_SCREENER/.secrets/mi_readonly.pw'; then
+            echo "readonly password file already present (not overwritten)"
+          else
+            openssl rand -base64 32 | tr -d '\n' > /tmp/mi_readonly.pw
+            chmod 600 /tmp/mi_readonly.pw
+            scp -q /tmp/mi_readonly.pw "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/mi_readonly.pw"
+            shred -u /tmp/mi_readonly.pw || rm -f /tmp/mi_readonly.pw
+            echo "readonly password file installed"
+          fi
+          if ssh "$DO_USER@$DO_HOST" 'test -s /root/FMP_SCREENER/.secrets/ai_context_api_token'; then
+            echo "ai token file already present (not overwritten)"
+          else
+            openssl rand -hex 32 > /tmp/ai_context_api_token
+            chmod 600 /tmp/ai_context_api_token
+            scp -q /tmp/ai_context_api_token "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/ai_context_api_token"
+            shred -u /tmp/ai_context_api_token || rm -f /tmp/ai_context_api_token
+            echo "ai token file installed"
+          fi
+          if [ -n "${FINRA_CLIENT_ID:-}" ] && [ -n "${FINRA_CLIENT_SECRET:-}" ]; then
+            if ssh "$DO_USER@$DO_HOST" 'test -s /root/FMP_SCREENER/.secrets/finra_client_id && test -s /root/FMP_SCREENER/.secrets/finra_client_secret'; then
+              echo "finra credential files already present (not overwritten)"
+            else
+              install -m 0600 /dev/null /tmp/finra_client_id
+              install -m 0600 /dev/null /tmp/finra_client_secret
+              printf '%s\n' "$FINRA_CLIENT_ID" > /tmp/finra_client_id
+              printf '%s\n' "$FINRA_CLIENT_SECRET" > /tmp/finra_client_secret
+              scp -q /tmp/finra_client_id "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/finra_client_id"
+              scp -q /tmp/finra_client_secret "$DO_USER@$DO_HOST:/root/FMP_SCREENER/.secrets/finra_client_secret"
+              shred -u /tmp/finra_client_id /tmp/finra_client_secret || rm -f /tmp/finra_client_id /tmp/finra_client_secret
+              echo "finra credential files installed"
+            fi
+          else
+            echo "FINRA repository secrets unavailable; Query API ingest will be skipped"
+          fi
           ssh "$DO_USER@$DO_HOST" 'chmod 0600 /root/FMP_SCREENER/.secrets/fred_api_key /root/FMP_SCREENER/.secrets/mi_readonly.pw /root/FMP_SCREENER/.secrets/ai_context_api_token'
-          shred -u /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token || rm -f /tmp/fred_api_key /tmp/mi_readonly.pw /tmp/ai_context_api_token
+          ssh "$DO_USER@$DO_HOST" 'chmod 0600 /root/FMP_SCREENER/.secrets/finra_client_id /root/FMP_SCREENER/.secrets/finra_client_secret 2>/dev/null || true'
 
       - name: Provision FRED key, read-only role, and private API token
         run: |
           ssh "$DO_USER@$DO_HOST" \
             '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase provision'
 
-      - name: First FRED ingest, optional legacy files, analytics, morning snapshot
+      - name: FRED ingest (idempotent)
         run: |
           ssh "$DO_USER@$DO_HOST" \
-            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest'
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-fred'
+
+      - name: FINRA Query API aggregate ingest (bounded)
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-finra'
+
+      - name: Legacy sector ingest
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-legacy'
+
+      - name: Analytics backfill from 2019
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-analytics'
+
+      - name: Morning context snapshot
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-morning'
 
       - name: Restart dashboard and AppTest Market Intelligence pages
         run: |
           ssh "$DO_USER@$DO_HOST" \
             '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase verify'
+
+      - name: Enable refresh timer and localhost AI context API
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase schedule'
+
+      - name: Assert workspace has no leaked FRED key
+        if: always()
+        run: |
+          python - <<'PY'
+          import os, pathlib, sys
+          key = os.environ.get("FRED_API_KEY") or ""
+          if not key:
+              sys.exit(0)
+          root = pathlib.Path(os.environ.get("GITHUB_WORKSPACE") or ".")
+          for path in root.rglob("*"):
+              if not path.is_file() or ".git" in path.parts:
+                  continue
+              if path.stat().st_size > 2_000_000:
+                  continue
+              try:
+                  text = path.read_text(encoding="utf-8", errors="ignore")
+              except OSError:
+                  continue
+              if key in text:
+                  print("refusing: workspace file contains the FRED key")
+                  sys.exit(1)
+          print("secret-presence check: key was not written to the workspace")
+          PY
+
+  schedule_only:
+    name: Retry timer and localhost API
+    if: ${{ contains(github.event.head_commit.message, '[schedule-only]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DO_HOST: ${{ secrets.DO_HOST }}
+      DO_USER: ${{ secrets.DO_USER }}
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            ServerAliveInterval 15
+            ServerAliveCountMax 120
+            ConnectTimeout 20
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Install fixed activator
+        run: |
+          scp -q scripts/activate_market_intelligence_host.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh"
+          scp -q scripts/materialize_ai_context_env.py \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/materialize_ai_context_env.py"
+          scp -q scripts/install_market_intelligence_timers.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/install_market_intelligence_timers.sh"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh /root/FMP_SCREENER/scripts/materialize_ai_context_env.py /root/FMP_SCREENER/scripts/install_market_intelligence_timers.sh'
 
       - name: Enable refresh timer and localhost AI context API
         run: |

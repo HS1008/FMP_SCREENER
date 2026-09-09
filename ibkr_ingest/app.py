@@ -85,13 +85,21 @@ def heartbeat(body: dict[str, Any]) -> dict[str, Any]:
 @app.post("/v1/quotes", dependencies=[Depends(require_token)])
 def quotes(body: dict[str, Any]) -> dict[str, Any]:
     try:
-        collector_id, records = validate_quote_batch(body)
+        collector_id, records, pre_rejected = validate_quote_batch(body)
     except PayloadError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from None
     from market_intelligence.ibkr_store import ingest_quotes
 
-    with ingest_engine().begin() as conn:
-        counts = ingest_quotes(conn, records, collector_id=collector_id)
+    counts = {"received": len(records) + len(pre_rejected), "inserted": 0, "unchanged": 0, "rejected": len(pre_rejected), "results": list(pre_rejected), "run_id": None}
+    if records:
+        with ingest_engine().begin() as conn:
+            stored = ingest_quotes(conn, records, collector_id=collector_id)
+        counts["inserted"] = stored.get("inserted", 0)
+        counts["unchanged"] = stored.get("unchanged", 0)
+        counts["rejected"] = stored.get("rejected", 0) + len(pre_rejected)
+        counts["results"] = list(stored.get("results") or []) + list(pre_rejected)
+        counts["run_id"] = stored.get("run_id")
+        counts["received"] = stored.get("received", len(records)) + len(pre_rejected)
     return {
         "ok": True,
         "collector_id": collector_id,
@@ -99,4 +107,7 @@ def quotes(body: dict[str, Any]) -> dict[str, Any]:
         "inserted": counts["inserted"],
         "unchanged": counts["unchanged"],
         "rejected": counts["rejected"],
+        "committed": counts["inserted"],
+        "duplicate": counts["unchanged"],
+        "results": counts["results"],
     }

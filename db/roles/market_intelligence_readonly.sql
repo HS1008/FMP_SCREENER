@@ -73,6 +73,11 @@ GRANT SELECT ON mi_v_pit_sector_internals_current TO mi_readonly;
 GRANT SELECT ON mi_v_pit_sector_internals_latest TO mi_readonly;
 GRANT SELECT ON mi_v_ibkr_collector_status TO mi_readonly;
 GRANT SELECT ON mi_v_ibkr_quotes_latest TO mi_readonly;
+GRANT SELECT ON mi_v_finra_dataset_capability TO mi_readonly;
+GRANT SELECT ON mi_v_finra_aggregate_current TO mi_readonly;
+GRANT SELECT ON mi_v_finra_aggregate_history TO mi_readonly;
+GRANT SELECT ON mi_v_trace_individual_trades TO mi_readonly;
+GRANT SELECT ON mi_v_order_flow_coverage TO mi_readonly;
 
 -- Defensive session defaults for the role (defaults, not privileges: a session can still
 -- SET them back, which is why the GRANT surface above is what enforces read-only).

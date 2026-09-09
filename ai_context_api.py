@@ -54,6 +54,7 @@ SECTION_ROUTES = {
     "market": "market",
     "strategies": "strategy_monitor_summary",
     "data-health": "data_health",
+    "order-flow": "order_flow",
 }
 
 app = FastAPI(title="Market Intelligence AI Context API", docs_url=None, redoc_url=None, openapi_url=None)

@@ -44,7 +44,7 @@ GENERATED_AT = datetime(2025, 1, 2, 11, 30, tzinfo=timezone.utc)
 # so the module pins that clock to GENERATED_AT (a test seam on a private function, not a
 # production knob); clock-advancement tests move it forward explicitly.
 CAPTURE_CLOCK = {"now": GENERATED_AT}
-MI_PAGES = sorted(p for p in PAGES.glob("1[0-7]_*.py"))
+MI_PAGES = sorted(p for p in PAGES.glob("1[0-8]_*.py"))
 
 
 def _boom(*_a, **_k):
@@ -91,6 +91,37 @@ def populated(pg_engine, tmp_path_factory, pinned_capture_clock):
         )
         upsert_source_registry(conn, enabled={"FRED": True, "FMP_LEGACY": True}, access={"FRED": "CONFIGURED", "FMP_LEGACY": "CONFIGURED"})
         parent = start_run(conn, source_id="ORCHESTRATOR", dataset="fixture_pipeline")
+        from market_intelligence.ingest_finra import ingest_finra, record_individual_trace_limitation
+
+        record_individual_trace_limitation(conn)
+    class _FixtureFinra:
+        def query_all(self, spec, **_kwargs):
+            if spec.dataset == "corporateMarketBreadth":
+                return [
+                    {
+                        "tradeReportDate": AS_OF.isoformat(),
+                        "productCategory": "all securities",
+                        "totalVolume": 1000.0,
+                        "totalTrades": 100,
+                        "advances": 40,
+                        "declines": 30,
+                        "unchanged": 5,
+                        "fiftyTwoWeekHigh": 2,
+                        "fiftyTwoWeekLow": 1,
+                    }
+                ]
+            if spec.dataset == "corporateMarketSentiment":
+                return [
+                    {"tradeReportDate": AS_OF.isoformat(), "tradeType": "all securities", "productCategory": "customer buy", "totalVolume": 400.0, "totalTrades": 40, "totalTransactions": 40},
+                    {"tradeReportDate": AS_OF.isoformat(), "tradeType": "all securities", "productCategory": "customer sell", "totalVolume": 250.0, "totalTrades": 30, "totalTransactions": 30},
+                ]
+            if spec.dataset == "corporatesAndAgenciesCappedVolume":
+                return [
+                    {"tradeReportDate": AS_OF.isoformat(), "gradeCode": "IG", "144AFlag": "N", "totalTradeCount": 80, "totalVolumeQuantity": 500.0, "customerBuyParLessThan5YearsQuantity": 100.0, "customerSellParLessThan5YearsQuantity": 50.0}
+                ]
+            return []
+
+    ingest_finra(pg_engine, _FixtureFinra(), parent_run_id=parent, today=AS_OF, mode="full")
     client = fake_fred_client(AS_OF)
     fred = ingest_fred_catalog(pg_engine, client, mode="full", today=AS_OF, parent_run_id=parent)
     assert not fred.failed, [r.as_dict() for r in fred.failed]
@@ -569,7 +600,7 @@ def api(consumer):
     return TestClient(ai_context_api.app, raise_server_exceptions=False)
 
 
-SECTION_PATHS = ["/v1/context/{0}/latest".format(p) for p in ("morning", "macro", "rates", "credit", "sectors", "liquidity", "market", "strategies", "data-health")]
+SECTION_PATHS = ["/v1/context/{0}/latest".format(p) for p in ("morning", "macro", "rates", "credit", "sectors", "liquidity", "market", "strategies", "data-health", "order-flow")]
 ROUTES = ["/v1/ready", *SECTION_PATHS, "/v1/context/data-health/live", "/v1/context/data-health"]
 
 
@@ -776,7 +807,7 @@ def test_pages_render_populated_state_db_only(consumer, page):
     text_out = _texts(at)
     assert at.title[0].value
     assert len(at.dataframe) >= 1, "each page shows at least one table when data exists"
-    if page.stem not in {"14_Sector_Rotation_V2", "15_Data_Health", "17_PIT_Sector_Internals"}:  # pages with no FRED content
+    if page.stem not in {"14_Sector_Rotation_V2", "15_Data_Health", "17_PIT_Sector_Internals", "18_Order_Flow"}:
         assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in text_out
     if page.stem == "10_Market_Pulse":
         assert "Overnight quotes unavailable" in text_out
@@ -786,6 +817,9 @@ def test_pages_render_populated_state_db_only(consumer, page):
         assert "CURRENT_UNIVERSE_CONTEXT_ONLY" in text_out and "never as zero" in text_out
     if page.stem == "17_PIT_Sector_Internals":
         assert "research_eligible = FALSE" in text_out and "SYNTHETIC_TEST_ONLY" in text_out and "2020-01-01" in text_out
+    if page.stem == "18_Order_Flow":
+        assert "Corporate Bond Trading Activity" in text_out
+        assert "not a live order book" in text_out.lower()
 
 
 @pytest.mark.parametrize("page", MI_PAGES, ids=[p.stem for p in MI_PAGES])
@@ -837,7 +871,7 @@ def test_pages_import_no_provider_modules():
     code = "import sys, market_intelligence.pages_ui; print('\\n'.join(sorted(sys.modules)))"
     out = subprocess.run([sys.executable, "-c", code], cwd=str(ROOT), capture_output=True, text=True, check=True, env={**os.environ, "DATABASE_READONLY_URL": ""}).stdout.split()
     loaded = set(out)
-    for banned in ("data_loader", "precomputed_loader", "nightly_refresh", "db.connection", "market_intelligence.writer_db", "market_intelligence.fred_client", "market_intelligence.legacy_bridge", "market_intelligence.store", "market_intelligence.ibkr_store", "ibkr_collector", "ibkr_ingest", "jobs.sync_quantconnect", "requests"):
+    for banned in ("data_loader", "precomputed_loader", "nightly_refresh", "db.connection", "market_intelligence.writer_db", "market_intelligence.fred_client", "market_intelligence.finra_client", "market_intelligence.legacy_bridge", "market_intelligence.store", "market_intelligence.ibkr_store", "ibkr_collector", "ibkr_ingest", "jobs.sync_quantconnect", "requests"):
         assert banned not in loaded, banned
     assert "market_intelligence.readonly_db" in loaded
     _ = importlib
@@ -853,7 +887,7 @@ def test_refresh_dry_run_makes_no_calls_and_no_writes(pg_engine, populated, caps
     code = run(["--all-configured", "--dry-run", "--json"], engine=pg_engine, fred_client_factory=lambda: _boom(), env={"FRED_API_KEY": "not-used", "DATABASE_URL": "x"})
     out = json.loads(capsys.readouterr().out)
     assert code == 0 and out["status"] == "DRY_RUN_VALIDATED"
-    assert [s["step"] for s in out["plan"]["steps"]] == ["fred", "legacy_sector", "build_analytics", "build_morning"]
+    assert [s["step"] for s in out["plan"]["steps"]] == ["fred", "finra", "legacy_sector", "build_analytics", "build_morning"]
     assert "not-used" not in json.dumps(out)
     with pg_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_ingestion_runs")).scalar() == before
@@ -901,6 +935,7 @@ def test_refresh_unconfigured_source_is_explicit_skip_not_crash(pg_engine, popul
     code = run(["--all-configured", "--json", "--as-of", AS_OF.isoformat()], engine=pg_engine, env={"MARKET_INTELLIGENCE_PRECOMPUTED_ROOT": "/nonexistent", "DATABASE_URL": "x"})
     out = json.loads(capsys.readouterr().out)
     assert code == 0 and out["results"]["fred"]["status"] == "SKIPPED" and out["results"]["legacy_sector"]["status"] == "SKIPPED"
+    assert out["results"]["finra"]["status"] == "SKIPPED"
     with pg_engine.connect() as conn:
         access = conn.execute(text("SELECT access_status, enabled FROM mi_source_registry WHERE source_id='FRED'")).one()
     assert access.access_status == "CONFIGURATION_REQUIRED" and access.enabled is False

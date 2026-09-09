@@ -47,6 +47,9 @@ VALUE_KEYS = {
     "latest", "transforms", "history", "metrics", "comparison", "mean", "std",
     "rs_chg_1w", "rs_chg_1m", "rs_chg_3m", "rs_chg_6m", "rs_chg_12m", "ret_1m", "ret_1w", "ret_3m", "ret_6m", "ret_12m",
     "rank", "ranks", "leadership", "score", "weights", "returns", "coverage_stats",
+    "total_volume", "total_trades", "total_transactions", "volume_change", "trade_count_change",
+    "customer_net_volume", "customer_buy_volume", "customer_sell_volume", "total_volume_quantity",
+    "total_trade_count",
 }
 IDENTITY_KEYS = {
     "series_id", "metric_id", "label", "title", "bucket", "as_of", "observation_date", "units", "category",
@@ -56,6 +59,7 @@ IDENTITY_KEYS = {
     "instrument_id", "canonical_sector", "provider_label", "benchmark", "return_basis", "value_basis",
     "universe_method", "research_eligible", "source_id", "dataset", "industry_key", "aggregation", "catalog_units",
     "artifact_sha256", "schema_version", "methodology_version", "computed_at", "coverage",
+    "product_category", "capability_status", "grade_code",
 }
 _ORDER_KEYS = ("series_id", "metric_id", "sector_key", "industry_key", "instrument_id", "tenor", "bucket", "label")
 

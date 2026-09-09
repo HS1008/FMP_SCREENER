@@ -24,6 +24,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("status", help="Show task, lock, and recent log state")
     sub.add_parser("install", help="Install/update the current-user Windows logon task")
     sub.add_parser("uninstall", help="Remove the Windows task; PostgreSQL data is preserved")
+    provision = sub.add_parser("provision-token", help="Store the ingest token from a local file into Credential Manager (never prints the token)")
+    provision.add_argument("--from-file", required=True, help="Path to a local 0600 file containing only the token")
     return parser
 
 
@@ -47,10 +49,10 @@ def main(argv: list[str] | None = None) -> int:
         from ibkr_collector.runner import run_forever
 
         return run_forever()
-    if args.command in {"start", "stop", "status", "install", "uninstall"}:
+    if args.command in {"start", "stop", "status", "install", "uninstall", "provision-token"}:
         from ibkr_collector.service_windows import dispatch
 
-        return dispatch(args.command)
+        return dispatch(args.command, from_file=getattr(args, "from_file", None))
     raise SystemExit("unknown command")
 
 

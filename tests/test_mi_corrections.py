@@ -58,6 +58,20 @@ def test_section_status_does_not_let_one_fresh_series_conceal_a_stale_required_s
     assert "DGS10" not in zero["missing_required"]
 
 
+def test_section_status_marks_stale_sector_as_of_without_calling_it_current():
+    capture = date(2025, 1, 2)
+    data = {
+        "datasets": {
+            "ETF_RS_VS_SPY": [
+                {"sector_key": "XLK", "as_of": "2024-06-01", "metrics": {"rs_chg_1m": 0.01}},
+            ]
+        }
+    }
+    sec = section_status("sectors", data, required=["datasets"], capture_date=capture, empty_reason="empty")
+    assert sec["status"] == morning_context.SECTION_STALE
+    assert sec["captured_freshness"]["status"] == "STALE"
+
+
 @pytest.mark.usefixtures("pg_engine")
 def test_null_revision_invalidates_derived_metrics_and_recovers(pg_engine):
     """Finding C: a valid→NULL revision must unpublish derived rows; a later valid revision restores them."""

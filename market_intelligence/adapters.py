@@ -20,7 +20,9 @@ from typing import Any, Mapping
 ACCESS_DISABLED = "DISABLED"
 ACCESS_CONFIGURATION_REQUIRED = "CONFIGURATION_REQUIRED"
 ACCESS_CONFIGURED = "CONFIGURED"
+ACCESS_AVAILABLE = "AVAILABLE"
 ACCESS_ENTITLEMENT_REQUIRED = "ENTITLEMENT_REQUIRED"
+ACCESS_TEMPORARILY_UNAVAILABLE = "TEMPORARILY_UNAVAILABLE"
 
 IBKR_SOURCE_ID = "IBKR_MARKET_DATA"
 TRACE_SOURCE_ID = "FINRA_TRACE"
@@ -91,26 +93,44 @@ class IBKRMarketDataAdapter:
 
 
 class TraceAdapter:
-    """Access-status scaffolding for TRACE corporate bond trades. Requires a FINRA data entitlement."""
+    """FINRA Query API aggregates plus honest status for individual TRACE trades.
+
+    Individual TRACE prints are a separate TRAQS/TRACE API product and are not fetched here.
+    """
 
     source_id = TRACE_SOURCE_ID
     ENABLE_FLAG = "MI_TRACE_ENABLED"
-    CREDENTIAL_ENV = ("FINRA_API_CLIENT_ID", "FINRA_API_CLIENT_SECRET")
-    CAPABILITIES = {"trades": "planned (entitlement dependent)", "volume_caps": "preserved as reported", "corrections": "kept as separate rows"}
+    QUERY_ENABLE_FLAG = "MI_FINRA_ENABLED"
+    CREDENTIAL_ENV = ("FINRA_CLIENT_ID", "FINRA_CLIENT_SECRET", "FINRA_API_CLIENT_ID", "FINRA_API_CLIENT_SECRET")
+    CAPABILITIES = {
+        "aggregates": "FINRA Query API corporateMarketBreadth/Sentiment and corporatesAndAgenciesCappedVolume",
+        "trades": "not available on Query API; TRACE API/TRAQS is a separate entitlement",
+        "volume_caps": "preserved as reported/capped source fields",
+        "corrections": "aggregate revisions stored; individual prints not ingested",
+    }
 
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
-        missing = [name for name in self.CREDENTIAL_ENV if not env.get(name)]
-        if not _flag(env, self.ENABLE_FLAG):
-            status, reason = ACCESS_DISABLED, "{0} not set; TRACE is not part of the scheduled refresh".format(self.ENABLE_FLAG)
-        elif missing:
-            status, reason = ACCESS_CONFIGURATION_REQUIRED, "missing {0}".format(", ".join(missing))
+        from market_intelligence.finra_client import configured_from_env, enabled_from_env
+
+        query_configured = configured_from_env(env)
+        query_enabled = enabled_from_env(env) or query_configured
+        missing = []
+        if not env.get("FINRA_CLIENT_ID") and not env.get("FINRA_API_CLIENT_ID"):
+            missing.append("FINRA_CLIENT_ID or FINRA_API_CLIENT_ID")
+        if not env.get("FINRA_CLIENT_SECRET") and not env.get("FINRA_API_CLIENT_SECRET"):
+            missing.append("FINRA_CLIENT_SECRET or FINRA_API_CLIENT_SECRET")
+        if not query_configured:
+            if not _flag(env, self.ENABLE_FLAG) and not _flag(env, self.QUERY_ENABLE_FLAG):
+                status, reason, enabled = ACCESS_DISABLED, "FINRA Query API not enabled and credentials are absent", False
+            else:
+                status, reason, enabled = ACCESS_CONFIGURATION_REQUIRED, "missing {0}".format(", ".join(missing)), False
         else:
-            status, reason = ACCESS_ENTITLEMENT_REQUIRED, "credentials present but no TRACE client implementation is shipped; entitlement unverified"
-        return AdapterStatus(self.source_id, status, False, reason, tuple(self.CREDENTIAL_ENV) + (self.ENABLE_FLAG,), dict(self.CAPABILITIES))
+            status, reason, enabled = ACCESS_CONFIGURED, "Query API credentials present; dataset entitlement is recorded per-dataset after a probe/ingest", query_enabled
+        return AdapterStatus(self.source_id, status, enabled, reason, ("FINRA_CLIENT_ID", "FINRA_CLIENT_SECRET", self.ENABLE_FLAG, self.QUERY_ENABLE_FLAG), dict(self.CAPABILITIES))
 
     def fetch_trades(self, cusips: list[str], *, env: Mapping[str, str]) -> list[dict[str, Any]]:
         status = self.probe(env)
-        raise AdapterDisabled(self.source_id, status.access_status, status.reason)
+        raise AdapterDisabled(self.source_id, ACCESS_ENTITLEMENT_REQUIRED, "individual TRACE transactions are not a Query API dataset; TRAQS/TRACE API is out of this adapter")
 
 
 # ---- SEC EDGAR -----------------------------------------------------------------------------------------------
@@ -187,10 +207,12 @@ def probe_all(env: Mapping[str, str]) -> dict[str, AdapterStatus]:
 
 
 __all__ = [
+    "ACCESS_AVAILABLE",
     "ACCESS_CONFIGURATION_REQUIRED",
     "ACCESS_CONFIGURED",
     "ACCESS_DISABLED",
     "ACCESS_ENTITLEMENT_REQUIRED",
+    "ACCESS_TEMPORARILY_UNAVAILABLE",
     "ADAPTERS",
     "AdapterDisabled",
     "AdapterStatus",
