@@ -79,6 +79,6 @@ jobs:
           if [ -x scripts/install_market_intelligence_timers.sh ] && [ -f /etc/fmp/market_intelligence.env ]; then
             bash scripts/install_market_intelligence_timers.sh --apply --with-api --root /root/FMP_SCREENER --env-file /etc/fmp/market_intelligence.env
           fi
-          python -m jobs.verify_mi_dashboard --json || echo "WARN: AppTest reported failure after #22 deploy"
+          scripts/activate_market_intelligence_host.sh --phase verify
           echo "UNSTASH_DEPLOY_OK"
           EOF
