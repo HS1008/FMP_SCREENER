@@ -277,6 +277,8 @@ def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
     assert "stale_source=" in verify
     assert "failed_source=" in verify
     assert "ibkr_quote_code=" in verify
+    assert "Deploy FMP Dashboard" in verify
+    assert "cursor/mi-research-verify-674b" not in verify
     assert "latest_observation_date" not in verify.split("python - <<'PY'", 1)[-1].split("PY", 1)[0]
 
 

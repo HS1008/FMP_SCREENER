@@ -1,12 +1,17 @@
 # Post-deploy production verify for the research-workspace rollout.
-# Same-repo push trigger (GitHub App tokens cannot workflow_dispatch).
-# Never prints secrets, observation values, or restricted credit figures.
+# Runs after Deploy FMP Dashboard succeeds on main (GitHub App tokens
+# cannot workflow_dispatch). Never prints secrets, observation values,
+# or restricted credit figures.
 name: Market Intelligence research workspace verify
 
 on:
-  push:
+  workflow_run:
+    workflows:
+      - Deploy FMP Dashboard
+    types:
+      - completed
     branches:
-      - cursor/mi-research-verify-674b
+      - main
   workflow_dispatch:
 
 permissions:
@@ -18,6 +23,9 @@ concurrency:
 
 jobs:
   verify:
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     name: Host SHA, grants, AppTest, scheduled refresh
     runs-on: ubuntu-latest
     timeout-minutes: 70
