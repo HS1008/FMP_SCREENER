@@ -24,35 +24,67 @@ LOW_POS_COLOR = "#d4ac0d"
 MISSING_COLOR = "#7f8c8d"
 
 
-def _run_readonly(fn: Callable[[Any], Any], *args: Any) -> Any:
+def _run_readonly(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     with readonly_connection() as conn:
-        return fn(conn, *args)
+        return fn(conn, *args, **kwargs)
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
-def cached_read(fn_name: str, *args: Any) -> Any:
+def cached_read(fn_name: str, *args: Any, **kwargs: Any) -> Any:
     """Cache a read-model call by function name (module attribute) and args."""
     from market_intelligence import read_models
 
     fn = getattr(read_models, fn_name)
-    return _run_readonly(fn, *args)
+    return _run_readonly(fn, *args, **kwargs)
 
 
 def clear_read_cache() -> None:
     cached_read.clear()
 
 
-def page_header(title: str, caption: str, *, fred: bool = True) -> None:
-    st.set_page_config(page_title=title, page_icon="📊", layout="wide")
-    st.title(title)
-    st.caption(caption)
-    cols = st.columns([6, 1])
-    with cols[1]:
-        if st.button("Refresh DB cache", help="Clears this page's cached PostgreSQL reads. No provider calls."):
+def _safe_page_config(title: str) -> None:
+    try:
+        st.set_page_config(page_title=title, page_icon="📊", layout="wide")
+    except Exception:  # noqa: BLE001 - already configured by the app shell
+        pass
+
+
+def page_header(title: str, caption: str | None = None, *, fred: bool = True, as_of: str | None = None, freshness: str | None = None, warning: str | None = None) -> None:
+    _safe_page_config(title)
+    head = st.columns([5.2, 1.6, 1.0])
+    with head[0]:
+        st.title(title)
+        if caption:
+            st.caption(caption)
+    with head[1]:
+        if as_of or freshness:
+            st.caption("As of {0}".format(as_of or "—"))
+            if freshness:
+                st.caption(freshness_chip(freshness))
+    with head[2]:
+        if st.button("Refresh", help="Reloads cached database reads only. No provider calls."):
             clear_read_cache()
             st.rerun()
+    if warning:
+        st.warning(warning)
     if fred:
         st.caption(FRED_ATTRIBUTION)
+
+
+def compact_as_of(dates: list[Any], *, freshness: str | None = None) -> tuple[str | None, str | None]:
+    parsed = [as_date(value) for value in dates]
+    present = sorted({value.isoformat() for value in parsed if value is not None})
+    if not present:
+        return None, freshness
+    if len(present) == 1:
+        return present[0], freshness
+    return "{0} … {1}".format(present[0], present[-1]), freshness
+
+
+def implied_prior_yield(yield_pct: Any, change_bps: Any) -> float | None:
+    if _is_missing(yield_pct) or _is_missing(change_bps):
+        return None
+    return float(yield_pct) - (float(change_bps) / 100.0)
 
 
 def unavailable(exc: ReadOnlyUnavailable) -> None:
@@ -65,9 +97,9 @@ def unavailable(exc: ReadOnlyUnavailable) -> None:
     st.stop()
 
 
-def load_or_stop(fn_name: str, *args: Any) -> Any:
+def load_or_stop(fn_name: str, *args: Any, **kwargs: Any) -> Any:
     try:
-        return cached_read(fn_name, *args)
+        return cached_read(fn_name, *args, **kwargs)
     except ReadOnlyUnavailable as exc:
         unavailable(exc)
     except Exception as exc:  # noqa: BLE001 - sanitized
@@ -240,6 +272,7 @@ __all__ = [
     "as_date",
     "cached_read",
     "clear_read_cache",
+    "compact_as_of",
     "fmt",
     "fmt_signed",
     "freshness_chip",
@@ -247,6 +280,7 @@ __all__ = [
     "heat_marker",
     "heatmap_legend",
     "history_chart",
+    "implied_prior_yield",
     "load_or_stop",
     "page_header",
     "styled_heatmap",

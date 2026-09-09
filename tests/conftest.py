@@ -101,6 +101,7 @@ MI_TABLES_TRUNCATE = (
     "mi_credit_index_snapshots",
     "mi_metric_snapshots",
     "mi_finra_aggregate_observations",
+    "mi_finra_aggregate_quarantine",
     "mi_finra_ingest_checkpoint",
     "mi_finra_dataset_capability",
     "mi_collector_status",

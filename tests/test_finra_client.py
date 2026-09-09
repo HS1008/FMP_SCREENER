@@ -101,6 +101,34 @@ def test_pagination_and_inclusive_date_window():
     assert data_calls[1]["json"]["offset"] == 1
 
 
+def test_pagination_truncation_is_an_error_not_silent_success():
+    page = [{"tradeReportDate": "2026-01-02", "productCategory": "all securities", "totalVolume": 1}]
+    session = FakeSession(
+        [
+            FakeResponse(200, {"access_token": "tok", "expires_in": 3600}),
+            FakeResponse(200, page),
+        ]
+    )
+    client = FinraClient("id", "secret", session=session, sleep=lambda _s: None)
+    with pytest.raises(FinraError) as exc:
+        client.query_all(CORPORATE_BREADTH, start=date(2026, 1, 2), end=date(2026, 1, 3), limit=1, max_pages=1)
+    assert "pagination incomplete" in str(exc.value).lower()
+    assert exc.value.capability == "TEMPORARILY_UNAVAILABLE"
+
+
+def test_unexpected_object_payload_is_not_an_empty_success():
+    session = FakeSession(
+        [
+            FakeResponse(200, {"access_token": "tok", "expires_in": 3600}),
+            FakeResponse(200, {"unexpected": True}),
+        ]
+    )
+    client = FinraClient("id", "secret", session=session, sleep=lambda _s: None)
+    with pytest.raises(FinraError) as exc:
+        client.query_page(CORPORATE_BREADTH, limit=5, offset=0)
+    assert "unexpected" in str(exc.value).lower()
+
+
 def test_client_source_does_not_call_traqs_or_guess_trace_tape():
     text = (ROOT / "market_intelligence" / "finra_client.py").read_text(encoding="utf-8")
     ingest = (ROOT / "market_intelligence" / "ingest_finra.py").read_text(encoding="utf-8")
