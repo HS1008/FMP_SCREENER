@@ -306,6 +306,12 @@ def upsert_heartbeat(conn, payload: Mapping[str, Any]) -> None:
     mdt = payload.get("market_data_type")
     if mdt not in ALLOWED_MD_TYPES and mdt is not None:
         mdt = "UNAVAILABLE"
+    details = payload.get("details") if isinstance(payload.get("details"), dict) else {}
+    overflow = details.get("queue_overflow_count")
+    try:
+        overflow = int(overflow) if overflow is not None else None
+    except (TypeError, ValueError):
+        overflow = None
     conn.execute(
         text(
             """
@@ -317,7 +323,7 @@ def upsert_heartbeat(conn, payload: Mapping[str, Any]) -> None:
             ) VALUES (
                 :cid, :src, :state, NOW(), CAST(:socket AS TIMESTAMPTZ), CAST(:handshake AS TIMESTAMPTZ),
                 CAST(:tws AS TIMESTAMPTZ), CAST(:quote AS TIMESTAMPTZ), CAST(:callback AS TIMESTAMPTZ),
-                :err, :mdt, :client_id, CAST(:watchlist AS JSONB), CAST(:details AS JSONB), :overflow, NOW()
+                :err, :mdt, :client_id, CAST(:watchlist AS JSONB), CAST(:details AS JSONB), COALESCE(:overflow, 0), NOW()
             )
             ON CONFLICT (collector_id) DO UPDATE SET
                 source_id = EXCLUDED.source_id,
@@ -333,7 +339,7 @@ def upsert_heartbeat(conn, payload: Mapping[str, Any]) -> None:
                 client_id = COALESCE(EXCLUDED.client_id, mi_collector_status.client_id),
                 watchlist_json = COALESCE(EXCLUDED.watchlist_json, mi_collector_status.watchlist_json),
                 details_json = EXCLUDED.details_json,
-                queue_overflow_count = COALESCE(EXCLUDED.queue_overflow_count, mi_collector_status.queue_overflow_count),
+                queue_overflow_count = COALESCE(:overflow, mi_collector_status.queue_overflow_count),
                 updated_at = NOW()
             """
         ),
@@ -351,6 +357,6 @@ def upsert_heartbeat(conn, payload: Mapping[str, Any]) -> None:
             "client_id": payload.get("client_id"),
             "watchlist": strict_dumps(payload.get("watchlist") or []),
             "details": strict_dumps(payload.get("details") or {}),
-            "overflow": (payload.get("details") or {}).get("queue_overflow_count") if isinstance(payload.get("details"), dict) else None,
+            "overflow": overflow,
         },
     )

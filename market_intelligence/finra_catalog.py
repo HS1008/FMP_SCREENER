@@ -176,12 +176,14 @@ CORPORATE_CAPPED_VOLUME = FinraDatasetSpec(
         "tradeMonth",
     ),
     volume_is_capped=True,
-    cadence="D",
+    cadence="M",
     coverage_note=(
         "Capped/reported TRACE volume for corporate and agency debt, split by FINRA "
-        "gradeCode (IG, HY, AGCY) and 144AFlag. Totals are lower-bound/capped measures "
-        "where FINRA caps size. Do not describe size-weighted statistics as exact VWAP. "
-        "Do not add IG+HY+AGCY 144A/non-144A rows as if they were a single tape."
+        "gradeCode (IG, HY, AGCY) and 144AFlag. Live Query API rows use month-start "
+        "tradeReportDate values; treat this dataset as monthly, not a partial session. "
+        "Totals are lower-bound/capped measures where FINRA caps size. Do not describe "
+        "size-weighted statistics as exact VWAP. Do not add IG+HY+AGCY 144A/non-144A "
+        "rows as if they were a single tape."
     ),
     units_note=(
         "Source fields as published by FINRA Query API corporatesAndAgenciesCappedVolume. "
