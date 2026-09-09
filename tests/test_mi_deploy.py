@@ -263,12 +263,17 @@ def test_ai_context_env_example_has_no_provider_secrets():
 
 
 def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
-    for name in ("mi_host_preflight.yml", "mi_production_activate.yml"):
+    for name in ("mi_host_preflight.yml", "mi_production_activate.yml", "mi_research_workspace_verify.yml"):
         raw = (ROOT / ".github" / "workflows" / name).read_text()
         text = _yaml_without_comments(ROOT / ".github" / "workflows" / name)
         assert "pull_request:" not in text and "pull_request_target" not in text
         assert "printf '%s" not in raw or "FRED_API_KEY" in raw  # key written to a 0600 file, never echoed
         assert "echo \"$FRED" not in raw and "echo $FRED" not in raw
+    verify = (ROOT / ".github" / "workflows" / "mi_research_workspace_verify.yml").read_text()
+    assert "refresh_journal_sanitized" in verify
+    assert "refresh_env_writer_url" in verify
+    assert "activate_market_intelligence_host.sh" in verify
+    assert "market_intelligence.env" in verify
 
 
 def test_activate_host_script_uses_admin_or_peer_for_role_sql():
@@ -284,6 +289,8 @@ def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     assert "ingest-finra" in text
     assert "ai_context_api.env" in text
     assert "materialize_ai_context_env.py" in text
+    assert "materialize_mi_writer_url.py" in text
+    assert "writer_url_source" in text
     assert "wait_for_local_api" in text
     assert "127.0.0.1:8765/health" in text
     assert '-f -' in text
@@ -321,6 +328,35 @@ def test_validate_fred_live_refuses_production_urls_and_missing_config(monkeypat
     captured = capsys.readouterr()
     combined = captured.out + captured.err
     assert "test-fred-key-not-real" not in combined
+
+
+def test_materialize_mi_writer_url_from_db_star_and_never_prints_secret(tmp_path, monkeypatch, capsys):
+    from scripts.materialize_mi_writer_url import main, resolve_writer_url
+
+    monkeypatch.delenv("MARKET_INTELLIGENCE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.setenv("DB_HOST", "127.0.0.1")
+    monkeypatch.setenv("DB_PORT", "5432")
+    monkeypatch.setenv("DB_NAME", "quant_monitor")
+    monkeypatch.setenv("DB_USER", "fmp_writer")
+    monkeypatch.setenv("DB_PASSWORD", "not-a-real-writer-password")
+    out = tmp_path / "writer.url"
+    assert main(["--output", str(out)]) == 0
+    captured = capsys.readouterr()
+    assert "writer_url_source=db_star" in captured.out
+    assert "not-a-real-writer-password" not in captured.out
+    text = out.read_text()
+    assert text.startswith("postgresql://")
+    assert "quant_monitor" in text
+    assert "not-a-real-writer-password" in text
+    url, source = resolve_writer_url({
+        "MARKET_INTELLIGENCE_DATABASE_URL": "postgresql://writer:CHANGE_ME@127.0.0.1:5432/fmp",
+        "DATABASE_URL": "postgresql://writer:from-database-url@127.0.0.1:5432/fmp",
+    })
+    assert source == "database_url" and "from-database-url" in url
+    url, source = resolve_writer_url({"MARKET_INTELLIGENCE_DATABASE_URL": "postgresql://writer:keep@127.0.0.1:5432/fmp"})
+    assert source == "dedicated" and url.endswith("/fmp")
+    assert resolve_writer_url({}) == ("", "missing")
 
 
 def test_update_protected_env_preserves_other_keys_and_does_not_print_the_value(tmp_path):

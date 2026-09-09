@@ -1,0 +1,195 @@
+# Post-deploy production verify for the research-workspace rollout.
+# Same-repo push trigger (GitHub App tokens cannot workflow_dispatch).
+# Never prints secrets, observation values, or restricted credit figures.
+name: Market Intelligence research workspace verify
+
+on:
+  push:
+    branches:
+      - cursor/mi-research-verify-674b
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mi-research-workspace-verify
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: Host SHA, grants, AppTest, scheduled refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    env:
+      DO_HOST: ${{ secrets.DO_HOST }}
+      DO_USER: ${{ secrets.DO_USER }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config << 'EOF'
+          Host *
+            ServerAliveInterval 15
+            ServerAliveCountMax 120
+            ConnectTimeout 20
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - name: Install fixed activator without adding untracked checkout files
+        run: |
+          scp -q scripts/activate_market_intelligence_host.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh'
+
+      - name: Confirm deployed SHA and apply 019 if objects are missing
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          set -euo pipefail
+          cd /root/FMP_SCREENER
+          echo "deployed_head=$(git rev-parse HEAD)"
+          echo "deployed_oneline=$(git log -1 --oneline)"
+          echo "dashboard=$(systemctl is-active fmp-dashboard || true)"
+          source venv/bin/activate
+          python - <<'PY'
+          from sqlalchemy import text
+          from db.connection import engine
+          from jobs.apply_migrations import apply_migrations, split_sql_statements
+          from pathlib import Path
+          with engine.connect() as conn:
+              recorded = conn.execute(text("SELECT 1 FROM schema_migrations WHERE filename='019_finra_identity_quarantine.sql'")).scalar()
+              table = conn.execute(text("SELECT 1 FROM information_schema.tables WHERE table_name='mi_finra_aggregate_quarantine'")).scalar()
+              col = conn.execute(text("SELECT 1 FROM information_schema.columns WHERE table_name='mi_finra_aggregate_observations' AND column_name='identity_status'")).scalar()
+              view = conn.execute(text("SELECT 1 FROM information_schema.views WHERE table_name='mi_v_finra_aggregate_quarantine'")).scalar()
+          print("migration_019_recorded={0}".format("yes" if recorded else "no"))
+          print("quarantine_table={0}".format("yes" if table else "no"))
+          print("identity_status_column={0}".format("yes" if col else "no"))
+          print("quarantine_view={0}".format("yes" if view else "no"))
+          if not table or not col or not view:
+              sql = Path("db/migrations/019_finra_identity_quarantine.sql").read_text(encoding="utf-8")
+              with engine.begin() as conn:
+                  for statement in split_sql_statements(sql):
+                      conn.execute(text(statement))
+                  conn.execute(text("INSERT INTO schema_migrations (filename) VALUES ('019_finra_identity_quarantine.sql') ON CONFLICT (filename) DO NOTHING"))
+              print("migration_019_applied=repaired")
+          else:
+              print("migration_019_applied=present")
+          PY
+          EOF
+
+      - name: Refresh mi_readonly grants
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase provision'
+
+      - name: AppTest Market Intelligence pages
+        run: |
+          ssh "$DO_USER@$DO_HOST" \
+            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase verify'
+
+      - name: Confirm private API, timer, and collector independence
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          set -euo pipefail
+          echo "mi_timer_enabled=$(systemctl is-enabled fmp-mi-refresh.timer 2>/dev/null || echo absent)"
+          echo "mi_timer_active=$(systemctl is-active fmp-mi-refresh.timer 2>/dev/null || echo absent)"
+          systemctl list-timers fmp-mi-refresh.timer --no-pager || true
+          echo "refresh_after=$(systemctl show fmp-mi-refresh.service -p After --value || true)"
+          echo "refresh_wants=$(systemctl show fmp-mi-refresh.service -p Wants --value || true)"
+          echo "api_unit=$(systemctl is-active fmp-ai-context-api.service 2>/dev/null || echo absent)"
+          echo "api_listen=$(ss -ltn 2>/dev/null | awk '$4 ~ /127.0.0.1:8765/ {print "loopback"; found=1} $4 ~ /0.0.0.0:8765/ {print "public"; found=1} END {if (!found) print "none"}')"
+          health="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/health || true)"
+          ready="$(curl -sS -o /dev/null -w '%{http_code}' http://127.0.0.1:8765/v1/ready || true)"
+          echo "api_health=${health}"
+          echo "api_ready_without_token=${ready}"
+          test "$health" = "200"
+          test "$ready" = "401"
+          echo "ibkr_ingest=$(systemctl is-active fmp-ibkr-ingest.service 2>/dev/null || echo absent)"
+          if systemctl cat fmp-ai-context-api.service >/dev/null 2>&1; then
+            if systemctl cat fmp-ai-context-api.service | grep -Ei 'FRED_API_KEY|FINRA_CLIENT_SECRET|MARKET_INTELLIGENCE_DATABASE_URL|DATABASE_URL=' >/dev/null; then
+              echo "FAIL: API unit mentions writer/provider secret names"
+              exit 4
+            fi
+            echo "api_unit_secret_names=absent"
+          fi
+          EOF
+
+      - name: Run the scheduled refresh unit once
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          text = Path("/etc/fmp/market_intelligence.env").read_text(encoding="utf-8")
+          present = False
+          placeholder = False
+          for line in text.splitlines():
+              if line.startswith("MARKET_INTELLIGENCE_DATABASE_URL="):
+                  value = line.split("=", 1)[1]
+                  present = bool(value.strip())
+                  placeholder = "CHANGE_ME" in value
+          print("refresh_env_writer_url={0}".format("placeholder" if placeholder else ("present" if present else "absent")))
+          PY
+          set +e
+          systemctl start fmp-mi-refresh.service
+          start_rc=$?
+          set -e
+          echo "refresh_start_rc=${start_rc}"
+          echo "refresh_result=$(systemctl show fmp-mi-refresh.service -p Result --value || true)"
+          echo "refresh_exec=$(systemctl show fmp-mi-refresh.service -p ExecMainStatus --value || true)"
+          echo "refresh_journal_sanitized:"
+          journalctl -u fmp-mi-refresh.service -n 60 --no-pager -o cat 2>/dev/null \
+            | grep -Ei 'error|traceback|address already|permission|modulenotfound|importerror|failed|started|CONFIGURATION|writer|lock|exit' \
+            | grep -viE 'postgres(ql)?://|bearer |password=|api_key|token=|FINRA_CLIENT|FRED_API|DATABASE_URL|MARKET_INTELLIGENCE_DATABASE' \
+            || true
+          if [ "$start_rc" -ne 0 ]; then
+            echo "FAIL: scheduled refresh unit did not start"
+            exit 1
+          fi
+          EOF
+
+      - name: Re-AppTest and report sanitized source/identity status
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          set -euo pipefail
+          cd /root/FMP_SCREENER
+          /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase verify
+          source venv/bin/activate
+          set -a
+          # Same files AppTest uses; values are not printed.
+          [ -f /root/FMP_SCREENER/.env ] && . /root/FMP_SCREENER/.env
+          [ -f /etc/fmp/market_intelligence.env ] && . /etc/fmp/market_intelligence.env
+          set +a
+          python - <<'PY'
+          from sqlalchemy import text
+          from market_intelligence.readonly_db import readonly_connection
+          from market_intelligence.read_models import data_health_context, order_flow_context, ibkr_collector_status
+          with readonly_connection() as conn:
+              health = data_health_context(conn)
+              flow = order_flow_context(conn, include_history=False)
+              collectors = ibkr_collector_status(conn)
+              grant = conn.execute(text("SELECT has_table_privilege(current_user, 'mi_v_finra_aggregate_quarantine', 'SELECT')")).scalar()
+          print("readonly_quarantine_select={0}".format(bool(grant)))
+          print("source_count={0}".format(len(health.get("sources") or [])))
+          print("stale_count={0}".format(len(health.get("stale") or [])))
+          print("failed_transport_count={0}".format(len(health.get("failed_transport") or [])))
+          print("finra_quarantine_count={0}".format(len(health.get("finra_quarantine") or [])))
+          capped = flow.get("capped_volume") or {}
+          print("capped_identity_validated={0}".format(bool(capped.get("identity_validated"))))
+          print("capped_headline_eligible={0}".format(bool(capped.get("headline_eligible"))))
+          print("capped_row_count={0}".format(len(capped.get("rows") or [])))
+          print("breadth_row_count={0}".format(len((flow.get("breadth") or {}).get("rows") or [])))
+          print("individual_trades_available={0}".format(bool((flow.get("individual_trades") or {}).get("available"))))
+          print("ibkr_collector_count={0}".format(len(collectors or [])))
+          for row in collectors or []:
+              print("ibkr_observed={0}".format(row.get("observed_state")))
+          PY
+          EOF
