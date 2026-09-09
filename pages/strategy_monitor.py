@@ -26,6 +26,7 @@ from qc_research.research_library import (
     load_research_library,
     load_strategy_runs,
 )
+from qc_research.streamlit_tables import arrow_safe_frame
 
 
 logger = logging.getLogger(__name__)
@@ -1200,7 +1201,7 @@ display = library_display_frame(visible_library, include_smoke=include_smoke)
 if display is not None and not display.empty:
     st.subheader("Research library")
     st.caption("Default run is the latest completed eligible non-holdout result — not the highest-performing run. Failed research stays visible. Completed is not approved.")
-    st.dataframe(display, use_container_width=True, hide_index=True)
+    st.dataframe(arrow_safe_frame(display), use_container_width=True, hide_index=True)
 
 visible = strategies.copy()
 if scope != "All" and "environment" in visible.columns:

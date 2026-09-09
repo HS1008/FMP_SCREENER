@@ -31,6 +31,7 @@ from qc_research.platform_presentation import (
     tidy_number,
 )
 from qc_research.research_readout import build_readout, comparison_table, plain_status_line
+from qc_research.streamlit_tables import arrow_safe_frame
 
 from qc_research.ml_aggregation import (
     COMPLETE,
@@ -806,7 +807,7 @@ def render_platform_view(view: dict[str, Any]) -> None:
         if compare:
             st.markdown("**Strategy versus baseline**")
             st.caption("Difference is shown only where both sides exist. CAGR differences are percentage points, not alpha.")
-            st.dataframe(pd.DataFrame(compare), use_container_width=True, hide_index=True)
+            st.dataframe(arrow_safe_frame(pd.DataFrame(compare)), use_container_width=True, hide_index=True)
         _maybe_performance_charts(view)
         if not (view.get("stitched_equity") or view.get("daily_returns") or view.get("oos_equity")):
             st.caption("No canonical equity or return series is stored for a performance chart. The window table is the source of truth.")
@@ -819,7 +820,7 @@ def render_platform_view(view: dict[str, Any]) -> None:
                 selected_trial_fallback=str(view.get("selected_candidate") or "") or None,
             )
             if not frame.empty:
-                st.dataframe(frame, use_container_width=True, hide_index=True)
+                st.dataframe(arrow_safe_frame(frame), use_container_width=True, hide_index=True)
             else:
                 st.write(oos_windows)
             st.caption("Non-holdout windows only. 2025+ / final holdout remain sealed. Missing windows are not counted as zero. Outperformance is not an economic acceptance decision.")
@@ -916,7 +917,7 @@ def render_platform_view(view: dict[str, Any]) -> None:
             qc_frame = official_qc_id_frame(qc_rows if isinstance(qc_rows, list) else [])
             if not qc_frame.empty:
                 st.caption("Official QC IDs")
-                st.dataframe(qc_frame, use_container_width=True, hide_index=True)
+                st.dataframe(arrow_safe_frame(qc_frame), use_container_width=True, hide_index=True)
 
 
 def render_platform_section(strategy_id: str, *, engine=None) -> None:

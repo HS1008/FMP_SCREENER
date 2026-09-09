@@ -26,6 +26,7 @@ from qc_research.aggregation import (
     walk_forward_aggregates,
 )
 from qc_research.holdout import classify_rows
+from qc_research.streamlit_tables import arrow_safe_frame
 
 
 def fmt_num(value, decimals=2):
@@ -1047,7 +1048,7 @@ def render_backtest_vs_paper(backtests: pd.DataFrame, snapshot, trades, fmt_num_
                 fmt_num_paper(row.get("alpha")),
                 fmt_num_paper(row.get("beta")),
                 fmt_decimal_pct(row.get("win_rate")) if choice["source"] == "stage1" else fmt_pct_paper(row.get("win_rate")),
-                row.get("trade_count"),
+                "—" if row.get("trade_count") is None else str(row.get("trade_count")),
             ],
             "Paper": [
                 "—",
@@ -1058,9 +1059,9 @@ def render_backtest_vs_paper(backtests: pd.DataFrame, snapshot, trades, fmt_num_
                 "—",
                 "—",
                 "—",
-                len(trades) if trades is not None else "—",
+                "—" if trades is None else str(len(trades)),
             ],
         }
     )
-    st.dataframe(comparison, use_container_width=True, hide_index=True)
+    st.dataframe(arrow_safe_frame(comparison), use_container_width=True, hide_index=True)
     st.write(f"QuantConnect backtest ID: `{row.get('backtest_id')}`")
