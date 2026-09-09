@@ -36,6 +36,35 @@ jobs:
             echo "Fetching latest code..."
             git fetch origin main
 
+            echo "Preserving host-modified activation scripts outside the checkout (not secrets)"
+            preserve_dir=/root/fmp_backups/checkout_preserve
+            install -d -m 0700 "$preserve_dir"
+            stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+            for rel in scripts/activate_market_intelligence_host.sh scripts/materialize_ai_context_env.py scripts/install_market_intelligence_timers.sh; do
+              if [ ! -e "$rel" ]; then
+                continue
+              fi
+              tracked=0
+              git ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 && tracked=1
+              dirty=0
+              if [ "$tracked" = 1 ] && ! git diff --quiet -- "$rel"; then
+                dirty=1
+              fi
+              if [ "$tracked" = 0 ]; then
+                dirty=1
+              fi
+              if [ "$dirty" = 1 ]; then
+                echo "preserving $rel -> $preserve_dir"
+                cp -a "$rel" "$preserve_dir/$(basename "$rel").$stamp"
+                if [ "$tracked" = 1 ]; then
+                  git checkout -- "$rel"
+                else
+                  rm -f "$rel"
+                fi
+              fi
+            done
+            echo "working_tree_porcelain=$(git status --porcelain | tr '\n' '|')"
+
             echo "Updating server..."
             git pull --ff-only origin main
 
