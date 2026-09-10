@@ -98,6 +98,8 @@ def test_identity_script_fails_closed_without_url_or_fallback():
     script = (ROOT / "scripts" / "verify_dashboard_identity.sh").read_text(encoding="utf-8")
     assert "python3" in script
     assert "PYTHON_BIN" in script
+    assert "/root/FMP_SCREENER/.env" not in script
+    assert "/etc/fmp/fmp-dashboard.env" in script
 
 
 def test_identity_script_refuses_writer_fallback_on_deploy():

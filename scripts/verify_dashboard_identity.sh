@@ -9,7 +9,6 @@ load_dashboard_env() {
   else
     files=(
       /etc/fmp/fmp-dashboard.env
-      /root/FMP_SCREENER/.env
       "${FMP_DASHBOARD_ENV:-}"
     )
   fi

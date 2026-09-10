@@ -87,6 +87,8 @@ jobs:
 
             VERIFY_RC=0
             echo "Verifying Streamlit database identity..."
+            export FMP_IDENTITY_ENV_ONLY=1
+            export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
             bash scripts/verify_dashboard_identity.sh || VERIFY_RC=$?
 
             echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
@@ -113,7 +115,12 @@ jobs:
                 fi
                 echo "Verifying Streamlit identity from immutable release checkout..."
                 IMMUTABLE_VERIFY_RC=0
-                ( cd /opt/fmp/current && bash scripts/verify_dashboard_identity.sh ) || IMMUTABLE_VERIFY_RC=$?
+                (
+                  cd /opt/fmp/current
+                  export FMP_IDENTITY_ENV_ONLY=1
+                  export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
+                  bash scripts/verify_dashboard_identity.sh
+                ) || IMMUTABLE_VERIFY_RC=$?
                 if [ "$IMMUTABLE_VERIFY_RC" != "0" ]; then
                   VERIFY_RC="$IMMUTABLE_VERIFY_RC"
                 fi

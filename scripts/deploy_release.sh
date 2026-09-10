@@ -91,6 +91,8 @@ if [ "$SKIP_IDENTITY" != 1 ]; then
     cd "$target"
     python -m qc_research.contracts.digests
     bash scripts/provision_dashboard_readonly.sh --require
+    export FMP_IDENTITY_ENV_ONLY=1
+    export FMP_DASHBOARD_ENV="${FMP_DASHBOARD_ENV:-/etc/fmp/fmp-dashboard.env}"
     bash scripts/verify_dashboard_identity.sh
   )
 fi

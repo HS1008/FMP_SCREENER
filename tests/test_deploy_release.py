@@ -28,6 +28,9 @@ def test_release_script_is_additive_and_supports_rollback():
         "scripts/verify_dashboard_identity.sh"
     )
     assert "scripts/verify_dashboard_identity.sh" in deploy
+    assert "FMP_IDENTITY_ENV_ONLY=1" in deploy
+    assert "FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env" in deploy
+    assert deploy.index("FMP_IDENTITY_ENV_ONLY=1") < deploy.index("scripts/verify_dashboard_identity.sh")
     assert "/opt/fmp/current/scripts/verify_dashboard_identity.sh" in deploy
     assert "immutable current is missing scripts/verify_dashboard_identity.sh" in deploy
     assert "--skip-identity" in script
@@ -37,6 +40,9 @@ def test_release_script_is_additive_and_supports_rollback():
     identity_block = script[script.index('if [ "$SKIP_IDENTITY" != 1 ]'):]
     assert "qc_research.contracts.digests" in identity_block
     assert "provision_dashboard_readonly.sh --require" in identity_block
+    assert "FMP_IDENTITY_ENV_ONLY=1" in identity_block
+    assert "/etc/fmp/fmp-dashboard.env" in identity_block
+    assert "/root/FMP_SCREENER/.env" not in identity_block
     preflight_block = script[script.index('if [ "$SKIP_PREFLIGHT" != 1 ]'):script.index('if [ "$SKIP_IDENTITY" != 1 ]')]
     assert "provision_dashboard_readonly.sh" not in preflight_block
     assert "verify_dashboard_identity.sh" not in preflight_block
@@ -73,6 +79,8 @@ def test_release_script_is_additive_and_supports_rollback():
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
     assert "/var/lib/fmp/streamlit" in docs
     assert "DASHBOARD_READONLY_URL" in docs
+    assert "FMP_IDENTITY_ENV_ONLY=1" in docs
+    assert "does not source `/root/FMP_SCREENER/.env`" in docs
     example = (ROOT / "deploy" / "fmp-dashboard.service.example").read_text(encoding="utf-8")
     assert "DASHBOARD_READONLY_URL" in example
     env = (ROOT / "deploy" / "fmp-dashboard.env.example").read_text(encoding="utf-8")
