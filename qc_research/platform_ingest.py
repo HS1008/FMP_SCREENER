@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping
 
 from sqlalchemy import text
 
+from qc_research.contracts.kinds import reject_holdout_access, reject_synthetic_official
 from qc_research.object_store_sync import (
     PLATFORM_SCHEMA_VERSIONS,
     canonical_dumps,
@@ -24,6 +25,20 @@ from qc_research.object_store_sync import (
 
 class IngestEnvironmentError(RuntimeError):
     """Live PostgreSQL ingest is blocked until DATABASE_URL / DB_* are set."""
+
+
+def refuse_tainted_source(record: Mapping[str, Any] | None) -> None:
+    """Refuse holdout-tainted or synthetic-official source JSON before wrapping.
+
+    Wrappers must not overwrite holdout_accessed=true to false.
+    """
+    payload = dict(record or {})
+    reject_synthetic_official(payload)
+    reject_holdout_access(payload)
+    nested = payload.get("payload")
+    if isinstance(nested, dict):
+        reject_synthetic_official(nested)
+        reject_holdout_access(nested)
 
 
 def live_postgres_configured() -> bool:
@@ -454,6 +469,7 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
     """Turn a platform smoke runner JSON into hashed Monitor artifacts."""
     from qc_research.lifecycle import normalize_research_lifecycle
 
+    refuse_tainted_source(record)
     run_id = str(record.get("run_id") or record.get("research_run_id") or "")
     if not run_id:
         raise ValueError("smoke record is missing run_id")
@@ -558,6 +574,7 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
     strategy_id = str(record.get("strategy_id") or "")
     if not strategy_id:
         raise ValueError("canonical platform artifact is missing strategy_id")
+    refuse_tainted_source(record)
     lineage = str(record.get("research_lineage_id") or strategy_id)
     run_id = str(
         record.get("research_run_id")
@@ -783,6 +800,7 @@ def normalize_platform_file(path: Path) -> list[tuple[str, dict[str, Any]]]:
     )
 
     payload = load_json_object(path)
+    refuse_tainted_source(payload)
     if is_tlt_duration_momentum_record(payload):
         wrapped = wrap_tlt_duration_momentum_record(payload)
         for kind, artifact in wrapped:

@@ -167,6 +167,26 @@ def test_experiment_manifest_ingests_without_object_store():
     assert "QuantConnect Max Drawdown" in reconstructed["source_label"]
 
 
+def test_canonical_wrap_refuses_holdout_instead_of_overwriting():
+    from qc_research.contracts.kinds import ArtifactContractError
+    from qc_research.platform_ingest import wrap_canonical_platform_record
+
+    record = {
+        "strategy_id": "FutureBondTrend",
+        "holdout_accessed": True,
+        "economic_gate": "NOT_DEFINED",
+        "official_windows": [
+            {"window_id": "W2019", "oos_start": "2019-01-02", "oos_end": "2019-12-31"}
+        ],
+    }
+    with pytest.raises(ArtifactContractError, match="holdout_accessed"):
+        wrap_canonical_platform_record(record)
+    record["holdout_accessed"] = False
+    record["holdout_spec"] = {"accessed": True}
+    with pytest.raises(ArtifactContractError, match="holdout_spec"):
+        wrap_canonical_platform_record(record)
+
+
 def test_synthetic_artifacts_are_rejected_from_ingest():
     from qc_research.object_store_sync import ArtifactSyncError, ingest_artifact
 

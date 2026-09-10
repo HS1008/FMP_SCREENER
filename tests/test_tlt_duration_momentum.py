@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from qc_research.ingest_platform_artifacts import main as ingest_main
 from qc_research.ml_monitor_ui import build_platform_monitor_view, infer_research_labels
 from qc_research.platform_ingest import (
@@ -181,6 +183,19 @@ def test_generic_smoke_wrap_is_unchanged():
     wrapped = wrap_smoke_record(smoke)
     assert [kind for kind, _ in wrapped] == ["run_summary", "oos_aggregate"]
     assert len(wrapped[1][1]["payload"]["windows"]) == 2
+
+
+def test_tlt_wrap_refuses_holdout_instead_of_overwriting():
+    from qc_research.contracts.kinds import ArtifactContractError
+
+    with pytest.raises(ArtifactContractError, match="holdout_accessed"):
+        wrap_tlt_duration_momentum_record(
+            {
+                "strategy_id": STRATEGY_ID,
+                "research_lineage_id": LINEAGE_ID,
+                "holdout_accessed": True,
+            }
+        )
 
 
 def test_generic_canonical_artifact_needs_no_tlt_ui():

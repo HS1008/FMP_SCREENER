@@ -170,8 +170,9 @@ def _merge_windows(record: dict[str, Any]) -> list[dict[str, Any]]:
 
 def wrap_tlt_duration_momentum_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """Turn the official 10-window TLT V0 JSON into hashed Monitor artifacts."""
-    from qc_research.platform_ingest import _hashed_envelope
+    from qc_research.platform_ingest import _hashed_envelope, refuse_tainted_source
 
+    refuse_tainted_source(record)
     if str(record.get("strategy_id") or "") not in {"", STRATEGY_ID}:
         raise ValueError("TLT V0 artifact strategy_id must be {0}".format(STRATEGY_ID))
     if str(record.get("research_lineage_id") or "") not in {"", LINEAGE_ID}:
