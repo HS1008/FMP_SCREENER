@@ -184,3 +184,373 @@ def load_stage2_artifact_payload(engine, research_run_id: str, artifact_type: st
     if rows is None or rows.empty:
         return None
     return as_payload(rows.iloc[0].get("payload_json"))
+
+
+def _execute_one(engine, sql: str, params: dict[str, Any] | None = None):
+    if engine is None:
+        return None
+    try:
+        with engine.connect() as conn:
+            return conn.execute(text(sql), params or {}).mappings().first()
+    except Exception:
+        return None
+
+
+STRATEGIES_SQL = """
+        SELECT
+            strategy_id,
+            name,
+            environment,
+            status,
+            qc_project_id,
+            qc_deployment_id,
+            qc_research_project_id,
+            qc_research_project_name,
+            git_commit,
+            rules_json,
+            created_at,
+            updated_at
+        FROM strategies
+        ORDER BY name
+        """
+
+PLATFORM_STRATEGY_ROWS_SQL = """
+            SELECT DISTINCT ON (strategy_id)
+                strategy_id,
+                strategy_id AS name,
+                'research' AS environment,
+                CASE
+                    WHEN COALESCE(run_status, '') IN ('', 'HUMAN_REVIEW_REQUIRED', 'RESEARCH_COMPLETE')
+                    THEN 'COMPLETE'
+                    ELSE run_status
+                END AS status,
+                NULL::varchar AS qc_project_id,
+                NULL::varchar AS qc_deployment_id,
+                NULL::varchar AS qc_research_project_id,
+                NULL::varchar AS qc_research_project_name,
+                NULL::varchar AS git_commit,
+                NULL::jsonb AS rules_json,
+                first_seen_at AS created_at,
+                last_seen_at AS updated_at,
+                research_mode,
+                research_kind,
+                asset_class
+            FROM research_runs
+            WHERE research_kind = 'platform_research'
+              AND strategy_id IS NOT NULL
+              AND strategy_id <> ''
+            ORDER BY strategy_id, last_seen_at DESC NULLS LAST
+            """
+
+STRATEGY_LABELS_SQL = """
+            SELECT DISTINCT ON (strategy_id)
+                strategy_id,
+                research_mode,
+                research_kind,
+                asset_class,
+                delivery_status,
+                last_seen_at
+            FROM research_runs
+            WHERE strategy_id IS NOT NULL
+              AND strategy_id <> ''
+            ORDER BY strategy_id, last_seen_at DESC NULLS LAST
+            """
+
+STRATEGY_LABELS_FALLBACK_SQL = """
+                SELECT DISTINCT ON (strategy_id)
+                    strategy_id,
+                    research_mode,
+                    research_kind,
+                    asset_class,
+                    last_seen_at
+                FROM research_runs
+                WHERE strategy_id IS NOT NULL
+                  AND strategy_id <> ''
+                ORDER BY strategy_id, last_seen_at DESC NULLS LAST
+                """
+
+STRATEGY_BY_ID_SQL = """
+            SELECT
+                strategy_id,
+                name,
+                environment,
+                status,
+                qc_project_id,
+                qc_deployment_id,
+                qc_research_project_id,
+                qc_research_project_name,
+                git_commit,
+                rules_json,
+                created_at,
+                updated_at
+            FROM strategies
+            WHERE strategy_id = :strategy_id
+            """
+
+LATEST_SNAPSHOT_SQL = """
+        SELECT
+            timestamp,
+            equity,
+            cash,
+            holdings_value,
+            daily_return,
+            total_return,
+            drawdown,
+            status
+        FROM live_snapshots
+        WHERE strategy_id = :strategy_id
+          AND equity > 0
+        ORDER BY timestamp DESC
+        LIMIT 1
+    """
+
+EQUITY_HISTORY_SQL = """
+            SELECT
+                timestamp,
+                equity,
+                cash,
+                holdings_value,
+                total_return,
+                drawdown
+            FROM live_snapshots
+            WHERE strategy_id = :strategy_id
+            ORDER BY timestamp ASC
+        """
+
+LATEST_POSITIONS_SQL = """
+            SELECT
+                symbol,
+                quantity,
+                price,
+                market_value,
+                weight,
+                timestamp
+            FROM positions
+            WHERE strategy_id = :strategy_id
+              AND timestamp = (
+                  SELECT MAX(timestamp)
+                  FROM positions
+                  WHERE strategy_id = :strategy_id
+              )
+            ORDER BY ABS(market_value) DESC
+        """
+
+ORDERS_SQL = """
+            SELECT
+                timestamp,
+                symbol,
+                direction,
+                quantity,
+                order_type,
+                status,
+                fill_price,
+                qc_order_id
+            FROM orders
+            WHERE strategy_id = :strategy_id
+            ORDER BY timestamp DESC NULLS LAST
+            LIMIT 50
+        """
+
+TRADES_SQL = """
+            SELECT
+                symbol,
+                entry_time,
+                exit_time,
+                quantity,
+                entry_price,
+                exit_price,
+                pnl
+            FROM trades
+            WHERE strategy_id = :strategy_id
+            ORDER BY exit_time DESC NULLS LAST
+            LIMIT 50
+        """
+
+BACKTESTS_SQL = """
+        SELECT
+            backtest_id,
+            strategy_id,
+            name,
+            status,
+            created_at,
+            sharpe_ratio,
+            sortino_ratio,
+            alpha,
+            beta,
+            cagr,
+            max_drawdown,
+            net_profit,
+            win_rate,
+            loss_rate,
+            trade_count,
+            psr,
+            research_suite_version,
+            research_run_id,
+            research_experiment_id,
+            research_test_type,
+            research_phase,
+            research_window_id,
+            research_git_commit,
+            research_is_holdout,
+            research_dirty,
+            train_start,
+            train_end,
+            test_start,
+            test_end,
+            parameters_json,
+            objective_name,
+            objective_value,
+            raw_statistics_json,
+            research_guide_json,
+            research_thresholds_json,
+            research_primary_parameter,
+            research_selection_summary_json,
+            research_lineage_id,
+            economic_parameter_count,
+            research_metadata_count,
+            backtest_start,
+            backtest_end,
+            error_message
+        FROM backtests
+        WHERE strategy_id = :strategy_id
+        ORDER BY created_at DESC NULLS LAST
+    """
+
+BACKTESTS_FALLBACK_SQL = """
+                SELECT
+                    backtest_id,
+                    name,
+                    status,
+                    created_at,
+                    sharpe_ratio,
+                    sortino_ratio,
+                    alpha,
+                    beta,
+                    cagr,
+                    max_drawdown,
+                    net_profit,
+                    win_rate,
+                    loss_rate,
+                    trade_count,
+                    psr
+                FROM backtests
+                WHERE strategy_id = :strategy_id
+                ORDER BY created_at DESC NULLS LAST
+            """
+
+BACKTEST_EQUITY_SQL = """
+                SELECT
+                    timestamp,
+                    equity,
+                    period_return,
+                    series_name
+                FROM backtest_equity_points
+                WHERE backtest_id = :backtest_id
+                ORDER BY timestamp ASC
+            """
+
+RESEARCH_RUN_SQL = """
+                    SELECT
+                        research_run_id,
+                        strategy_id,
+                        suite_version,
+                        git_commit,
+                        dirty,
+                        first_seen_at,
+                        last_seen_at,
+                        holdout_accessed,
+                        holdout_access_count,
+                        config_json,
+                        research_lineage_id,
+                        expected_experiment_count,
+                        synced_experiment_count,
+                        completed_count,
+                        failed_count,
+                        skipped_count,
+                        run_status,
+                        holdout_exposure_status,
+                        holdout_start,
+                        holdout_end,
+                        orchestrator_summary_json
+                    FROM research_runs
+                    WHERE research_run_id = :run_id
+                """
+
+
+def enrich_strategy_research_labels(engine, strategies: pd.DataFrame) -> pd.DataFrame:
+    if strategies is None or strategies.empty:
+        return strategies
+    work = strategies.copy()
+    for column in ("research_mode", "research_kind", "asset_class", "delivery_status"):
+        if column not in work.columns:
+            work[column] = None
+    meta = read_sql(engine, STRATEGY_LABELS_SQL)
+    if meta is None or meta.empty:
+        meta = read_sql(engine, STRATEGY_LABELS_FALLBACK_SQL)
+    if meta is None or meta.empty:
+        return work
+    work = work.drop(
+        columns=[
+            col
+            for col in ("research_mode", "research_kind", "asset_class", "delivery_status", "last_seen_at")
+            if col in work.columns
+        ],
+        errors="ignore",
+    )
+    return work.merge(meta, on="strategy_id", how="left")
+
+
+def load_strategies_frame(engine) -> pd.DataFrame:
+    registered = read_sql(engine, STRATEGIES_SQL)
+    extra = read_sql(engine, PLATFORM_STRATEGY_ROWS_SQL)
+    if extra is None or extra.empty:
+        combined = registered
+    elif registered is None or registered.empty:
+        combined = extra
+    else:
+        have = set(registered["strategy_id"].astype(str))
+        add = extra[~extra["strategy_id"].astype(str).isin(have)]
+        combined = registered if add.empty else pd.concat([registered, add], ignore_index=True)
+    return enrich_strategy_research_labels(engine, combined)
+
+
+def load_strategy_row(engine, strategy_id: str):
+    rows = read_sql(engine, STRATEGY_BY_ID_SQL, {"strategy_id": strategy_id})
+    if rows is None or rows.empty:
+        return None
+    return rows.iloc[0]
+
+
+def load_latest_snapshot_row(engine, strategy_id: str):
+    return _execute_one(engine, LATEST_SNAPSHOT_SQL, {"strategy_id": strategy_id})
+
+
+def load_equity_history_frame(engine, strategy_id: str) -> pd.DataFrame:
+    return read_sql(engine, EQUITY_HISTORY_SQL, {"strategy_id": strategy_id})
+
+
+def load_latest_positions_frame(engine, strategy_id: str) -> pd.DataFrame:
+    return read_sql(engine, LATEST_POSITIONS_SQL, {"strategy_id": strategy_id})
+
+
+def load_orders_frame(engine, strategy_id: str) -> pd.DataFrame:
+    return read_sql(engine, ORDERS_SQL, {"strategy_id": strategy_id})
+
+
+def load_trades_frame(engine, strategy_id: str) -> pd.DataFrame:
+    return read_sql(engine, TRADES_SQL, {"strategy_id": strategy_id})
+
+
+def load_backtests_frame(engine, strategy_id: str) -> pd.DataFrame:
+    rows = read_sql(engine, BACKTESTS_SQL, {"strategy_id": strategy_id})
+    if rows is None or rows.empty:
+        return read_sql(engine, BACKTESTS_FALLBACK_SQL, {"strategy_id": strategy_id})
+    return rows
+
+
+def load_backtest_equity_frame(engine, backtest_id: str) -> pd.DataFrame:
+    return read_sql(engine, BACKTEST_EQUITY_SQL, {"backtest_id": backtest_id})
+
+
+def load_research_run_row(engine, run_id: str):
+    return _execute_one(engine, RESEARCH_RUN_SQL, {"run_id": run_id})

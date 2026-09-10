@@ -1224,11 +1224,16 @@ def test_strategy_monitor_shows_research_and_execution_labels():
     monitor = (
         Path(__file__).resolve().parent.parent / "pages" / "strategy_monitor.py"
     ).read_text(encoding="utf-8")
+    queries = (
+        Path(__file__).resolve().parent.parent / "qc_research" / "read_models" / "monitor_queries.py"
+    ).read_text(encoding="utf-8")
     assert "Research Project:" in monitor
     assert "Execution Project:" in monitor
     assert "qc_research_project_name" in monitor
     assert "qc_research_project_id" in monitor
-    assert "orchestrator_summary_json" in monitor
+    assert "orchestrator_summary_json" in queries
+    assert "load_research_run" in monitor
+    assert "from qc_research.read_models.monitor_queries import" in monitor
     ui = (
         Path(__file__).resolve().parent.parent / "qc_research" / "monitor_ui.py"
     ).read_text(encoding="utf-8")

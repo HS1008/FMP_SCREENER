@@ -8,6 +8,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_live_monitor_loaders_are_read_only_and_engine_optional():
+    from qc_research.read_models.monitor_queries import (
+        BACKTESTS_SQL,
+        STRATEGIES_SQL,
+        load_backtests_frame,
+        load_equity_history_frame,
+        load_latest_snapshot_row,
+        load_research_run_row,
+        load_strategies_frame,
+    )
+
+    assert "FROM strategies" in STRATEGIES_SQL
+    assert "FROM backtests" in BACKTESTS_SQL
+    assert "INSERT" not in STRATEGIES_SQL.upper()
+    assert load_strategies_frame(None).empty
+    assert load_backtests_frame(None, "SPYTrend").empty
+    assert load_equity_history_frame(None, "SPYTrend").empty
+    assert load_latest_snapshot_row(None, "SPYTrend") is None
+    assert load_research_run_row(None, "run") is None
+
+
 def test_monitor_loaders_reexport_from_ml_monitor_ui():
     from qc_research.ml_monitor_ui import (
         PLATFORM_RUN_IDS_SQL,
@@ -72,6 +93,10 @@ def test_streamlit_pages_do_not_import_ingest_sql():
     ui = (ROOT / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
     assert "from qc_research.read_models.monitor_queries import" in ui
     assert "INSERT INTO" not in ui
+    assert "from qc_research.read_models.monitor_queries import" in monitor
+    assert "INSERT INTO" not in monitor
+    assert "def load_strategies():" in monitor
+    assert "def load_backtests(" in monitor
     store = (ROOT / "qc_research" / "object_store_sync.py").read_text(encoding="utf-8")
     assert "from qc_research.ingest.stage2_sql import" in store
     assert "def ingest_artifact" in store
