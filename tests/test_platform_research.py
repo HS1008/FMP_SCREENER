@@ -212,6 +212,29 @@ def test_canonical_wrap_refuses_holdout_instead_of_overwriting():
         wrap_canonical_platform_record(record)
 
 
+def test_canonical_wrap_refuses_inventing_official_run_id():
+    from qc_research.platform_ingest import wrap_canonical_platform_record
+
+    windows = [
+        {"window_id": "W2019", "oos_start": "2019-01-02", "oos_end": "2019-12-31"}
+    ]
+    future = {
+        "strategy_id": "FutureBondTrend",
+        "research_status": "COMPLETE",
+        "economic_gate": "NOT_DEFINED",
+        "official_windows": windows,
+        "provenance": "REAL_QC",
+        "holdout_locked": True,
+    }
+    wrapped = wrap_canonical_platform_record(future)
+    assert wrapped[0][1]["research_run_id"] == "PLATFORM_FutureBondTrend_V0"
+    for strategy_id in ("TLTDurationMomentum", "SPYTrend", "CrossSectionalFactorML"):
+        official = dict(future)
+        official["strategy_id"] = strategy_id
+        with pytest.raises(ValueError, match="missing research_run_id"):
+            wrap_canonical_platform_record(official)
+
+
 def test_synthetic_artifacts_are_rejected_from_ingest():
     from qc_research.object_store_sync import ArtifactSyncError, ingest_artifact
 
