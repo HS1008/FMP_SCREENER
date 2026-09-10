@@ -6,6 +6,7 @@ psql pattern as Market Intelligence read-only tests. Never prints URLs.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import uuid
@@ -35,6 +36,42 @@ def test_verify_job_exits_3_when_url_unset(monkeypatch):
     from jobs.verify_dashboard_readonly import run
 
     assert run() == 3
+
+
+def test_identity_script_fails_closed_without_url_or_fallback():
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": str(ROOT),
+            "FMP_IDENTITY_ENV_ONLY": "1",
+        },
+        check=False,
+    )
+    assert result.returncode == 3
+    assert "DASHBOARD_READONLY_URL required" in result.stdout
+    assert "postgresql" not in result.stdout.lower()
+
+
+def test_identity_script_allows_explicit_writer_fallback():
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": str(ROOT),
+            "FMP_IDENTITY_ENV_ONLY": "1",
+            "DASHBOARD_ALLOW_WRITER_FALLBACK": "1",
+        },
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "skipped_explicit_writer_fallback" in result.stdout
 
 
 def _provision_dashboard_role(admin_url: str, role: str, password: str | None, tmp_dir: Path) -> subprocess.CompletedProcess:

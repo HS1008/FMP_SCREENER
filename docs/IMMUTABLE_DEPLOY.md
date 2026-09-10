@@ -33,7 +33,7 @@ The Streamlit unit must mount `ReadWritePaths=/var/lib/fmp /var/log/fmp`. See `d
 
 ## Streamlit identity
 
-`DASHBOARD_READONLY_URL` is required for Strategy Monitor. It is **not** `mi_readonly` (that role cannot SELECT `strategies` / `backtests`). If the URL is unset, the page fails closed unless `DASHBOARD_ALLOW_WRITER_FALLBACK=1` is set as a temporary host escape. Deploy runs `python -m jobs.verify_dashboard_readonly` after migrations (exit 2 fails deploy; exit 3 means unset / skip).
+`DASHBOARD_READONLY_URL` is required for Strategy Monitor. It is **not** `mi_readonly` (that role cannot SELECT `strategies` / `backtests`). If the URL is unset, the page fails closed unless `DASHBOARD_ALLOW_WRITER_FALLBACK=1` is set as a temporary host escape. Live deploy and `deploy_release.sh` run `scripts/verify_dashboard_identity.sh` after migrations: exit 2 fails deploy; exit 3 also fails unless the writer escape is explicit. The script sources `/etc/fmp/fmp-dashboard.env` and `/root/FMP_SCREENER/.env` without printing values.
 
 ## Rollback
 

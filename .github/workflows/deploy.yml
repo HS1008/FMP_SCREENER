@@ -79,16 +79,8 @@ jobs:
             echo "Applying database migrations..."
             python -m jobs.apply_migrations
 
-            echo "Read-only identity verify (skip if DASHBOARD_READONLY_URL unset)"
-            set +e
-            python -m jobs.verify_dashboard_readonly
-            ro_rc=$?
-            set -e
-            if [ "$ro_rc" = "2" ]; then
-              echo "dashboard_readonly_verify failed"
-              exit 2
-            fi
-            echo "dashboard_readonly_verify_rc=$ro_rc"
+            echo "Verifying Streamlit database identity..."
+            bash scripts/verify_dashboard_identity.sh
 
             echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
             bash scripts/install_backtest_sync_cron.sh /root/FMP_SCREENER

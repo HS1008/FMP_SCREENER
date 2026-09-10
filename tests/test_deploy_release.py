@@ -17,6 +17,9 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "git reset --hard" not in script
     deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     assert "git pull --ff-only origin main" in deploy
+    assert "scripts/verify_dashboard_identity.sh" in deploy
+    assert "scripts/verify_dashboard_identity.sh" in script
+    assert "dashboard_readonly_verify_rc" not in deploy
     assert (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").is_file()
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
     assert "/var/lib/fmp/streamlit" in docs

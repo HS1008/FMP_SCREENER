@@ -441,18 +441,7 @@ phase_verify() {
   systemctl is-active --quiet fmp-dashboard
   echo "dashboard_active=yes"
   python -m jobs.verify_mi_dashboard --json
-  set +e
-  python -m jobs.verify_dashboard_readonly
-  readonly_rc=$?
-  set -e
-  if [ "$readonly_rc" = "0" ]; then
-    echo "dashboard_readonly_verify=ok"
-  elif [ "$readonly_rc" = "3" ]; then
-    echo "dashboard_readonly_verify=skipped"
-  else
-    echo "dashboard_readonly_verify=failed"
-    exit 2
-  fi
+  bash "$ROOT/scripts/verify_dashboard_identity.sh"
   echo "verify complete"
 }
 
