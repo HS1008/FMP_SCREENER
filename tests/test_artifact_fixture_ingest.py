@@ -6,7 +6,7 @@ import pytest
 
 from qc_research.contracts.fixtures import CONSUMER_FIXTURES, stage1_run_summary, stage2_run_manifest
 from qc_research.contracts.hashing import payload_for_hash, sha256_payload, verify_artifact_sha256
-from qc_research.contracts.kinds import PRICE_TECH_V1_FEATURE_ORDER, reject_synthetic_official
+from qc_research.contracts.kinds import PRICE_TECH_V1_FEATURE_ORDER, reject_holdout_access, reject_synthetic_official
 from qc_research.object_store_sync import ArtifactSyncError, validate_artifact, verify_hash
 
 
@@ -40,6 +40,25 @@ def test_synthetic_official_is_rejected():
     payload = {"provenance": "SYNTHETIC_TEST_ONLY", "schema_version": "stage2_ml_v1"}
     with pytest.raises((ArtifactSyncError, ValueError), match="SYNTHETIC_TEST_ONLY"):
         reject_synthetic_official(payload)
+
+
+def test_holdout_access_is_rejected_at_ingest():
+    payload = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_X",
+        "run_status": "COMPLETE",
+        "holdout_accessed": True,
+    }
+    with pytest.raises((ArtifactSyncError, ValueError), match="holdout_accessed"):
+        reject_holdout_access(payload)
+    from qc_research.object_store_sync import ingest_artifact
+
+    class _Conn:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("holdout payload must not reach SQL")
+
+    with pytest.raises(ArtifactSyncError, match="holdout"):
+        ingest_artifact(_Conn(), key="bad", kind="run_summary", payload=payload)
 
 
 def test_fixtures_ingest_against_disposable_postgres(pg_engine):

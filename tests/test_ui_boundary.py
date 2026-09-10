@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from qc_research.ui_boundary import provider_fetch_allowed, refuse_provider_fetch
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_provider_fetch_denied_by_default(monkeypatch):
@@ -30,6 +34,11 @@ def test_eia_watchlist_uses_cache_only_when_fetch_denied(monkeypatch):
     monkeypatch.setattr(watchlist.eia_wholesale, "load_cached_or_fetch_eia_data", _fail)
     power, gas, sample = watchlist.load_market_data(force_refresh=True)
     assert power.empty and gas.empty and sample is False
+
+
+def test_power_producer_strips_writer_after_dotenv():
+    watchlist = (ROOT / "power_producer_watchlist.py").read_text(encoding="utf-8")
+    assert "strip_writer_database_env" in watchlist
 
 
 def test_provider_fetch_opt_in(monkeypatch):

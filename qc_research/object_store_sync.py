@@ -19,6 +19,7 @@ from qc_research.contracts.kinds import (
     PLATFORM_KINDS,
     PLATFORM_SCHEMA_VERSIONS,
     SCHEMA_VERSION,
+    reject_holdout_access,
     reject_synthetic_official,
 )
 
@@ -232,6 +233,7 @@ def ingest_artifact(
     validate_artifact(kind, payload)
     try:
         reject_synthetic_official(payload)
+        reject_holdout_access(payload)
     except ValueError as exc:
         raise ArtifactSyncError(str(exc)) from exc
     sha = verify_hash(payload, expected_hash)

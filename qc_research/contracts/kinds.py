@@ -65,6 +65,9 @@ def reject_synthetic_official(payload: dict[str, Any]) -> None:
 def reject_holdout_access(payload: dict[str, Any]) -> None:
     if payload.get("holdout_accessed") is True:
         raise ArtifactContractError("Official non-holdout ingest refuses holdout_accessed=true")
+    spec = payload.get("holdout_spec")
+    if isinstance(spec, dict) and spec.get("accessed") is True:
+        raise ArtifactContractError("Official non-holdout ingest refuses holdout_spec.accessed=true")
     if str(payload.get("economic_gate") or "NOT_DEFINED") not in {"NOT_DEFINED", None, ""}:
         if payload.get("economic_gate") in {"PASS", "WATCH", "FAIL"}:
             raise ArtifactContractError("economic_gate PASS/WATCH/FAIL is not a producer-defined threshold")

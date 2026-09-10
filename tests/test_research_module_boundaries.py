@@ -58,6 +58,17 @@ def test_streamlit_pages_do_not_import_ingest_sql():
     assert "qc_research.ingest" not in dashboard
     assert "writer_db" not in dashboard
     assert "strip_writer_database_env" in dashboard
+    forbidden = (
+        "writer_db",
+        "object_store_sync",
+        "qc_research.ingest",
+        "market_intelligence.writer_db",
+        "from market_intelligence.ideas import",
+    )
+    for path in (ROOT / "pages").glob("*.py"):
+        text = path.read_text(encoding="utf-8")
+        for token in forbidden:
+            assert token not in text, "{0} imports {1}".format(path.name, token)
     ui = (ROOT / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
     assert "from qc_research.read_models.monitor_queries import" in ui
     assert "INSERT INTO" not in ui

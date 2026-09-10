@@ -85,6 +85,9 @@ def load_watchlist() -> pd.DataFrame:
 
 def _load_api_key() -> str:
     load_dotenv(config.PROJECT_ROOT / ".env")
+    from db.dashboard_engine import strip_writer_database_env
+
+    strip_writer_database_env()
     key = (os.getenv("FMP_API_KEY") or "").strip()
     if not key:
         st.warning(
@@ -97,6 +100,9 @@ def _load_api_key() -> str:
 @st.cache_data(ttl=900, show_spinner="Fetching FMP prices…")
 def fetch_price_history(ticker: str, date_from: date, date_to: date) -> pd.Series:
     load_dotenv(config.PROJECT_ROOT / ".env")
+    from db.dashboard_engine import strip_writer_database_env
+
+    strip_writer_database_env()
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
     if not api_key:
         return pd.Series(dtype=float, name=ticker)

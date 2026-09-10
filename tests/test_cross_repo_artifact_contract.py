@@ -69,3 +69,28 @@ def test_sanitized_fixtures_share_sha256():
         assert consumer["holdout_accessed"] is False
         assert producer["holdout_accessed"] is False
         assert consumer.get("economic_gate", "NOT_DEFINED") in {None, "NOT_DEFINED"} or consumer_name == "stage1_run_summary"
+
+
+@pytest.mark.skipif(QS_ROOT is None, reason="quant-strategies sibling repo not present")
+def test_official_fixtures_include_producer_required_fields():
+    sys.path.insert(0, str(QS_ROOT))
+    from research.stage2.artifact_contract import REQUIRED_BY_KIND
+
+    from qc_research.contracts.kinds import KIND_REQUIRED_FIELDS
+
+    mapping = {
+        "run_manifest": "run_manifest",
+        "run_summary": "run_summary",
+        "training_summary": "training_summary",
+        "model_metadata": "model_metadata",
+        "oos_diagnostics": "oos_diagnostics",
+        "oos_aggregate": "oos_aggregate",
+        "nonholdout_assessment": "nonholdout_assessment",
+    }
+    for kind, producer_kind in mapping.items():
+        consumer_required = set(KIND_REQUIRED_FIELDS[kind])
+        producer_required = set(REQUIRED_BY_KIND[producer_kind])
+        assert consumer_required <= producer_required, kind
+        payload = CONSUMER_FIXTURES[kind]()
+        missing = [field for field in producer_required if field not in payload]
+        assert missing == [], "{0} missing producer fields: {1}".format(kind, missing)
