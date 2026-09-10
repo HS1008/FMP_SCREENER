@@ -1480,6 +1480,7 @@ def sync_backtests(
     backtests = result.get("backtests", []) or []
     detail_reads = 0
     chart_reads = 0
+    research_failures: list[str] = []
 
     with engine.begin() as conn:
         existing = existing_backtest_map(conn, strategy_id)
@@ -1573,12 +1574,13 @@ def sync_backtests(
                         f"{name} ({backtest_id}): {exc}"
                     )
                     if stage1_detail_failure_is_blocking(name, backtest):
-                        raise ResearchStateSyncError(
+                        research_failures.append(
                             "Stage 1 detail read failed for {0} ({1}): {2}".format(
                                 name, backtest_id, exc
                             )
-                        ) from exc
-                    conn.execute(text(LEGACY_UPSERT_SQL), base)
+                        )
+                    else:
+                        conn.execute(text(LEGACY_UPSERT_SQL), base)
             elif is_stage1_name(name) and row_existing and row_existing.get("research_run_id"):
                 merged = merge_stage1_lightweight_metrics(row_existing, metrics)
                 conn.execute(text(STAGE1_LIGHTWEIGHT_UPSERT_SQL), {**base, **merged})
@@ -1633,11 +1635,23 @@ def sync_backtests(
                             "Equity curve not available yet for "
                             f"{name} ({backtest_id})"
                         )
+                        if stage1_chart_failure_is_blocking(name, backtest):
+                            research_failures.append(
+                                "Equity curve missing for {0} ({1})".format(
+                                    name, backtest_id
+                                )
+                            )
                 except Exception as exc:
                     print(
                         "Equity chart sync failed for "
                         f"{name} ({backtest_id}): {exc}"
                     )
+                    if stage1_chart_failure_is_blocking(name, backtest):
+                        research_failures.append(
+                            "Equity chart sync failed for {0} ({1}): {2}".format(
+                                name, backtest_id, exc
+                            )
+                        )
 
         try:
             audit_holdout_exposures(conn, strategy_id)
@@ -1652,6 +1666,8 @@ def sync_backtests(
                 "Research run progress refresh failed for {0}: {1}".format(strategy_id, exc)
             ) from exc
 
+    if research_failures:
+        raise ResearchStateSyncError("; ".join(research_failures))
     print(
         f"Backtest sync: {len(backtests)} listed, "
         f"{detail_reads} detail reads, {chart_reads} chart reads"
@@ -1738,7 +1754,7 @@ def parse_args(argv=None):
 
 
 class ResearchStateSyncError(RuntimeError):
-    """Holdout audit, progress refresh, or a completed Stage 1 detail read failed."""
+    """Holdout audit, progress refresh, or finished Stage 1 evidence failed."""
 
 
 def stage1_detail_failure_is_blocking(name, backtest) -> bool:
@@ -1747,6 +1763,16 @@ def stage1_detail_failure_is_blocking(name, backtest) -> bool:
         return False
     status = str((backtest or {}).get("status") or "").lower()
     return "completed" in status or is_failed_status(status, backtest)
+
+
+def stage1_chart_failure_is_blocking(name, backtest) -> bool:
+    """Completed Stage 1 rows must persist an equity curve once we request one."""
+    if not is_stage1_name(name):
+        return False
+    status = str((backtest or {}).get("status") or "").lower()
+    if is_failed_status(status, backtest):
+        return False
+    return "completed" in status
 
 
 def migration_failure_exit_code(migration_error, sync_backtests_requested: bool):
