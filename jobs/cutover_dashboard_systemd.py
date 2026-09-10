@@ -45,7 +45,7 @@ RestartSec=5
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/fmp /var/log/fmp /opt/fmp/current/outputs
+ReadWritePaths=/var/lib/fmp /var/log/fmp
 
 [Install]
 WantedBy=multi-user.target

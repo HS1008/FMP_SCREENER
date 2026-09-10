@@ -138,6 +138,12 @@ def test_apply_with_allow_flag_still_does_not_mutate_systemd(tmp_path):
     assert "FMP_SCREENER" not in exec_start
     assert "WorkingDirectory=/opt/fmp/current" in PROPOSED_UNIT
     assert "Environment=FMP_STREAMLIT_READONLY=1" in PROPOSED_UNIT
+    rw = [line for line in PROPOSED_UNIT.splitlines() if line.startswith("ReadWritePaths=")][0]
+    assert rw == "ReadWritePaths=/var/lib/fmp /var/log/fmp"
+    assert "/opt/fmp/current/outputs" not in PROPOSED_UNIT
+    example = (ROOT / "deploy" / "fmp-dashboard.service.example").read_text(encoding="utf-8")
+    assert "ReadWritePaths=/var/lib/fmp /var/log/fmp" in example
+    assert "__ROOT__/outputs" not in example.split("ReadWritePaths=", 1)[1].splitlines()[0]
 
 
 def test_missing_immutable_current_is_recorded_not_a_deploy_failure(tmp_path):
