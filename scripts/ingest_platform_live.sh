@@ -72,8 +72,7 @@ fi
 DELIVERY_REPORT="$ROOT/delivery/report.json"
 if [ -f "$DELIVERY_REPORT" ]; then
   echo "Recording research-delivery facts (remote status / fallback / artifact hashes) in PostgreSQL..."
-  python -m qc_research.delivery_visibility record --report "$DELIVERY_REPORT" \
-    || echo "WARN: delivery report could not be recorded; ingest result above is unaffected"
+  python -m qc_research.delivery_visibility record --report "$DELIVERY_REPORT" --require-postgres
 else
   echo "No delivery report present (direct host invocation); delivery facts not recorded."
 fi

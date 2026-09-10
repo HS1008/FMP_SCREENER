@@ -146,6 +146,10 @@ def test_workflow_and_live_script_wire_explicit_ref_and_report():
     assert "full 40-character git SHA" in WORKFLOW
     assert "qc_research.contracts.digests" in LIVE_SCRIPT
     assert "qc_research.delivery_visibility record" in LIVE_SCRIPT
+    assert "--require-postgres" in LIVE_SCRIPT
+    record_block = LIVE_SCRIPT.split("delivery_visibility record", 1)[1]
+    assert "|| echo" not in record_block.split("else", 1)[0]
+    assert "WARN:" not in LIVE_SCRIPT
     # The fallback is preserved: committed artifacts still ingest when remote is blocked.
     assert 'TARGET="$LOCAL_ROOT"' in WORKFLOW and 'TARGET="$LOCAL_CANDIDATE"' in WORKFLOW
     # Triggers unchanged: no push trigger was introduced.
@@ -228,3 +232,14 @@ def test_delivery_facts_recorded_in_market_intelligence_tables(mi_db, tmp_path):
     with mi_db.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_ingestion_runs WHERE source_id=:s"), {"s": dv.SOURCE_ID}).scalar() == 2
         assert conn.execute(text("SELECT transport_status FROM mi_data_freshness WHERE source_id=:s"), {"s": dv.SOURCE_ID}).scalar() == "OK"
+
+
+def test_record_require_postgres_fails_closed_without_writer(monkeypatch, tmp_path):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    missing = tmp_path / "missing.json"
+    assert dv.main(["record", "--report", str(missing), "--require-postgres"]) == 2
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"event": "schedule"}), encoding="utf-8")
+    assert dv.main(["record", "--report", str(report), "--require-postgres"]) == 2
+    assert dv.main(["record", "--report", str(missing)]) == 0
