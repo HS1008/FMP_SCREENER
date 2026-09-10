@@ -28,8 +28,11 @@ def payload_for_hash(payload: dict[str, Any]) -> dict[str, Any]:
 
 def verify_artifact_sha256(payload: dict[str, Any], expected: str | None) -> str:
     actual = sha256_payload(payload_for_hash(payload) if isinstance(payload, dict) else payload)
-    if expected and actual != str(expected).strip():
+    claimed = str(expected or "").strip()
+    if not claimed and isinstance(payload, dict):
+        claimed = str(payload.get("artifact_sha256") or "").strip()
+    if claimed and actual != claimed:
         raise ArtifactHashError(
-            "SHA-256 mismatch: expected {0}, computed {1}".format(expected, actual)
+            "SHA-256 mismatch: expected {0}, computed {1}".format(claimed, actual)
         )
     return actual

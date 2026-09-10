@@ -89,9 +89,12 @@ def validate_artifact(kind: str, payload: dict[str, Any] | None) -> dict[str, An
 def verify_hash(payload: dict[str, Any], expected: str | None) -> str:
     body = payload_for_hash(payload) if isinstance(payload, dict) else payload
     actual = sha256_payload(body)
-    if expected and actual != str(expected).strip():
+    claimed = str(expected or "").strip()
+    if not claimed and isinstance(payload, dict):
+        claimed = str(payload.get("artifact_sha256") or "").strip()
+    if claimed and actual != claimed:
         raise ArtifactSyncError(
-            "SHA-256 mismatch: expected {0}, computed {1}".format(expected, actual)
+            "SHA-256 mismatch: expected {0}, computed {1}".format(claimed, actual)
         )
     return actual
 
