@@ -16,6 +16,12 @@ RELEASE = (ROOT / "scripts" / "deploy_release.sh").read_text(encoding="utf-8")
 STAGE1_VERIFY = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(
     encoding="utf-8"
 )
+DEPLOY = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+LIVE_INGEST = (ROOT / "scripts" / "ingest_platform_live.sh").read_text(encoding="utf-8")
+UNSET_STREAMLIT = (
+    "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH "
+    "DASHBOARD_ALLOW_WRITER_FALLBACK"
+)
 
 
 def test_cron_sources_writer_env_before_python_and_skips_dashboard_env():
@@ -58,6 +64,31 @@ def test_deploy_release_sources_writer_env_before_preflight_migrate():
     assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in preflight
     assert "fmp-dashboard.env" not in preflight
     assert "/root/FMP_SCREENER/.env" not in preflight
+
+
+def test_writer_jobs_unset_streamlit_identity_after_sourcing_checkout_env():
+    immutable = DEPLOY.split("Applying migrations from the immutable release tree", 1)[1]
+    immutable = immutable.split("Verifying Streamlit identity from immutable release", 1)[0]
+    assert UNSET_STREAMLIT in immutable
+    assert immutable.index("/root/FMP_SCREENER/.env") < immutable.index(UNSET_STREAMLIT)
+    assert immutable.index(UNSET_STREAMLIT) < immutable.index("python -m jobs.apply_migrations")
+
+    persist = DEPLOY.split("Persisting sanitized deploy identity", 1)[1]
+    persist = persist.split("Restarting Streamlit", 1)[0]
+    assert UNSET_STREAMLIT in persist
+    assert persist.index("/root/FMP_SCREENER/.env") < persist.index(UNSET_STREAMLIT)
+    assert persist.index(UNSET_STREAMLIT) < persist.index("jobs.record_deploy_identity_db")
+
+    stage1_persist = STAGE1_VERIFY.split("Persisting sanitized Stage 1 live identity", 1)[1]
+    assert UNSET_STREAMLIT in stage1_persist
+    assert stage1_persist.index("/root/FMP_SCREENER/.env") < stage1_persist.index(UNSET_STREAMLIT)
+    assert stage1_persist.index(UNSET_STREAMLIT) < stage1_persist.index(
+        "jobs.record_research_live_identity_db"
+    )
+
+    sourced = LIVE_INGEST.split('source "$DROPLET_ENV"', 1)[1]
+    sourced = sourced.split("python -m qc_research.ingest_platform_artifacts", 1)[0]
+    assert UNSET_STREAMLIT in sourced
 
 
 def test_sync_quantconnect_uses_writer_dotenv_helper():

@@ -91,6 +91,10 @@ def test_deploy_persists_identity_in_writer_subshell_before_dashboard_env():
     assert "/etc/fmp/fmp-writer.env" in block
     assert "/root/FMP_SCREENER/.env" in block
     assert block.index("/etc/fmp/fmp-writer.env") < block.index("/root/FMP_SCREENER/.env")
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in block
+    assert block.index("/root/FMP_SCREENER/.env") < block.index(
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
+    )
     assert "/etc/fmp/fmp-dashboard.env" not in block
     assert "(" in block and ")" in block
     assert "--from /var/lib/fmp/deploy/current.json" in block

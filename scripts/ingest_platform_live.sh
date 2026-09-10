@@ -36,6 +36,7 @@ set -a
 # shellcheck disable=SC1090
 source "$DROPLET_ENV"
 set +a
+unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
 
 if [ -z "${DATABASE_URL:-}" ] && { [ -z "${DB_HOST:-}" ] || [ -z "${DB_NAME:-}" ] || [ -z "${DB_USER:-}" ]; }; then
   echo "FAIL: sourced env has neither DATABASE_URL nor DB_HOST/DB_NAME/DB_USER"

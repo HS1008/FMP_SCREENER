@@ -132,6 +132,14 @@ def test_release_script_is_additive_and_supports_rollback():
     assert deploy.index("Applying migrations from the immutable release tree") < deploy.index(
         "Verifying Streamlit identity from immutable release checkout"
     )
+    immutable_migrate = deploy.split("Applying migrations from the immutable release tree", 1)[1]
+    immutable_migrate = immutable_migrate.split(
+        "Verifying Streamlit identity from immutable release checkout", 1
+    )[0]
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in immutable_migrate
+    assert immutable_migrate.index("/root/FMP_SCREENER/.env") < immutable_migrate.index(
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
+    )
     assert "official CSFML V1 identity refused" in deploy
     assert "qc_research.verify_tlt_monitor --live" in deploy
     assert "--allow-missing" in deploy
@@ -186,6 +194,10 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "/etc/fmp/fmp-writer.env" in persist
     assert "/root/FMP_SCREENER/.env" in persist
     assert persist.index("/etc/fmp/fmp-writer.env") < persist.index("/root/FMP_SCREENER/.env")
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in persist
+    assert persist.index("/root/FMP_SCREENER/.env") < persist.index(
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
+    )
     assert "/etc/fmp/fmp-dashboard.env" not in persist
     assert "--apply" not in deploy
     assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy

@@ -257,6 +257,10 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     persist = workflow.split("Persisting sanitized Stage 1 live identity", 1)[1]
     assert "/etc/fmp/fmp-writer.env" in persist
     assert "/root/FMP_SCREENER/.env" in persist
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in persist
+    assert persist.index("/root/FMP_SCREENER/.env") < persist.index(
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
+    )
     assert persist.index("/etc/fmp/fmp-writer.env") < persist.index("/root/FMP_SCREENER/.env")
     assert "/etc/fmp/fmp-dashboard.env" not in persist
     assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in persist

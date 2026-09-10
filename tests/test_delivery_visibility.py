@@ -166,6 +166,12 @@ def test_workflow_and_live_script_wire_explicit_ref_and_report():
     assert LIVE_SCRIPT.index("DROPLET_ENV=/etc/fmp/fmp-writer.env") < LIVE_SCRIPT.index(
         "DROPLET_ENV=/root/FMP_SCREENER/.env"
     )
+    assert LIVE_SCRIPT.index('source "$DROPLET_ENV"') < LIVE_SCRIPT.index(
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
+    )
+    assert LIVE_SCRIPT.index(
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
+    ) < LIVE_SCRIPT.index("python -m qc_research.ingest_platform_artifacts")
     assert "CODE_ROOT=" in LIVE_SCRIPT
     assert 'IMMUTABLE_ROOT="/opt/fmp/current"' in LIVE_SCRIPT
     assert 'GIT_CHECKOUT="/root/FMP_SCREENER"' in LIVE_SCRIPT

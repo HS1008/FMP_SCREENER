@@ -195,6 +195,7 @@ jobs:
                 . /root/FMP_SCREENER/.env
               fi
               set +a
+              unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
               python -m jobs.record_research_live_identity_db \
                 --stage1 /var/lib/fmp/deploy/stage1_live.json
             ) || LIVE_DB_RC=$?
