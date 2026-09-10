@@ -26,11 +26,16 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "ssh-keyscan -t" not in deploy
     assert "DO_SSH_KNOWN_HOSTS" in deploy
     assert "StrictHostKeyChecking=yes" in deploy
-    assert "bash scripts/deploy_host.sh --sha" in deploy
+    assert "bash -s -- --sha" in deploy
+    assert "flock -n" in host
+    assert "concurrency:" in deploy
+    assert "cancel-in-progress: false" in deploy
+    assert "git pull --ff-only origin main" not in deploy
+    assert "git pull --ff-only origin main" not in host
     assert "python -m jobs.apply_migrations" not in deploy
     assert "systemctl restart fmp-dashboard" not in deploy
     assert deploy.count("python -m jobs.apply_migrations") == 0
-    assert host.count("python -m jobs.apply_migrations") == 1
+    assert host.count("-m jobs.apply_migrations") == 1
     assert "Applying database migrations ONCE" in host
     assert "MIGRATIONS_BACKFILL_SHA256" not in host
     assert "MERGING TO MAIN IS A PRODUCTION DEPLOY EVENT" in deploy
@@ -38,14 +43,16 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
 
 def test_deploy_host_migrates_once_from_staged_sha():
     host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
-    assert "--skip-migrate" in host
-    assert host.index("deploy_release.sh") < host.index("python -m jobs.apply_migrations")
+    assert "activate=skipped" in host
+    assert "checkout --detach" in host
+    assert host.index("Staging immutable release") < host.index("-m jobs.apply_migrations")
     assert host.index("Applying database migrations ONCE") < host.index(
-        "python -m jobs.apply_migrations"
+        "-m jobs.apply_migrations"
     )
-    assert host.index("python -m jobs.apply_migrations") < host.index(
+    assert host.index("-m jobs.apply_migrations") < host.index(
         "provision_dashboard_readonly.sh"
     )
+    assert "no activate" in host
     assert "/etc/fmp/secrets/dashboard_readonly.pw" in host
     assert "dashboard_readonly_pw=migrated_to_etc_fmp_secrets" in host
     assert "refusing to mutate the shared checkout venv first" in host
@@ -109,3 +116,6 @@ def test_release_docs_describe_auto_deploy():
     assert "ubuntu-latest" in docs
     assert "self-hosted deploy runner" not in docs.lower() or "not self-hosted" in docs.lower()
     assert "DO_SSH_KNOWN_HOSTS" in docs
+    assert "prepare → validate → activate" in docs or "prepare/validate/activate" in docs.lower() or "Prepare:" in docs
+    assert "last_verified.sha" in docs
+    assert "deploy_release.sh --rollback" in docs

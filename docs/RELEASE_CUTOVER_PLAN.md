@@ -32,13 +32,21 @@ Do not merge platform-MI into this line. Do not launch QuantConnect.
 
 1. GitHub Actions checks out the merged SHA.
 2. Configures pinned SSH trust (`DO_SSH_KEY`, `DO_SSH_KNOWN_HOSTS`).
-3. SSHes to the droplet and runs `scripts/deploy_host.sh --sha <merged_sha>`.
-4. Host script: fetch/pull `/root/FMP_SCREENER` to that SHA, stage
-   `/opt/fmp/releases/<sha>`, install the **staged** venv, apply DB migrations
-   **once** from the staged tree using the trusted checksum baseline, provision
-   / verify the dashboard read-only identity, query-back official research
-   rows, record sanitized deploy identity, restart the **existing**
-   `fmp-dashboard` unit, post-restart verify.
+3. SSHes to the droplet and pipes `scripts/deploy_host.sh --sha <merged_sha>`
+   (workflow concurrency `fmp-deploy-main`, `cancel-in-progress: false`).
+4. Host script takes `/var/lock/fmp-deploy.lock` and runs
+   prepare → validate → activate:
+   - **Prepare:** stage `/opt/fmp/releases/<sha>` and its venv. Does **not**
+     pull `main`, flip `current`/`previous`, or provision.
+   - **Validate:** migrate once from the staged interpreter/code root,
+     provision/verify read-only identity, query-back official research rows,
+     persist sanitized deploy identity, dry-run cutover readiness.
+   - **Activate:** checkout the existing unit tree to the **requested SHA**
+     (not `git pull origin main`), restart `fmp-dashboard`, observe the live
+     PID, write `/var/lib/fmp/deploy/host_audit.json`, require running-service
+     identity. SHA equality is enforced only when the process uses
+     `/opt/fmp/current`. On restart/verify/audit failure the checkout is
+     restored to the pre-activate SHA.
 
 systemd cutover to `/opt/fmp/current` is **not** performed automatically.
 `cutover --apply` still refuses to install the live unit.
@@ -133,3 +141,41 @@ After the auto-deploy restart of the existing unit:
   historical integrity CANNOT_RULE_OUT, engineering IMPLEMENTED/TESTED,
   rerun NOT AUTHORIZED, economic_gate NOT_DEFINED, promotion
   HUMAN_REVIEW_REQUIRED, holdout LOCKED)
+- `/var/lib/fmp/deploy/last_verified.sha` equals the requested SHA
+
+## 9. Final activation and rollback (human only — this agent does not run them)
+
+Everyday auto-deploy after #29 merge already restarts the **existing**
+`/root/FMP_SCREENER` unit. The following is the later cutover to the staged
+layout. Do not run these from Cursor.
+
+### Activate `/opt/fmp/current` (after a successful staged SHA)
+
+1. Confirm `/opt/fmp/releases/<sha>` exists, `venv/bin/streamlit` is
+   executable, and `/var/lib/fmp/deploy/last_verified.sha` equals `<sha>`.
+2. Confirm `/etc/fmp/fmp-dashboard.env` has `EnvironmentFile=` (no `-`) and
+   `FMP_STREAMLIT_READONLY=1`.
+3. `jobs.cutover_dashboard_systemd --dry-run` must report `ready=true` and
+   `systemd_mutated=false`.
+4. Human installs/enables the proposed unit only after reviewing
+   `docs/IMMUTABLE_DEPLOY.md`. `cutover --apply` remains refused unless a
+   later authorized change lifts that gate.
+5. Manual pointer flip (only if the unit already uses `/opt/fmp/current`):
+   `ln -sfn /opt/fmp/releases/<good-sha> /opt/fmp/previous` then
+   `ln -sfn /opt/fmp/releases/<new-sha> /opt/fmp/current`.
+6. `systemctl restart fmp-dashboard && systemctl is-active fmp-dashboard`
+7. Re-run identity verify + `jobs.observe_running_dashboard` +
+   `jobs.audit_host_dashboard --require-readonly --require-running-identity --expected-sha <sha>`.
+8. Refuse cutover if observed PID cwd/executable/env-file do not use
+   `/opt/fmp/current` or the observed SHA mismatches.
+
+### Rollback
+
+1. App-only: `scripts/deploy_release.sh --rollback` (swaps current/previous)
+   then restart and re-verify. Does **not** un-apply SQL.
+2. If everyday activate failed, the host script already restores
+   `/root/FMP_SCREENER` to `checkout_before_activate.sha` and restarts.
+3. Manual restore: `git -C /root/FMP_SCREENER checkout --detach $(cat /var/lib/fmp/deploy/last_verified.sha)`
+   then `systemctl restart fmp-dashboard`.
+4. Additive migrations that already committed stay. Old application code must
+   coexist with the new schema.

@@ -23,6 +23,8 @@ SKIP_RESTART=0
 SKIP_PREFLIGHT=0
 SKIP_IDENTITY=0
 SKIP_MIGRATE=0
+NO_ACTIVATE=0
+STAGE_ONLY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -34,6 +36,15 @@ while [ $# -gt 0 ]; do
     --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
     --skip-identity) SKIP_IDENTITY=1; shift ;;
     --skip-migrate) SKIP_MIGRATE=1; shift ;;
+    --no-activate) NO_ACTIVATE=1; shift ;;
+    --stage-only)
+      STAGE_ONLY=1
+      NO_ACTIVATE=1
+      SKIP_MIGRATE=1
+      SKIP_PREFLIGHT=1
+      SKIP_RESTART=1
+      shift
+      ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
@@ -62,7 +73,9 @@ if [ "$ROLLBACK" = 1 ]; then
     fi
     (
       cd "$prev"
-      python3 -m qc_research.contracts.digests
+      PY="$prev/venv/bin/python"
+      if [ ! -x "$PY" ]; then PY=python3; fi
+      "$PY" -m qc_research.contracts.digests
       bash scripts/provision_dashboard_readonly.sh --require
       export FMP_IDENTITY_ENV_ONLY=1
       export FMP_DASHBOARD_ENV="${FMP_DASHBOARD_ENV:-/etc/fmp/fmp-dashboard.env}"
@@ -120,7 +133,7 @@ fi
 # --skip-identity (break-glass layout-only) may omit the venv.
 if [ ! -x "$target/venv/bin/streamlit" ]; then
   if [ ! -f "$target/requirements.txt" ]; then
-    if [ "$SKIP_IDENTITY" = 1 ]; then
+    if [ "$SKIP_IDENTITY" = 1 ] || [ "$STAGE_ONLY" = 1 ]; then
       echo "layout_only_skip_venv=1"
     else
       echo "FAIL: release tree is missing requirements.txt"
@@ -132,7 +145,7 @@ if [ ! -x "$target/venv/bin/streamlit" ]; then
     "$target/venv/bin/pip" install -r "$target/requirements.txt"
   fi
 fi
-if [ "$SKIP_IDENTITY" != 1 ] && [ ! -x "$target/venv/bin/streamlit" ]; then
+if [ "$SKIP_IDENTITY" != 1 ] && [ "$STAGE_ONLY" != 1 ] && [ ! -x "$target/venv/bin/streamlit" ]; then
   echo "FAIL: release venv is missing streamlit at $target/venv/bin/streamlit"
   exit 3
 fi
@@ -151,21 +164,41 @@ if [ "$SKIP_PREFLIGHT" != 1 ]; then
       set +a
     fi
     unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-    if [ "$SKIP_MIGRATE" != 1 ]; then
-      python -m jobs.apply_migrations
+    PY="$target/venv/bin/python"
+    if [ ! -x "$PY" ]; then
+      echo "FAIL: staged interpreter missing at $target/venv/bin/python"
+      exit 3
     fi
-    python -m pytest -q tests/test_deploy_release.py tests/test_ui_boundary.py tests/test_surface_status.py
+    if [ "$SKIP_MIGRATE" != 1 ]; then
+      "$PY" -m jobs.apply_migrations
+    fi
+    "$PY" -m pytest -q tests/test_deploy_release.py tests/test_ui_boundary.py tests/test_surface_status.py
   )
 fi
-if [ "$SKIP_IDENTITY" != 1 ]; then
+if [ "$STAGE_ONLY" = 1 ]; then
+  echo "stage_only=1 provision=skipped activate=skipped"
+fi
+if [ "$SKIP_IDENTITY" != 1 ] && [ "$STAGE_ONLY" != 1 ]; then
   (
     cd "$target"
-    python -m qc_research.contracts.digests
-    bash scripts/provision_dashboard_readonly.sh --require
+    PY="$target/venv/bin/python"
+    if [ ! -x "$PY" ]; then
+      echo "FAIL: staged interpreter missing at $target/venv/bin/python"
+      exit 3
+    fi
+    "$PY" -m qc_research.contracts.digests
+    bash scripts/provision_dashboard_readonly.sh --require --root "$target"
+    export FMP_PYTHON="$PY"
     export FMP_IDENTITY_ENV_ONLY=1
     export FMP_DASHBOARD_ENV="${FMP_DASHBOARD_ENV:-/etc/fmp/fmp-dashboard.env}"
     bash scripts/verify_dashboard_identity.sh
   )
+fi
+
+if [ "$NO_ACTIVATE" = 1 ]; then
+  echo "staged_release=$SHA"
+  echo "activate=skipped"
+  exit 0
 fi
 
 if [ -L "$CURRENT_LINK" ]; then

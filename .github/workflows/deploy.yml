@@ -7,6 +7,10 @@ on:
     branches:
       - main
 
+concurrency:
+  group: fmp-deploy-main
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -49,6 +53,10 @@ jobs:
             exit 3
           fi
           SHA="$(git rev-parse HEAD)"
+          # Pipe this SHA's deploy_host.sh. The host script takes the flock.
+          # Do not pull main on the host first: concurrent pushes must not
+          # move the checkout to a different SHA before this script runs.
           ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
             "$DO_USER@$DO_HOST" \
-            "cd /root/FMP_SCREENER && git fetch origin main && git pull --ff-only origin main && bash scripts/deploy_host.sh --sha $SHA"
+            "bash -s -- --sha $SHA" \
+            < scripts/deploy_host.sh

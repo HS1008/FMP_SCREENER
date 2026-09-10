@@ -1,6 +1,6 @@
 # Immutable release deployment
 
-Production today still uses `.github/workflows/deploy.yml` (`git pull --ff-only` in `/root/FMP_SCREENER`). That path stays until `scripts/deploy_release.sh` is validated on the host. Do not delete the git-pull flow.
+Production auto-deploy stages `/opt/fmp/releases/<sha>` first, validates with the staged interpreter, then checks out that exact SHA in `/root/FMP_SCREENER` and restarts the existing unit. It does not `git pull origin main` and does not flip `/opt/fmp/current` until a human cutover. `scripts/deploy_release.sh --stage-only` never provisions or advances pointers.
 
 ## Target layout
 

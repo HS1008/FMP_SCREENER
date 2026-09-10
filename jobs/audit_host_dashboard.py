@@ -174,6 +174,8 @@ def collect_facts(
         "observed_uses_opt_fmp_current": observed.get("observed_uses_opt_fmp_current"),
         "running_service_identity_proven": observed.get("observed_running_identity") == "recorded"
         and bool(observed.get("observed_pid")),
+        "expected_code_sha": None,
+        "observed_sha_matches_expected": None,
     }
 
 
@@ -209,7 +211,13 @@ def print_facts(facts: Mapping[str, Any]) -> None:
         print("{0}={1}".format(key, facts.get(key)))
 
 
-def audit_exit_code(facts: Mapping[str, Any], *, require_readonly: bool) -> int:
+def audit_exit_code(
+    facts: Mapping[str, Any],
+    *,
+    require_readonly: bool,
+    require_running_identity: bool = False,
+    expected_sha: str | None = None,
+) -> int:
     if facts.get("writer_fallback") or facts.get("writer_env_keys_present"):
         print("host_audit=writer_fallback_refused")
         return 4
@@ -219,6 +227,15 @@ def audit_exit_code(facts: Mapping[str, Any], *, require_readonly: bool) -> int:
     if require_readonly and not facts.get("readonly_proven"):
         print("host_audit=readonly_unproven")
         return 3
+    if require_running_identity and not facts.get("running_service_identity_proven"):
+        print("host_audit=running_identity_unproven")
+        return 6
+    expected = (expected_sha or "").strip().lower()
+    observed = str(facts.get("observed_code_sha") or "").strip().lower()
+    uses_current = bool(facts.get("observed_uses_opt_fmp_current"))
+    if expected and uses_current and observed != expected:
+        print("host_audit=running_sha_mismatch")
+        return 7
     if facts.get("readonly_proven"):
         print("host_audit=readonly_proven")
         return 0
@@ -232,17 +249,29 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--require-readonly", action="store_true", default=False)
     parser.add_argument("--verify-rc", type=int, default=None)
     parser.add_argument("--env-file", default="")
+    parser.add_argument("--require-running-identity", action="store_true", default=False)
+    parser.add_argument("--expected-sha", default="")
     args = parser.parse_args(argv)
     env_file = resolve_identity_env_file(args.env_file)
     facts = collect_facts(
         env=identity_env_from_file(env_file) if env_file is not None else None,
         verify_rc=args.verify_rc,
     )
+    facts["expected_code_sha"] = args.expected_sha or None
+    if args.expected_sha:
+        facts["observed_sha_matches_expected"] = (
+            str(facts.get("observed_code_sha") or "").lower() == args.expected_sha.lower()
+        )
     if args.out:
         write_facts(facts, Path(args.out))
         print("host_audit_written={0}".format(args.out))
     print_facts(facts)
-    return audit_exit_code(facts, require_readonly=args.require_readonly)
+    return audit_exit_code(
+        facts,
+        require_readonly=args.require_readonly,
+        require_running_identity=args.require_running_identity,
+        expected_sha=args.expected_sha or None,
+    )
 
 
 if __name__ == "__main__":

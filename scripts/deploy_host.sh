@@ -4,10 +4,20 @@
 #
 #   bash scripts/deploy_host.sh --sha <40-hex>
 #
-# Everyday auto-deploy still updates /root/FMP_SCREENER and restarts the
-# existing unit. systemd cutover to /opt/fmp/current is a human action.
+# Everyday auto-deploy stages /opt/fmp/releases/<sha>, validates, then may
+# mirror the checkout and restart the existing unit. systemd cutover to
+# /opt/fmp/current is a human action. Stage-only never flips current/previous.
 # Migrations run ONCE from the staged release SHA.
 set -euo pipefail
+LOCK_FILE="${FMP_DEPLOY_LOCK:-/var/lock/fmp-deploy.lock}"
+if ! (umask 077; : > "$LOCK_FILE") 2>/dev/null; then
+  LOCK_FILE="/tmp/fmp-deploy.lock"
+fi
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+  echo "FAIL: another deploy holds $LOCK_FILE"
+  exit 75
+fi
 
 ROOT="${FMP_CHECKOUT:-/root/FMP_SCREENER}"
 RELEASE_ROOT="${FMP_RELEASE_ROOT:-/opt/fmp/releases}"
@@ -68,14 +78,12 @@ for rel in scripts/activate_market_intelligence_host.sh scripts/materialize_ai_c
   fi
 done
 echo "working_tree_porcelain=$(git status --porcelain | tr '\n' '|')"
-
-echo "Updating checkout to $SHA..."
-git fetch origin main
-git pull --ff-only origin main
-actual="$(git rev-parse HEAD)"
-if [ "$actual" != "$SHA" ]; then
-  echo "FAIL: checkout HEAD ${actual} does not match requested ${SHA}"
-  exit 3
+echo "prepare=skip_checkout_pull requested_sha=$SHA"
+PREV_HEAD="$(git rev-parse HEAD 2>/dev/null || true)"
+STATE_DIR="${FMP_DEPLOY_STATE:-/var/lib/fmp/deploy}"
+install -d -m 0755 "$STATE_DIR" 2>/dev/null || true
+if [ -n "$PREV_HEAD" ]; then
+  printf '%s\n' "$PREV_HEAD" > "$STATE_DIR/checkout_before_activate.sha" || true
 fi
 
 if [ -s "$LEGACY_PW_FILE" ] && [ ! -s "$HOST_PW_FILE" ]; then
@@ -92,28 +100,53 @@ if [ ! -f "$DASHBOARD_ENV" ]; then
   exit 1
 fi
 
-echo "Staging immutable release (no migrate, no restart)..."
+echo "Staging immutable release (no migrate, no restart, no activate, no provision)..."
+STAGED="$RELEASE_ROOT/$SHA"
+REPO_URL="${FMP_REPO_URL:-https://github.com/hs1008/fmp_screener.git}"
+CURRENT_BEFORE=""
+if [ -L "$CURRENT_LINK" ] || [ -e "$CURRENT_LINK" ]; then
+  CURRENT_BEFORE="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
+fi
 IMMUTABLE_RC=0
-if [ "${FMP_IMMUTABLE_RELEASE_STRICT:-}" = "1" ]; then
-  bash scripts/deploy_release.sh --sha "$SHA" --skip-restart --skip-migrate \
-    || IMMUTABLE_RC=$?
-else
-  bash scripts/deploy_release.sh --sha "$SHA" --skip-restart --skip-migrate --skip-preflight \
-    || IMMUTABLE_RC=$?
+install -d -m 0755 "$RELEASE_ROOT"
+if [ ! -d "$STAGED/.git" ]; then
+  if git clone --depth 1 "$REPO_URL" "$STAGED"; then
+    :
+  else
+    git clone "$ROOT" "$STAGED"
+  fi
 fi
-if [ "$IMMUTABLE_RC" != "0" ]; then
-  echo "immutable release populate failed rc=${IMMUTABLE_RC}"
-  exit "$IMMUTABLE_RC"
+git -C "$STAGED" fetch --depth 1 origin "$SHA" || git -C "$STAGED" fetch "$ROOT" "$SHA"
+git -C "$STAGED" checkout --detach "$SHA"
+actual="$(git -C "$STAGED" rev-parse HEAD)"
+if [ "$actual" != "$SHA" ]; then
+  echo "FAIL: staged HEAD ${actual} does not match requested ${SHA}"
+  exit 3
 fi
-if [ ! -f "$CURRENT_LINK/scripts/verify_dashboard_identity.sh" ]; then
-  echo "immutable current is missing scripts/verify_dashboard_identity.sh"
-  exit 6
+if [ ! -x "$STAGED/venv/bin/python" ]; then
+  if [ ! -f "$STAGED/requirements.txt" ]; then
+    echo "FAIL: staged tree is missing requirements.txt"
+    exit 3
+  fi
+  echo "Creating release venv at $STAGED/venv"
+  python3 -m venv "$STAGED/venv"
+  "$STAGED/venv/bin/pip" install -r "$STAGED/requirements.txt"
 fi
-CODE_ROOT="$CURRENT_LINK"
+if [ ! -x "$STAGED/venv/bin/streamlit" ]; then
+  echo "FAIL: staged release venv is missing streamlit"
+  exit 3
+fi
+if [ "$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)" != "$CURRENT_BEFORE" ]; then
+  echo "FAIL: stage-only must not move current/previous pointers"
+  exit 3
+fi
+echo "staged_release=$SHA activate=skipped"
+CODE_ROOT="$STAGED"
 if [ ! -x "$CODE_ROOT/venv/bin/python" ]; then
   echo "FAIL: staged release venv is missing; refusing to mutate the shared checkout venv first"
   exit 3
 fi
+PYTHON_BIN="$CODE_ROOT/venv/bin/python"
 
 echo "Applying database migrations ONCE from the staged SHA..."
 (
@@ -135,8 +168,8 @@ echo "Applying database migrations ONCE from the staged SHA..."
     set +a
   fi
   unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-  python -m qc_research.contracts.digests
-  python -m jobs.apply_migrations
+  "$PYTHON_BIN" -m qc_research.contracts.digests
+  "$PYTHON_BIN" -m jobs.apply_migrations
 )
 
 echo "Provisioning dashboard_readonly (password file required)..."
@@ -151,6 +184,7 @@ export FMP_DASHBOARD_ENV="$DASHBOARD_ENV"
   # shellcheck disable=SC1091
   source "$CODE_ROOT/venv/bin/activate"
   export PYTHONPATH="$CODE_ROOT"
+  export FMP_PYTHON="$PYTHON_BIN"
   bash scripts/verify_dashboard_identity.sh
 ) || VERIFY_RC=$?
 
@@ -164,7 +198,7 @@ echo "Recording deploy identity (no secrets)..."
   . "$DASHBOARD_ENV"
   set +a
   unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  python -m jobs.report_deploy_identity \
+  "$PYTHON_BIN" -m jobs.report_deploy_identity \
     --sha "$SHA" \
     --checkout "$ROOT" \
     --mode git_pull \
@@ -173,30 +207,11 @@ echo "Recording deploy identity (no secrets)..."
     --env-file "$DASHBOARD_ENV"
 )
 
-echo "Auditing host Streamlit identity (no secrets, no systemd change)..."
-AUDIT_RC=0
-(
-  set -a
-  # Default DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
-  # shellcheck disable=SC1091
-  . "$DASHBOARD_ENV"
-  set +a
-  unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  python -m jobs.audit_host_dashboard \
-    --verify-rc "$VERIFY_RC" \
-    --out /var/lib/fmp/deploy/host_audit.json \
-    --require-readonly \
-    --env-file /etc/fmp/fmp-dashboard.env
-) || AUDIT_RC=$?
-
 if [ "$VERIFY_RC" != "0" ]; then
   echo "dashboard identity verify failed rc=${VERIFY_RC}"
   exit "$VERIFY_RC"
 fi
-if [ "$AUDIT_RC" != "0" ]; then
-  echo "host dashboard audit failed rc=${AUDIT_RC}"
-  exit "$AUDIT_RC"
-fi
+echo "pre_restart_audit=deferred_until_after_restart"
 
 echo "Verifying official CSFML V1 identity (read-only, missing run is not a deploy failure)..."
 CSFML_RC=0
@@ -211,7 +226,7 @@ CSFML_RC=0
   . "$DASHBOARD_ENV"
   set +a
   unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  python -m qc_research.verify_csfml_v1 --live --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/csfml_v1_live.json
+  "$PYTHON_BIN" -m qc_research.verify_csfml_v1 --live --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/csfml_v1_live.json
 ) || CSFML_RC=$?
 if [ "$CSFML_RC" = "2" ] || [ "$CSFML_RC" = "4" ]; then
   echo "official CSFML V1 identity refused rc=${CSFML_RC}"
@@ -234,7 +249,7 @@ TLT_RC=0
   . "$DASHBOARD_ENV"
   set +a
   unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  python -m qc_research.verify_tlt_monitor --live --allow-missing --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/tlt_v0_live.json
+  "$PYTHON_BIN" -m qc_research.verify_tlt_monitor --live --allow-missing --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/tlt_v0_live.json
 ) || TLT_RC=$?
 if [ "$TLT_RC" = "2" ] || [ "$TLT_RC" = "4" ]; then
   echo "official TLT V0 identity refused rc=${TLT_RC}"
@@ -258,7 +273,7 @@ STAGE1_RC=0
   . "$DASHBOARD_ENV"
   set +a
   unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  python -m qc_research.verify_stage1 --live --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/stage1_live.json
+  "$PYTHON_BIN" -m qc_research.verify_stage1 --live --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/stage1_live.json
 ) || STAGE1_RC=$?
 if [ "$STAGE1_RC" = "2" ] || [ "$STAGE1_RC" = "4" ]; then
   echo "official Stage 1 identity refused rc=${STAGE1_RC}"
@@ -278,7 +293,7 @@ CUTOVER_RC=0
   . "$DASHBOARD_ENV"
   set +a
   unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  python -m jobs.cutover_dashboard_systemd \
+  "$PYTHON_BIN" -m jobs.cutover_dashboard_systemd \
     --verify-rc "$VERIFY_RC" \
     --env-file "$DASHBOARD_ENV" \
     --out /var/lib/fmp/deploy/cutover_readiness.json
@@ -302,18 +317,45 @@ echo "Persisting sanitized deploy identity to PostgreSQL..."
   fi
   set +a
   unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-  python -m jobs.record_deploy_identity_db \
+  "$PYTHON_BIN" -m jobs.record_deploy_identity_db \
     --from /var/lib/fmp/deploy/current.json \
     --csfml /var/lib/fmp/deploy/csfml_v1_live.json \
     --tlt /var/lib/fmp/deploy/tlt_v0_live.json \
     --stage1 /var/lib/fmp/deploy/stage1_live.json
 )
 
+restore_checkout() {
+  if [ -n "${PREV_HEAD:-}" ] && [ "$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)" != "$PREV_HEAD" ]; then
+    echo "Restoring checkout to last pre-activate SHA $PREV_HEAD"
+    git -C "$ROOT" fetch "$STAGED" "$PREV_HEAD" || true
+    git -C "$ROOT" checkout --detach "$PREV_HEAD"
+  fi
+}
+
 if [ "$SKIP_RESTART" != 1 ]; then
+  echo "Activating existing checkout to requested SHA (does not flip /opt/fmp/current)..."
+  git -C "$ROOT" fetch --update-head-ok "$STAGED" "$SHA"
+  git -C "$ROOT" checkout --detach "$SHA"
+  live_head="$(git -C "$ROOT" rev-parse HEAD)"
+  if [ "$live_head" != "$SHA" ]; then
+    echo "FAIL: checkout HEAD ${live_head} does not match requested ${SHA}"
+    restore_checkout
+    exit 3
+  fi
   echo "Restarting Streamlit..."
-  systemctl restart fmp-dashboard
+  if ! systemctl restart fmp-dashboard; then
+    echo "restart failed; restoring previous checkout"
+    restore_checkout
+    systemctl restart fmp-dashboard || true
+    exit 1
+  fi
   echo "Verifying Streamlit service..."
-  systemctl is-active --quiet fmp-dashboard
+  if ! systemctl is-active --quiet fmp-dashboard; then
+    echo "post-restart service inactive; restoring previous checkout"
+    restore_checkout
+    systemctl restart fmp-dashboard || true
+    exit 1
+  fi
   echo "Re-verifying Streamlit database identity after restart..."
   POST_VERIFY_RC=0
   (
@@ -327,8 +369,37 @@ if [ "$SKIP_RESTART" != 1 ]; then
   ) || POST_VERIFY_RC=$?
   if [ "$POST_VERIFY_RC" != "0" ]; then
     echo "post-restart dashboard identity verify failed rc=${POST_VERIFY_RC}"
+    restore_checkout
+    systemctl restart fmp-dashboard || true
     exit "$POST_VERIFY_RC"
   fi
+  echo "Observing running Streamlit identity after restart..."
+  "$PYTHON_BIN" -m jobs.observe_running_dashboard --out "$STATE_DIR/running_identity.json"
+  echo "Auditing host Streamlit identity after restart (no secrets, no systemd change)..."
+  AUDIT_RC=0
+  (
+    set -a
+    # Default DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
+    # shellcheck disable=SC1091
+    . "$DASHBOARD_ENV"
+    set +a
+    unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+    "$PYTHON_BIN" -m jobs.audit_host_dashboard \
+      --verify-rc "$POST_VERIFY_RC" \
+      --out "$STATE_DIR/host_audit.json" \
+      --require-readonly \
+      --require-running-identity \
+      --expected-sha "$SHA" \
+      --env-file /etc/fmp/fmp-dashboard.env
+  ) || AUDIT_RC=$?
+  if [ "$AUDIT_RC" != "0" ]; then
+    echo "host dashboard audit failed rc=${AUDIT_RC}"
+    restore_checkout
+    systemctl restart fmp-dashboard || true
+    exit "$AUDIT_RC"
+  fi
+  printf '%s\n' "$SHA" > "$STATE_DIR/last_verified.sha"
+  echo "last_verified=$SHA"
   if systemctl cat fmp-ibkr-ingest.service >/dev/null 2>&1; then
     echo "Restarting private IBKR ingest API..."
     systemctl restart fmp-ibkr-ingest.service

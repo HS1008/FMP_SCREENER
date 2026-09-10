@@ -62,7 +62,9 @@ if [ -n "${DASHBOARD_READONLY_URL:-}" ]; then
     exit 4
   fi
 fi
-if command -v python >/dev/null 2>&1; then
+if [ -n "${FMP_PYTHON:-}" ] && [ -x "${FMP_PYTHON}" ]; then
+  PYTHON_BIN="$FMP_PYTHON"
+elif command -v python >/dev/null 2>&1; then
   PYTHON_BIN=python
 else
   PYTHON_BIN=python3

@@ -50,7 +50,7 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "/etc/fmp/fmp-dashboard.env" in identity_block
     assert "/root/FMP_SCREENER/.env" not in identity_block
     preflight_block = script.split('if [ "$SKIP_PREFLIGHT" != 1 ]; then', 1)[1].split(
-        'if [ "$SKIP_IDENTITY" != 1 ]; then', 1
+        'if [ "$SKIP_IDENTITY" != 1 ] && [ "$STAGE_ONLY" != 1 ]; then', 1
     )[0]
     assert "provision_dashboard_readonly.sh" not in preflight_block
     assert "verify_dashboard_identity.sh" not in preflight_block
@@ -214,6 +214,47 @@ def test_release_script_rebinds_an_existing_tree_to_the_requested_sha(tmp_path):
         subprocess.check_output(["git", "-C", str(poisoned), "rev-parse", "HEAD"], text=True).strip()
         == second
     )
+
+
+def test_release_script_stage_only_does_not_flip_pointers(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    (repo / "README").write_text("stage\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "seed"], cwd=repo, check=True, capture_output=True)
+    sha = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    release_root = tmp_path / "releases"
+    current = tmp_path / "current"
+    previous = tmp_path / "previous"
+    env = os.environ.copy()
+    env["FMP_CURRENT_LINK"] = str(current)
+    env["FMP_PREVIOUS_LINK"] = str(previous)
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / "deploy_release.sh"),
+            "--sha",
+            sha,
+            "--repo",
+            str(repo),
+            "--release-root",
+            str(release_root),
+            "--stage-only",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (release_root / sha / "README").is_file()
+    assert not current.exists() and not current.is_symlink()
+    assert not previous.exists() and not previous.is_symlink()
+    assert "activate=skipped" in result.stdout
+    assert "provision=skipped" in result.stdout
 
 
 def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):

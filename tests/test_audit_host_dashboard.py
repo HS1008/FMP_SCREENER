@@ -161,18 +161,21 @@ def test_production_verify_workflow_runs_host_audit():
     assert "live code root missing on droplet" in text
 
 
-def test_everyday_deploy_runs_host_audit_before_restart():
+def test_everyday_deploy_runs_host_audit_after_restart():
     deploy = Path("scripts/deploy_host.sh").read_text(encoding="utf-8")
     assert "jobs.audit_host_dashboard" in deploy
     assert "--require-readonly" in deploy
+    assert "--require-running-identity" in deploy
+    assert "--expected-sha" in deploy
     assert "--verify-rc" in deploy
-    assert "/var/lib/fmp/deploy/host_audit.json" in deploy
-    assert deploy.index("jobs.report_deploy_identity") < deploy.index("jobs.audit_host_dashboard")
-    assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
+    assert "host_audit.json" in deploy
+    assert "/var/lib/fmp/deploy" in deploy
+    assert deploy.index("jobs.report_deploy_identity") < deploy.index("systemctl restart fmp-dashboard")
+    assert deploy.index("systemctl restart fmp-dashboard") < deploy.index("jobs.audit_host_dashboard")
     assert "host dashboard audit failed" in deploy
-    audit_block = deploy.split("Auditing host Streamlit identity", 1)[1].split(
-        "Verifying official CSFML V1 identity", 1
-    )[0]
+    assert "restore_checkout" in deploy
+    assert "last_verified.sha" in deploy
+    audit_block = deploy.split("Auditing host Streamlit identity after restart", 1)[1]
     assert "/etc/fmp/fmp-dashboard.env" in audit_block
     assert "--env-file /etc/fmp/fmp-dashboard.env" in audit_block
     assert "unset DATABASE_URL" in audit_block
@@ -181,3 +184,48 @@ def test_everyday_deploy_runs_host_audit_before_restart():
     assert "jobs.cutover_dashboard_systemd" in deploy
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
     assert "--apply" not in deploy
+
+
+def test_audit_exit_requires_running_identity_and_sha_when_cut_over():
+    facts = {
+        "writer_fallback": False,
+        "writer_env_keys_present": [],
+        "provider_fetch": False,
+        "readonly_proven": True,
+        "running_service_identity_proven": False,
+        "observed_uses_opt_fmp_current": True,
+        "observed_code_sha": "aaa",
+    }
+    assert audit_exit_code(facts, require_readonly=True, require_running_identity=True) == 6
+    facts["running_service_identity_proven"] = True
+    assert (
+        audit_exit_code(
+            facts,
+            require_readonly=True,
+            require_running_identity=True,
+            expected_sha="bbb",
+        )
+        == 7
+    )
+    facts["observed_code_sha"] = "bbb"
+    assert (
+        audit_exit_code(
+            facts,
+            require_readonly=True,
+            require_running_identity=True,
+            expected_sha="bbb",
+        )
+        == 0
+    )
+    # Mutable checkout identity is not proof of the loaded SHA.
+    facts["observed_uses_opt_fmp_current"] = False
+    facts["observed_code_sha"] = "other"
+    assert (
+        audit_exit_code(
+            facts,
+            require_readonly=True,
+            require_running_identity=True,
+            expected_sha="bbb",
+        )
+        == 0
+    )
