@@ -308,7 +308,7 @@ def test_activate_verify_phase_does_not_source_writer_checkout_env():
     ingest = text.split("phase_ingest_fred()", 1)[1].split("phase_ingest_finra()", 1)[0]
     assert "load_writer_env" in ingest
     mi_verify = (ROOT / "jobs" / "verify_mi_dashboard.py").read_text()
-    assert "strip_writer_database_env" in mi_verify
+    assert "load_streamlit_env" in mi_verify
 
 
 def test_activate_host_script_uses_admin_or_peer_for_role_sql():

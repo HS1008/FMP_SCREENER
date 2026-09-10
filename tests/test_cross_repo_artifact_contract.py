@@ -120,6 +120,16 @@ def test_pinned_producer_required_fields_are_satisfied_by_official_fixtures():
         assert missing == [], "{0} missing pinned producer fields: {1}".format(kind, missing)
 
 
+def test_kind_required_fields_are_subset_of_pinned_producer_fields():
+    from qc_research.contracts.kinds import KIND_REQUIRED_FIELDS
+    from qc_research.contracts.producer_fields import required_by_kind
+
+    pinned = required_by_kind()
+    for kind, fields in KIND_REQUIRED_FIELDS.items():
+        assert kind in pinned, kind
+        assert set(fields) <= set(pinned[kind]), kind
+
+
 def test_producer_ref_is_a_full_git_sha():
     from qc_research.contracts.producer_fields import load_producer_required
 

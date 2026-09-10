@@ -45,9 +45,9 @@ def run(argv: list[str] | None = None) -> int:
     if not (os.environ.get("DATABASE_READONLY_URL") or "").strip():
         print("DATABASE_READONLY_URL is not configured", file=sys.stderr)
         return 3
-    from db.dashboard_engine import strip_writer_database_env
+    from db.dashboard_engine import load_streamlit_env
 
-    strip_writer_database_env()
+    load_streamlit_env()
     from streamlit.testing.v1 import AppTest
 
     report: dict[str, object] = {"pages": []}
