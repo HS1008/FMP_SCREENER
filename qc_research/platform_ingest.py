@@ -291,10 +291,10 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
     if kind in {"run_summary", "run_manifest"} and run_id:
         identity = platform_run_identity(payload)
         if identity["strategy_id"]:
-            if str(run_id) in sealed_results_run_ids() and research_run_exists(conn, str(run_id)):
+            if sealed and research_run_exists(conn, str(run_id)):
                 return
-            conn.execute(text(UPSERT_PLATFORM_RUN), identity)
-            register_platform_monitor_strategy(conn, identity)
+            conn.execute(text(_conflict_sql(UPSERT_PLATFORM_RUN, sealed=sealed)), identity)
+            register_platform_monitor_strategy(conn, identity, sealed=sealed)
 
 
 SKIP_NO_DATABASE = (
@@ -410,7 +410,12 @@ ON CONFLICT (strategy_id) DO UPDATE SET
 """
 
 
-def register_platform_monitor_strategy(conn, identity: Mapping[str, Any] | None = None) -> None:
+def register_platform_monitor_strategy(
+    conn,
+    identity: Mapping[str, Any] | None = None,
+    *,
+    sealed: bool = False,
+) -> None:
     """Idempotent research-only Strategy Monitor row from a canonical artifact."""
     row = dict(identity or {})
     strategy_id = str(row.get("strategy_id") or "")
@@ -419,7 +424,7 @@ def register_platform_monitor_strategy(conn, identity: Mapping[str, Any] | None 
     project_id = row.get("project_id") or row.get("qc_research_project_id")
     project_name = row.get("project_name") or row.get("qc_research_project_name")
     conn.execute(
-        text(REGISTER_STRATEGY_SQL),
+        text(_conflict_sql(REGISTER_STRATEGY_SQL, sealed=sealed)),
         {
             "strategy_id": strategy_id,
             "name": row.get("name") or strategy_id,

@@ -495,6 +495,36 @@ def test_sealed_csfml_children_insert_once_on_first_ingest():
     assert all("DO UPDATE" not in sql for sql in child_sql)
 
 
+def test_sealed_tlt_identity_insert_once_when_exists_check_misses():
+    from qc_research.platform_ingest import ingest_platform_payload
+    from qc_research.tlt_duration_momentum import wrap_tlt_duration_momentum_record
+
+    path = ROOT / "qc_research" / "platform_artifacts" / "tlt_duration_momentum.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    wrapped = wrap_tlt_duration_momentum_record(record)
+    summary = next(payload for kind, payload in wrapped if kind == "run_summary")
+
+    class _Conn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+            return None
+
+    conn = _Conn()
+    ingest_platform_payload(conn, kind="run_summary", payload=summary)
+    identity_sql = [
+        sql
+        for sql, _ in conn.calls
+        if "insert into" in sql.lower()
+        and any(table in sql.lower() for table in ("research_runs", "strategies"))
+    ]
+    assert identity_sql
+    assert all("DO NOTHING" in sql for sql in identity_sql)
+    assert all("DO UPDATE" not in sql for sql in identity_sql)
+
+
 def test_official_csfml_v1_mutated_pin_fields_are_refused():
     base = {
         "research_run_id": PIN["full_suite_run_id"],
