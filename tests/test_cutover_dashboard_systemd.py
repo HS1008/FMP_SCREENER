@@ -229,9 +229,10 @@ def test_everyday_deploy_records_cutover_dry_run_and_never_applies():
     assert "FMP_ALLOW_SYSTEMD_CUTOVER" not in deploy
     assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("jobs.cutover_dashboard_systemd")
+    assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("jobs.record_deploy_identity_db")
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
     cutover_block = deploy.split("Recording systemd cutover readiness", 1)[1].split(
-        "Restarting Streamlit", 1
+        "Persisting sanitized deploy identity", 1
     )[0]
     assert "/etc/fmp/fmp-dashboard.env" in cutover_block
     assert "unset DATABASE_URL" in cutover_block

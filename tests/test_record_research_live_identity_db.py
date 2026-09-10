@@ -186,6 +186,9 @@ def test_deploy_persists_live_identity_after_query_back_in_writer_subshell():
     assert deploy.index("jobs.record_deploy_identity_db") < deploy.index(
         "jobs.record_research_live_identity_db"
     )
+    assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index(
+        "jobs.record_deploy_identity_db"
+    )
     verify = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(encoding="utf-8")
     assert "jobs.record_research_live_identity_db" in verify
     assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in verify

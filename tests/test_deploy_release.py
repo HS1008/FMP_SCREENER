@@ -132,8 +132,11 @@ def test_release_script_is_additive_and_supports_rollback():
     assert deploy.index("qc_research.verify_tlt_monitor --live") < deploy.index(
         "jobs.record_research_live_identity_db"
     )
-    assert deploy.index("jobs.record_research_live_identity_db") < deploy.index(
+    assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
         "jobs.cutover_dashboard_systemd"
+    )
+    assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index(
+        "jobs.record_deploy_identity_db"
     )
     tlt = deploy.split("Verifying official TLT V0 identity", 1)[1].split(
         "Verifying official Stage 1 identity", 1
@@ -161,11 +164,11 @@ def test_release_script_is_additive_and_supports_rollback():
     assert ". /root/FMP_SCREENER/.env" not in stage1
     assert "source /root/FMP_SCREENER/.env" not in stage1
     live_db = deploy.split("Persisting sanitized research live identity", 1)[1].split(
-        "Recording systemd cutover readiness", 1
+        "Restarting Streamlit", 1
     )[0]
     assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in live_db
     live_db = deploy.split("Persisting sanitized research live identity", 1)[1].split(
-        "Recording systemd cutover readiness", 1
+        "Restarting Streamlit", 1
     )[0]
     assert "/etc/fmp/fmp-writer.env" in live_db
     assert "/root/FMP_SCREENER/.env" in live_db
