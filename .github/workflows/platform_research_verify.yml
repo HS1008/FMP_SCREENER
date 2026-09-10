@@ -68,6 +68,7 @@ jobs:
               --verify-monitor
             python -m qc_research.verify_tlt_monitor --live
             python -m qc_research.verify_tlt_monitor --live --apptest
+            python -m qc_research.verify_csfml_v1 --live
           EOF
 
       - name: Audit live Streamlit identity and systemd path

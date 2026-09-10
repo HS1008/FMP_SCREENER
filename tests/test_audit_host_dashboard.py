@@ -104,6 +104,8 @@ def test_production_verify_workflow_runs_host_audit():
     text = Path(".github/workflows/platform_research_verify.yml").read_text(encoding="utf-8")
     assert "jobs.audit_host_dashboard" in text
     assert text.index("verify_tlt_monitor --live") < text.index("jobs.audit_host_dashboard")
+    assert "qc_research.verify_csfml_v1 --live" in text
+    assert "--require-present" not in text
     assert "--require-readonly" in text
     assert "jobs or change systemd" in text
 

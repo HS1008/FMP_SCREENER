@@ -153,6 +153,9 @@ jobs:
               exit "$AUDIT_RC"
             fi
 
+            echo "Verifying official CSFML V1 identity (read-only, missing run is not a deploy failure)..."
+            python -m qc_research.verify_csfml_v1 --live
+
             echo "Recording systemd cutover readiness (dry-run, no unit change)..."
             CUTOVER_RC=0
             python -m jobs.cutover_dashboard_systemd \

@@ -154,6 +154,7 @@ def test_cutover_source_never_calls_systemctl_mutate():
 def test_everyday_deploy_records_cutover_dry_run_and_never_applies():
     deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     assert "jobs.cutover_dashboard_systemd" in deploy
+    assert "qc_research.verify_csfml_v1 --live" in deploy
     assert "--apply" not in deploy
     assert "--require-ready" not in deploy
     assert "FMP_ALLOW_SYSTEMD_CUTOVER" not in deploy

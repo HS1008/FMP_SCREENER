@@ -50,6 +50,8 @@ def test_release_script_is_additive_and_supports_rollback():
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
     assert deploy.index("/etc/fmp/fmp-dashboard.env") < deploy.index("jobs.audit_host_dashboard")
     assert "jobs.cutover_dashboard_systemd" in deploy
+    assert "qc_research.verify_csfml_v1 --live" in deploy
+    assert "--require-present" not in deploy
     assert "--apply" not in deploy
     assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
