@@ -5,7 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
-from qc_research.verify_csfml_v1 import evaluate_csfml_v1_row, verify_exit_code
+from qc_research.verify_csfml_v1 import (
+    evaluate_csfml_v1_row,
+    official_csfml_v1_identity_blockers,
+    verify_exit_code,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -61,6 +65,70 @@ def test_wrong_sha_holdout_or_gate_fails_closed():
     assert "holdout_accessed" in holdout["blockers"]
     gate = evaluate_csfml_v1_row({**base, "economic_gate": "PASS"}, PIN)
     assert "economic_gate_changed" in gate["blockers"]
+
+
+def test_official_csfml_identity_blockers_are_run_scoped():
+    official = {
+        "research_run_id": PIN["full_suite_run_id"],
+        "strategy_id": PIN["strategy_id"],
+        "git_commit": PIN["authoritative_csfml_v1_qc_sha"],
+        "holdout_accessed": False,
+        "holdout_access_count": 0,
+        "economic_gate": "NOT_DEFINED",
+    }
+    assert (
+        official_csfml_v1_identity_blockers(
+            strategy_id=PIN["strategy_id"],
+            research_run_id=PIN["full_suite_run_id"],
+            row=official,
+        )
+        == []
+    )
+    assert official_csfml_v1_identity_blockers(
+        strategy_id=PIN["strategy_id"],
+        research_run_id="STAGE2_CrossSectionalFactorML_FIXTURE01",
+        row={**official, "git_commit": "0" * 40},
+    ) == []
+    drifted = official_csfml_v1_identity_blockers(
+        strategy_id=PIN["strategy_id"],
+        research_run_id=PIN["full_suite_run_id"],
+        row={**official, "git_commit": "0" * 40, "economic_gate": "PASS"},
+    )
+    assert "git_commit_not_pinned" in drifted
+    assert "economic_gate_changed" in drifted
+    assert official_csfml_v1_identity_blockers(
+        strategy_id=PIN["strategy_id"],
+        research_run_id=PIN["full_suite_run_id"],
+        engine=None,
+    ) == ["identity_query_failed"]
+
+    class _EmptyEngine:
+        def connect(self):
+            class _Conn:
+                def __enter__(self_inner):
+                    return self_inner
+
+                def __exit__(self_inner, *args):
+                    return False
+
+                def execute(self_inner, *args, **kwargs):
+                    class _Result:
+                        def mappings(self_map):
+                            class _Mappings:
+                                def first(self_first):
+                                    return None
+
+                            return _Mappings()
+
+                    return _Result()
+
+            return _Conn()
+
+    assert official_csfml_v1_identity_blockers(
+        strategy_id=PIN["strategy_id"],
+        research_run_id=PIN["full_suite_run_id"],
+        engine=_EmptyEngine(),
+    ) == ["official_run_missing"]
 
 
 def test_live_csfml_strips_writer_env_before_engine(monkeypatch):

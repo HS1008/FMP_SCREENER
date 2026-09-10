@@ -356,7 +356,17 @@ ON CONFLICT (research_run_id) DO UPDATE SET
     strategy_family_id = COALESCE(EXCLUDED.strategy_family_id, research_runs.strategy_family_id),
     strategy_spec_hash = COALESCE(EXCLUDED.strategy_spec_hash, research_runs.strategy_spec_hash),
     research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, research_runs.research_lineage_id),
-    run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status),
+    run_status = CASE
+        WHEN research_runs.run_status IN ('COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE')
+            THEN research_runs.run_status
+        WHEN research_runs.run_status IN ('CLOUD_VALIDATED', 'DRY_RUN_COMPLETE')
+             AND COALESCE(EXCLUDED.run_status, '') NOT IN (
+                 'COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE',
+                 'CLOUD_VALIDATED', 'DRY_RUN_COMPLETE'
+             )
+            THEN research_runs.run_status
+        ELSE COALESCE(EXCLUDED.run_status, research_runs.run_status)
+    END,
     promotion_gate = COALESCE(EXCLUDED.promotion_gate, research_runs.promotion_gate),
     holdout_status = CASE
         WHEN UPPER(COALESCE(research_runs.holdout_status, '')) = 'ACCESSED'

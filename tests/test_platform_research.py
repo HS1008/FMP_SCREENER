@@ -653,3 +653,8 @@ def test_platform_run_summary_upserts_generic_identity_not_stage2(monkeypatch):
     assert identity["research_lineage_id"] == "LINEAGE_QQQ_RIDGE_TRANSPORT_V0"
     assert "platform_research" in UPSERT_PLATFORM_RUN
     assert "ON CONFLICT (research_run_id)" in UPSERT_PLATFORM_RUN
+    assert (
+        "WHEN research_runs.run_status IN ('COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE')"
+        in UPSERT_PLATFORM_RUN
+    )
+    assert "run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status)" not in UPSERT_PLATFORM_RUN

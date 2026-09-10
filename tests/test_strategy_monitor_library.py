@@ -49,6 +49,8 @@ def test_platform_view_uses_investment_tabs_and_readout():
     library = (ROOT / "qc_research" / "research_library.py").read_text(encoding="utf-8")
     assert "csfml_v1_historical_impact_for_run" in library
     assert "label_integrity" in PLATFORM
+    assert "official_csfml_v1_identity_blockers" in PLATFORM
+    assert "This is not an economic PASS/WATCH/FAIL" in PLATFORM
 
 
 def test_filter_library_keeps_failed_and_hides_smoke_by_default():

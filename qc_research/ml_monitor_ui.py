@@ -1170,6 +1170,20 @@ def render_stage2_section(
     )
     integrity_caption = csfml_v1_integrity_caption(strategy_id, selected_run)
     if integrity_caption:
+        from qc_research.verify_csfml_v1 import official_csfml_v1_identity_blockers
+
+        blockers = official_csfml_v1_identity_blockers(
+            strategy_id=strategy_id,
+            research_run_id=selected_run,
+            engine=engine,
+        )
+        if blockers:
+            st.error(
+                "Official CSFML V1 identity refused ({0}). "
+                "Stored metrics are not shown as official. "
+                "This is not an economic PASS/WATCH/FAIL.".format(", ".join(blockers))
+            )
+            st.stop()
         st.caption(integrity_caption)
     accounting = view.get("create_accounting") or {}
     c1, c2, c3, c4 = st.columns(4)

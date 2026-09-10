@@ -76,6 +76,39 @@ def evaluate_csfml_v1_row(
     return report
 
 
+def official_csfml_v1_identity_blockers(
+    *,
+    strategy_id: str | None,
+    research_run_id: str | None,
+    row: Mapping[str, Any] | None = None,
+    engine: Any = None,
+) -> list[str]:
+    """Return blockers when the selected run is official CSFML V1.
+
+    Empty when the run is not official V1 or the stored identity matches the
+    pin. Query failures and a missing official row fail closed. Does not map
+    blockers onto PASS/WATCH/FAIL or change economic_gate.
+    """
+    from qc_research.contracts.label_integrity import csfml_v1_integrity_caption
+
+    if not csfml_v1_integrity_caption(strategy_id, research_run_id):
+        return []
+    pin = load_csfml_v1_label_integrity()
+    record = row
+    if record is None:
+        if engine is None:
+            return ["identity_query_failed"]
+        try:
+            with engine.connect() as conn:
+                record = query_csfml_v1_row(conn, run_id=str(research_run_id))
+        except Exception:
+            return ["identity_query_failed"]
+    report = evaluate_csfml_v1_row(record, pin)
+    if report.get("identity_ok"):
+        return []
+    return [str(item) for item in (report.get("blockers") or ["identity_refused"])]
+
+
 def query_csfml_v1_row(conn, *, run_id: str) -> dict[str, Any] | None:
     from sqlalchemy import text
 
