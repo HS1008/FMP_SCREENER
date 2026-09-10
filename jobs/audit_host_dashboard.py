@@ -14,7 +14,8 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-DEFAULT_PASSWORD_FILE = "/root/FMP_SCREENER/.secrets/dashboard_readonly.pw"
+DEFAULT_PASSWORD_FILE = "/etc/fmp/secrets/dashboard_readonly.pw"
+LEGACY_PASSWORD_FILE = "/root/FMP_SCREENER/.secrets/dashboard_readonly.pw"
 DEFAULT_CURRENT_LINK = "/opt/fmp/current"
 DEFAULT_UNIT = "fmp-dashboard"
 DEFAULT_ENV_FILE = "/etc/fmp/fmp-dashboard.env"
@@ -108,7 +109,13 @@ def collect_facts(
     from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
 
     environ = env if env is not None else os.environ
-    pw = Path(password_file or os.environ.get("FMP_DASHBOARD_READONLY_PW") or DEFAULT_PASSWORD_FILE)
+    configured = password_file or os.environ.get("FMP_DASHBOARD_READONLY_PW")
+    if configured:
+        pw = Path(configured)
+    else:
+        host_pw = Path(DEFAULT_PASSWORD_FILE)
+        legacy_pw = Path(LEGACY_PASSWORD_FILE)
+        pw = host_pw if _password_file_present(host_pw) or not _password_file_present(legacy_pw) else legacy_pw
     current = Path(current_link or os.environ.get("FMP_CURRENT_LINK") or DEFAULT_CURRENT_LINK)
     exec_start = systemd_exec if systemd_exec is not None else read_systemd_exec()
     pin = load_csfml_v1_label_integrity()
@@ -124,10 +131,12 @@ def collect_facts(
     pw_present = _password_file_present(pw)
     uses_current = "/opt/fmp/current" in exec_start
     uses_root = "/root/FMP_SCREENER" in exec_start
+    # Live identity/privilege proof is verify_rc==0 plus the session identity.
+    # A leftover password file is not sufficient and is not required once
+    # DASHBOARD_READONLY_URL is proven.
     readonly_proven = (
         verify_rc == 0
         and url_set
-        and pw_present
         and not writer
         and not provider
         and not writer_env_keys_present

@@ -162,7 +162,7 @@ def test_production_verify_workflow_runs_host_audit():
 
 
 def test_everyday_deploy_runs_host_audit_before_restart():
-    deploy = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    deploy = Path("scripts/deploy_host.sh").read_text(encoding="utf-8")
     assert "jobs.audit_host_dashboard" in deploy
     assert "--require-readonly" in deploy
     assert "--verify-rc" in deploy

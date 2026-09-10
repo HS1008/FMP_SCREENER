@@ -182,8 +182,15 @@ def test_csfml_v1_label_integrity_pin_does_not_change_economics():
 
     pin = load_csfml_v1_label_integrity()
     assert pin["historical_v1_impact"] == "CANNOT_RULE_OUT"
+    assert pin["impact_status"] == "CANNOT_RULE_OUT"
+    assert pin["rerun_decision"] == "UNDETERMINED_HUMAN_GATE"
     assert pin["rerun_authorized"] is False
     assert pin["economic_gate"] == "NOT_DEFINED"
+    assert pin["artifact_provenance"] == "VERIFIED"
+    assert pin["corrected_engineering"] == "IMPLEMENTED_TESTED"
+    assert pin["historical_rerun"] == "NOT_AUTHORIZED_HUMAN_DECISION_PENDING"
+    assert pin["promotion"] == "HUMAN_REVIEW_REQUIRED"
+    assert pin["holdout"] == "LOCKED"
     assert pin["holdout_accessed"] is False
     caption = csfml_v1_integrity_caption("CrossSectionalFactorML")
     assert caption and "CANNOT_RULE_OUT" in caption
@@ -209,6 +216,11 @@ def test_csfml_v1_label_integrity_pin_does_not_change_economics():
     assert distinction is not None
     assert distinction["historical_integrity"] == "CANNOT_RULE_OUT"
     assert distinction["economic_approval"] == "NOT_DEFINED"
+    assert distinction["artifact_provenance"] == "VERIFIED"
+    assert distinction["corrected_engineering"] == "IMPLEMENTED_TESTED"
+    assert distinction["historical_rerun"] == "NOT_AUTHORIZED_HUMAN_DECISION_PENDING"
+    assert distinction["promotion"] == "HUMAN_REVIEW_REQUIRED"
+    assert distinction["holdout"] == "LOCKED"
     assert "does not quantify or clear official V1" in distinction["engineering_completion"]
     assert csfml_status_distinction("SPYTrend") is None
     ui = (
@@ -216,7 +228,11 @@ def test_csfml_v1_label_integrity_pin_does_not_change_economics():
     ).read_text(encoding="utf-8")
     assert "csfml_v1_integrity_caption" in ui
     assert "csfml_status_distinction" in ui
-    assert "Engineering completion is not an economic PASS" in ui
+    assert "Artifact provenance:" in ui
+    assert "Historical label integrity:" in ui
+    assert "Corrected engineering:" in ui
+    assert "Historical rerun:" in ui
+    assert "economic_gate=NOT_DEFINED is not a failure" in ui
 
 
 @pytest.mark.skipif(QS_ROOT is None, reason="quant-strategies sibling repo not present")

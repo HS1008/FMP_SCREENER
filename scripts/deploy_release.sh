@@ -22,6 +22,7 @@ ROLLBACK=0
 SKIP_RESTART=0
 SKIP_PREFLIGHT=0
 SKIP_IDENTITY=0
+SKIP_MIGRATE=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -32,6 +33,7 @@ while [ $# -gt 0 ]; do
     --skip-restart) SKIP_RESTART=1; shift ;;
     --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
     --skip-identity) SKIP_IDENTITY=1; shift ;;
+    --skip-migrate) SKIP_MIGRATE=1; shift ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
@@ -149,7 +151,9 @@ if [ "$SKIP_PREFLIGHT" != 1 ]; then
       set +a
     fi
     unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-    python -m jobs.apply_migrations
+    if [ "$SKIP_MIGRATE" != 1 ]; then
+      python -m jobs.apply_migrations
+    fi
     python -m pytest -q tests/test_deploy_release.py tests/test_ui_boundary.py tests/test_surface_status.py
   )
 fi

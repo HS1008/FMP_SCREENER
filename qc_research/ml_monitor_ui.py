@@ -1206,13 +1206,19 @@ def render_stage2_section(
             )
             st.stop()
         distinction = csfml_status_distinction(strategy_id, selected_run) or {}
+        st.write("Artifact provenance: **{0}**".format(distinction.get("artifact_provenance") or "VERIFIED"))
+        st.write("Historical label integrity: **{0}**".format(distinction.get("historical_integrity") or "CANNOT_RULE_OUT"))
+        st.write("Corrected engineering: **{0}**".format(distinction.get("corrected_engineering") or "IMPLEMENTED_TESTED"))
+        st.write("Historical rerun: **{0}**".format(distinction.get("historical_rerun") or "NOT_AUTHORIZED_HUMAN_DECISION_PENDING"))
+        st.write("Economic gate: **{0}**".format(distinction.get("economic_approval") or "NOT_DEFINED"))
+        st.write("Promotion: **{0}**".format(distinction.get("promotion") or "HUMAN_REVIEW_REQUIRED"))
+        st.write("Holdout: **{0}**".format(distinction.get("holdout") or "LOCKED"))
         st.caption(integrity_caption)
         if distinction.get("engineering_completion"):
             st.caption(distinction["engineering_completion"])
         st.caption(
-            "Economic approval is {0}. Engineering completion is not an economic PASS.".format(
-                distinction.get("economic_approval") or "NOT_DEFINED"
-            )
+            "These statuses are separate. Engineering completion is not an economic PASS "
+            "and does not clear historical V1. economic_gate=NOT_DEFINED is not a failure."
         )
     accounting = view.get("create_accounting") or {}
     c1, c2, c3, c4 = st.columns(4)

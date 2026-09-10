@@ -16,7 +16,7 @@ RELEASE = (ROOT / "scripts" / "deploy_release.sh").read_text(encoding="utf-8")
 STAGE1_VERIFY = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(
     encoding="utf-8"
 )
-DEPLOY = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+DEPLOY = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
 LIVE_INGEST = (ROOT / "scripts" / "ingest_platform_live.sh").read_text(encoding="utf-8")
 UNSET_STREAMLIT = (
     "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH "
@@ -67,8 +67,8 @@ def test_deploy_release_sources_writer_env_before_preflight_migrate():
 
 
 def test_writer_jobs_unset_streamlit_identity_after_sourcing_checkout_env():
-    immutable = DEPLOY.split("Applying migrations from the immutable release tree", 1)[1]
-    immutable = immutable.split("Verifying Streamlit identity from immutable release", 1)[0]
+    immutable = DEPLOY.split("Applying database migrations ONCE from the staged SHA", 1)[1]
+    immutable = immutable.split("Verifying Streamlit database identity", 1)[0]
     assert UNSET_STREAMLIT in immutable
     assert immutable.index("/root/FMP_SCREENER/.env") < immutable.index(UNSET_STREAMLIT)
     assert immutable.index(UNSET_STREAMLIT) < immutable.index("python -m jobs.apply_migrations")

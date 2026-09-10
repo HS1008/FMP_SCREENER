@@ -32,30 +32,10 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "does not match requested" in script
     fetch_block = script.split("if [ ! -d \"$target/.git\" ]; then", 1)[1]
     assert 'git -C "$target" fetch --depth 1 origin "$SHA"' not in fetch_block.split("fi", 1)[0]
-    deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
-    assert "git pull --ff-only origin main" in deploy
-    assert "qc_research.contracts.digests" in deploy
-    assert "scripts/provision_dashboard_readonly.sh --require" in deploy
-    assert deploy.index("scripts/provision_dashboard_readonly.sh --require") < deploy.index(
-        "scripts/verify_dashboard_identity.sh"
-    )
-    assert "scripts/verify_dashboard_identity.sh" in deploy
-    assert "FMP_IDENTITY_ENV_ONLY=1" in deploy
-    assert "FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env" in deploy
-    assert deploy.index("FMP_IDENTITY_ENV_ONLY=1") < deploy.index("scripts/verify_dashboard_identity.sh")
-    assert "/opt/fmp/current/scripts/verify_dashboard_identity.sh" in deploy
-    assert "immutable current is missing scripts/verify_dashboard_identity.sh" in deploy
-    assert "source /opt/fmp/current/venv/bin/activate" in deploy
-    assert "PYTHONPATH=/opt/fmp/current" in deploy
-    immutable_verify = deploy.split("Verifying Streamlit identity from immutable release checkout", 1)[1]
-    assert immutable_verify.index("source /opt/fmp/current/venv/bin/activate") < immutable_verify.index(
-        "scripts/verify_dashboard_identity.sh"
-    )
     assert "--skip-identity" in script
     assert "DEPLOY_BREAK_GLASS" in script
     assert "refusing --skip-identity without DEPLOY_BREAK_GLASS=1" in script
-    assert "--skip-identity" not in deploy
-    assert "DEPLOY_BREAK_GLASS" not in deploy
+    assert "--skip-migrate" in script
     assert "qc_research.contracts.digests" in script
     assert "scripts/provision_dashboard_readonly.sh --require" in script
     assert "scripts/verify_dashboard_identity.sh" in script
@@ -75,150 +55,8 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "provision_dashboard_readonly.sh" not in preflight_block
     assert "verify_dashboard_identity.sh" not in preflight_block
     assert "/etc/fmp/fmp-writer.env" in preflight_block
-    assert preflight_block.index("/etc/fmp/fmp-writer.env") < preflight_block.index(
-        "python -m jobs.apply_migrations"
-    )
+    assert 'if [ "$SKIP_MIGRATE" != 1 ]; then' in preflight_block
     assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in preflight_block
-    assert "--verify-rc" in deploy
-    assert "dashboard identity verify failed" in deploy
-    assert deploy.index("jobs.report_deploy_identity") < deploy.index("systemctl restart fmp-dashboard")
-    assert deploy.index("--verify-rc") < deploy.index("systemctl restart fmp-dashboard")
-    assert "/opt/fmp/releases" in deploy
-    assert "--skip-restart" in deploy
-    assert "--skip-identity" not in deploy
-    assert "FMP_IMMUTABLE_RELEASE_STRICT" in deploy
-    assert "immutable release populate failed" in deploy
-    assert "FMP_IMMUTABLE_RELEASE_STRICT=1" not in deploy.split("immutable release populate failed", 1)[1][:80]
-    assert "jobs.report_deploy_identity" in deploy
-    assert "jobs.record_deploy_identity_db" in deploy
-    assert "jobs.audit_host_dashboard" in deploy
-    assert "--require-readonly" in deploy
-    assert "/var/lib/fmp/deploy/host_audit.json" in deploy
-    assert deploy.index("jobs.report_deploy_identity") < deploy.index("jobs.record_deploy_identity_db")
-    assert deploy.index("jobs.audit_host_dashboard") < deploy.index("jobs.record_deploy_identity_db")
-    assert deploy.index("qc_research.verify_stage1 --live") < deploy.index("jobs.record_deploy_identity_db")
-    assert "jobs.record_research_live_identity_db" not in deploy
-    assert "--csfml /var/lib/fmp/deploy/csfml_v1_live.json" in deploy
-    assert "--tlt /var/lib/fmp/deploy/tlt_v0_live.json" in deploy
-    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in deploy
-    assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
-    assert deploy.index("/etc/fmp/fmp-dashboard.env") < deploy.index("jobs.audit_host_dashboard")
-    record_prefix = deploy.split("jobs.record_deploy_identity_db", 1)[0]
-    assert "/etc/fmp/fmp-writer.env" in record_prefix[-500:]
-    assert "/root/FMP_SCREENER/.env" in record_prefix[-500:]
-    assert record_prefix.rfind("/etc/fmp/fmp-writer.env") > record_prefix.rfind(
-        "Persisting sanitized deploy identity"
-    )
-    assert "/etc/fmp/fmp-dashboard.env" not in record_prefix.split("Persisting sanitized deploy identity", 1)[-1]
-    report_block = deploy.split("Recording deploy identity", 1)[1].split(
-        "Auditing host Streamlit identity", 1
-    )[0]
-    assert "/etc/fmp/fmp-dashboard.env" in report_block
-    assert "jobs.report_deploy_identity" in report_block
-    assert "--env-file /etc/fmp/fmp-dashboard.env" in report_block
-    assert "unset DATABASE_URL" in report_block
-    assert "source /root/FMP_SCREENER/.env" not in report_block
-    assert ". /root/FMP_SCREENER/.env" not in report_block
-    assert "jobs.cutover_dashboard_systemd" in deploy
-    assert "qc_research.verify_csfml_v1 --live" in deploy
-    assert "--require-present" not in deploy
-    assert "/var/lib/fmp/deploy/csfml_v1_live.json" in deploy
-    assert "CSFML_CODE_ROOT=/opt/fmp/current" in deploy
-    assert deploy.index("CSFML_CODE_ROOT=/opt/fmp/current") < deploy.index(
-        "qc_research.verify_csfml_v1 --live"
-    )
-    assert "unset MIGRATIONS_BACKFILL_SHA256" in deploy
-    assert "Applying migrations from the immutable release tree" in deploy
-    assert deploy.index("Applying migrations from the immutable release tree") < deploy.index(
-        "Verifying Streamlit identity from immutable release checkout"
-    )
-    immutable_migrate = deploy.split("Applying migrations from the immutable release tree", 1)[1]
-    immutable_migrate = immutable_migrate.split(
-        "Verifying Streamlit identity from immutable release checkout", 1
-    )[0]
-    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in immutable_migrate
-    assert immutable_migrate.index("/root/FMP_SCREENER/.env") < immutable_migrate.index(
-        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
-    )
-    assert "official CSFML V1 identity refused" in deploy
-    assert "qc_research.verify_tlt_monitor --live" in deploy
-    assert "--allow-missing" in deploy
-    assert "/var/lib/fmp/deploy/tlt_v0_live.json" in deploy
-    assert "jobs.record_research_live_identity_db" not in deploy
-    assert "official TLT V0 identity refused" in deploy
-    assert deploy.index("qc_research.verify_csfml_v1 --live") < deploy.index(
-        "qc_research.verify_tlt_monitor --live"
-    )
-    assert deploy.index("qc_research.verify_tlt_monitor --live") < deploy.index(
-        "jobs.record_deploy_identity_db"
-    )
-    assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
-        "jobs.cutover_dashboard_systemd"
-    )
-    assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index(
-        "jobs.record_deploy_identity_db"
-    )
-    tlt = deploy.split("Verifying official TLT V0 identity", 1)[1].split(
-        "Verifying official Stage 1 identity", 1
-    )[0]
-    assert "/etc/fmp/fmp-dashboard.env" in tlt
-    assert "unset DATABASE_URL" in tlt
-    assert "--allow-missing" in tlt
-    assert ". /root/FMP_SCREENER/.env" not in tlt
-    assert "source /root/FMP_SCREENER/.env" not in tlt
-    assert "qc_research.verify_stage1 --live" in deploy
-    assert "/var/lib/fmp/deploy/stage1_live.json" in deploy
-    assert "official Stage 1 identity refused" in deploy
-    assert deploy.index("qc_research.verify_tlt_monitor --live") < deploy.index(
-        "qc_research.verify_stage1 --live"
-    )
-    assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
-        "jobs.record_deploy_identity_db"
-    )
-    stage1 = deploy.split("Verifying official Stage 1 identity", 1)[1].split(
-        "Persisting sanitized deploy identity", 1
-    )[0]
-    assert "/etc/fmp/fmp-dashboard.env" in stage1
-    assert "unset DATABASE_URL" in stage1
-    assert "--require-present" not in stage1
-    assert ". /root/FMP_SCREENER/.env" not in stage1
-    assert "source /root/FMP_SCREENER/.env" not in stage1
-    persist = deploy.split("Persisting sanitized deploy identity", 1)[1].split(
-        "Restarting Streamlit", 1
-    )[0]
-    assert "jobs.record_deploy_identity_db" in persist
-    assert "jobs.record_research_live_identity_db" not in persist
-    assert "--csfml /var/lib/fmp/deploy/csfml_v1_live.json" in persist
-    assert "--tlt /var/lib/fmp/deploy/tlt_v0_live.json" in persist
-    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in persist
-    assert "/etc/fmp/fmp-writer.env" in persist
-    assert "/root/FMP_SCREENER/.env" in persist
-    assert persist.index("/etc/fmp/fmp-writer.env") < persist.index("/root/FMP_SCREENER/.env")
-    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in persist
-    assert persist.index("/root/FMP_SCREENER/.env") < persist.index(
-        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
-    )
-    assert "/etc/fmp/fmp-dashboard.env" not in persist
-    assert "--apply" not in deploy
-    assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy
-    assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
-    assert "systemctl restart fmp-dashboard" in deploy
-    restart = deploy.split("Restarting Streamlit", 1)[1]
-    assert "systemctl is-active --quiet fmp-dashboard" in restart
-    assert "Re-verifying Streamlit database identity after restart" in restart
-    assert "post-restart dashboard identity verify failed" in restart
-    assert restart.index("systemctl restart fmp-dashboard") < restart.index(
-        "Re-verifying Streamlit database identity after restart"
-    )
-    assert restart.index("systemctl is-active --quiet fmp-dashboard") < restart.index(
-        "scripts/verify_dashboard_identity.sh"
-    )
-    assert "FMP_IDENTITY_ENV_ONLY=1" in restart
-    assert "FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env" in restart
-    assert "/opt/fmp/current/scripts/verify_dashboard_identity.sh" in restart
-    assert ". /root/FMP_SCREENER/.env" not in restart
-    assert "source /root/FMP_SCREENER/.env" not in restart
-    assert "jobs.record_deploy_identity_db" not in restart
     assert (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").is_file()
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
     assert "one INSERT" in docs

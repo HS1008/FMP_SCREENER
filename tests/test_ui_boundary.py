@@ -93,6 +93,38 @@ def test_streamlit_entrypoints_strip_writer_and_never_call_load_dotenv():
     assert "def _background_warm_enabled" in dashboard
 
 
+FORBIDDEN_PROVIDER_IMPORTS = (
+    "import yfinance",
+    "from yfinance",
+    "import ib_insync",
+    "from ib_insync",
+    "quantconnect.com",
+    "from data_sources.fred",
+    "import data_sources.fred",
+    "from data_sources.finra",
+    "EIA_API",
+)
+
+
+def test_production_streamlit_pages_do_not_import_provider_clients():
+    production = [
+        *(ROOT / "pages").glob("*.py"),
+        ROOT / "qc_research" / "ml_monitor_ui.py",
+        ROOT / "qc_research" / "research_readout.py",
+        ROOT / "qc_research" / "preview_platform_monitor.py",
+    ]
+    for path in production:
+        text = path.read_text(encoding="utf-8")
+        for needle in FORBIDDEN_PROVIDER_IMPORTS:
+            assert needle not in text, "{0} imports provider path {1}".format(path.name, needle)
+        assert "object_get(" not in text
+    dashboard = (ROOT / "dashboard.py").read_text(encoding="utf-8")
+    assert "provider_fetch_allowed" in dashboard or "refuse_provider_fetch" in dashboard
+    assert "STREAMLIT_ALLOW_PROVIDER_FETCH" in (ROOT / "qc_research" / "ui_boundary.py").read_text(
+        encoding="utf-8"
+    )
+
+
 def test_provider_fetch_opt_in(monkeypatch):
     monkeypatch.setenv("STREAMLIT_ALLOW_PROVIDER_FETCH", "1")
     assert provider_fetch_allowed() is True

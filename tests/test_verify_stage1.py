@@ -124,7 +124,7 @@ def test_verify_module_is_readonly_and_wired_without_require_present():
     assert "begin()" not in text
     assert "DATABASE_URL" not in text
     assert "backtests/create" not in text
-    deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    deploy = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
     assert "qc_research.verify_stage1" in deploy
     assert "--live" in deploy
     assert "--require-present" not in deploy

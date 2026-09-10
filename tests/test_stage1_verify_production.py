@@ -314,7 +314,9 @@ def test_stage1_production_verify_uses_dashboard_readonly():
 
 
 def test_deploy_installs_backtest_sync_cron_after_migrations():
-    deploy = _workflow_text("deploy.yml")
+    deploy = (
+        Path(__file__).resolve().parent.parent / "scripts" / "deploy_host.sh"
+    ).read_text(encoding="utf-8")
     verify = _workflow_text("stage1_verify.yml")
     assert "install_backtest_sync_cron.sh" in deploy
     assert "python -m jobs.apply_migrations" in deploy

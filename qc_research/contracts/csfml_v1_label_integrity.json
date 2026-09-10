@@ -6,10 +6,22 @@
   "authoritative_csfml_v1_sha": "ef270841621933f5039680cb070559f43bd1e3c8",
   "authoritative_csfml_v1_qc_sha": "54a5543f5796073cdf9192b04daa5dc08e8d1747",
   "historical_v1_impact": "CANNOT_RULE_OUT",
+  "impact_status": "CANNOT_RULE_OUT",
+  "rerun_decision": "UNDETERMINED_HUMAN_GATE",
   "rerun_authorized": false,
+  "artifact_provenance": "VERIFIED",
+  "corrected_engineering": "IMPLEMENTED_TESTED",
+  "historical_rerun": "NOT_AUTHORIZED_HUMAN_DECISION_PENDING",
   "economic_gate": "NOT_DEFINED",
+  "promotion": "HUMAN_REVIEW_REQUIRED",
+  "holdout": "LOCKED",
   "holdout_accessed": false,
   "issue": "lifetime_delisting_map_without_event_date",
   "safe_when_t21_present": true,
-  "monitor_caption": "Official CSFML V1 label integrity is CANNOT_RULE_OUT for missing t+21 plus a later lifetime delisting. Complete 21-session exits are unaffected. economic_gate stays NOT_DEFINED. No QuantConnect rerun is authorized."
+  "label_resolution_id": "CSFML_LABEL_RESOLUTION_FAILCLOSED_V1",
+  "label_resolution_hash": "4deb64b1f3f1da3bab722f8bd8bc41379bd0df549aeb4061861c030cff56a54b",
+  "historical_target_hash": "494299984781b88598fc90e153adfd32420715a83dc75699bfb5736dbb451ff3",
+  "historical_config_fingerprint": "7684df2e9dff44fa",
+  "corrected_config_fingerprint": "57e40d871400d4b0",
+  "monitor_caption": "Official CSFML V1 statuses are separate: artifact provenance VERIFIED (intact / parseable / provenance-bound); historical label integrity CANNOT_RULE_OUT; corrected engineering IMPLEMENTED / TESTED for future runs; historical rerun NOT AUTHORIZED / HUMAN DECISION PENDING; economic_gate NOT_DEFINED; promotion HUMAN_REVIEW_REQUIRED; holdout LOCKED. Engineering completion does not clear historical economic evidence."
 }

@@ -16,17 +16,20 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-PW_FILE="$ROOT/.secrets/dashboard_readonly.pw"
+HOST_PW_FILE="/etc/fmp/secrets/dashboard_readonly.pw"
+LEGACY_PW_FILE="$ROOT/.secrets/dashboard_readonly.pw"
+PW_FILE="$HOST_PW_FILE"
 DASHBOARD_ENV="$ROOT/.env"
 SYSTEMD_ENV="/etc/fmp/fmp-dashboard.env"
 SQL_FILE="$ROOT/db/roles/dashboard_readonly.sql"
 REQUIRE=0
 URL_FILE=""
+PW_FILE_SET=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --root) ROOT="$2"; shift 2 ;;
-    --pw-file) PW_FILE="$2"; shift 2 ;;
+    --pw-file) PW_FILE="$2"; PW_FILE_SET=1; shift 2 ;;
     --dashboard-env) DASHBOARD_ENV="$2"; shift 2 ;;
     --systemd-env) SYSTEMD_ENV="$2"; shift 2 ;;
     --sql-file) SQL_FILE="$2"; shift 2 ;;
@@ -37,6 +40,25 @@ while [ $# -gt 0 ]; do
 done
 
 cd "$ROOT"
+
+migrate_password_file() {
+  if [ "$PW_FILE" != "$HOST_PW_FILE" ]; then
+    return 0
+  fi
+  if [ -s "$HOST_PW_FILE" ]; then
+    return 0
+  fi
+  if [ -s "$LEGACY_PW_FILE" ]; then
+    install -d -m 0700 "$(dirname "$HOST_PW_FILE")" 2>/dev/null || true
+    if [ -d "$(dirname "$HOST_PW_FILE")" ]; then
+      if cp -a "$LEGACY_PW_FILE" "$HOST_PW_FILE" 2>/dev/null; then
+        chmod 0600 "$HOST_PW_FILE" || true
+        echo "dashboard_readonly_pw=migrated_to_etc_fmp_secrets"
+        echo "dashboard_readonly_pw_legacy_kept=1"
+      fi
+    fi
+  fi
+}
 
 load_host_env() {
   local f
@@ -236,9 +258,18 @@ materialize_env() {
   fi
 }
 
+if [ "$PW_FILE_SET" != 1 ]; then
+  migrate_password_file
+  if [ ! -s "$PW_FILE" ] && [ -s "$LEGACY_PW_FILE" ]; then
+    PW_FILE="$LEGACY_PW_FILE"
+    echo "dashboard_readonly_pw=legacy_checkout_path"
+  fi
+fi
+
 if [ ! -s "$PW_FILE" ]; then
   if [ "$REQUIRE" = 1 ]; then
     echo "FAIL: dashboard_readonly password file absent and --require is set"
+    echo "expected_pw_file=/etc/fmp/secrets/dashboard_readonly.pw"
     exit 3
   fi
   echo "dashboard_readonly=skipped (password file absent)"

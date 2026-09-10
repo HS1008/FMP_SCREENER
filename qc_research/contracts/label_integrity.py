@@ -152,13 +152,21 @@ def csfml_status_distinction(
         return None
     pin = load_csfml_v1_label_integrity()
     return {
-        "historical_integrity": str(pin["historical_v1_impact"]),
+        "artifact_provenance": str(pin.get("artifact_provenance") or "VERIFIED"),
+        "historical_integrity": str(pin.get("impact_status") or pin["historical_v1_impact"]),
         "historical_caption": caption,
+        "corrected_engineering": str(pin.get("corrected_engineering") or "IMPLEMENTED_TESTED"),
         "engineering_completion": (
-            "Engineering completion of delisting-event semantics does not "
-            "quantify or clear official V1 results."
+            "Corrected engineering is IMPLEMENTED / TESTED for future runs. "
+            "That does not quantify or clear official V1 economic evidence."
         ),
+        "historical_rerun": str(
+            pin.get("historical_rerun") or "NOT_AUTHORIZED_HUMAN_DECISION_PENDING"
+        ),
+        "rerun_decision": str(pin.get("rerun_decision") or "UNDETERMINED_HUMAN_GATE"),
         "economic_approval": str(pin.get("economic_gate") or "NOT_DEFINED"),
+        "promotion": str(pin.get("promotion") or "HUMAN_REVIEW_REQUIRED"),
+        "holdout": str(pin.get("holdout") or "LOCKED"),
     }
 
 
@@ -225,6 +233,8 @@ def scan_official_csfml_v1_published_tree() -> dict[str, Any]:
         raise ArtifactContractError("Official CSFML V1 pin historical_v1_impact must stay CANNOT_RULE_OUT")
     if pin.get("rerun_authorized") is not False:
         raise ArtifactContractError("Official CSFML V1 pin has rerun_authorized=false")
+    if str(pin.get("rerun_decision") or "UNDETERMINED_HUMAN_GATE") != "UNDETERMINED_HUMAN_GATE":
+        raise ArtifactContractError("Official CSFML V1 pin rerun_decision must stay UNDETERMINED_HUMAN_GATE")
     if present:
         raise ArtifactContractError(
             "Official CSFML V1 published tree contains {0}; do not treat "

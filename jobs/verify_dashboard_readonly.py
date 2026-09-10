@@ -1,5 +1,6 @@
 """Verify the Streamlit identity can SELECT and cannot mutate.
 
+Privilege denial must be proven. Constraint/schema errors are not read-only.
 Never prints URLs or passwords. Exit 0 ok, 2 failed, 3 config.
 """
 
@@ -7,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import Any
 
 from sqlalchemy import create_engine, text
 
@@ -117,6 +119,7 @@ CORE_MUTATION_PROBES = (
     ("UPDATE research_risk_metrics SET metric_name = metric_name WHERE FALSE", "UPDATE_RISK"),
     ("DELETE FROM research_risk_metrics WHERE FALSE", "DELETE_RISK"),
     ("CREATE TABLE dashboard_readonly_probe (id int)", "CREATE"),
+    ("TRUNCATE TABLE research_runs", "TRUNCATE"),
 )
 
 OPTIONAL_MUTATION_PROBES = (
@@ -166,9 +169,167 @@ OPTIONAL_MUTATION_PROBES = (
     ("DELETE FROM research_oos_windows WHERE FALSE", "DELETE_OOS_WINDOWS"),
 )
 
+DENIED_SQLSTATES = frozenset({"42501", "25006"})
+DML_PRIVILEGES = ("INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER")
+WRITER_ROLE_MARKERS = (
+    "fmp_writer",
+    "writer",
+    "mi_writer",
+    "market_intelligence",
+    "postgres",
+    "rds_superuser",
+)
+
+
+class ReadonlyVerifyError(RuntimeError):
+    """Dashboard identity is not proven read-only."""
+
 
 def _url() -> str:
     return (os.environ.get("DASHBOARD_READONLY_URL") or "").strip()
+
+
+def expected_role_name() -> str:
+    override = (os.environ.get("DASHBOARD_READONLY_ROLE") or "").strip()
+    if override:
+        return override
+    url = _url()
+    if "://" in url:
+        rest = url.split("://", 1)[1]
+        user = rest.split("@", 1)[0].split(":", 1)[0]
+        if user:
+            return user
+    return "dashboard_readonly"
+
+
+def sqlstate_of(exc: BaseException) -> str:
+    orig = getattr(exc, "orig", None)
+    code = getattr(orig, "pgcode", None) or getattr(exc, "pgcode", None)
+    if code:
+        return str(code)
+    message = str(exc).lower()
+    if "permission denied" in message or "must be owner" in message:
+        return "42501"
+    if "read-only" in message or "cannot execute" in message and "read-only" in message:
+        return "25006"
+    return ""
+
+
+def mutation_is_privilege_denial(exc: BaseException) -> bool:
+    return sqlstate_of(exc) in DENIED_SQLSTATES
+
+
+def _scalar(conn, statement: str, **params: Any) -> Any:
+    return conn.execute(text(statement), params).scalar()
+
+
+def prove_session_identity(conn, expected: str) -> None:
+    current = str(_scalar(conn, "SELECT current_user") or "")
+    session = str(_scalar(conn, "SELECT session_user") or "")
+    if current != expected or session != expected:
+        raise ReadonlyVerifyError(
+            "identity mismatch current_user={0} session_user={1} expected={2}".format(
+                current, session, expected
+            )
+        )
+    txn = str(_scalar(conn, "SHOW transaction_read_only") or "").lower()
+    default = str(_scalar(conn, "SHOW default_transaction_read_only") or "").lower()
+    if txn not in {"on"} or default not in {"on"}:
+        raise ReadonlyVerifyError(
+            "transaction_read_only={0} default_transaction_read_only={1}".format(txn, default)
+        )
+
+
+def prove_privileges(conn, role: str) -> None:
+    if _scalar(conn, "SELECT has_schema_privilege(:r, 'public', 'CREATE')", r=role):
+        raise ReadonlyVerifyError(
+            "role {0} has CREATE on schema public (direct or PUBLIC-inherited)".format(role)
+        )
+    tables = conn.execute(
+        text(
+            """
+            SELECT table_name FROM information_schema.tables
+            WHERE table_schema = 'public' AND table_type IN ('BASE TABLE', 'VIEW')
+            """
+        )
+    ).fetchall()
+    for (name,) in tables:
+        for priv in DML_PRIVILEGES:
+            if _scalar(
+                conn,
+                "SELECT has_table_privilege(:r, :t, :p)",
+                r=role,
+                t="public.{0}".format(name),
+                p=priv,
+            ):
+                raise ReadonlyVerifyError(
+                    "role {0} has {1} on {2}".format(role, priv, name)
+                )
+    sequences = conn.execute(
+        text(
+            """
+            SELECT sequence_name FROM information_schema.sequences
+            WHERE sequence_schema = 'public'
+            """
+        )
+    ).fetchall()
+    for (name,) in sequences:
+        for priv in ("USAGE", "UPDATE"):
+            if _scalar(
+                conn,
+                "SELECT has_sequence_privilege(:r, :s, :p)",
+                r=role,
+                s="public.{0}".format(name),
+                p=priv,
+            ):
+                raise ReadonlyVerifyError(
+                    "role {0} has {1} on sequence {2}".format(role, priv, name)
+                )
+    members = conn.execute(
+        text(
+            """
+            SELECT r.rolname
+            FROM pg_auth_members m
+            JOIN pg_roles u ON u.oid = m.member
+            JOIN pg_roles r ON r.oid = m.roleid
+            WHERE u.rolname = :role
+            """
+        ),
+        {"role": role},
+    ).fetchall()
+    dangerous = [
+        str(row[0])
+        for row in members
+        if any(marker in str(row[0]).lower() for marker in WRITER_ROLE_MARKERS)
+        or str(row[0]).lower() in {"pg_write_all_data", "pg_database_owner"}
+    ]
+    if dangerous:
+        raise ReadonlyVerifyError(
+            "role {0} is a member of writer/admin identities: {1}".format(
+                role, ",".join(dangerous)
+            )
+        )
+
+
+def _probe_mutation(conn, statement: str, label: str, *, optional: bool) -> None:
+    conn.execute(text("SAVEPOINT readonly_probe"))
+    try:
+        conn.execute(text(statement))
+    except Exception as exc:
+        conn.execute(text("ROLLBACK TO SAVEPOINT readonly_probe"))
+        conn.execute(text("RELEASE SAVEPOINT readonly_probe"))
+        if mutation_is_privilege_denial(exc):
+            return
+        if optional and "does not exist" in str(exc).lower():
+            return
+        raise ReadonlyVerifyError(
+            "mutation {0} failed with SQLSTATE {1}, not privilege/read-only denial".format(
+                label, sqlstate_of(exc) or "unknown"
+            )
+        ) from exc
+    conn.execute(text("ROLLBACK TO SAVEPOINT readonly_probe"))
+    conn.execute(text("RELEASE SAVEPOINT readonly_probe"))
+    raise ReadonlyVerifyError("mutation {0} succeeded".format(label))
 
 
 def run() -> int:
@@ -181,31 +342,39 @@ def run() -> int:
         if url.startswith("postgresql://") and "+psycopg2" not in url
         else url
     )
-    with engine.connect() as conn:
-        for statement in REQUIRED_SELECTS:
-            conn.execute(text(statement))
-        for statement in OPTIONAL_SELECTS:
-            try:
+    expected = expected_role_name()
+    try:
+        with engine.connect() as conn:
+            prove_session_identity(conn, expected)
+            prove_privileges(conn, expected)
+            for statement in REQUIRED_SELECTS:
                 conn.execute(text(statement))
-            except Exception:
-                conn.rollback()
-        denied = []
-        for statement, label in CORE_MUTATION_PROBES + OPTIONAL_MUTATION_PROBES:
-            try:
-                conn.execute(text(statement))
-                conn.rollback()
-                denied.append(label)
-            except Exception:
-                conn.rollback()
-        if denied:
-            print("READONLY_VERIFY_FAILED mutations_succeeded={0}".format(",".join(denied)))
-            return 2
+            for statement in OPTIONAL_SELECTS:
+                try:
+                    conn.execute(text("SAVEPOINT optional_select"))
+                    conn.execute(text(statement))
+                    conn.execute(text("RELEASE SAVEPOINT optional_select"))
+                except Exception:
+                    conn.execute(text("ROLLBACK TO SAVEPOINT optional_select"))
+                    conn.execute(text("RELEASE SAVEPOINT optional_select"))
+            for statement, label in CORE_MUTATION_PROBES:
+                _probe_mutation(conn, statement, label, optional=False)
+            for statement, label in OPTIONAL_MUTATION_PROBES:
+                _probe_mutation(conn, statement, label, optional=True)
+            conn.rollback()
+    except ReadonlyVerifyError as exc:
+        print("READONLY_VERIFY_FAILED {0}".format(exc))
+        return 2
     print("readonly_select=ok")
     print("readonly_insert=denied")
     print("readonly_update=denied")
     print("readonly_delete=denied")
+    print("readonly_truncate=denied")
     print("readonly_create=denied")
     print("readonly_monitor_tables=denied")
+    print("readonly_current_user={0}".format(expected))
+    print("readonly_session_user={0}".format(expected))
+    print("readonly_transaction_read_only=on")
     return 0
 
 

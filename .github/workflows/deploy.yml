@@ -1,5 +1,7 @@
 name: Deploy FMP Dashboard
 
+# MERGING TO MAIN IS A PRODUCTION DEPLOY EVENT.
+# This workflow auto-deploys on push to main via SSH to DigitalOcean.
 on:
   push:
     branches:
@@ -10,357 +12,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Configure SSH
+      - name: Checkout deploy orchestrator
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure pinned SSH trust
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
-          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_SSH_KNOWN_HOSTS: ${{ secrets.DO_SSH_KNOWN_HOSTS }}
         run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
+            echo "FAIL: DO_SSH_KEY is required"
+            exit 3
+          fi
+          if [ -z "${DO_SSH_KNOWN_HOSTS:-}" ]; then
+            echo "FAIL: DO_SSH_KNOWN_HOSTS is required (pinned host key, not ssh-keyscan)"
+            exit 3
+          fi
           mkdir -p ~/.ssh
-
           printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-
-          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          printf "%s\n" "$DO_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          unset SSH_PRIVATE_KEY DO_SSH_KNOWN_HOSTS
 
       - name: Deploy to DigitalOcean
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" << 'EOF'
-            set -e
-
-            cd /root/FMP_SCREENER
-
-            echo "Fetching latest code..."
-            git fetch origin main
-
-            echo "Preserving host-modified activation scripts outside the checkout (not secrets)"
-            preserve_dir=/root/fmp_backups/checkout_preserve
-            install -d -m 0700 "$preserve_dir"
-            stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-            for rel in scripts/activate_market_intelligence_host.sh scripts/materialize_ai_context_env.py scripts/install_market_intelligence_timers.sh; do
-              if [ ! -e "$rel" ]; then
-                continue
-              fi
-              tracked=0
-              git ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 && tracked=1
-              dirty=0
-              if [ "$tracked" = 1 ] && ! git diff --quiet -- "$rel"; then
-                dirty=1
-              fi
-              if [ "$tracked" = 0 ]; then
-                dirty=1
-              fi
-              if [ "$dirty" = 1 ]; then
-                echo "preserving $rel -> $preserve_dir"
-                cp -a "$rel" "$preserve_dir/$(basename "$rel").$stamp"
-                if [ "$tracked" = 1 ]; then
-                  git checkout -- "$rel"
-                else
-                  rm -f "$rel"
-                fi
-              fi
-            done
-            echo "working_tree_porcelain=$(git status --porcelain | tr '\n' '|')"
-
-            echo "Updating server..."
-            git pull --ff-only origin main
-
-            echo "Activating virtual environment..."
-            source venv/bin/activate
-
-            if [ -f requirements.txt ]; then
-              echo "Updating dependencies..."
-              pip install -r requirements.txt
-            fi
-
-            echo "Verifying contract digests..."
-            python -m qc_research.contracts.digests
-
-            echo "Applying database migrations..."
-            unset MIGRATIONS_BACKFILL_SHA256
-            python -m jobs.apply_migrations
-
-            echo "Provisioning dashboard_readonly (password file required)..."
-            bash scripts/provision_dashboard_readonly.sh --require
-
-            VERIFY_RC=0
-            echo "Verifying Streamlit database identity..."
-            export FMP_IDENTITY_ENV_ONLY=1
-            export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
-            bash scripts/verify_dashboard_identity.sh || VERIFY_RC=$?
-
-            echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
-            bash scripts/install_backtest_sync_cron.sh /root/FMP_SCREENER
-
-            IMMUTABLE_RC=0
-            if [ -d /opt/fmp/releases ]; then
-              echo "Populating immutable release tree (systemd still uses /root/FMP_SCREENER)"
-              if [ "${FMP_IMMUTABLE_RELEASE_STRICT:-}" = "1" ]; then
-                bash scripts/deploy_release.sh --sha "$(git rev-parse HEAD)" --skip-restart \
-                  || IMMUTABLE_RC=$?
-              else
-                bash scripts/deploy_release.sh --sha "$(git rev-parse HEAD)" --skip-restart --skip-preflight \
-                  || IMMUTABLE_RC=$?
-              fi
-              if [ "$IMMUTABLE_RC" != "0" ]; then
-                echo "immutable release populate failed rc=${IMMUTABLE_RC}"
-                exit "$IMMUTABLE_RC"
-              fi
-              if [ "$IMMUTABLE_RC" = "0" ]; then
-                if [ ! -f /opt/fmp/current/scripts/verify_dashboard_identity.sh ]; then
-                  echo "immutable current is missing scripts/verify_dashboard_identity.sh"
-                  exit 6
-                fi
-                echo "Applying migrations from the immutable release tree..."
-                (
-                  cd /opt/fmp/current
-                  if [ -f /opt/fmp/current/venv/bin/activate ]; then
-                    # shellcheck disable=SC1091
-                    source /opt/fmp/current/venv/bin/activate
-                  fi
-                  export PYTHONPATH=/opt/fmp/current
-                  unset MIGRATIONS_BACKFILL_SHA256
-                  if [ -f /etc/fmp/fmp-writer.env ]; then
-                    set -a
-                    # shellcheck disable=SC1091
-                    . /etc/fmp/fmp-writer.env
-                    set +a
-                  elif [ -f /root/FMP_SCREENER/.env ]; then
-                    set -a
-                    # shellcheck disable=SC1091
-                    . /root/FMP_SCREENER/.env
-                    set +a
-                  fi
-                  unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-                  python -m qc_research.contracts.digests
-                  python -m jobs.apply_migrations
-                )
-                echo "Verifying Streamlit identity from immutable release checkout..."
-                IMMUTABLE_VERIFY_RC=0
-                (
-                  cd /opt/fmp/current
-                  if [ -f /opt/fmp/current/venv/bin/activate ]; then
-                    # shellcheck disable=SC1091
-                    source /opt/fmp/current/venv/bin/activate
-                  fi
-                  export PYTHONPATH=/opt/fmp/current
-                  export FMP_IDENTITY_ENV_ONLY=1
-                  export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
-                  bash scripts/verify_dashboard_identity.sh
-                ) || IMMUTABLE_VERIFY_RC=$?
-                if [ "$IMMUTABLE_VERIFY_RC" != "0" ]; then
-                  VERIFY_RC="$IMMUTABLE_VERIFY_RC"
-                fi
-              fi
-            fi
-
-            echo "Recording deploy identity (no secrets)..."
-            if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
-              echo "FAIL: /etc/fmp/fmp-dashboard.env is required for deploy identity"
-              exit 1
-            fi
-            (
-              set -a
-              # shellcheck disable=SC1091
-              . /etc/fmp/fmp-dashboard.env
-              set +a
-              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-              python -m jobs.report_deploy_identity \
-                --sha "$(git rev-parse HEAD)" \
-                --checkout /root/FMP_SCREENER \
-                --mode git_pull \
-                --immutable-rc "$IMMUTABLE_RC" \
-                --verify-rc "$VERIFY_RC" \
-                --env-file /etc/fmp/fmp-dashboard.env
-            )
-
-            echo "Auditing host Streamlit identity (no secrets, no systemd change)..."
-            if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
-              echo "FAIL: /etc/fmp/fmp-dashboard.env is required for host audit"
-              exit 1
-            fi
-            AUDIT_RC=0
-            (
-              set -a
-              # shellcheck disable=SC1091
-              . /etc/fmp/fmp-dashboard.env
-              set +a
-              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-              python -m jobs.audit_host_dashboard \
-                --verify-rc "$VERIFY_RC" \
-                --out /var/lib/fmp/deploy/host_audit.json \
-                --require-readonly \
-                --env-file /etc/fmp/fmp-dashboard.env
-            ) || AUDIT_RC=$?
-
-            if [ "$VERIFY_RC" != "0" ]; then
-              echo "dashboard identity verify failed rc=${VERIFY_RC}"
-              exit "$VERIFY_RC"
-            fi
-            if [ "$AUDIT_RC" != "0" ]; then
-              echo "host dashboard audit failed rc=${AUDIT_RC}"
-              exit "$AUDIT_RC"
-            fi
-
-            echo "Verifying official CSFML V1 identity (read-only, missing run is not a deploy failure)..."
-            if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
-              echo "FAIL: /etc/fmp/fmp-dashboard.env is required for CSFML V1 query-back"
-              exit 1
-            fi
-            CSFML_CODE_ROOT=/root/FMP_SCREENER
-            if [ -d /opt/fmp/current ] && [ -f /opt/fmp/current/qc_research/verify_csfml_v1.py ]; then
-              CSFML_CODE_ROOT=/opt/fmp/current
-            fi
-            CSFML_RC=0
-            (
-              cd "$CSFML_CODE_ROOT"
-              if [ -f "$CSFML_CODE_ROOT/venv/bin/activate" ]; then
-                # shellcheck disable=SC1091
-                source "$CSFML_CODE_ROOT/venv/bin/activate"
-              fi
-              export PYTHONPATH="$CSFML_CODE_ROOT"
-              set -a
-              # shellcheck disable=SC1091
-              . /etc/fmp/fmp-dashboard.env
-              set +a
-              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-              python -m qc_research.verify_csfml_v1 --live --code-root "$CSFML_CODE_ROOT" --out /var/lib/fmp/deploy/csfml_v1_live.json
-            ) || CSFML_RC=$?
-            if [ "$CSFML_RC" = "2" ] || [ "$CSFML_RC" = "4" ]; then
-              echo "official CSFML V1 identity refused rc=${CSFML_RC}"
-              exit "$CSFML_RC"
-            fi
-            if [ "$CSFML_RC" != "0" ]; then
-              echo "official CSFML V1 query-back failed rc=${CSFML_RC}"
-              exit "$CSFML_RC"
-            fi
-
-            echo "Verifying official TLT V0 identity (read-only, missing run is not a deploy failure)..."
-            TLT_RC=0
-            (
-              cd "$CSFML_CODE_ROOT"
-              if [ -f "$CSFML_CODE_ROOT/venv/bin/activate" ]; then
-                # shellcheck disable=SC1091
-                source "$CSFML_CODE_ROOT/venv/bin/activate"
-              fi
-              export PYTHONPATH="$CSFML_CODE_ROOT"
-              set -a
-              # shellcheck disable=SC1091
-              . /etc/fmp/fmp-dashboard.env
-              set +a
-              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-              python -m qc_research.verify_tlt_monitor --live --allow-missing --code-root "$CSFML_CODE_ROOT" --out /var/lib/fmp/deploy/tlt_v0_live.json
-            ) || TLT_RC=$?
-            if [ "$TLT_RC" = "2" ] || [ "$TLT_RC" = "4" ]; then
-              echo "official TLT V0 identity refused rc=${TLT_RC}"
-              exit "$TLT_RC"
-            fi
-            if [ "$TLT_RC" != "0" ]; then
-              echo "official TLT V0 query-back failed rc=${TLT_RC}"
-              exit "$TLT_RC"
-            fi
-
-            echo "Verifying official Stage 1 identity (read-only, missing run is not a deploy failure)..."
-            STAGE1_RC=0
-            (
-              cd "$CSFML_CODE_ROOT"
-              if [ -f "$CSFML_CODE_ROOT/venv/bin/activate" ]; then
-                # shellcheck disable=SC1091
-                source "$CSFML_CODE_ROOT/venv/bin/activate"
-              fi
-              export PYTHONPATH="$CSFML_CODE_ROOT"
-              set -a
-              # shellcheck disable=SC1091
-              . /etc/fmp/fmp-dashboard.env
-              set +a
-              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-              python -m qc_research.verify_stage1 --live --code-root "$CSFML_CODE_ROOT" --out /var/lib/fmp/deploy/stage1_live.json
-            ) || STAGE1_RC=$?
-            if [ "$STAGE1_RC" = "2" ] || [ "$STAGE1_RC" = "4" ]; then
-              echo "official Stage 1 identity refused rc=${STAGE1_RC}"
-              exit "$STAGE1_RC"
-            fi
-            if [ "$STAGE1_RC" != "0" ]; then
-              echo "official Stage 1 query-back failed rc=${STAGE1_RC}"
-              exit "$STAGE1_RC"
-            fi
-
-            echo "Recording systemd cutover readiness (dry-run, no unit change)..."
-            if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
-              echo "FAIL: /etc/fmp/fmp-dashboard.env is required for cutover readiness"
-              exit 1
-            fi
-            CUTOVER_RC=0
-            (
-              set -a
-              # shellcheck disable=SC1091
-              . /etc/fmp/fmp-dashboard.env
-              set +a
-              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-              python -m jobs.cutover_dashboard_systemd \
-                --verify-rc "$VERIFY_RC" \
-                --env-file /etc/fmp/fmp-dashboard.env \
-                --out /var/lib/fmp/deploy/cutover_readiness.json
-            ) || CUTOVER_RC=$?
-            if [ "$CUTOVER_RC" != "0" ]; then
-              echo "systemd cutover readiness failed rc=${CUTOVER_RC}"
-              exit "$CUTOVER_RC"
-            fi
-
-            echo "Persisting sanitized deploy identity to PostgreSQL..."
-            (
-              set -a
-              if [ -f /etc/fmp/fmp-writer.env ]; then
-                # shellcheck disable=SC1091
-                . /etc/fmp/fmp-writer.env
-              elif [ -f /root/FMP_SCREENER/.env ]; then
-                # shellcheck disable=SC1091
-                . /root/FMP_SCREENER/.env
-              fi
-              set +a
-              unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-              python -m jobs.record_deploy_identity_db \
-                --from /var/lib/fmp/deploy/current.json \
-                --csfml /var/lib/fmp/deploy/csfml_v1_live.json \
-                --tlt /var/lib/fmp/deploy/tlt_v0_live.json \
-                --stage1 /var/lib/fmp/deploy/stage1_live.json
-            )
-
-            echo "Restarting Streamlit..."
-            systemctl restart fmp-dashboard
-
-            echo "Verifying Streamlit service..."
-            systemctl is-active --quiet fmp-dashboard
-
-            echo "Re-verifying Streamlit database identity after restart..."
-            POST_VERIFY_RC=0
-            POST_VERIFY_ROOT=/root/FMP_SCREENER
-            if [ -f /opt/fmp/current/scripts/verify_dashboard_identity.sh ]; then
-              POST_VERIFY_ROOT=/opt/fmp/current
-            fi
-            (
-              cd "$POST_VERIFY_ROOT"
-              if [ -f "$POST_VERIFY_ROOT/venv/bin/activate" ]; then
-                # shellcheck disable=SC1091
-                source "$POST_VERIFY_ROOT/venv/bin/activate"
-              fi
-              export PYTHONPATH="$POST_VERIFY_ROOT"
-              export FMP_IDENTITY_ENV_ONLY=1
-              export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
-              bash scripts/verify_dashboard_identity.sh
-            ) || POST_VERIFY_RC=$?
-            if [ "$POST_VERIFY_RC" != "0" ]; then
-              echo "post-restart dashboard identity verify failed rc=${POST_VERIFY_RC}"
-              exit "$POST_VERIFY_RC"
-            fi
-
-            if systemctl cat fmp-ibkr-ingest.service >/dev/null 2>&1; then
-              echo "Restarting private IBKR ingest API..."
-              systemctl restart fmp-ibkr-ingest.service
-            fi
-
-            echo "Deployment complete."
-          EOF
+          set -euo pipefail
+          if [ -z "${DO_HOST:-}" ] || [ -z "${DO_USER:-}" ]; then
+            echo "FAIL: DO_HOST and DO_USER are required"
+            exit 3
+          fi
+          SHA="$(git rev-parse HEAD)"
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "$DO_USER@$DO_HOST" \
+            "cd /root/FMP_SCREENER && git fetch origin main && git pull --ff-only origin main && bash scripts/deploy_host.sh --sha $SHA"

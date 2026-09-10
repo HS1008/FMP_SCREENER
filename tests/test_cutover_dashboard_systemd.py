@@ -233,7 +233,7 @@ def test_cutover_reads_readonly_url_from_env_file_when_process_env_lacks_it(tmp_
 
 
 def test_everyday_deploy_records_cutover_dry_run_and_never_applies():
-    deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    deploy = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
     assert "jobs.cutover_dashboard_systemd" in deploy
     assert "qc_research.verify_csfml_v1 --live" in deploy
     assert "--apply" not in deploy

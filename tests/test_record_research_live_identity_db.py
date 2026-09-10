@@ -162,7 +162,7 @@ def test_missing_sidecar_does_not_null_sibling_live_columns(pg_engine, monkeypat
 
 
 def test_deploy_persists_live_identity_after_query_back_in_writer_subshell():
-    deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    deploy = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
     assert "jobs.record_research_live_identity_db" not in deploy
     assert "jobs.record_deploy_identity_db" in deploy
     assert "--csfml /var/lib/fmp/deploy/csfml_v1_live.json" in deploy

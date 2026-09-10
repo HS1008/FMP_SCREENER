@@ -199,6 +199,7 @@ outputs/
 !stage2_results/**/*.json
 !qc_research/platform_artifacts/**/*.json
 !qc_research/contracts/*.json
+!db/migration_checksum_baseline.json
 *.csv
 !data/power_producer_watchlist.csv
 !data/power_market_hub_map.csv

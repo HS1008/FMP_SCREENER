@@ -92,10 +92,13 @@ def test_units_reference_real_entrypoints():
     assert (ROOT / "ai_context_api.py").exists() and "ai_context_api:app" in api
     assert "SuccessExitStatus=0 2 75" in refresh
     deploy_yml = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text()
     assert "deploy/market_intelligence" not in deploy_yml
-    assert "fmp-ibkr-ingest.service" in deploy_yml
-    assert "fmp_backups/checkout_preserve" in deploy_yml
-    assert "git checkout --" in deploy_yml
+    assert "fmp-ibkr-ingest.service" in host
+    assert "fmp_backups/checkout_preserve" in host
+    assert "git checkout --" in host
+    assert "git reset --hard" not in host
+    assert "git clean -" not in host
     assert "git reset --hard" not in deploy_yml
     assert "git clean -" not in deploy_yml
 

@@ -67,6 +67,9 @@ def test_dashboard_readonly_sql_sets_read_only_defaults():
     assert "CONNECTION LIMIT 20" in sql
     assert "GRANT SELECT ON TABLE" in sql
     assert "REVOKE CREATE ON SCHEMA public FROM dashboard_readonly" in sql
+    assert "repairing grants and memberships" in sql
+    assert "has_schema_privilege('dashboard_readonly', 'public', 'CREATE')" in sql
+    assert "pg_auth_members" in sql
     assert "strategies" in sql
     assert "research_runs" in sql
     assert "backtests" in sql
@@ -261,7 +264,7 @@ def dashboard_ro_engine(pg_engine, pg_database, pg_admin_url, tmp_path):
     assert first.returncode == 0, first.stderr
     second = _provision_dashboard_role(admin_on_test_db, role, None, tmp_path)
     assert second.returncode == 0, second.stderr
-    assert "refreshing grants only" in second.stdout
+    assert "repairing grants and memberships" in second.stdout
     with pg_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as admin:
         admin.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
     url = make_url(pg_database).set(username=role, password=password)
@@ -301,6 +304,7 @@ def test_verify_job_covers_monitor_tables():
     assert "INSERT INTO research_fixed_income_metrics" in text
     assert "INSERT INTO research_risk_metrics" in text
     assert "CREATE TABLE dashboard_readonly_probe" in text
+    assert "TRUNCATE TABLE research_runs" in text
     required = "\n".join(REQUIRED_SELECTS)
     assert "FROM backtests" in required
     assert "FROM research_artifacts" in required
@@ -527,4 +531,139 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
         admin = create_engine(pg_admin_url, isolation_level="AUTOCOMMIT", future=True)
         with admin.connect() as conn:
             conn.execute(text("DROP ROLE IF EXISTS dashboard_readonly"))
+        admin.dispose()
+
+
+def test_constraint_error_is_not_treated_as_readonly():
+    from jobs.verify_dashboard_readonly import mutation_is_privilege_denial, sqlstate_of
+
+    class _Orig:
+        pgcode = "23502"
+
+    class _Exc(Exception):
+        def __init__(self):
+            super().__init__("null value in column violates not-null constraint")
+            self.orig = _Orig()
+
+    exc = _Exc()
+    assert sqlstate_of(exc) == "23502"
+    assert mutation_is_privilege_denial(exc) is False
+
+
+def test_polluted_preexisting_role_is_repaired_or_fails_closed(
+    pg_engine, pg_database, pg_admin_url, tmp_path
+):
+    role = "dashboard_ro_{0}".format(uuid.uuid4().hex[:8])
+    writer = "fmp_writer_{0}".format(uuid.uuid4().hex[:8])
+    password = "dash_{0}".format(uuid.uuid4().hex)
+    admin_on_test_db = make_url(pg_admin_url).set(
+        database=make_url(pg_database).database,
+        drivername="postgresql",
+    ).render_as_string(hide_password=False)
+    admin = create_engine(admin_on_test_db, isolation_level="AUTOCOMMIT", future=True)
+    try:
+        with admin.connect() as conn:
+            conn.execute(text('CREATE ROLE "{0}" NOLOGIN'.format(writer)))
+            conn.execute(
+                text(
+                    "CREATE ROLE \"{0}\" LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE "
+                    "INHERIT PASSWORD '{1}'".format(role, password)
+                )
+            )
+            conn.execute(text('GRANT "{0}" TO "{1}"'.format(writer, role)))
+            conn.execute(text('GRANT INSERT, UPDATE, DELETE ON research_runs TO "{0}"'.format(role)))
+            conn.execute(text('GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA public TO "{0}"'.format(role)))
+        first = _provision_dashboard_role(admin_on_test_db, role, password, tmp_path)
+        if first.returncode != 0:
+            combined = first.stdout + first.stderr
+            assert "CREATE on schema public" in combined or "role memberships" in combined or "owns" in combined
+            return
+        url = make_url(pg_database).set(username=role, password=password).render_as_string(
+            hide_password=False
+        )
+        from jobs.verify_dashboard_readonly import run
+
+        import os as _os
+        _os.environ["DASHBOARD_READONLY_URL"] = url
+        assert run() == 0
+        with admin.connect() as conn:
+            insert_ok = conn.execute(
+                text("SELECT has_table_privilege(:r, 'research_runs', 'INSERT')"),
+                {"r": role},
+            ).scalar()
+            member = conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM pg_auth_members m "
+                    "JOIN pg_roles u ON u.oid = m.member "
+                    "JOIN pg_roles r ON r.oid = m.roleid "
+                    "WHERE u.rolname = :u AND r.rolname = :w"
+                ),
+                {"u": role, "w": writer},
+            ).scalar()
+        assert insert_ok is False
+        assert int(member or 0) == 0
+    finally:
+        with admin.connect() as conn:
+            conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = :u"), {"u": role})
+            conn.execute(text('DROP OWNED BY "{0}"'.format(role)))
+            conn.execute(text('DROP ROLE IF EXISTS "{0}"'.format(role)))
+            conn.execute(text('DROP ROLE IF EXISTS "{0}"'.format(writer)))
+        admin.dispose()
+
+
+def test_public_create_inheritance_fails_closed(pg_engine, pg_database, pg_admin_url, tmp_path):
+    role = "dashboard_ro_{0}".format(uuid.uuid4().hex[:8])
+    password = "dash_{0}".format(uuid.uuid4().hex)
+    admin_on_test_db = make_url(pg_admin_url).set(
+        database=make_url(pg_database).database,
+        drivername="postgresql",
+    ).render_as_string(hide_password=False)
+    admin = create_engine(admin_on_test_db, isolation_level="AUTOCOMMIT", future=True)
+    try:
+        with admin.connect() as conn:
+            conn.execute(text("GRANT CREATE ON SCHEMA public TO PUBLIC"))
+        first = _provision_dashboard_role(admin_on_test_db, role, password, tmp_path)
+        combined = first.stdout + first.stderr
+        assert first.returncode != 0
+        assert "CREATE on schema public" in combined
+        assert "REVOKE CREATE ON SCHEMA public FROM PUBLIC" in combined
+    finally:
+        with admin.connect() as conn:
+            conn.execute(text("REVOKE CREATE ON SCHEMA public FROM PUBLIC"))
+            conn.execute(text('DROP OWNED BY "{0}"'.format(role)))
+            conn.execute(text('DROP ROLE IF EXISTS "{0}"'.format(role)))
+        admin.dispose()
+
+
+def test_constraint_insert_false_positive_fails_verify(pg_engine, pg_database, pg_admin_url, monkeypatch):
+    role = "dash_insert_{0}".format(uuid.uuid4().hex[:8])
+    password = "dash_{0}".format(uuid.uuid4().hex)
+    admin = create_engine(pg_admin_url, isolation_level="AUTOCOMMIT", future=True)
+    dbname = make_url(pg_database).database
+    try:
+        with admin.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE ROLE \"{0}\" LOGIN NOSUPERUSER PASSWORD '{1}'".format(role, password)
+                )
+            )
+            conn.execute(text('GRANT CONNECT ON DATABASE "{0}" TO "{1}"'.format(dbname, role)))
+        with pg_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text("GRANT USAGE ON SCHEMA public TO \"{0}\"".format(role)))
+            conn.execute(text("GRANT SELECT, INSERT ON research_runs TO \"{0}\"".format(role)))
+            conn.execute(text("ALTER ROLE \"{0}\" SET default_transaction_read_only = on".format(role)))
+        url = make_url(pg_database).set(username=role, password=password).render_as_string(
+            hide_password=False
+        )
+        monkeypatch.setenv("DASHBOARD_READONLY_URL", url)
+        from jobs.verify_dashboard_readonly import run
+
+        assert run() == 2
+    finally:
+        with pg_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
+            conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = :u"), {"u": role})
+            conn.execute(text('REVOKE ALL ON ALL TABLES IN SCHEMA public FROM "{0}"'.format(role)))
+            conn.execute(text('DROP OWNED BY "{0}"'.format(role)))
+        with admin.connect() as conn:
+            conn.execute(text('DROP ROLE IF EXISTS "{0}"'.format(role)))
         admin.dispose()

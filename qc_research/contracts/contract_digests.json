@@ -3,7 +3,7 @@
   "note": "SHA-256 of committed contract JSON bytes. Update this file in the same change as the source JSON.",
   "files": {
     "producer_required_fields.json": "9829b6d9960158fd7ca828fdae082da0167731a1c9860c06b2290cc6ba84694b",
-    "csfml_v1_label_integrity.json": "c780de3bf9ad83dd434100cc23e1ec5773e00bd52d2ebe1c1098ec22d94cdc1e",
+    "csfml_v1_label_integrity.json": "cccb1f4a8d4c0b9436bb813765523a92de4c51e0fce132b366819494e5f63d85",
     "sealed_results.json": "ebf76f905e894ccf0ba0726b3bfc0d8ae7da248d9e6b65b4bc5c42a67be06a5d"
   }
 }

@@ -1,64 +1,113 @@
 # Production release plan (authorization required)
 
-This plan is reviewable evidence. It does **not** merge PRs, dispatch Deploy,
-install systemd, or mutate production.
+This plan is reviewable evidence. It does **not** merge PRs, install systemd,
+or mutate production from Cursor.
+
+## WARNING
+
+**MERGING FMP #29 TO MAIN IS A PRODUCTION DEPLOY EVENT.**
+
+`/.github/workflows/deploy.yml` triggers on `push -> main`, runs on
+`ubuntu-latest`, then SSHes to DigitalOcean with `StrictHostKeyChecking=yes`
+and a pinned `DO_SSH_KNOWN_HOSTS` secret. It is **not** a human workflow
+dispatch and **not self-hosted**.
+
+Do not merge #29 until first-run deployment prerequisites below are satisfied.
+
+A separate recommendation that manual dispatch would be safer may be considered
+later. Auto-deploy policy is unchanged without human approval.
 
 ## 1. Pull requests and order
 
-1. **HS1008/quant-strategies #28** → `research-integration`
-   (`cursor/research-architecture-674b`). Merge first. CSFML label-contract
-   producer.
-2. **HS1008/fmp_screener #29** → `main`
-   (`cursor/research-architecture-674b`). Merge second. Dashboard ingest,
-   Monitor, host verification. Consumer pin is unchanged unless
-   `required_by_kind` / integrity digest actually change (they do not in this
-   milestone).
+1. **quant-strategies MAIN safety/tooling PR** → `main`
+   (launch authorization on default-branch QC workflows only).
+2. **HS1008/quant-strategies #28** → `research-integration`
+   (`cursor/research-architecture-674b`). CSFML label-contract producer.
+3. **HS1008/fmp_screener #29** → `main` **LAST**
+   (`cursor/research-architecture-674b`). Auto-deploys.
 
 Do not merge platform-MI into this line. Do not launch QuantConnect.
 
-## 2. Preconditions (names only)
+## 2. What executes automatically on merge to main
 
-- GitHub write access to merge the two PRs.
-- Self-hosted Deploy runner on the production droplet.
-- PostgreSQL roles: `dashboard_readonly` (Streamlit), writer role used only
-  by ingest/MI jobs (not Streamlit).
-- Host files: `/etc/fmp/fmp-dashboard.env`, `/etc/fmp/fmp-writer.env` (create
-  if absent), `/root/FMP_SCREENER/.secrets/dashboard_readonly.pw`.
-- Credentials by name only: `DASHBOARD_READONLY_URL`, writer URL in
-  `fmp-writer.env`, no Streamlit writer fallback.
+1. GitHub Actions checks out the merged SHA.
+2. Configures pinned SSH trust (`DO_SSH_KEY`, `DO_SSH_KNOWN_HOSTS`).
+3. SSHes to the droplet and runs `scripts/deploy_host.sh --sha <merged_sha>`.
+4. Host script: fetch/pull `/root/FMP_SCREENER` to that SHA, stage
+   `/opt/fmp/releases/<sha>`, install the **staged** venv, apply DB migrations
+   **once** from the staged tree using the trusted checksum baseline, provision
+   / verify the dashboard read-only identity, query-back official research
+   rows, record sanitized deploy identity, restart the **existing**
+   `fmp-dashboard` unit, post-restart verify.
 
-## 3. Host preparation and deploy
+systemd cutover to `/opt/fmp/current` is **not** performed automatically.
+`cutover --apply` still refuses to install the live unit.
 
-Everyday path after FMP #29 is on `main` (human dispatches Deploy):
+## 3. Host files that must already exist
 
-```bash
-# on the droplet, Deploy workflow already does the equivalent
-bash scripts/provision_dashboard_readonly.sh --require
-FMP_IDENTITY_ENV_ONLY=1 FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env \
-  bash scripts/verify_dashboard_identity.sh
-python -m jobs.audit_host_dashboard --require-readonly \
-  --env-file /etc/fmp/fmp-dashboard.env \
-  --out /var/lib/fmp/deploy/host_audit.json
-python -m jobs.observe_running_dashboard \
-  --out /var/lib/fmp/deploy/running_observation.json
-python -m jobs.cutover_dashboard_systemd \
-  --env-file /etc/fmp/fmp-dashboard.env \
-  --out /var/lib/fmp/deploy/cutover_readiness.json
-# cutover --apply still does not install the live unit
-```
+- `/etc/fmp/fmp-dashboard.env` (required; missing file fails deploy)
+- `/etc/fmp/fmp-writer.env` (preferred writer identity for migrations)
+- `/etc/fmp/secrets/dashboard_readonly.pw` **or** the legacy
+  `/root/FMP_SCREENER/.secrets/dashboard_readonly.pw` (copied, not deleted,
+  on first migrate)
+- Existing `/root/FMP_SCREENER` checkout, virtualenv, systemd unit, cron/timers
+- Official research rows already in PostgreSQL
+- GitHub secrets: `DO_SSH_KEY`, `DO_SSH_KNOWN_HOSTS`, `DO_HOST`, `DO_USER`
 
-Immutable layout (optional, separate from everyday git-pull):
+Human must confirm live droplet SQL files for migrations 001–019 match
+`db/migration_checksum_baseline.json` (bound to `origin/main`
+`2ed4da99df28d06e7730e56601de440e870dc823`). Cursor could not see the
+production deployed SHA.
 
-```bash
-scripts/deploy_release.sh --sha <merged_main_sha>
-```
+## 4. Database changes on first #29 deploy
 
-## 4. Expected verification outputs
+- Add `schema_migrations.sha256` if missing.
+- Backfill NULL hashes **only** when filename + current file hash match the
+  trusted baseline. Mismatch or unknown historical file → hard fail.
+- Apply new additive migrations 020–025 with hashes written at apply time.
+- Repair `dashboard_readonly` to least privilege, or fail closed (including
+  PUBLIC-inherited CREATE).
+
+There is no `MIGRATIONS_BACKFILL_SHA256` bless-current-files flag.
+
+## 5. Fail-closed deploy conditions
+
+- Checkout SHA mismatch
+- Missing `/etc/fmp/fmp-dashboard.env`
+- Trusted baseline mismatch / unknown historical migration / drifted applied SQL
+- Dashboard identity verify failed (privilege proof, not constraint false-positive)
+- Host audit `readonly_unproven` / writer keys / provider fetch
+- Official CSFML / Stage 1 / TLT identity refused (exit 2/4)
+- Staged release missing verify script or bootable venv
+- Missing pinned SSH known_hosts
+
+## 6. What is and is not rolled back
+
+Rolled back / left unchanged on failure before restart:
+
+- The existing running Streamlit unit is not switched if identity verify fails
+  before `systemctl restart`.
+- `/opt/fmp/previous` remains the prior staged release when a new stage exists.
+
+Not automatically rolled back:
+
+- Additive DB migrations that already committed. Old application code must
+  coexist with the new schema. Rollback of the app is `scripts/deploy_release.sh --rollback`
+  (symlink only) plus a human decision; it does not un-apply SQL.
+- Half-applied checksum backfill cannot happen: NULL-sha adoption is one
+  transaction with apply.
+
+A staged `/opt/fmp/current` symlink is **not** a completed cutover.
+Configured identity ≠ running-service identity. Only an inspected PID / cwd /
+executable / env-file path proves what Streamlit is running.
+
+## 7. Expected verification outputs
 
 Configured identity (`jobs.audit_host_dashboard` / verify script):
 
 - `dashboard_readonly_verify=ok`
-- `readonly_proven=true`
+- `readonly_proven=true` from live identity/privilege proof, not merely a
+  password file
 - `writer_fallback=false`, no writer keys in dashboard env
 - `csfml_v1_label_integrity=CANNOT_RULE_OUT`
 - `csfml_v1_rerun_authorized=false`
@@ -74,34 +123,13 @@ Observed running service (`jobs.observe_running_dashboard`):
 `cutover --apply` expected: `apply_status=refused_no_systemd_mutate`,
 `systemd_mutated=false`. That is **not** a completed cutover.
 
-## 5. Post-restart checks
+## 8. Post-restart checks
 
-After a human `systemctl restart fmp-dashboard`:
+After the auto-deploy restart of the existing unit:
 
-- Re-run identity verify against `/etc/fmp/fmp-dashboard.env`.
-- Re-run `jobs.observe_running_dashboard` and confirm PID/cwd/exe/code SHA.
-- Live CSFML / TLT / Stage 1 query-back (existing verify jobs).
-- Confirm official research identities already in PostgreSQL were not
-  overwritten.
-
-Do not require `FMP_STREAMLIT_READONLY` to appear in `/proc/PID/environ`.
-
-## 6. Failure handling and rollback
-
-- If `readonly_proven` is false: do not restart; do not install the proposed
-  unit.
-- If writer keys appear in the dashboard env: refuse (`exit 4`).
-- Everyday rollback: remain on `/root/FMP_SCREENER` git-pull unit.
-- Immutable rollback: `scripts/deploy_release.sh --rollback`.
-
-## 7. Operations that need production authorization
-
-- Merge #28 / #29.
-- Dispatch `.github/workflows/deploy.yml` on `main`.
-- Create `/etc/fmp/fmp-writer.env` or change host env files.
-- Install the proposed systemd unit (cutover tool will not do this).
-- `systemctl restart` / enable.
-- Production write-denial probes (exercise on disposable PostgreSQL first).
-- Any QuantConnect job, including smoke.
-- The separate pre-2025 V1 impact investigation
-  (`quant-strategies/research/stage2/PROPOSED_V1_IMPACT_INVESTIGATION.md`).
+- `systemctl is-active fmp-dashboard`
+- post-restart `scripts/verify_dashboard_identity.sh`
+- Strategy Monitor shows separate CSFML V1 statuses (provenance VERIFIED,
+  historical integrity CANNOT_RULE_OUT, engineering IMPLEMENTED/TESTED,
+  rerun NOT AUTHORIZED, economic_gate NOT_DEFINED, promotion
+  HUMAN_REVIEW_REQUIRED, holdout LOCKED)

@@ -82,7 +82,7 @@ def test_load_record_and_cli_refuse_missing_or_secret_json(tmp_path, monkeypatch
 
 
 def test_deploy_persists_identity_in_writer_subshell_before_dashboard_env():
-    deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    deploy = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
     assert "jobs.record_deploy_identity_db" in deploy
     assert "jobs.record_research_live_identity_db" not in deploy
     assert "/var/lib/fmp/deploy/current.json" in deploy
