@@ -246,10 +246,13 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
         drivername="postgresql",
     ).render_as_string(hide_password=False)
     env = {
-        "PATH": os.environ.get("PATH", ""),
+        **os.environ,
         "HOME": str(tmp_path),
         "ADMIN_DATABASE_URL": admin_on_test_db,
         "DATABASE_URL": admin_on_test_db,
+        "DASHBOARD_READONLY_URL": "",
+        "DASHBOARD_ALLOW_WRITER_FALLBACK": "",
+        "FMP_IDENTITY_ENV_ONLY": "1",
     }
     result = subprocess.run(
         [
@@ -289,17 +292,19 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
                 url = line.split("=", 1)[1]
                 break
         assert url
+        verify_env = {
+            **os.environ,
+            "PYTHONPATH": str(ROOT),
+            "FMP_IDENTITY_ENV_ONLY": "1",
+            "DASHBOARD_READONLY_URL": url,
+            "DASHBOARD_ALLOW_WRITER_FALLBACK": "",
+        }
         verify = subprocess.run(
             ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],
             capture_output=True,
             text=True,
             cwd=ROOT,
-            env={
-                "PATH": os.environ.get("PATH", ""),
-                "PYTHONPATH": str(ROOT),
-                "FMP_IDENTITY_ENV_ONLY": "1",
-                "DASHBOARD_READONLY_URL": url,
-            },
+            env=verify_env,
             check=False,
             timeout=60,
         )
@@ -307,13 +312,19 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
         assert "dashboard_readonly_verify=ok" in verify.stdout
         assert password not in verify.stdout + verify.stderr
     finally:
-        test_admin = create_engine(admin_on_test_db, isolation_level="AUTOCOMMIT", future=True)
-        with test_admin.connect() as conn:
-            exists = conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = 'dashboard_readonly'")).scalar()
-            if exists:
-                conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'dashboard_readonly'"))
-                conn.execute(text("DROP OWNED BY dashboard_readonly"))
-        test_admin.dispose()
+        for engine_url in (pg_database, pg_admin_url):
+            engine = create_engine(engine_url, isolation_level="AUTOCOMMIT", future=True)
+            with engine.connect() as conn:
+                exists = conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = 'dashboard_readonly'")).scalar()
+                if exists:
+                    conn.execute(
+                        text(
+                            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                            "WHERE usename = 'dashboard_readonly' AND pid <> pg_backend_pid()"
+                        )
+                    )
+                    conn.execute(text("DROP OWNED BY dashboard_readonly"))
+            engine.dispose()
         admin = create_engine(pg_admin_url, isolation_level="AUTOCOMMIT", future=True)
         with admin.connect() as conn:
             conn.execute(text("DROP ROLE IF EXISTS dashboard_readonly"))

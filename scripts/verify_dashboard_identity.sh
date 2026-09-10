@@ -24,8 +24,13 @@ load_dashboard_env() {
 }
 
 load_dashboard_env
+if command -v python >/dev/null 2>&1; then
+  PYTHON_BIN=python
+else
+  PYTHON_BIN=python3
+fi
 set +e
-python -m jobs.verify_dashboard_readonly
+"$PYTHON_BIN" -m jobs.verify_dashboard_readonly
 rc=$?
 set -e
 if [ "$rc" = "0" ]; then
