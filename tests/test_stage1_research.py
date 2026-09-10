@@ -1999,6 +1999,19 @@ def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras(
     assert listed_stage1_run_id("PLATFORM_TLTDurationMomentum_V0", None) == (
         "PLATFORM_TLTDurationMomentum_V0"
     )
+    assert listed_stage1_run_id("W2015 train", None) == ""
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=listed_stage1_run_id("W2015 train", None) or None,
+        existing_row=None,
+        backtest_id="42444d596c9116f1320203e896fbf0fe",
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=None,
+        existing_row=None,
+        backtest_id="not-an-official-tlt-id",
+    ) is None
     synthetic = "S2__SyntheticStage2__run__ML_OOS_TEST__2015__002"
     assert listed_stage1_run_id(synthetic, None) == "run"
     assert official_stage1_backtest_upsert_blocked(
@@ -2065,6 +2078,7 @@ def test_sync_quantconnect_skips_official_stage1_rewrite():
     sync_fn = source.split("def sync_backtests", 1)[1]
     assert "official_stage1_backtest_upsert_blocked" in sync_fn
     assert "listed_stage1_run_id" in sync_fn
+    assert "backtest_id=str(backtest_id" in sync_fn
     assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
         "conn.execute(text(STAGE1_UPSERT_SQL)"
     )

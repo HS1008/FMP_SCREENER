@@ -1522,6 +1522,7 @@ def sync_backtests(
                 conn,
                 research_run_id=listed_stage1_run_id(name, row_existing) or None,
                 existing_row=row_existing,
+                backtest_id=str(backtest_id or ""),
             )
             if official_block:
                 action = "insert" if not row_existing else "rewrite"
@@ -1585,6 +1586,7 @@ def sync_backtests(
                         conn,
                         research_run_id=fields.get("research_run_id"),
                         existing_row=row_existing,
+                        backtest_id=str(backtest_id or ""),
                     )
                     if detail_block:
                         print(

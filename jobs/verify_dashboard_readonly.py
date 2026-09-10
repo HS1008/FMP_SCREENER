@@ -36,6 +36,9 @@ CORE_MUTATION_PROBES = (
     ("INSERT INTO research_artifacts (artifact_key) VALUES ('x')", "INSERT_ARTIFACTS"),
     ("UPDATE research_artifacts SET artifact_type = artifact_type WHERE FALSE", "UPDATE_ARTIFACTS"),
     ("DELETE FROM research_artifacts WHERE FALSE", "DELETE_ARTIFACTS"),
+    ("INSERT INTO strategies (strategy_id) VALUES ('x')", "INSERT_STRATEGIES"),
+    ("UPDATE strategies SET strategy_id = strategy_id WHERE FALSE", "UPDATE_STRATEGIES"),
+    ("DELETE FROM strategies WHERE FALSE", "DELETE_STRATEGIES"),
     ("CREATE TABLE dashboard_readonly_probe (id int)", "CREATE"),
 )
 

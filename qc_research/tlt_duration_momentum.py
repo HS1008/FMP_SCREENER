@@ -98,6 +98,18 @@ OFFICIAL_WINDOWS = {
     },
 }
 
+
+def official_tlt_qc_backtest_ids() -> frozenset[str]:
+    """Official TLT V0 QuantConnect backtest IDs. Cloud sync must not first-INSERT these."""
+    found: set[str] = set()
+    for window in OFFICIAL_WINDOWS.values():
+        for key in ("train_backtest_id", "winner_backtest_id", "baseline_backtest_id"):
+            value = str(window.get(key) or "").strip()
+            if value:
+                found.add(value)
+    return frozenset(found)
+
+
 REGISTER_STRATEGY_SQL = """
 INSERT INTO strategies (
     strategy_id, name, environment, status,

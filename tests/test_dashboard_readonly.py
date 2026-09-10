@@ -285,6 +285,7 @@ def test_verify_job_covers_monitor_tables():
     text = "\n".join(sql for sql, _label in CORE_MUTATION_PROBES)
     assert "INSERT INTO backtests" in text
     assert "INSERT INTO research_artifacts" in text
+    assert "INSERT INTO strategies" in text
     assert "CREATE TABLE dashboard_readonly_probe" in text
     required = "\n".join(REQUIRED_SELECTS)
     assert "FROM backtests" in required
@@ -315,6 +316,9 @@ def test_dashboard_readonly_role_selects_and_denies_writes(dashboard_ro_engine):
         "INSERT INTO research_artifacts (artifact_key) VALUES ('x')",
         "UPDATE research_artifacts SET artifact_type = artifact_type WHERE FALSE",
         "DELETE FROM research_artifacts WHERE FALSE",
+        "INSERT INTO strategies (strategy_id) VALUES ('x')",
+        "UPDATE strategies SET strategy_id = strategy_id WHERE FALSE",
+        "DELETE FROM strategies WHERE FALSE",
         "CREATE TABLE dashboard_readonly_probe (id int)",
     ):
         with pytest.raises(Exception) as excinfo:
@@ -336,6 +340,9 @@ def test_dashboard_readonly_privileges_hold_when_session_default_overridden(dash
         "INSERT INTO research_artifacts (artifact_key) VALUES ('x')",
         "UPDATE research_artifacts SET artifact_type = artifact_type WHERE FALSE",
         "DELETE FROM research_artifacts WHERE FALSE",
+        "INSERT INTO strategies (strategy_id) VALUES ('x')",
+        "UPDATE strategies SET strategy_id = strategy_id WHERE FALSE",
+        "DELETE FROM strategies WHERE FALSE",
         "CREATE TABLE dashboard_readonly_probe_rw (id int)",
     ):
         with pytest.raises(Exception) as excinfo:

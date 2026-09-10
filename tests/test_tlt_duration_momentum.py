@@ -25,6 +25,7 @@ from qc_research.tlt_duration_momentum import (
     STRATEGY_ID,
     WINDOW_IDS,
     is_tlt_duration_momentum_record,
+    official_tlt_qc_backtest_ids,
     official_tlt_v0_identity_blockers,
     platform_oos_window_frame,
     verify_tlt_monitor_view,
@@ -114,6 +115,8 @@ def test_official_tlt_artifact_wraps_ten_windows_and_identity():
     frame = platform_oos_window_frame(view["oos_windows"])
     assert list(frame["window_id"]) == list(WINDOW_IDS)
     assert "2025" not in "".join(frame["oos_end"].astype(str))
+    assert len(official_tlt_qc_backtest_ids()) == 30
+    assert "42444d596c9116f1320203e896fbf0fe" in official_tlt_qc_backtest_ids()
 
 
 def test_tlt_ingest_is_idempotent_and_registers_monitor_strategy():

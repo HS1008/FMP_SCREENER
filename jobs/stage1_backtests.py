@@ -147,14 +147,22 @@ def official_stage1_backtest_upsert_blocked(
     *,
     research_run_id: str | None,
     existing_row: dict[str, Any] | None = None,
+    backtest_id: str | None = None,
 ) -> str | None:
     """Skip QC backtest writes that would mutate official Stage 1 metrics.
 
     First INSERT of official-run experiments is allowed until the pin
     expected_experiment_count is stored. Existing official rows are never
     rewritten. Official research_runs identity is not created here.
+    Official TLT QC backtest IDs are refused even when the cloud name
+    omits the sealed run id.
     """
     from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
+    from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
+
+    qc_id = str(backtest_id or (existing_row or {}).get("backtest_id") or "").strip()
+    if qc_id and qc_id in official_tlt_qc_backtest_ids():
+        return "sealed_results_backtest_immutable"
 
     existing_run = str((existing_row or {}).get("research_run_id") or "").strip()
     incoming_run = str(research_run_id or "").strip()
