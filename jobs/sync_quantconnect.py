@@ -1269,15 +1269,39 @@ STAGE1_UPSERT_SQL = """
 """
 
 
-def stage1_upsert_sql(research_run_id: str | None) -> str:
-    """Official/sealed Stage 1 rows insert once; in-progress runs still update."""
-    from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
+def backtest_upsert_sql(
+    statement: str,
+    *,
+    research_run_id: str | None = None,
+    backtest_id: str | None = None,
+) -> str:
+    """Official/sealed rows insert once; in-progress and live rows still update."""
+    from qc_research.contracts.sealed_results import (
+        is_sealed_results_run,
+        official_sealed_qc_backtest_ids,
+        official_stage1_pin,
+    )
     from qc_research.ingest.stage2_sql import conflict_sql
 
     run_id = str(research_run_id or "")
-    return conflict_sql(
+    qc_id = str(backtest_id or "")
+    sealed = bool(
+        official_stage1_pin(run_id)
+        or is_sealed_results_run(run_id)
+        or (qc_id and qc_id in official_sealed_qc_backtest_ids())
+    )
+    return conflict_sql(statement, sealed=sealed)
+
+
+def stage1_upsert_sql(
+    research_run_id: str | None,
+    backtest_id: str | None = None,
+) -> str:
+    """Official/sealed Stage 1 rows insert once; in-progress runs still update."""
+    return backtest_upsert_sql(
         STAGE1_UPSERT_SQL,
-        sealed=bool(official_stage1_pin(run_id) or is_sealed_results_run(run_id)),
+        research_run_id=research_run_id,
+        backtest_id=backtest_id,
     )
 
 
@@ -1615,7 +1639,12 @@ def sync_backtests(
                         )
                     else:
                         conn.execute(
-                            text(stage1_upsert_sql(payload.get("research_run_id"))),
+                            text(
+                                stage1_upsert_sql(
+                                    payload.get("research_run_id"),
+                                    payload.get("backtest_id"),
+                                )
+                            ),
                             payload,
                         )
                         upsert_research_run(conn, strategy_id, fields)
@@ -1636,7 +1665,18 @@ def sync_backtests(
                             f"a research_run_id for {name} ({backtest_id}): {exc}"
                         )
                     else:
-                        conn.execute(text(LEGACY_UPSERT_SQL), base)
+                        conn.execute(
+                            text(
+                                backtest_upsert_sql(
+                                    LEGACY_UPSERT_SQL,
+                                    research_run_id=listed_stage1_run_id(
+                                        name, row_existing
+                                    ),
+                                    backtest_id=str(backtest_id or ""),
+                                )
+                            ),
+                            base,
+                        )
             elif (
                 is_stage1_name(name)
                 and row_existing
@@ -1644,7 +1684,16 @@ def sync_backtests(
                 and not official_block
             ):
                 merged = merge_stage1_lightweight_metrics(row_existing, metrics)
-                conn.execute(text(STAGE1_LIGHTWEIGHT_UPSERT_SQL), {**base, **merged})
+                conn.execute(
+                    text(
+                        backtest_upsert_sql(
+                            STAGE1_LIGHTWEIGHT_UPSERT_SQL,
+                            research_run_id=row_existing.get("research_run_id"),
+                            backtest_id=str(backtest_id or ""),
+                        )
+                    ),
+                    {**base, **merged},
+                )
             elif needs_legacy_date_hydration(row_existing, backtest):
                 try:
                     detail_result = get_backtest_detail(project_id, backtest_id)
@@ -1652,7 +1701,15 @@ def sync_backtests(
                     detail = detail_result.get("backtest") or detail_result
                     dates = legacy_hydration_fields(detail)
                     conn.execute(
-                        text(LEGACY_DATE_UPSERT_SQL),
+                        text(
+                            backtest_upsert_sql(
+                                LEGACY_DATE_UPSERT_SQL,
+                                research_run_id=listed_stage1_run_id(
+                                    name, row_existing
+                                ),
+                                backtest_id=str(backtest_id or ""),
+                            )
+                        ),
                         {
                             **base,
                             "backtest_start": dates.get("backtest_start"),
@@ -1665,9 +1722,29 @@ def sync_backtests(
                         "Legacy date hydration failed for "
                         f"{name} ({backtest_id}): {exc}"
                     )
-                    conn.execute(text(LEGACY_UPSERT_SQL), base)
+                    conn.execute(
+                        text(
+                            backtest_upsert_sql(
+                                LEGACY_UPSERT_SQL,
+                                research_run_id=listed_stage1_run_id(
+                                    name, row_existing
+                                ),
+                                backtest_id=str(backtest_id or ""),
+                            )
+                        ),
+                        base,
+                    )
             else:
-                conn.execute(text(LEGACY_UPSERT_SQL), base)
+                conn.execute(
+                    text(
+                        backtest_upsert_sql(
+                            LEGACY_UPSERT_SQL,
+                            research_run_id=listed_stage1_run_id(name, row_existing),
+                            backtest_id=str(backtest_id or ""),
+                        )
+                    ),
+                    base,
+                )
 
             if fetch_chart:
                 try:

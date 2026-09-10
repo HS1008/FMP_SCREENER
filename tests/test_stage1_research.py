@@ -2109,7 +2109,7 @@ def test_sync_quantconnect_skips_official_stage1_rewrite():
     assert "backtest_id=str(backtest_id" in sync_fn
     assert "stage1_upsert_sql" in sync_fn
     assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
-        "stage1_upsert_sql(payload.get("
+        "stage1_upsert_sql("
     )
     assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
         "LEGACY_UPSERT_SQL"
@@ -2120,16 +2120,24 @@ def test_sync_quantconnect_skips_official_stage1_rewrite():
     assert "unlabeled_qc_needs_detail" in sync_fn
     assert "Skipping unlabeled QC insert" in sync_fn
     assert "detail did not recover" in sync_fn
+    assert "backtest_upsert_sql" in sync_fn
     assert sync_fn.index("unlabeled_qc_needs_detail") < sync_fn.index(
-        "conn.execute(text(LEGACY_UPSERT_SQL), base)"
+        "backtest_upsert_sql(\n                                    LEGACY_UPSERT_SQL"
     )
     assert sync_fn.index("detail did not recover") < sync_fn.index(
-        "stage1_upsert_sql(payload.get("
+        "stage1_upsert_sql("
     )
 
 
 def test_stage1_upsert_sql_insert_once_for_official_run():
-    from jobs.sync_quantconnect import STAGE1_UPSERT_SQL, stage1_upsert_sql
+    from jobs.sync_quantconnect import (
+        LEGACY_UPSERT_SQL,
+        STAGE1_LIGHTWEIGHT_UPSERT_SQL,
+        STAGE1_UPSERT_SQL,
+        backtest_upsert_sql,
+        stage1_upsert_sql,
+    )
+    from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
 
     official = stage1_upsert_sql(OFFICIAL_STAGE1_RUN)
     assert "DO NOTHING" in official
@@ -2138,6 +2146,17 @@ def test_stage1_upsert_sql_insert_once_for_official_run():
     open_run = stage1_upsert_sql("STAGE1_SPYTrend_156c40e7")
     assert open_run == STAGE1_UPSERT_SQL
     assert stage1_upsert_sql(None) == STAGE1_UPSERT_SQL
+    lightweight = backtest_upsert_sql(
+        STAGE1_LIGHTWEIGHT_UPSERT_SQL,
+        research_run_id=OFFICIAL_STAGE1_RUN,
+    )
+    assert "DO NOTHING" in lightweight
+    assert "DO UPDATE" not in lightweight
+    qc_id = next(iter(official_tlt_qc_backtest_ids()))
+    legacy = backtest_upsert_sql(LEGACY_UPSERT_SQL, backtest_id=qc_id)
+    assert "DO NOTHING" in legacy
+    assert "DO UPDATE" not in legacy
+    assert backtest_upsert_sql(LEGACY_UPSERT_SQL, backtest_id="not-official") == LEGACY_UPSERT_SQL
 
 
 def test_audit_holdout_exposures_skips_official_stage1():
