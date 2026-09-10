@@ -17,6 +17,24 @@ from qc_research.contracts.kinds import SCHEMA_VERSION
 from qc_research.lifecycle import normalize_research_lifecycle
 
 
+def conflict_sql(statement: str, *, sealed: bool) -> str:
+    """Sealed official rows insert once; later re-ingest cannot rewrite them."""
+    if not sealed:
+        return statement
+    head, sep, rest = statement.partition("ON CONFLICT")
+    if not sep:
+        return statement
+    target = rest.split(" DO ", 1)[0]
+    return "{0}ON CONFLICT{1} DO NOTHING".format(head, target)
+
+
+def _run_is_sealed(run_id: str | None) -> bool:
+    from qc_research.contracts.sealed_results import sealed_results_run_ids
+
+    key = str(run_id or "")
+    return bool(key) and key in sealed_results_run_ids()
+
+
 UPSERT_ARTIFACT_SQL = """
 INSERT INTO research_artifacts (
     artifact_key, research_run_id, research_experiment_id, artifact_type,
@@ -137,7 +155,7 @@ def upsert_artifact(
     logical_path: str | None = None,
 ) -> None:
     conn.execute(
-        text(UPSERT_ARTIFACT_SQL),
+        text(conflict_sql(UPSERT_ARTIFACT_SQL, sealed=_run_is_sealed(run_id))),
         {
             "artifact_key": key,
             "research_run_id": run_id,
@@ -154,9 +172,13 @@ def upsert_artifact(
 def upsert_trials_from_training_summary(conn, payload: dict[str, Any]) -> int:
     trials = payload.get("candidate_trials") or []
     count = 0
+    sql = conflict_sql(
+        UPSERT_TRIAL_SQL,
+        sealed=_run_is_sealed(payload.get("research_run_id") or payload.get("run_id")),
+    )
     for trial in trials:
         conn.execute(
-            text(UPSERT_TRIAL_SQL),
+            text(sql),
             {
                 "research_run_id": payload.get("research_run_id"),
                 "outer_window_id": payload.get("window_id"),
@@ -180,7 +202,12 @@ def upsert_trials_from_training_summary(conn, payload: dict[str, Any]) -> int:
 
 def upsert_model_from_metadata(conn, payload: dict[str, Any]) -> None:
     conn.execute(
-        text(UPSERT_MODEL_SQL),
+        text(
+            conflict_sql(
+                UPSERT_MODEL_SQL,
+                sealed=_run_is_sealed(payload.get("run_id") or payload.get("research_run_id")),
+            )
+        ),
         {
             "model_id": payload.get("model_id"),
             "research_run_id": payload.get("run_id") or payload.get("research_run_id"),
@@ -205,11 +232,15 @@ def upsert_features_from_training_summary(conn, payload: dict[str, Any]) -> int:
     if isinstance(rows, dict):
         rows = rows.get("features") or rows.get("rows") or []
     count = 0
+    sql = conflict_sql(
+        UPSERT_FEATURE_SQL,
+        sealed=_run_is_sealed(payload.get("research_run_id") or payload.get("run_id")),
+    )
     for row in rows:
         if not isinstance(row, dict):
             continue
         conn.execute(
-            text(UPSERT_FEATURE_SQL),
+            text(sql),
             {
                 "research_run_id": payload.get("research_run_id"),
                 "outer_window_id": payload.get("window_id"),
@@ -230,9 +261,13 @@ def upsert_features_from_training_summary(conn, payload: dict[str, Any]) -> int:
 def upsert_signals_from_oos(conn, payload: dict[str, Any]) -> int:
     points = payload.get("monthly_signal_diagnostics") or []
     count = 0
+    sql = conflict_sql(
+        UPSERT_SIGNAL_SQL,
+        sealed=_run_is_sealed(payload.get("research_run_id") or payload.get("run_id")),
+    )
     for point in points:
         conn.execute(
-            text(UPSERT_SIGNAL_SQL),
+            text(sql),
             {
                 "backtest_id": payload.get("backtest_id") or "",
                 "research_run_id": payload.get("research_run_id"),

@@ -397,6 +397,104 @@ def test_platform_identity_skips_existing_sealed_run():
     ingest_platform_payload(_ExistsConn(), kind="run_summary", payload=summary)
 
 
+def test_conflict_sql_sealed_is_insert_once():
+    from qc_research.ingest.stage2_sql import UPSERT_TRIAL_SQL, conflict_sql
+    from qc_research.platform_ingest import UPSERT_EXPERIMENT, UPSERT_TRIAL, _conflict_sql
+
+    sealed_trial = _conflict_sql(UPSERT_TRIAL, sealed=True)
+    assert "DO NOTHING" in sealed_trial
+    assert "DO UPDATE" not in sealed_trial
+    assert "ON CONFLICT (research_run_id, trial_id)" in sealed_trial
+    open_trial = _conflict_sql(UPSERT_TRIAL, sealed=False)
+    assert open_trial == UPSERT_TRIAL
+    assert "DO UPDATE" in open_trial
+    sealed_exp = _conflict_sql(UPSERT_EXPERIMENT, sealed=True)
+    assert "DO NOTHING" in sealed_exp
+    assert "DO UPDATE" not in sealed_exp
+    sealed_ml = conflict_sql(UPSERT_TRIAL_SQL, sealed=True)
+    assert "DO NOTHING" in sealed_ml
+    assert "DO UPDATE" not in sealed_ml
+    assert conflict_sql(UPSERT_TRIAL_SQL, sealed=False) == UPSERT_TRIAL_SQL
+
+
+def test_sealed_tlt_children_insert_once_on_conflict():
+    from qc_research.platform_ingest import ingest_platform_payload
+    from qc_research.tlt_duration_momentum import wrap_tlt_duration_momentum_record
+
+    path = ROOT / "qc_research" / "platform_artifacts" / "tlt_duration_momentum.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    wrapped = wrap_tlt_duration_momentum_record(record)
+
+    class _Conn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+
+            class _Result:
+                def fetchone(self_inner):
+                    return None
+
+            return _Result()
+
+    conn = _Conn()
+    child_kinds = {"trials", "oos_aggregate", "experiment_manifest"}
+    for kind, artifact in wrapped:
+        if kind in child_kinds:
+            ingest_platform_payload(conn, kind=kind, payload=artifact)
+    child_sql = [
+        sql
+        for sql, _ in conn.calls
+        if any(
+            table in sql.lower()
+            for table in ("research_trials", "research_oos_windows", "research_experiments")
+        )
+    ]
+    assert child_sql
+    assert all("DO NOTHING" in sql for sql in child_sql)
+    assert all("DO UPDATE" not in sql for sql in child_sql)
+
+
+def test_sealed_csfml_children_insert_once_on_first_ingest():
+    path = (
+        ROOT
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / PIN["full_suite_run_id"]
+        / "2015"
+        / "training_summary.json"
+    )
+    official = json.loads(path.read_text(encoding="utf-8"))
+
+    class _Conn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append((str(statement), params))
+            return None
+
+    conn = _Conn()
+    ingest_artifact(
+        conn,
+        key="first-official-2015",
+        kind="training_summary",
+        payload=official,
+        logical_path=str(path),
+    )
+    child_sql = [
+        sql
+        for sql, _ in conn.calls
+        if "insert into" in sql.lower()
+        and any(table in sql.lower() for table in ("ml_trials", "ml_feature_diagnostics", "research_artifacts"))
+    ]
+    assert child_sql
+    assert any("ml_trials" in sql.lower() for sql in child_sql)
+    assert all("DO NOTHING" in sql for sql in child_sql)
+    assert all("DO UPDATE" not in sql for sql in child_sql)
+
+
 def test_official_csfml_v1_mutated_pin_fields_are_refused():
     base = {
         "research_run_id": PIN["full_suite_run_id"],

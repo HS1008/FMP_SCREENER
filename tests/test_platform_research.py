@@ -163,6 +163,10 @@ def test_experiment_manifest_ingests_without_object_store():
     )
     assert any("research_experiments" in sql.lower() for sql, _ in conn.calls)
     assert {row[1]["experiment_id"] for row in conn.calls} == {"ML_TRAIN", "ML_OOS_TEST", "FIXED_BASELINE_OOS"}
+    child_sql = [sql for sql, _ in conn.calls if "research_experiments" in sql.lower()]
+    assert child_sql
+    assert all("DO UPDATE" in sql for sql in child_sql)
+    assert all("DO NOTHING" not in sql for sql in child_sql)
     reconstructed = format_monitor_value(-0.2, reconstructed=True)
     assert reconstructed["source_label"].startswith("monthly-sampled")
     assert "QuantConnect Max Drawdown" in reconstructed["source_label"]

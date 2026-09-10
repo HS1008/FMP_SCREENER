@@ -14,6 +14,7 @@ from sqlalchemy import text
 
 from qc_research.contracts.kinds import reject_holdout_access, reject_synthetic_official
 from qc_research.contracts.label_integrity import refuse_impersonated_official_csfml_v1
+from qc_research.ingest.stage2_sql import conflict_sql as _conflict_sql
 from qc_research.object_store_sync import (
     PLATFORM_SCHEMA_VERSIONS,
     canonical_dumps,
@@ -187,11 +188,12 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
     refuse_sealed_committed_mismatch(payload)
     inner = _inner(payload)
     run_id = str(payload.get("research_run_id") or inner.get("research_run_id") or "")
+    sealed = bool(run_id) and run_id in sealed_results_run_ids()
     if kind == "trials":
         selected = inner.get("selected_trial_id")
         for row in list(inner.get("candidates") or []) + list(inner.get("rejected") or []):
             conn.execute(
-                text(UPSERT_TRIAL),
+                text(_conflict_sql(UPSERT_TRIAL, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "trial_id": row.get("trial_id"),
@@ -206,7 +208,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
         pair = inner.get("pair") or []
         if len(pair) >= 2:
             conn.execute(
-                text(UPSERT_PAIR),
+                text(_conflict_sql(UPSERT_PAIR, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "pair_left": pair[0],
@@ -222,7 +224,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
     elif kind in {"fixed_income_risk", "fixed_income_diagnostics"}:
         for name, value in (inner.get("metrics") or {"gross_dv01": inner.get("gross_dv01")}).items():
             conn.execute(
-                text(UPSERT_FI),
+                text(_conflict_sql(UPSERT_FI, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "metric_name": name,
@@ -233,10 +235,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
             )
     elif kind == "oos_aggregate":
         windows = inner.get("windows") or []
-        for index, window in enumerate(windows):
-            conn.execute(
-                text(
-                    """
+        oos_sql = """
                     INSERT INTO research_oos_windows (
                         research_run_id, outer_window_id, oos_start, oos_end, metrics_json
                     ) VALUES (
@@ -248,7 +247,9 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
                         oos_end = EXCLUDED.oos_end,
                         metrics_json = EXCLUDED.metrics_json
                     """
-                ),
+        for index, window in enumerate(windows):
+            conn.execute(
+                text(_conflict_sql(oos_sql, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "outer_window_id": str(window.get("window_id") or window.get("kind") or index),
@@ -264,7 +265,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
         for index, item in enumerate(experiments):
             experiment_id = item if isinstance(item, str) else str((item or {}).get("experiment_id") or index)
             conn.execute(
-                text(UPSERT_EXPERIMENT),
+                text(_conflict_sql(UPSERT_EXPERIMENT, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "experiment_id": experiment_id,
@@ -275,7 +276,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
         spec = inner if inner.get("identity") else payload
         identity = spec.get("identity") or {}
         conn.execute(
-            text(UPSERT_SPEC),
+            text(_conflict_sql(UPSERT_SPEC, sealed=sealed)),
             {
                 "strategy_spec_hash": identity.get("config_fingerprint") or payload.get("config_fingerprint") or "",
                 "strategy_id": identity.get("strategy_id") or payload.get("strategy_id") or "",
