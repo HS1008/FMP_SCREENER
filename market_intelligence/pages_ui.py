@@ -717,6 +717,14 @@ def render_data_health() -> None:
                     "migrations_missing_checksum": ops.get("migrations_missing_checksum"),
                     "ibkr_oldest_heartbeat_age_seconds": ops.get("ibkr_oldest_heartbeat_age_seconds"),
                     "ibkr_quote_count": ops.get("ibkr_quote_count"),
+                    "deploy_git_sha": ops.get("deploy_git_sha"),
+                    "dashboard_readonly_proven": ops.get("dashboard_readonly_proven"),
+                    "systemd_still_git_pull": ops.get("systemd_still_git_pull"),
+                    "systemd_cutover_proven": ops.get("systemd_cutover_proven"),
+                    "immutable_current_present": ops.get("immutable_current_present"),
+                    "csfml_v1_label_integrity": ops.get("csfml_v1_label_integrity"),
+                    "csfml_v1_rerun_authorized": ops.get("csfml_v1_rerun_authorized"),
+                    "deploy_identity_recorded_at": ops.get("deploy_identity_recorded_at"),
                 }
             )
 

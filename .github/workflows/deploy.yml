@@ -128,6 +128,18 @@ jobs:
               --immutable-rc "$IMMUTABLE_RC" \
               --verify-rc "$VERIFY_RC"
 
+            echo "Persisting sanitized deploy identity to PostgreSQL..."
+            (
+              set -a
+              if [ -f /root/FMP_SCREENER/.env ]; then
+                # shellcheck disable=SC1091
+                . /root/FMP_SCREENER/.env
+              fi
+              set +a
+              python -m jobs.record_deploy_identity_db \
+                --from /var/lib/fmp/deploy/current.json
+            )
+
             echo "Auditing host Streamlit identity (no secrets, no systemd change)..."
             set -a
             if [ -f /etc/fmp/fmp-dashboard.env ]; then

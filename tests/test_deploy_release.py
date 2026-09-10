@@ -46,11 +46,17 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "immutable release populate failed" in deploy
     assert "FMP_IMMUTABLE_RELEASE_STRICT=1" not in deploy.split("immutable release populate failed", 1)[1][:80]
     assert "jobs.report_deploy_identity" in deploy
+    assert "jobs.record_deploy_identity_db" in deploy
     assert "jobs.audit_host_dashboard" in deploy
     assert "--require-readonly" in deploy
     assert "/var/lib/fmp/deploy/host_audit.json" in deploy
+    assert deploy.index("jobs.report_deploy_identity") < deploy.index("jobs.record_deploy_identity_db")
+    assert deploy.index("jobs.record_deploy_identity_db") < deploy.index("jobs.audit_host_dashboard")
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
     assert deploy.index("/etc/fmp/fmp-dashboard.env") < deploy.index("jobs.audit_host_dashboard")
+    record_prefix = deploy.split("jobs.record_deploy_identity_db", 1)[0]
+    assert "/root/FMP_SCREENER/.env" in record_prefix[-500:]
+    assert "/etc/fmp/fmp-dashboard.env" not in record_prefix.split("Persisting sanitized deploy identity", 1)[-1]
     assert "jobs.cutover_dashboard_systemd" in deploy
     assert "qc_research.verify_csfml_v1 --live" in deploy
     assert "--require-present" not in deploy
@@ -156,5 +162,11 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
 def test_data_health_keeps_ops_off_main_pages():
     ui = (ROOT / "market_intelligence" / "pages_ui.py").read_text(encoding="utf-8")
     assert "Platform ops summary" in ui
+    assert "dashboard_readonly_proven" in ui
+    assert "deploy_git_sha" in ui
     dashboard = (ROOT / "dashboard.py").read_text(encoding="utf-8")
     assert "Platform ops summary" not in dashboard
+    assert "dashboard_readonly_proven" not in dashboard
+    pages = "".join(path.read_text(encoding="utf-8") for path in (ROOT / "pages").glob("*.py"))
+    assert "/var/lib/fmp/deploy" not in pages
+    assert "/var/lib/fmp/deploy" not in ui
