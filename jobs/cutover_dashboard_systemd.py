@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
-from jobs.audit_host_dashboard import collect_facts, write_facts
+from jobs.audit_host_dashboard import collect_facts, identity_env_from_file, write_facts
 from scripts.update_protected_env import STREAMLIT_WRITER_KEYS
 
 
@@ -53,47 +53,6 @@ WantedBy=multi-user.target
 
 def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _assignment_value(text: str, key: str) -> str:
-    prefix = key + "="
-    for line in text.splitlines():
-        raw = line.strip()
-        if raw.startswith("export "):
-            raw = raw[7:].strip()
-        if raw.startswith(prefix):
-            return raw.split("=", 1)[1].strip().strip("'").strip('"')
-    return ""
-
-
-def identity_env_from_file(path: Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
-    """Copy process env and overlay dashboard identity from the systemd env file.
-
-    Does not print values. Writer key names in the file are still reported by
-    ``scan_systemd_env_file``; this overlay only needs URL and flag presence.
-    """
-    from db.dashboard_engine import WRITER_ENV_KEYS
-
-    environ = dict(base if base is not None else os.environ)
-    for key in (
-        *WRITER_ENV_KEYS,
-        "DASHBOARD_READONLY_URL",
-        "DASHBOARD_ALLOW_WRITER_FALLBACK",
-        "STREAMLIT_ALLOW_PROVIDER_FETCH",
-    ):
-        environ.pop(key, None)
-    if not path.is_file():
-        return environ
-    text = path.read_text(encoding="utf-8")
-    for key in (
-        "DASHBOARD_READONLY_URL",
-        "DASHBOARD_ALLOW_WRITER_FALLBACK",
-        "STREAMLIT_ALLOW_PROVIDER_FETCH",
-    ):
-        value = _assignment_value(text, key)
-        if value:
-            environ[key] = value
-    return environ
 
 
 def scan_systemd_env_file(path: Path) -> dict[str, Any]:

@@ -5,7 +5,25 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from jobs.audit_host_dashboard import audit_exit_code, collect_facts, write_facts
+from jobs.audit_host_dashboard import (
+    audit_exit_code,
+    collect_facts,
+    identity_env_from_file,
+    write_facts,
+)
+
+
+def test_identity_env_from_file_strips_writer_keys_and_overlays_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgresql://fmp:secret@127.0.0.1/fmp")
+    monkeypatch.setenv("DASHBOARD_READONLY_URL", "")
+    env_file = tmp_path / "fmp-dashboard.env"
+    env_file.write_text(
+        "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:secret@127.0.0.1/fmp\n",
+        encoding="utf-8",
+    )
+    environ = identity_env_from_file(env_file)
+    assert environ["DASHBOARD_READONLY_URL"].startswith("postgresql://dashboard_readonly:")
+    assert "DATABASE_URL" not in environ or not environ.get("DATABASE_URL")
 
 
 def test_collect_facts_marks_unproven_root_checkout(tmp_path, monkeypatch):
@@ -107,6 +125,7 @@ def test_production_verify_workflow_runs_host_audit():
     assert "qc_research.verify_csfml_v1 --live" in text
     assert "--require-present" not in text
     assert "--require-readonly" in text
+    assert "--env-file /etc/fmp/fmp-dashboard.env" in text
     assert "jobs or change systemd" in text
     assert "source /root/FMP_SCREENER/.env" not in text
     assert ". /root/FMP_SCREENER/.env" not in text
@@ -133,6 +152,7 @@ def test_everyday_deploy_runs_host_audit_before_restart():
         "Verifying official CSFML V1 identity", 1
     )[0]
     assert "/etc/fmp/fmp-dashboard.env" in audit_block
+    assert "--env-file /etc/fmp/fmp-dashboard.env" in audit_block
     assert "unset DATABASE_URL" in audit_block
     assert "source /root/FMP_SCREENER/.env" not in audit_block
     assert ". /root/FMP_SCREENER/.env" not in audit_block

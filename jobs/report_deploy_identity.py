@@ -23,10 +23,19 @@ def build_record(
     mode: str,
     immutable_rc: int,
     verify_rc: int | None = None,
+    env_file: Path | str | None = None,
 ) -> dict[str, object]:
-    from jobs.audit_host_dashboard import collect_facts
+    from jobs.audit_host_dashboard import (
+        collect_facts,
+        identity_env_from_file,
+        resolve_identity_env_file,
+    )
 
-    facts = collect_facts(verify_rc=verify_rc)
+    resolved = resolve_identity_env_file(str(env_file) if env_file else "")
+    facts = collect_facts(
+        env=identity_env_from_file(resolved) if resolved is not None else None,
+        verify_rc=verify_rc,
+    )
     return {
         "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "git_sha": sha,
@@ -63,6 +72,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--mode", default="git_pull")
     parser.add_argument("--immutable-rc", type=int, default=0)
     parser.add_argument("--verify-rc", type=int, default=None)
+    parser.add_argument("--env-file", default="")
     args = parser.parse_args(argv)
     record = build_record(
         sha=args.sha,
@@ -70,6 +80,7 @@ def main(argv: list[str] | None = None) -> int:
         mode=args.mode,
         immutable_rc=args.immutable_rc,
         verify_rc=args.verify_rc,
+        env_file=args.env_file,
     )
     path = write_record(record)
     print("deploy_identity_written={0}".format(path))

@@ -73,6 +73,7 @@ def test_release_script_is_additive_and_supports_rollback():
     )[0]
     assert "/etc/fmp/fmp-dashboard.env" in report_block
     assert "jobs.report_deploy_identity" in report_block
+    assert "--env-file /etc/fmp/fmp-dashboard.env" in report_block
     assert "unset DATABASE_URL" in report_block
     assert "source /root/FMP_SCREENER/.env" not in report_block
     assert ". /root/FMP_SCREENER/.env" not in report_block
@@ -215,6 +216,7 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
     from jobs.report_deploy_identity import build_record, write_record
 
     monkeypatch.setenv("DASHBOARD_READONLY_URL", "postgresql://dashboard_readonly:secret@127.0.0.1/fmp")
+    monkeypatch.delenv("FMP_DASHBOARD_ENV", raising=False)
     monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
     monkeypatch.delenv("STREAMLIT_ALLOW_PROVIDER_FETCH", raising=False)
     for key in (
@@ -253,6 +255,35 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
     assert record["readonly_proven"] is False
     assert record["csfml_v1_label_integrity"] == "CANNOT_RULE_OUT"
     assert record["csfml_v1_rerun_authorized"] is False
+
+
+def test_report_deploy_identity_loads_url_from_env_file(tmp_path, monkeypatch):
+    from jobs.report_deploy_identity import build_record
+
+    monkeypatch.delenv("FMP_DASHBOARD_ENV", raising=False)
+    monkeypatch.delenv("DASHBOARD_READONLY_URL", raising=False)
+    monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
+    monkeypatch.delenv("STREAMLIT_ALLOW_PROVIDER_FETCH", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://fmp:secret@127.0.0.1/fmp")
+    env_file = tmp_path / "fmp-dashboard.env"
+    env_file.write_text(
+        "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:secret@127.0.0.1/fmp\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FMP_DASHBOARD_READONLY_PW", str(tmp_path / "missing.pw"))
+    monkeypatch.setenv("FMP_CURRENT_LINK", str(tmp_path / "missing-current"))
+    monkeypatch.setenv("FMP_SYSTEMD_EXEC_START", "/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py")
+    record = build_record(
+        sha="abc123",
+        checkout="/root/FMP_SCREENER",
+        mode="git_pull",
+        immutable_rc=0,
+        verify_rc=0,
+        env_file=env_file,
+    )
+    assert record["dashboard_readonly_url_set"] is True
+    assert record["writer_env_keys_present"] == []
+    assert record["readonly_proven"] is False
 
 
 def test_data_health_keeps_ops_off_main_pages():

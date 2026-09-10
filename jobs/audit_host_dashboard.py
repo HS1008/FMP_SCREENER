@@ -17,10 +17,57 @@ from typing import Any, Mapping
 DEFAULT_PASSWORD_FILE = "/root/FMP_SCREENER/.secrets/dashboard_readonly.pw"
 DEFAULT_CURRENT_LINK = "/opt/fmp/current"
 DEFAULT_UNIT = "fmp-dashboard"
+DEFAULT_ENV_FILE = "/etc/fmp/fmp-dashboard.env"
 
 
 def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _assignment_value(text: str, key: str) -> str:
+    prefix = key + "="
+    for line in text.splitlines():
+        raw = line.strip()
+        if raw.startswith("export "):
+            raw = raw[7:].strip()
+        if raw.startswith(prefix):
+            return raw.split("=", 1)[1].strip().strip("'").strip('"')
+    return ""
+
+
+def resolve_identity_env_file(explicit: str | None = None) -> Path | None:
+    value = (explicit or os.environ.get("FMP_DASHBOARD_ENV") or "").strip()
+    return Path(value) if value else None
+
+
+def identity_env_from_file(path: Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Copy process env and overlay dashboard identity from the systemd env file.
+
+    Does not print values. Writer leftovers in the process are stripped so
+    ``readonly_proven`` cannot be poisoned by a parent writer shell.
+    """
+    from db.dashboard_engine import WRITER_ENV_KEYS
+
+    environ = dict(base if base is not None else os.environ)
+    for key in (
+        *WRITER_ENV_KEYS,
+        "DASHBOARD_READONLY_URL",
+        "DASHBOARD_ALLOW_WRITER_FALLBACK",
+        "STREAMLIT_ALLOW_PROVIDER_FETCH",
+    ):
+        environ.pop(key, None)
+    if not path.is_file():
+        return environ
+    text = path.read_text(encoding="utf-8")
+    for key in (
+        "DASHBOARD_READONLY_URL",
+        "DASHBOARD_ALLOW_WRITER_FALLBACK",
+        "STREAMLIT_ALLOW_PROVIDER_FETCH",
+    ):
+        value = _assignment_value(text, key)
+        if value:
+            environ[key] = value
+    return environ
 
 
 def _password_file_present(path: Path) -> bool:
@@ -149,8 +196,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--out", default="")
     parser.add_argument("--require-readonly", action="store_true", default=False)
     parser.add_argument("--verify-rc", type=int, default=None)
+    parser.add_argument("--env-file", default="")
     args = parser.parse_args(argv)
-    facts = collect_facts(verify_rc=args.verify_rc)
+    env_file = resolve_identity_env_file(args.env_file)
+    facts = collect_facts(
+        env=identity_env_from_file(env_file) if env_file is not None else None,
+        verify_rc=args.verify_rc,
+    )
     if args.out:
         write_facts(facts, Path(args.out))
         print("host_audit_written={0}".format(args.out))

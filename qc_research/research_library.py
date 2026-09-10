@@ -6,7 +6,6 @@ from typing import Any
 
 import pandas as pd
 from sqlalchemy import bindparam, text
-from sqlalchemy.exc import ProgrammingError
 
 from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
 from qc_research.lifecycle import COMPLETE, RESEARCH_COMPLETE
@@ -189,10 +188,7 @@ def load_research_library(engine) -> pd.DataFrame:
     run_ids = [str(value) for value in runs["research_run_id"].dropna().astype(str).tolist()]
     extras = pd.DataFrame()
     if run_ids:
-        try:
-            extras = _read_sql(engine, THESIS_SQL, {"run_ids": run_ids}, expanding=("run_ids",))
-        except ProgrammingError:
-            extras = pd.DataFrame()
+        extras = _read_sql(engine, THESIS_SQL, {"run_ids": run_ids}, expanding=("run_ids",))
     if extras is not None and not extras.empty:
         runs = runs.merge(extras, on="research_run_id", how="left")
     else:

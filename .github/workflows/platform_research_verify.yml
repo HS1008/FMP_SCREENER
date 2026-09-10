@@ -115,5 +115,6 @@ jobs:
             python -m jobs.audit_host_dashboard \
               --verify-rc "$verify_rc" \
               --out /var/lib/fmp/deploy/host_audit.json \
-              --require-readonly
+              --require-readonly \
+              --env-file /etc/fmp/fmp-dashboard.env
           EOF

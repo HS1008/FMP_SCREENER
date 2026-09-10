@@ -36,6 +36,7 @@ def test_research_sql_helpers_do_not_swallow_generic_errors():
     assert "except Exception:\n        return pd.DataFrame()" not in QUERIES
     assert "except Exception:\n        return None" not in QUERIES
     assert "except Exception:\n        return pd.DataFrame()" not in LIBRARY
+    assert "except ProgrammingError:" not in LIBRARY
     assert "read_sql_optional" in QUERIES
     assert "Paper/live tables stay optional" in QUERIES
 
@@ -123,6 +124,30 @@ def test_paper_loaders_stay_empty_on_sql_errors(monkeypatch):
     assert mq.load_trades_frame(object(), "SPYTrend").empty
     assert mq.load_latest_positions_frame(object(), "SPYTrend").empty
     assert mq.load_latest_snapshot_row(object(), "SPYTrend") is None
+
+
+def test_research_library_raises_when_thesis_query_fails(monkeypatch):
+    from qc_research import research_library as lib
+
+    runs = pd.DataFrame(
+        [
+            {
+                "strategy_id": "SPYTrend",
+                "research_run_id": "STAGE1_SPYTrend_c04553d8",
+                "research_kind": "stage1",
+                "run_status": "COMPLETE",
+            }
+        ]
+    )
+
+    def _read(_engine, sql, params=None, expanding=()):
+        if "FROM research_artifacts" in sql:
+            raise _programming_error()
+        return runs
+
+    monkeypatch.setattr(lib, "_read_sql", _read)
+    with pytest.raises(ProgrammingError):
+        lib.load_research_library(object())
 
 
 def test_research_library_raises_when_runs_query_fails(monkeypatch):
