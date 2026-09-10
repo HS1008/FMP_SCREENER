@@ -84,7 +84,11 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "--require-readonly" in deploy
     assert "/var/lib/fmp/deploy/host_audit.json" in deploy
     assert deploy.index("jobs.report_deploy_identity") < deploy.index("jobs.record_deploy_identity_db")
-    assert deploy.index("jobs.record_deploy_identity_db") < deploy.index("jobs.audit_host_dashboard")
+    assert deploy.index("jobs.audit_host_dashboard") < deploy.index("jobs.record_deploy_identity_db")
+    assert deploy.index("qc_research.verify_stage1 --live") < deploy.index("jobs.record_deploy_identity_db")
+    assert deploy.index("jobs.record_deploy_identity_db") < deploy.index(
+        "jobs.record_research_live_identity_db"
+    )
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
     assert deploy.index("/etc/fmp/fmp-dashboard.env") < deploy.index("jobs.audit_host_dashboard")
     record_prefix = deploy.split("jobs.record_deploy_identity_db", 1)[0]
@@ -95,7 +99,7 @@ def test_release_script_is_additive_and_supports_rollback():
     )
     assert "/etc/fmp/fmp-dashboard.env" not in record_prefix.split("Persisting sanitized deploy identity", 1)[-1]
     report_block = deploy.split("Recording deploy identity", 1)[1].split(
-        "Persisting sanitized deploy identity", 1
+        "Auditing host Streamlit identity", 1
     )[0]
     assert "/etc/fmp/fmp-dashboard.env" in report_block
     assert "jobs.report_deploy_identity" in report_block
@@ -149,7 +153,7 @@ def test_release_script_is_additive_and_supports_rollback():
         "jobs.record_research_live_identity_db"
     )
     stage1 = deploy.split("Verifying official Stage 1 identity", 1)[1].split(
-        "Persisting sanitized research live identity", 1
+        "Persisting sanitized deploy identity", 1
     )[0]
     assert "/etc/fmp/fmp-dashboard.env" in stage1
     assert "unset DATABASE_URL" in stage1

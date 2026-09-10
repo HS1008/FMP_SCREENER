@@ -179,6 +179,13 @@ def test_deploy_persists_live_identity_after_query_back_in_writer_subshell():
     )[0]
     assert "st.stop()" not in ops_block
     assert "st.error(" not in ops_block
+    assert deploy.index("jobs.audit_host_dashboard") < deploy.index("jobs.record_deploy_identity_db")
+    assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
+        "jobs.record_deploy_identity_db"
+    )
+    assert deploy.index("jobs.record_deploy_identity_db") < deploy.index(
+        "jobs.record_research_live_identity_db"
+    )
     verify = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(encoding="utf-8")
     assert "jobs.record_research_live_identity_db" in verify
     assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in verify
