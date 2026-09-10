@@ -39,7 +39,7 @@ Everyday deploy and `deploy_release.sh` run `scripts/provision_dashboard_readonl
 
 Verify sources `/etc/fmp/fmp-dashboard.env` and `/root/FMP_SCREENER/.env` without printing values. Exit 2, 3, 4, or 5 fails deploy. Everyday deploy also runs `python -m qc_research.contracts.digests` before migrations.
 
-If `/opt/fmp/releases` exists, everyday deploy also populates an immutable release tree for that SHA (`--skip-restart --skip-preflight` unless `FMP_IMMUTABLE_RELEASE_STRICT=1`, which runs full preflight on the release checkout). After a successful populate, deploy re-runs identity verify from `/opt/fmp/current` and fails closed if that verify fails. A populate failure is recorded and is non-blocking unless `FMP_IMMUTABLE_RELEASE_STRICT=1`. Systemd still runs from `/root/FMP_SCREENER` until cutover is validated on the host. Deploy writes `/var/lib/fmp/deploy/current.json` (override with `FMP_DEPLOY_STATE`) with SHA, checkout path, and immutable populate status. The file must not contain URLs or passwords.
+If `/opt/fmp/releases` exists, everyday deploy also populates an immutable release tree for that SHA (`--skip-restart --skip-preflight` unless `FMP_IMMUTABLE_RELEASE_STRICT=1`, which also runs pip / migrations / pytest on the release checkout). `--skip-preflight` does **not** skip contract-digest, `provision_dashboard_readonly.sh --require`, or identity verify on the release tree. After a successful populate, deploy re-runs identity verify from `/opt/fmp/current` and fails closed if that script is missing (exit 6) or verify fails. A populate failure is recorded and is non-blocking unless `FMP_IMMUTABLE_RELEASE_STRICT=1`. Systemd still runs from `/root/FMP_SCREENER` until cutover is validated on the host. Deploy writes `/var/lib/fmp/deploy/current.json` (override with `FMP_DEPLOY_STATE`) with SHA, checkout path, and immutable populate status. The file must not contain URLs or passwords.
 
 ## Rollback
 
@@ -60,7 +60,7 @@ Secrets stay in `/etc/fmp` and `/root/FMP_SCREENER/.secrets`. Release trees must
 ## Local / pre-cutover checks
 
 ```
-scripts/deploy_release.sh --sha <git_sha> --skip-restart --skip-preflight
+scripts/deploy_release.sh --sha <git_sha> --skip-restart --skip-preflight --skip-identity
 ```
 
-`--skip-preflight` skips pip, migrations, pytest, and the read-only verify. Use only to exercise symlink layout. Host cutover still requires the full preflight.
+`--skip-preflight` skips pip, migrations, and pytest. `--skip-identity` also skips contract digests, read-only provision, and identity verify (layout-only). Host cutover still requires the full preflight.

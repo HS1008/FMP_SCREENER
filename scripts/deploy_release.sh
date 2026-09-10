@@ -21,6 +21,7 @@ SHA=""
 ROLLBACK=0
 SKIP_RESTART=0
 SKIP_PREFLIGHT=0
+SKIP_IDENTITY=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -30,6 +31,7 @@ while [ $# -gt 0 ]; do
     --release-root) RELEASE_ROOT="$2"; shift 2 ;;
     --skip-restart) SKIP_RESTART=1; shift ;;
     --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
+    --skip-identity) SKIP_IDENTITY=1; shift ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
@@ -77,6 +79,12 @@ if [ "$SKIP_PREFLIGHT" != 1 ]; then
     cd "$target"
     python -m jobs.apply_migrations
     python -m pytest -q tests/test_deploy_release.py tests/test_ui_boundary.py tests/test_surface_status.py
+  )
+fi
+if [ "$SKIP_IDENTITY" != 1 ]; then
+  (
+    cd "$target"
+    python -m qc_research.contracts.digests
     bash scripts/provision_dashboard_readonly.sh --require
     bash scripts/verify_dashboard_identity.sh
   )

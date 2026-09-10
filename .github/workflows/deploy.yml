@@ -108,7 +108,11 @@ jobs:
                 echo "immutable release populate failed and FMP_IMMUTABLE_RELEASE_STRICT=1"
                 exit "$IMMUTABLE_RC"
               fi
-              if [ "$IMMUTABLE_RC" = "0" ] && [ -f /opt/fmp/current/scripts/verify_dashboard_identity.sh ]; then
+              if [ "$IMMUTABLE_RC" = "0" ]; then
+                if [ ! -f /opt/fmp/current/scripts/verify_dashboard_identity.sh ]; then
+                  echo "immutable current is missing scripts/verify_dashboard_identity.sh"
+                  exit 6
+                fi
                 echo "Verifying Streamlit identity from immutable release checkout..."
                 ( cd /opt/fmp/current && bash scripts/verify_dashboard_identity.sh )
               fi

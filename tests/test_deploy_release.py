@@ -24,11 +24,21 @@ def test_release_script_is_additive_and_supports_rollback():
     )
     assert "scripts/verify_dashboard_identity.sh" in deploy
     assert "/opt/fmp/current/scripts/verify_dashboard_identity.sh" in deploy
+    assert "immutable current is missing scripts/verify_dashboard_identity.sh" in deploy
+    assert "--skip-identity" in script
+    assert "qc_research.contracts.digests" in script
     assert "scripts/provision_dashboard_readonly.sh --require" in script
     assert "scripts/verify_dashboard_identity.sh" in script
+    identity_block = script[script.index('if [ "$SKIP_IDENTITY" != 1 ]'):]
+    assert "qc_research.contracts.digests" in identity_block
+    assert "provision_dashboard_readonly.sh --require" in identity_block
+    preflight_block = script[script.index('if [ "$SKIP_PREFLIGHT" != 1 ]'):script.index('if [ "$SKIP_IDENTITY" != 1 ]')]
+    assert "provision_dashboard_readonly.sh" not in preflight_block
+    assert "verify_dashboard_identity.sh" not in preflight_block
     assert "dashboard_readonly_verify_rc" not in deploy
     assert "/opt/fmp/releases" in deploy
     assert "--skip-restart" in deploy
+    assert "--skip-identity" not in deploy
     assert "FMP_IMMUTABLE_RELEASE_STRICT" in deploy
     assert "jobs.report_deploy_identity" in deploy
     assert "systemctl restart fmp-dashboard" in deploy
@@ -71,6 +81,7 @@ def test_release_script_symlink_layout_without_host_restart(tmp_path):
             str(release_root),
             "--skip-restart",
             "--skip-preflight",
+            "--skip-identity",
         ],
         capture_output=True,
         text=True,
