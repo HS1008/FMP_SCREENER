@@ -37,6 +37,8 @@ from jobs.stage1_backtests import (
     apply_run_summary,
     compute_research_run_progress,
     discover_run_summary_paths,
+    pin_terminal_run_status,
+    refresh_research_run_progress,
     hydrate_legacy_and_classify,
     import_run_summaries,
     legacy_hydration_fields,
@@ -1566,6 +1568,59 @@ def test_apply_run_summary_refuses_in_progress_and_unknown():
         _orchestrator_summary(run_status="INCOMPLETE", completed_count=80, skipped_count=1),
     )
     apply_run_summary(_RecordingConn(), _orchestrator_summary(run_status="COMPLETE"))
+
+
+def test_refresh_does_not_reopen_terminal_run_status():
+    assert pin_terminal_run_status(COMPLETE, IN_PROGRESS) == COMPLETE
+    assert pin_terminal_run_status(INCOMPLETE, IN_PROGRESS) == INCOMPLETE
+    assert pin_terminal_run_status(INCOMPLETE, COMPLETE) == COMPLETE
+    assert pin_terminal_run_status(IN_PROGRESS, IN_PROGRESS) == IN_PROGRESS
+    assert pin_terminal_run_status(None, IN_PROGRESS) == IN_PROGRESS
+
+    class _Conn:
+        def __init__(self, run_status: str):
+            self.run_status = run_status
+            self.updates: list[dict] = []
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+
+            class _Result:
+                def mappings(self_inner):
+                    if "FROM research_runs" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                                    "expected_experiment_count": 81,
+                                    "orchestrator_summary_json": {},
+                                    "run_status": self.run_status,
+                                }
+                            ]
+                        )
+                    if "FROM backtests" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                                    "status": "Completed.",
+                                    "research_test_type": "PARAM_SENS",
+                                }
+                                for _ in range(40)
+                            ]
+                        )
+                    return iter([])
+
+            if "UPDATE research_runs" in sql:
+                self.updates.append(params)
+            return _Result()
+
+    complete_conn = _Conn(COMPLETE)
+    refresh_research_run_progress(complete_conn, "SPYTrend")
+    assert complete_conn.updates[0]["run_status"] == COMPLETE
+    incomplete_conn = _Conn(INCOMPLETE)
+    refresh_research_run_progress(incomplete_conn, "SPYTrend")
+    assert incomplete_conn.updates[0]["run_status"] == INCOMPLETE
 
 
 def test_case5_smoke_excluded_from_stage1_counts_and_equity():

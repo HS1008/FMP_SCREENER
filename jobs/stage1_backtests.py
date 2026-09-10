@@ -665,6 +665,22 @@ def compute_research_run_progress(
     }
 
 
+def pin_terminal_run_status(existing: str | None, computed: str) -> str:
+    """Keep imported COMPLETE/INCOMPLETE from being reopened as IN_PROGRESS.
+
+    Row-status math may still report IN_PROGRESS when the summary JSON is
+    missing. Refresh must not undo an authoritative terminal import.
+    COMPLETE never downgrades. INCOMPLETE may upgrade to COMPLETE.
+    """
+    current = str(existing or "").strip()
+    nxt = str(computed or "").strip()
+    if current == COMPLETE:
+        return COMPLETE
+    if current == INCOMPLETE and nxt not in TERMINAL_SUMMARY_STATUSES:
+        return INCOMPLETE
+    return nxt or current
+
+
 def apply_run_summary(conn, payload: dict[str, Any]) -> None:
     """Upsert compact orchestrator run_summary.json into research_runs.
 
@@ -819,6 +835,9 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
             expected=meta.get("expected_experiment_count"),
             row_statuses=by_run.get(run_id) or [],
             orchestrator_summary=summary if isinstance(summary, dict) else {},
+        )
+        progress["run_status"] = pin_terminal_run_status(
+            meta.get("run_status"), progress["run_status"]
         )
         conn.execute(
             text(

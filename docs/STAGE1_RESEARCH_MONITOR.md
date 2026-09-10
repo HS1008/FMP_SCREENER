@@ -97,7 +97,9 @@ the same JSON is idempotent (`ON CONFLICT (research_run_id)`). Import
 accepts only `COMPLETE` or `INCOMPLETE`; `IN_PROGRESS` files are refused
 so a partial local summary cannot become authoritative. Progress computed
 from QuantConnect row statuses may still show `IN_PROGRESS` until a
-terminal summary arrives. An explicit path still works:
+terminal summary arrives. After a terminal import, progress refresh must
+not reopen `COMPLETE` or `INCOMPLETE` as `IN_PROGRESS` if the summary
+JSON is missing. An explicit path still works:
 
 ```bash
 python -m jobs.sync_quantconnect --backtests-only --import-run-summary path/to/run_summary.json
