@@ -9,6 +9,7 @@ from scripts.verify_stage1_production import (
     evaluate_legacy_and_holdout,
     evaluate_live_parser,
     evaluate_research_and_smoke,
+    evaluate_official_stage1_identity,
     evaluate_stage1_run,
     evaluate_working_tree,
     format_report,
@@ -159,6 +160,7 @@ def test_report_does_not_include_secret_names_as_values():
         overall="PASS",
     )
     assert "STAGE 1 PRODUCTION VERIFICATION" in report
+    assert "Official Stage 1 identity" in report
     assert "Overall:" in report
     assert "PASS" in report
     assert "DB_PASSWORD" not in report
@@ -543,3 +545,74 @@ def test_stage1_run_rejects_smoke_contamination():
     )
     assert result["status"] == "FAIL"
     assert any("SMOKE" in item for item in result["failures"])
+
+
+OFFICIAL_STAGE1_RUN = "STAGE1_SPYTrend_c04553d8"
+OFFICIAL_STAGE1_SHA = "f04dbfb1a936c753a42a1389d9181f7c22f551a3"
+
+
+def _official_stage1_verify_row(**overrides):
+    row = {
+        "research_run_id": OFFICIAL_STAGE1_RUN,
+        "strategy_id": "SPYTrend",
+        "git_commit": OFFICIAL_STAGE1_SHA,
+        "run_status": "COMPLETE",
+        "expected_experiment_count": 81,
+        "completed_count": 81,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "holdout_accessed": False,
+        "holdout_access_count": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_official_stage1_identity_skipped_when_absent():
+    result = evaluate_official_stage1_identity(
+        [
+            {
+                "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                "run_status": "COMPLETE",
+                "expected_experiment_count": 81,
+            }
+        ]
+    )
+    assert result["status"] == "SKIP"
+    assert result["present"] is False
+    assert result["failures"] == []
+
+
+def test_official_stage1_identity_passes_when_pinned():
+    result = evaluate_official_stage1_identity([_official_stage1_verify_row()])
+    assert result["status"] == "PASS"
+    assert result["present"] is True
+    assert result["research_run_id"] == OFFICIAL_STAGE1_RUN
+    assert result["failures"] == []
+
+
+def test_official_stage1_identity_refuses_pin_drift_and_holdout():
+    drifted = evaluate_official_stage1_identity(
+        [_official_stage1_verify_row(git_commit="0" * 40, completed_count=1)]
+    )
+    assert drifted["status"] == "FAIL"
+    assert any("git_commit" in item for item in drifted["failures"])
+    assert any("completed_count" in item for item in drifted["failures"])
+    assert any("This is not an economic PASS/WATCH/FAIL" in item for item in drifted["failures"])
+    holdout = evaluate_official_stage1_identity(
+        [_official_stage1_verify_row(holdout_accessed=True)]
+    )
+    assert holdout["status"] == "FAIL"
+    assert any("holdout_accessed" in item for item in holdout["failures"])
+
+
+def test_production_verify_queries_official_stage1_identity():
+    source = (
+        Path(__file__).resolve().parent.parent / "scripts" / "verify_stage1_production.py"
+    ).read_text(encoding="utf-8")
+    assert "evaluate_official_stage1_identity" in source
+    assert "holdout_accessed" in source.split("def load_spytrend_research_runs", 1)[1]
+    assert "holdout_access_count" in source.split("def load_spytrend_research_runs", 1)[1]
+    assert source.index("evaluate_official_stage1_identity(run_rows)") < source.index(
+        "stage1_run=stage1_run"
+    )
