@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import pandas as pd
@@ -27,6 +28,8 @@ from qc_research.aggregation import (
 )
 from qc_research.holdout import classify_rows
 from qc_research.streamlit_tables import arrow_safe_frame
+
+logger = logging.getLogger(__name__)
 
 
 def fmt_num(value, decimals=2):
@@ -318,7 +321,11 @@ def render_stage1_section(
             research_lineage_id=(db_run or {}).get("research_lineage_id") or strategy_id,
         )
     except Exception:
-        pass
+        logger.exception("Stage 1 legacy holdout overlap check failed")
+        st.warning(
+            "Unable to classify holdout exposure across all backtests. "
+            "The Stage 1-only exposure line may omit legacy overlap."
+        )
     st.caption(
         "Holdout exposure (lineage): **{0}**  •  "
         "FINAL_HOLDOUT count: {1}  •  Legacy overlap: {2}  •  "

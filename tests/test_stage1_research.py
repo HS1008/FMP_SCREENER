@@ -1312,6 +1312,8 @@ def test_strategy_monitor_shows_research_and_execution_labels():
     assert "STAGE 1 RESEARCH RESULTS" in ui
     assert "Audit / Safety" in ui
     assert "Equity Curves" in ui
+    assert "Unable to classify holdout exposure across all backtests" in ui
+    assert "except Exception:\n        pass" not in ui
 
 
 class _RecordingConn:

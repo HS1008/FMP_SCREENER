@@ -213,7 +213,8 @@ def test_stage1_production_verify_uses_dashboard_readonly():
     script = (
         Path(__file__).resolve().parent.parent / "scripts" / "verify_stage1_production.py"
     ).read_text(encoding="utf-8")
-    assert "from db.dashboard_engine import dashboard_engine, writer_fallback_allowed" in script
+    assert "dashboard_engine" in script
+    assert "strip_writer_database_env" in script
     assert "from db.connection import engine" not in script
     assert "DASHBOARD_ALLOW_WRITER_FALLBACK is not a Stage 1 production verify path" in script
     workflow = _workflow_text("stage1_verify.yml")

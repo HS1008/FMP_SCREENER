@@ -74,9 +74,18 @@ jobs:
               --root qc_research/platform_artifacts/tlt_duration_momentum.json \
               --dry-run \
               --verify-monitor
-            python -m qc_research.verify_tlt_monitor --live
-            python -m qc_research.verify_tlt_monitor --live --apptest
-            python -m qc_research.verify_csfml_v1 --live
+            (
+              set -a
+              # shellcheck disable=SC1091
+              source /etc/fmp/fmp-dashboard.env
+              set +a
+              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+              export FMP_IDENTITY_ENV_ONLY=1
+              export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
+              python -m qc_research.verify_tlt_monitor --live
+              python -m qc_research.verify_tlt_monitor --live --apptest
+              python -m qc_research.verify_csfml_v1 --live
+            )
           EOF
 
       - name: Audit live Streamlit identity and systemd path
@@ -96,6 +105,7 @@ jobs:
             # shellcheck disable=SC1091
             source /etc/fmp/fmp-dashboard.env
             set +a
+            unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
             echo "HOST DASHBOARD IDENTITY AUDIT"
             echo "This does not create QuantConnect jobs or change systemd."
             export FMP_IDENTITY_ENV_ONLY=1

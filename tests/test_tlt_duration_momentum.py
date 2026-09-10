@@ -360,6 +360,9 @@ def test_generic_ingest_workflow_is_event_driven():
     assert "dashboard_engine" in Path(
         DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
     ).read_text(encoding="utf-8")
+    assert "strip_writer_database_env()" in Path(
+        DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
+    ).read_text(encoding="utf-8")
     assert "Does not create QuantConnect jobs" in verify
     assert "jobs.audit_host_dashboard" in verify
     assert "verify_dashboard_identity.sh" in verify
@@ -369,6 +372,7 @@ def test_generic_ingest_workflow_is_event_driven():
     assert ". /root/FMP_SCREENER/.env" not in verify
     assert "--dry-run" in verify
     assert "/etc/fmp/fmp-dashboard.env" in verify
+    assert "unset DATABASE_URL" in verify
     from qc_research.fetch_remote_artifact import github_raw_url
 
     sha = "ef270841621933f5039680cb070559f43bd1e3c8"

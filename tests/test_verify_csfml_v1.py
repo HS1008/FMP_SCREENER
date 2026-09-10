@@ -63,9 +63,37 @@ def test_wrong_sha_holdout_or_gate_fails_closed():
     assert "economic_gate_changed" in gate["blockers"]
 
 
+def test_live_csfml_strips_writer_env_before_engine(monkeypatch):
+    from db.dashboard_engine import DashboardIdentityError
+    from qc_research.verify_csfml_v1 import main
+
+    called: list[str] = []
+
+    def strip():
+        called.append("strip")
+        return ["DATABASE_URL"]
+
+    def engine():
+        called.append("engine")
+        raise DashboardIdentityError("stop")
+
+    monkeypatch.setenv("DASHBOARD_READONLY_URL", "postgresql://dashboard_readonly:x@127.0.0.1/fmp")
+    monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
+    monkeypatch.setattr("db.dashboard_engine.strip_writer_database_env", strip)
+    monkeypatch.setattr("db.dashboard_engine.dashboard_engine", engine)
+    try:
+        main(["--live"])
+    except DashboardIdentityError:
+        pass
+    else:
+        raise AssertionError("expected DashboardIdentityError")
+    assert called == ["strip", "engine"]
+
+
 def test_verify_module_is_readonly_and_wired_without_require_present():
     text = (ROOT / "qc_research" / "verify_csfml_v1.py").read_text(encoding="utf-8")
     assert "dashboard_engine" in text
+    assert "strip_writer_database_env()" in text
     assert "postgres_engine" not in text
     assert "begin()" not in text
     assert "DATABASE_URL" not in text
@@ -88,3 +116,5 @@ def test_verify_module_is_readonly_and_wired_without_require_present():
     assert "source /root/FMP_SCREENER/.env" not in verify
     assert ". /root/FMP_SCREENER/.env" not in verify
     assert "/etc/fmp/fmp-dashboard.env" in verify
+    assert "unset DATABASE_URL" in verify
+    assert verify.index("unset DATABASE_URL") < verify.index("verify_tlt_monitor --live")
