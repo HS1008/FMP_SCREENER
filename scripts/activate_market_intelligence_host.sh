@@ -14,6 +14,7 @@
 #   /root/FMP_SCREENER/.secrets/finra_client_id
 #   /root/FMP_SCREENER/.secrets/finra_client_secret
 #   /root/FMP_SCREENER/.secrets/mi_readonly.pw
+#   /root/FMP_SCREENER/.secrets/dashboard_readonly.pw   # Strategy Monitor / Streamlit identity
 #   /root/FMP_SCREENER/.secrets/ai_context_api_token
 #
 # CREATE ROLE uses an admin identity, never the dashboard writer:
@@ -29,6 +30,7 @@ FRED_KEY_FILE="/root/FMP_SCREENER/.secrets/fred_api_key"
 FINRA_ID_FILE="/root/FMP_SCREENER/.secrets/finra_client_id"
 FINRA_SECRET_FILE="/root/FMP_SCREENER/.secrets/finra_client_secret"
 RO_PW_FILE="/root/FMP_SCREENER/.secrets/mi_readonly.pw"
+DASH_RO_PW_FILE="/root/FMP_SCREENER/.secrets/dashboard_readonly.pw"
 AI_TOKEN_FILE="/root/FMP_SCREENER/.secrets/ai_context_api_token"
 API_ENV_FILE="/etc/fmp/ai_context_api.env"
 
@@ -42,6 +44,7 @@ while [ $# -gt 0 ]; do
     --finra-id-file) FINRA_ID_FILE="$2"; shift 2 ;;
     --finra-secret-file) FINRA_SECRET_FILE="$2"; shift 2 ;;
     --readonly-pw-file) RO_PW_FILE="$2"; shift 2 ;;
+    --dashboard-readonly-pw-file) DASH_RO_PW_FILE="$2"; shift 2 ;;
     --ai-token-file) AI_TOKEN_FILE="$2"; shift 2 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
@@ -316,6 +319,43 @@ PY
   load_writer_env
   echo "Applying mi_readonly grants via admin/peer (password file, not printed)"
   apply_readonly_role_sql
+  if [ -s "$DASH_RO_PW_FILE" ]; then
+    echo "Applying dashboard_readonly grants (password not printed)"
+    admin_url="${MI_ADMIN_DATABASE_URL:-${ADMIN_DATABASE_URL:-}}"
+    if [ -n "$admin_url" ]; then
+      psql "$admin_url" -v ON_ERROR_STOP=1 \
+        -v ro_password="$(cat "$DASH_RO_PW_FILE")" \
+        -f "$ROOT/db/roles/dashboard_readonly.sql"
+    else
+      apply_readonly_sql_as_postgres "$(writer_db_meta | cut -f1)" || true
+      PGPASSWORD="$(cat "$DASH_RO_PW_FILE")" \
+        psql -v ON_ERROR_STOP=1 -v ro_password="$(cat "$DASH_RO_PW_FILE")" \
+        -f "$ROOT/db/roles/dashboard_readonly.sql" || echo "dashboard_readonly_sql=retry_via_admin_required"
+    fi
+    DASH_RO_PW_FILE="$DASH_RO_PW_FILE" python3 - <<'PY'
+import os, pathlib, urllib.parse
+pw = pathlib.Path(os.environ["DASH_RO_PW_FILE"]).read_text(encoding="utf-8").strip()
+raw = (os.environ.get("DATABASE_URL") or "").strip()
+if raw:
+    parts = urllib.parse.urlsplit(raw)
+    host = parts.hostname or "127.0.0.1"
+    port = parts.port or 5432
+    db = (parts.path or "/fmp").lstrip("/") or "fmp"
+else:
+    host = os.environ.get("DB_HOST") or "127.0.0.1"
+    port = int(os.environ.get("DB_PORT") or "5432")
+    db = os.environ.get("DB_NAME") or "fmp"
+url = "postgresql://dashboard_readonly:{0}@{1}:{2}/{3}".format(urllib.parse.quote(pw, safe=""), host, port, db)
+pathlib.Path("/tmp/dashboard_readonly_url").write_text(url + "\n", encoding="utf-8")
+os.chmod("/tmp/dashboard_readonly_url", 0o600)
+print("dashboard readonly url constructed (not printed)")
+PY
+    python3 "$ROOT/scripts/update_protected_env.py" \
+      --env-file "$DASHBOARD_ENV" --key DASHBOARD_READONLY_URL --value-file /tmp/dashboard_readonly_url
+    rm -f /tmp/dashboard_readonly_url
+  else
+    echo "dashboard_readonly=skipped (password file absent; Strategy Monitor keeps writer fallback)"
+  fi
   unset PGPASSWORD
   echo "provision complete"
 }
@@ -401,6 +441,18 @@ phase_verify() {
   systemctl is-active --quiet fmp-dashboard
   echo "dashboard_active=yes"
   python -m jobs.verify_mi_dashboard --json
+  set +e
+  python -m jobs.verify_dashboard_readonly
+  readonly_rc=$?
+  set -e
+  if [ "$readonly_rc" = "0" ]; then
+    echo "dashboard_readonly_verify=ok"
+  elif [ "$readonly_rc" = "3" ]; then
+    echo "dashboard_readonly_verify=skipped"
+  else
+    echo "dashboard_readonly_verify=failed"
+    exit 2
+  fi
   echo "verify complete"
 }
 

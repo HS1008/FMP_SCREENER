@@ -100,6 +100,10 @@ def fetch_price_history(ticker: str, date_from: date, date_to: date) -> pd.Serie
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
     if not api_key:
         return pd.Series(dtype=float, name=ticker)
+    from qc_research.ui_boundary import provider_fetch_allowed
+
+    if not provider_fetch_allowed():
+        return pd.Series(dtype=float, name=ticker)
     session = data_loader.create_http_session()
     try:
         hist = data_loader.get_price_history(

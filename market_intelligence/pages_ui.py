@@ -706,6 +706,21 @@ def render_data_health() -> None:
             if finra_quarantine:
                 st.dataframe(pd.DataFrame(finra_quarantine), use_container_width=True, hide_index=True)
 
+    ops = load_or_stop("ops_status")
+    if ops:
+        with st.expander("Platform ops summary"):
+            st.caption("Engineering detail stays on Data Health. Main pages show only current / delayed / stale / unavailable / blocked.")
+            st.write(
+                {
+                    "sources": ops.get("source_count"),
+                    "stale": ops.get("stale_count"),
+                    "failed_transport": ops.get("failed_transport_count"),
+                    "last_successful_refresh": ops.get("last_successful_refresh"),
+                    "research_runs": ops.get("research_run_count"),
+                    "migrations": ops.get("migration_count"),
+                }
+            )
+
     with st.expander("Ingestion diagnostics"):
         if runs:
             st.dataframe(pd.DataFrame([{"Run": row["run_id"], "Source": row["source_id"], "Dataset": row["dataset"], "Status": row["status"], "Received": row["rows_received"], "Inserted": row["rows_inserted"], "Revised": row["rows_revised"], "Rejected": row["rows_rejected"], "Error": (row["error_redacted"] or "")[:80]} for row in runs]), use_container_width=True, hide_index=True)

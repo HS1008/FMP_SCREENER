@@ -7,7 +7,9 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
-from db.connection import engine
+from db.dashboard_engine import dashboard_engine
+
+engine = dashboard_engine()
 from qc_research.aggregation import smoke_backtests, stage1_backtests
 from qc_research.monitor_ui import (
     render_backtest_vs_paper,

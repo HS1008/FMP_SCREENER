@@ -40,6 +40,14 @@ def _today(conn, today: date | None) -> date:
 
 # ---- primitives ------------------------------------------------------------------------
 
+def ops_status(conn) -> dict[str, Any]:
+    """Compact platform ops row for Data Health / System only."""
+    if not _view_exists(conn, "mi_v_ops_status"):
+        return {}
+    rows = _rows(conn, "SELECT * FROM mi_v_ops_status LIMIT 1")
+    return rows[0] if rows else {}
+
+
 def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
     """Registry x freshness rows with health recomputed against an explicit clock.
 
@@ -737,6 +745,7 @@ __all__ = [
     "research_ideas",
     "sector_latest",
     "sectors_context",
+    "ops_status",
     "source_health",
     "strategies_context",
     "strategy_summary",

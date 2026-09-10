@@ -5,7 +5,6 @@ Does not depend on Streamlit. Does not launch backtests. Idempotent.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from typing import Any, Callable, Iterable
@@ -15,51 +14,22 @@ from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = "stage2_ml_v1"
-PLATFORM_SCHEMA_VERSIONS = {SCHEMA_VERSION, "platform_v1", "platform_artifact_v1"}
+from qc_research.contracts.kinds import (
+    KIND_REQUIRED_FIELDS,
+    PLATFORM_KINDS,
+    PLATFORM_SCHEMA_VERSIONS,
+    SCHEMA_VERSION,
+    reject_synthetic_official,
+)
+
 REQUIRED_RUN_ARTIFACTS = ("run_manifest", "run_summary")
-
-KIND_REQUIRED_FIELDS = {
-    "run_manifest": ("schema_version", "research_run_id", "strategy_id"),
-    "run_summary": ("schema_version", "research_run_id", "run_status"),
-    "training_summary": ("schema_version", "research_run_id", "window_id", "candidate_trials"),
-    "oos_diagnostics": ("schema_version", "research_run_id", "window_id"),
-    "model_metadata": ("model_id", "run_id", "model_sha256"),
-    "oos_aggregate": ("schema_version", "research_run_id", "windows", "ml", "baseline", "holdout_excluded"),
-    "nonholdout_assessment": ("schema_version", "research_run_id", "progress", "status", "economic_gate"),
-}
-
-PLATFORM_KINDS = {
-    "strategy_spec",
-    "experiment_manifest",
-    "assessment",
-    "risk_diagnostics",
-    "parameter_sensitivity",
-    "walk_forward",
-    "trials",
-    "feature_diagnostics",
-    "selection_diagnostics",
-    "strategy_intent",
-    "search_space",
-    "pair_diagnostics",
-    "fixed_income_risk",
-    "fixed_income_diagnostics",
-    "curve_diagnostics",
-    "futures_roll_diagnostics",
-    "roll_diagnostics",
-}
 
 
 class ArtifactSyncError(ValueError):
     """An Object Store artifact failed validation."""
 
 
-def canonical_dumps(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
-
-
-def sha256_payload(value: Any) -> str:
-    return hashlib.sha256(canonical_dumps(value).encode("utf-8")).hexdigest()
+from qc_research.contracts.hashing import canonical_dumps, payload_for_hash, sha256_payload
 
 
 def parse_json_payload(raw: Any) -> dict[str, Any] | None:
@@ -98,11 +68,6 @@ def validate_artifact(kind: str, payload: dict[str, Any] | None) -> dict[str, An
     if missing:
         raise ArtifactSyncError("{0} missing fields: {1}".format(kind, missing))
     return payload
-
-
-def payload_for_hash(payload: dict[str, Any]) -> dict[str, Any]:
-    """Hash the artifact body. artifact_sha256 is a digest, not an input."""
-    return {key: value for key, value in payload.items() if key != "artifact_sha256"}
 
 
 def verify_hash(payload: dict[str, Any], expected: str | None) -> str:
@@ -619,9 +584,10 @@ def ingest_artifact(
     logical_path: str | None = None,
 ) -> str:
     validate_artifact(kind, payload)
-    provenance = str(payload.get("provenance") or (payload.get("payload") or {}).get("provenance") or "")
-    if provenance == "SYNTHETIC_TEST_ONLY":
-        raise ArtifactSyncError("SYNTHETIC_TEST_ONLY artifacts cannot be ingested as research evidence")
+    try:
+        reject_synthetic_official(payload)
+    except ValueError as exc:
+        raise ArtifactSyncError(str(exc)) from exc
     sha = verify_hash(payload, expected_hash)
     upsert_artifact(
         conn,

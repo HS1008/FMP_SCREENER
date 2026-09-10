@@ -23,6 +23,8 @@ def test_monitor_has_library_filters_and_stable_selection():
     assert "highest-performing" in MONITOR
     assert "strategy_monitor_last_strategy" in MONITOR
     assert "This page does not launch backtests" in MONITOR
+    assert "dashboard_engine" in MONITOR
+    assert "from db.dashboard_engine import dashboard_engine" in MONITOR
     assert "arrow_safe_frame" in MONITOR
     assert "UNAVAILABLE" in MONITOR
 

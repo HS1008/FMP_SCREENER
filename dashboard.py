@@ -40,11 +40,22 @@ import sector_dashboard_ui
 import spy_sector_rotation_engine
 import tech_rotation_engine
 import utilities_rotation_engine
+from qc_research.ui_boundary import provider_fetch_allowed, refuse_provider_fetch
 
 ROOT = Path(__file__).resolve().parent
 _CACHE_TTL_SECONDS: int = int(getattr(config, "DASHBOARD_CACHE_TTL_SECONDS", 86400))
 _WARM_DELAY_S: float = float(getattr(config, "DASHBOARD_BACKGROUND_WARM_DELAY_SECONDS", 45.0))
-_ENABLE_BACKGROUND_WARM: bool = bool(getattr(config, "DASHBOARD_ENABLE_BACKGROUND_WARM", False))
+_ENABLE_BACKGROUND_WARM: bool = bool(getattr(config, "DASHBOARD_ENABLE_BACKGROUND_WARM", False)) and provider_fetch_allowed()
+_real_create_http_session = data_loader.create_http_session
+
+
+def create_http_session(*args, **kwargs):
+    if not provider_fetch_allowed():
+        refuse_provider_fetch("FMP")
+    return _real_create_http_session(*args, **kwargs)
+
+
+data_loader.create_http_session = create_http_session
 
 
 def _precomputed_rotation_if_current(bundle: dict | None) -> dict | None:
@@ -61,6 +72,8 @@ def _cached_dispersion_universe(api_key: str, sector: str, universe_revision: st
     pre_uni = precomputed_loader.load_dispersion_universe(sector)
     if pre_uni is not None and not pre_uni.empty:
         return pre_uni
+    if not provider_fetch_allowed():
+        return pd.DataFrame()
     session = data_loader.create_http_session()
     return dispersion_engine.build_dispersion_universe(
         session, api_key, sector=sector, force_refresh_profiles=False
@@ -78,6 +91,8 @@ def _cached_sector_dispersion(api_key: str, sector: str, data_revision: str) -> 
     pre_bundle = precomputed_loader.load_dispersion_dashboard_bundle(sector)
     if pre_bundle is not None:
         return pre_bundle
+    if not provider_fetch_allowed():
+        return {"ok": False, "error": "legacy FMP fetch disabled; showing stored/precomputed data only", "universe": pd.DataFrame(), "summary": {}, "tables": {}, "wide_close": pd.DataFrame(), "breadth_ts": pd.DataFrame(), "dispersion_ts": pd.DataFrame()}
     session = data_loader.create_http_session()
     uni_rev = data_loader.dispersion_universe_revision(sector)
     uni_pre = _cached_dispersion_universe(api_key, sector, uni_rev)
@@ -126,6 +141,8 @@ def _cached_all_dashboard_rotation_prices_long(api_key: str, data_revision: str)
     pre_long = precomputed_loader.load_rotation_prices_long()
     if pre_long is not None and not pre_long.empty:
         return pre_long
+    if not provider_fetch_allowed():
+        return pd.DataFrame()
     session = data_loader.create_http_session()
     return rotation_price_batch.fetch_all_dashboard_rotation_prices_long(
         session, api_key, force_refresh=False
@@ -139,6 +156,8 @@ def _cached_tech_rotation(api_key: str, data_revision: str) -> dict:
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return tech_rotation_engine.build_tech_rotation_bundle(
@@ -153,6 +172,8 @@ def _cached_materials_rotation(api_key: str, data_revision: str) -> dict:
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return materials_rotation_engine.build_materials_rotation_bundle(
@@ -167,6 +188,8 @@ def _cached_comm_rotation(api_key: str, data_revision: str) -> dict:
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return comm_rotation_engine.build_comm_rotation_bundle(
@@ -181,6 +204,8 @@ def _cached_consumer_cyclical_rotation(api_key: str, data_revision: str) -> dict
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return consumer_cyclical_rotation_engine.build_consumer_cyclical_rotation_bundle(
@@ -195,6 +220,8 @@ def _cached_consumer_defensive_rotation(api_key: str, data_revision: str) -> dic
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return consumer_defensive_rotation_engine.build_consumer_defensive_rotation_bundle(
@@ -209,6 +236,8 @@ def _cached_energy_rotation(api_key: str, data_revision: str) -> dict:
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return energy_rotation_engine.build_energy_rotation_bundle(
@@ -223,6 +252,8 @@ def _cached_financial_services_rotation(api_key: str, data_revision: str) -> dic
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return financial_services_rotation_engine.build_financial_services_rotation_bundle(
@@ -237,6 +268,8 @@ def _cached_healthcare_rotation(api_key: str, data_revision: str) -> dict:
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return healthcare_rotation_engine.build_healthcare_rotation_bundle(
@@ -251,6 +284,8 @@ def _cached_industrials_rotation(api_key: str, data_revision: str) -> dict:
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return industrials_rotation_engine.build_industrials_rotation_bundle(
@@ -265,6 +300,8 @@ def _cached_real_estate_rotation(api_key: str, data_revision: str) -> dict:
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return real_estate_rotation_engine.build_real_estate_rotation_bundle(
@@ -279,6 +316,8 @@ def _cached_utilities_rotation(api_key: str, data_revision: str) -> dict:
     )
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return utilities_rotation_engine.build_utilities_rotation_bundle(
@@ -291,6 +330,8 @@ def _cached_ai_rotation(api_key: str, data_revision: str) -> dict:
     pre = _precomputed_rotation_if_current(precomputed_loader.load_ai_rotation_bundle())
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     bulk = _cached_all_dashboard_rotation_prices_long(api_key, data_revision)
     return ai_rotation_engine.build_ai_rotation_bundle(
@@ -305,6 +346,8 @@ def _cached_spy_sector_rotation(api_key: str, data_revision: str) -> dict:
     pre = _precomputed_rotation_if_current(precomputed_loader.load_spy_sector_rotation_bundle())
     if pre is not None:
         return pre
+    if not provider_fetch_allowed():
+        return {}
     session = data_loader.create_http_session()
     return spy_sector_rotation_engine.build_spy_sector_rotation_bundle(session, api_key, force_refresh=False)
 

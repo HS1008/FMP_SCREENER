@@ -3,15 +3,18 @@
 Default behavior:
   - create schema_migrations
   - skip filenames already recorded
+  - fail if an already-applied file's sha256 drifted
   - execute only unapplied migrations
-  - insert the filename only after successful execution
+  - insert the filename and sha256 only after successful execution
 
 ``--recheck`` re-executes already-applied SQL and is not the default.
+Changed SQL requires a new migration filename.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 from pathlib import Path
 
 from sqlalchemy import text
@@ -20,17 +23,27 @@ from sqlalchemy import text
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
 
 
+class MigrationDriftError(RuntimeError):
+    """An already-applied migration file changed contents."""
+
+
+def migration_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 def ensure_migrations_table(conn) -> None:
     conn.execute(
         text(
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 filename TEXT PRIMARY KEY,
-                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                sha256 TEXT
             )
             """
         )
     )
+    conn.execute(text("ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS sha256 TEXT"))
 
 
 def applied_filenames(conn) -> set[str]:
@@ -88,23 +101,41 @@ def apply_migrations(
         ensure_migrations_table(conn)
         already = applied_filenames(conn)
         pending = pending_migration_files(files, already, recheck=recheck)
-        skipped = [path.name for path in files if path not in pending]
-        for name in skipped:
-            applied.append("{0} (skipped)".format(name))
+        skipped = [path for path in files if path not in pending]
+        for path in skipped:
+            recorded = conn.execute(
+                text("SELECT sha256 FROM schema_migrations WHERE filename = :filename"),
+                {"filename": path.name},
+            ).scalar()
+            digest = migration_sha256(path)
+            if recorded and recorded != digest:
+                raise MigrationDriftError(
+                    "Migration drift: {0} changed after apply (recorded {1}, file {2}). "
+                    "Add a new migration filename instead of editing applied SQL.".format(
+                        path.name, recorded, digest
+                    )
+                )
+            if not recorded:
+                conn.execute(
+                    text("UPDATE schema_migrations SET sha256 = :sha256 WHERE filename = :filename"),
+                    {"filename": path.name, "sha256": digest},
+                )
+            applied.append("{0} (skipped)".format(path.name))
         for path in pending:
             sql = path.read_text(encoding="utf-8")
             for statement in split_sql_statements(sql):
                 conn.execute(text(statement))
+            digest = migration_sha256(path)
             if path.name not in already:
                 conn.execute(
                     text(
                         """
-                        INSERT INTO schema_migrations (filename)
-                        VALUES (:filename)
-                        ON CONFLICT (filename) DO NOTHING
+                        INSERT INTO schema_migrations (filename, sha256)
+                        VALUES (:filename, :sha256)
+                        ON CONFLICT (filename) DO UPDATE SET sha256 = EXCLUDED.sha256
                         """
                     ),
-                    {"filename": path.name},
+                    {"filename": path.name, "sha256": digest},
                 )
             applied.append(path.name if not recheck else "{0} (rechecked)".format(path.name))
     return applied
