@@ -27,7 +27,8 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "dashboard_readonly_verify_rc" not in deploy
     assert "/opt/fmp/releases" in deploy
     assert "--skip-restart" in deploy
-    assert "immutable_release_layout=failed_nonblocking" in deploy
+    assert "FMP_IMMUTABLE_RELEASE_STRICT" in deploy
+    assert "jobs.report_deploy_identity" in deploy
     assert "systemctl restart fmp-dashboard" in deploy
     assert (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").is_file()
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
@@ -77,6 +78,22 @@ def test_release_script_symlink_layout_without_host_restart(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (release_root / sha / "README").is_file()
     assert current.resolve() == (release_root / sha).resolve()
+
+
+def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
+    from jobs.report_deploy_identity import build_record, write_record
+
+    monkeypatch.setenv("DASHBOARD_READONLY_URL", "postgresql://dashboard_readonly:secret@127.0.0.1/fmp")
+    monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
+    path = tmp_path / "current.json"
+    record = build_record(sha="abc123", checkout="/root/FMP_SCREENER", mode="git_pull", immutable_rc=0)
+    write_record(record, path)
+    text = path.read_text(encoding="utf-8")
+    assert "secret" not in text
+    assert "postgresql://" not in text
+    assert record["dashboard_readonly_url_set"] is True
+    assert record["writer_fallback"] is False
+    assert record["systemd_still_git_pull"] is True
 
 
 def test_data_health_keeps_ops_off_main_pages():

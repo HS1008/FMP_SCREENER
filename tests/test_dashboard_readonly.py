@@ -34,6 +34,29 @@ def test_provision_script_applies_sql_via_admin_or_peer_not_writer():
             assert "DB_USER" not in line
 
 
+def test_dashboard_readonly_grants_cover_monitor_tables():
+    import re
+
+    sql = (ROOT / "db" / "roles" / "dashboard_readonly.sql").read_text(encoding="utf-8")
+    sources = [
+        (ROOT / "pages" / "strategy_monitor.py").read_text(encoding="utf-8"),
+        (ROOT / "qc_research" / "read_models" / "monitor_queries.py").read_text(encoding="utf-8"),
+    ]
+    tables = set()
+    for source in sources:
+        blocks = re.findall(r'"""(.*?)"""', source, flags=re.S)
+        blocks += re.findall(r"'''(.*?)'''", source, flags=re.S)
+        for block in blocks:
+            if "SELECT" not in block.upper():
+                continue
+            tables.update(re.findall(r"\bFROM\s+([a-z_][a-z0-9_]*)", block, flags=re.I))
+            tables.update(re.findall(r"\bJOIN\s+([a-z_][a-z0-9_]*)", block, flags=re.I))
+    tables -= {"bounded_q"}
+    assert tables
+    missing = sorted(name for name in tables if name not in sql)
+    assert not missing, missing
+
+
 def test_dashboard_readonly_sql_sets_read_only_defaults():
     sql = (ROOT / "db" / "roles" / "dashboard_readonly.sql").read_text(encoding="utf-8")
     assert "default_transaction_read_only = on" in sql

@@ -88,11 +88,26 @@ jobs:
             echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
             bash scripts/install_backtest_sync_cron.sh /root/FMP_SCREENER
 
+            IMMUTABLE_RC=0
             if [ -d /opt/fmp/releases ]; then
               echo "Populating immutable release tree (systemd still uses /root/FMP_SCREENER)"
               bash scripts/deploy_release.sh --sha "$(git rev-parse HEAD)" --skip-restart --skip-preflight \
-                || echo "immutable_release_layout=failed_nonblocking"
+                || IMMUTABLE_RC=$?
+              if [ "$IMMUTABLE_RC" != "0" ]; then
+                echo "immutable_release_layout=failed rc=${IMMUTABLE_RC}"
+              fi
+              if [ "${FMP_IMMUTABLE_RELEASE_STRICT:-}" = "1" ] && [ "$IMMUTABLE_RC" != "0" ]; then
+                echo "immutable release populate failed and FMP_IMMUTABLE_RELEASE_STRICT=1"
+                exit "$IMMUTABLE_RC"
+              fi
             fi
+
+            echo "Recording deploy identity (no secrets)..."
+            python -m jobs.report_deploy_identity \
+              --sha "$(git rev-parse HEAD)" \
+              --checkout /root/FMP_SCREENER \
+              --mode git_pull \
+              --immutable-rc "$IMMUTABLE_RC"
 
             echo "Restarting Streamlit..."
             systemctl restart fmp-dashboard

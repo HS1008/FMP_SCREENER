@@ -39,7 +39,7 @@ Everyday deploy and `deploy_release.sh` run `scripts/provision_dashboard_readonl
 
 Verify sources `/etc/fmp/fmp-dashboard.env` and `/root/FMP_SCREENER/.env` without printing values. Exit 2 fails deploy; exit 3 also fails unless the writer escape is explicit.
 
-If `/opt/fmp/releases` exists, everyday deploy also populates an immutable release tree for that SHA (`--skip-restart --skip-preflight`). Systemd still runs from `/root/FMP_SCREENER` until cutover is validated on the host.
+If `/opt/fmp/releases` exists, everyday deploy also populates an immutable release tree for that SHA (`--skip-restart --skip-preflight`). A failure is recorded and is non-blocking unless `FMP_IMMUTABLE_RELEASE_STRICT=1`. Systemd still runs from `/root/FMP_SCREENER` until cutover is validated on the host. Deploy writes `/var/lib/fmp/deploy/current.json` (override with `FMP_DEPLOY_STATE`) with SHA, checkout path, and immutable populate status. The file must not contain URLs or passwords.
 
 ## Rollback
 

@@ -9,6 +9,7 @@ import pytest
 
 from qc_research.contracts.fixtures import CONSUMER_FIXTURES
 from qc_research.contracts.hashing import canonical_dumps, payload_for_hash, sha256_payload
+from qc_research.contracts.producer_fields import required_by_kind
 
 
 def _quant_strategies_root() -> Path | None:
@@ -71,12 +72,22 @@ def test_sanitized_fixtures_share_sha256():
         assert consumer.get("economic_gate", "NOT_DEFINED") in {None, "NOT_DEFINED"} or consumer_name == "stage1_run_summary"
 
 
+def test_pinned_producer_required_fields_are_satisfied_by_official_fixtures():
+    pinned = required_by_kind()
+    assert pinned
+    for kind, fields in pinned.items():
+        payload = CONSUMER_FIXTURES[kind]()
+        missing = [field for field in fields if field not in payload]
+        assert missing == [], "{0} missing pinned producer fields: {1}".format(kind, missing)
+
+
 @pytest.mark.skipif(QS_ROOT is None, reason="quant-strategies sibling repo not present")
 def test_official_fixtures_include_producer_required_fields():
     sys.path.insert(0, str(QS_ROOT))
     from research.stage2.artifact_contract import REQUIRED_BY_KIND
 
     from qc_research.contracts.kinds import KIND_REQUIRED_FIELDS
+    from qc_research.contracts.producer_fields import required_by_kind as pinned_required
 
     mapping = {
         "run_manifest": "run_manifest",
@@ -90,6 +101,7 @@ def test_official_fixtures_include_producer_required_fields():
     for kind, producer_kind in mapping.items():
         consumer_required = set(KIND_REQUIRED_FIELDS[kind])
         producer_required = set(REQUIRED_BY_KIND[producer_kind])
+        assert set(pinned_required()[kind]) == producer_required, kind
         assert consumer_required <= producer_required, kind
         payload = CONSUMER_FIXTURES[kind]()
         missing = [field for field in producer_required if field not in payload]
