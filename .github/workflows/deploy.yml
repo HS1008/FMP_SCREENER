@@ -79,8 +79,8 @@ jobs:
             echo "Applying database migrations..."
             python -m jobs.apply_migrations
 
-            echo "Provisioning dashboard_readonly if password file exists..."
-            bash scripts/provision_dashboard_readonly.sh
+            echo "Provisioning dashboard_readonly (password file required)..."
+            bash scripts/provision_dashboard_readonly.sh --require
 
             echo "Verifying Streamlit database identity..."
             bash scripts/verify_dashboard_identity.sh
@@ -91,14 +91,23 @@ jobs:
             IMMUTABLE_RC=0
             if [ -d /opt/fmp/releases ]; then
               echo "Populating immutable release tree (systemd still uses /root/FMP_SCREENER)"
-              bash scripts/deploy_release.sh --sha "$(git rev-parse HEAD)" --skip-restart --skip-preflight \
-                || IMMUTABLE_RC=$?
+              if [ "${FMP_IMMUTABLE_RELEASE_STRICT:-}" = "1" ]; then
+                bash scripts/deploy_release.sh --sha "$(git rev-parse HEAD)" --skip-restart \
+                  || IMMUTABLE_RC=$?
+              else
+                bash scripts/deploy_release.sh --sha "$(git rev-parse HEAD)" --skip-restart --skip-preflight \
+                  || IMMUTABLE_RC=$?
+              fi
               if [ "$IMMUTABLE_RC" != "0" ]; then
                 echo "immutable_release_layout=failed rc=${IMMUTABLE_RC}"
               fi
               if [ "${FMP_IMMUTABLE_RELEASE_STRICT:-}" = "1" ] && [ "$IMMUTABLE_RC" != "0" ]; then
                 echo "immutable release populate failed and FMP_IMMUTABLE_RELEASE_STRICT=1"
                 exit "$IMMUTABLE_RC"
+              fi
+              if [ "$IMMUTABLE_RC" = "0" ] && [ -f /opt/fmp/current/scripts/verify_dashboard_identity.sh ]; then
+                echo "Verifying Streamlit identity from immutable release checkout..."
+                ( cd /opt/fmp/current && bash scripts/verify_dashboard_identity.sh )
               fi
             fi
 

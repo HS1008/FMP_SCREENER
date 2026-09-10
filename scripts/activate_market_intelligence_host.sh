@@ -321,6 +321,7 @@ PY
   echo "Applying mi_readonly grants via admin/peer (password file, not printed)"
   apply_readonly_role_sql
   bash "$ROOT/scripts/provision_dashboard_readonly.sh" \
+    --require \
     --root "$ROOT" \
     --pw-file "$DASH_RO_PW_FILE" \
     --dashboard-env "$DASHBOARD_ENV" \

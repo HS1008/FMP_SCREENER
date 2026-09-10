@@ -17,12 +17,13 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "git reset --hard" not in script
     deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     assert "git pull --ff-only origin main" in deploy
-    assert "scripts/provision_dashboard_readonly.sh" in deploy
-    assert deploy.index("scripts/provision_dashboard_readonly.sh") < deploy.index(
+    assert "scripts/provision_dashboard_readonly.sh --require" in deploy
+    assert deploy.index("scripts/provision_dashboard_readonly.sh --require") < deploy.index(
         "scripts/verify_dashboard_identity.sh"
     )
     assert "scripts/verify_dashboard_identity.sh" in deploy
-    assert "scripts/provision_dashboard_readonly.sh" in script
+    assert "/opt/fmp/current/scripts/verify_dashboard_identity.sh" in deploy
+    assert "scripts/provision_dashboard_readonly.sh --require" in script
     assert "scripts/verify_dashboard_identity.sh" in script
     assert "dashboard_readonly_verify_rc" not in deploy
     assert "/opt/fmp/releases" in deploy
