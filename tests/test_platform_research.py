@@ -235,13 +235,53 @@ def test_canonical_wrap_refuses_inventing_official_run_id():
             wrap_canonical_platform_record(official)
         invented = dict(official)
         invented["research_run_id"] = "PLATFORM_{0}_V1".format(strategy_id)
-        with pytest.raises(ValueError, match="not an official sealed identity"):
+        with pytest.raises(ValueError, match="unofficial identity"):
             wrap_canonical_platform_record(invented)
     sealed = dict(future)
     sealed["strategy_id"] = "TLTDurationMomentum"
     sealed["research_run_id"] = "PLATFORM_TLTDurationMomentum_V0"
     wrapped_official = wrap_canonical_platform_record(sealed)
     assert wrapped_official[0][1]["research_run_id"] == "PLATFORM_TLTDurationMomentum_V0"
+    from qc_research.platform_ingest import wrap_smoke_record
+
+    with pytest.raises(ValueError, match="unofficial identity"):
+        wrap_smoke_record(
+            {
+                "strategy_id": "SPYTrend",
+                "run_id": "PLATFORM_SPYTrend_V1",
+                "research_status": "COMPLETE",
+                "economic_gate": "NOT_DEFINED",
+                "provenance": "REAL_QC",
+                "holdout_locked": True,
+            }
+        )
+
+
+def test_discover_platform_files_applies_canonical_only_to_file_roots(tmp_path):
+    from qc_research.platform_ingest import discover_platform_files
+
+    smoke = tmp_path / "not_canonical.json"
+    smoke.write_text(
+        json.dumps(
+            {
+                "schema_version": "platform_artifact_v1",
+                "kind": "run_summary",
+                "provenance": "SYNTHETIC_TEST_ONLY",
+                "research_run_id": "FAKE",
+                "strategy_id": "FutureBondTrend",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert discover_platform_files(smoke, canonical_only=False) == [smoke]
+    assert discover_platform_files(smoke, canonical_only=True) == []
+    tlt = (
+        Path(__file__).resolve().parents[1]
+        / "qc_research"
+        / "platform_artifacts"
+        / "tlt_duration_momentum.json"
+    )
+    assert discover_platform_files(tlt, canonical_only=True) == [tlt]
 
 
 def test_synthetic_artifacts_are_rejected_from_ingest():

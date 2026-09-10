@@ -44,7 +44,11 @@ fi
 # Live PostgreSQL ingest uses the deployed checkout, not a copied Actions tree.
 # Artifact files may still live under ROOT (typically /tmp/fmp-platform-ingest).
 DEPLOYED_ROOT="/root/FMP_SCREENER"
-if [ -d "$DEPLOYED_ROOT" ] && [ -f "$DEPLOYED_ROOT/qc_research/ingest_platform_artifacts.py" ]; then
+if [ -d "$DEPLOYED_ROOT" ]; then
+  if [ ! -f "$DEPLOYED_ROOT/qc_research/ingest_platform_artifacts.py" ]; then
+    echo "FAIL: deployed ingest module missing at $DEPLOYED_ROOT"
+    exit 1
+  fi
   CODE_ROOT="$DEPLOYED_ROOT"
 else
   CODE_ROOT="$ROOT"
@@ -58,7 +62,7 @@ echo "Verifying contract digests..."
 python -m qc_research.contracts.digests
 
 INGEST_ARGS=(--root "$TARGET" --verify-monitor)
-if [ -d "$TARGET" ] && [ "$CANONICAL_ONLY" = "1" ]; then
+if [ "$CANONICAL_ONLY" = "1" ]; then
   INGEST_ARGS+=(--canonical-only)
 fi
 

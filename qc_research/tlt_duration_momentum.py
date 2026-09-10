@@ -395,6 +395,10 @@ def platform_oos_window_frame(windows: list[dict[str, Any]] | None):
 
 
 def assert_tlt_identity(payload: dict[str, Any]) -> None:
+    if str(payload.get("research_run_id") or "") != RUN_ID:
+        raise ValueError(
+            "research_run_id is {0}, expected {1}".format(payload.get("research_run_id"), RUN_ID)
+        )
     if str(payload.get("strategy_id") or "") != STRATEGY_ID:
         raise ValueError("strategy_id is {0}, expected {1}".format(payload.get("strategy_id"), STRATEGY_ID))
     if str(payload.get("research_lineage_id") or "") != LINEAGE_ID:
@@ -420,14 +424,11 @@ def query_tlt_identity(conn) -> dict[str, Any]:
                 research_mode, asset_class, strategy_family_id, holdout_accessed,
                 holdout_access_count, run_status
             FROM research_runs
-            WHERE strategy_id = :strategy_id
-               OR research_lineage_id = :lineage
-               OR research_run_id = :run_id
-            ORDER BY last_seen_at DESC NULLS LAST
+            WHERE research_run_id = :run_id
             LIMIT 1
             """
         ),
-        {"strategy_id": STRATEGY_ID, "lineage": LINEAGE_ID, "run_id": RUN_ID},
+        {"run_id": RUN_ID},
     ).mappings().first()
     if not run:
         raise ValueError("TLTDurationMomentum research_runs row is missing")
@@ -492,6 +493,8 @@ def verify_tlt_postgres(conn) -> dict[str, Any]:
     if int(identity.get("holdout_access_count") or 0) != 0:
         raise ValueError("holdout_access_count must be 0")
     run_id = str(identity.get("research_run_id") or "")
+    if run_id != RUN_ID:
+        raise ValueError("persisted research_run_id is {0}, expected {1}".format(run_id, RUN_ID))
     windows = query_tlt_windows(conn, run_id)
     found = {str(row.get("outer_window_id") or "") for row in windows}
     if found != set(WINDOW_IDS):
@@ -529,6 +532,7 @@ def verify_tlt_postgres(conn) -> dict[str, Any]:
     inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
     assert_tlt_identity(
         {
+            "research_run_id": run_id,
             "strategy_id": inner.get("strategy_id") or payload.get("strategy_id"),
             "research_lineage_id": inner.get("research_lineage_id"),
             "research_kind": inner.get("research_kind") or RESEARCH_KIND,

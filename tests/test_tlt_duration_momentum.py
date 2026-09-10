@@ -119,6 +119,19 @@ def test_official_tlt_artifact_wraps_ten_windows_and_identity():
     assert "42444d596c9116f1320203e896fbf0fe" in official_tlt_qc_backtest_ids()
 
 
+def test_tlt_query_back_selects_official_run_id_only():
+    source = (
+        DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "tlt_duration_momentum.py"
+    ).read_text(encoding="utf-8")
+    query = source.split("def query_tlt_identity", 1)[1].split("def query_tlt_windows", 1)[0]
+    assert "WHERE research_run_id = :run_id" in query
+    assert "strategy_id = :strategy_id" not in query
+    assert "ORDER BY last_seen_at" not in query
+    pin = source.split("def assert_tlt_identity", 1)[1].split("def query_tlt_identity", 1)[0]
+    assert "research_run_id" in pin
+    assert "RUN_ID" in pin
+
+
 def test_tlt_ingest_is_idempotent_and_registers_monitor_strategy():
     path = _tlt_path()
     conn = FakeConn()

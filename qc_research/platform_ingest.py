@@ -38,6 +38,37 @@ def refuse_tainted_source(record: Mapping[str, Any] | None) -> None:
     reject_synthetic_official(payload)
     reject_holdout_access(payload)
     refuse_impersonated_official_csfml_v1(payload)
+
+
+def refuse_unofficial_monitor_run(record: Mapping[str, Any] | None) -> None:
+    """Refuse a second Monitor identity for SPYTrend / CSFML / TLT."""
+    from qc_research.contracts.sealed_results import (
+        official_monitor_strategy_ids,
+        sealed_results_run_ids,
+    )
+
+    payload = dict(record or {})
+    nested = payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
+    inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    strategy_id = str(
+        payload.get("strategy_id")
+        or nested.get("strategy_id")
+        or inner.get("strategy_id")
+        or ""
+    )
+    run_id = str(
+        payload.get("research_run_id")
+        or payload.get("run_id")
+        or nested.get("research_run_id")
+        or inner.get("research_run_id")
+        or ""
+    ).strip()
+    if strategy_id in official_monitor_strategy_ids() and run_id not in sealed_results_run_ids():
+        raise ValueError(
+            "refusing unofficial identity {0} for official Monitor strategy {1}".format(
+                run_id or "<empty>", strategy_id
+            )
+        )
     nested = payload.get("payload")
     if isinstance(nested, dict):
         reject_synthetic_official(nested)
@@ -186,6 +217,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
     )
 
     refuse_sealed_committed_mismatch(payload)
+    refuse_unofficial_monitor_run(payload)
     inner = _inner(payload)
     run_id = str(payload.get("research_run_id") or inner.get("research_run_id") or "")
     sealed = bool(run_id) and run_id in sealed_results_run_ids()
@@ -532,6 +564,7 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
         raise ValueError("smoke record is missing run_id")
     lifecycle = normalize_research_lifecycle(record)
     strategy_id = str(record.get("strategy_id") or run_id)
+    refuse_unofficial_monitor_run({"strategy_id": strategy_id, "research_run_id": run_id})
     provenance = str(record.get("provenance") or "REAL_QC")
     metrics = dict(record.get("metrics") or {})
     baseline_metrics = dict(record.get("baseline_metrics") or {})
@@ -647,14 +680,7 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
                 "refusing to invent official identity {1}".format(strategy_id, invented)
             )
         run_id = invented
-    elif (
-        strategy_id in official_monitor_strategy_ids()
-        and run_id not in sealed_results_run_ids()
-    ):
-        raise ValueError(
-            "canonical platform artifact {0} research_run_id {1} is not an "
-            "official sealed identity".format(strategy_id, run_id)
-        )
+    refuse_unofficial_monitor_run({"strategy_id": strategy_id, "research_run_id": run_id})
     lifecycle = normalize_research_lifecycle(record)
     provenance = str(record.get("provenance") or "REAL_QC")
     aggregate = record.get("aggregate") if isinstance(record.get("aggregate"), dict) else {}
@@ -851,6 +877,8 @@ def is_live_canonical_file(path: Path) -> bool:
 def discover_platform_files(root: Path | None = None, *, canonical_only: bool = False) -> list[Path]:
     base = Path(root) if root is not None else DEFAULT_ARTIFACT_ROOT
     if base.is_file() and base.suffix == ".json":
+        if canonical_only and not is_live_canonical_file(base):
+            return []
         return [base]
     if not base.is_dir():
         return []
