@@ -115,7 +115,8 @@ def listed_stage1_run_id(
     return ""
 
 
-def official_stage1_backtest_count(conn, research_run_id: str) -> int:
+def official_stage1_backtest_count(conn, research_run_id: str) -> int | None:
+    """Stored official-run backtest count, or None when the lookup failed closed."""
     result = conn.execute(
         text(
             """
@@ -127,19 +128,27 @@ def official_stage1_backtest_count(conn, research_run_id: str) -> int:
         {"research_run_id": research_run_id},
     )
     if result is None:
-        return 0
+        return None
     mappings = getattr(result, "mappings", None)
     if mappings is None:
-        return 0
+        return None
     row = mappings().first()
     if not row:
-        return 0
+        return None
     if isinstance(row, dict):
-        return int(row.get("n") or 0)
+        if "n" not in row:
+            return None
+        try:
+            return int(row["n"])
+        except (TypeError, ValueError):
+            return None
     mapping = getattr(row, "_mapping", None)
-    if mapping is not None:
-        return int(mapping.get("n") or 0)
-    return 0
+    if mapping is None or "n" not in mapping:
+        return None
+    try:
+        return int(mapping["n"])
+    except (TypeError, ValueError):
+        return None
 
 
 def unlabeled_qc_needs_detail(
@@ -170,10 +179,11 @@ def official_stage1_backtest_upsert_blocked(
     """Skip QC backtest writes that would mutate official Stage 1 metrics.
 
     First INSERT of official-run experiments is allowed until the pin
-    expected_experiment_count is stored. Existing official rows are never
-    rewritten. Official research_runs identity is not created here.
-    Official TLT and published CSFML QC backtest IDs are refused even
-    when the cloud name omits the sealed run id.
+    expected_experiment_count is stored, and only when that count can be
+    read. A missed COUNT cannot create an 82nd official row. Existing
+    official rows are never rewritten. Official research_runs identity is
+    not created here. Official TLT and published CSFML QC backtest IDs
+    are refused even when the cloud name omits the sealed run id.
     """
     from qc_research.contracts.sealed_results import (
         is_sealed_results_run,
@@ -201,7 +211,10 @@ def official_stage1_backtest_upsert_blocked(
         expected_n = int(incoming_pin.get("expected_experiment_count"))
     except (TypeError, ValueError):
         return "official_stage1_pin_expected_count"
-    if official_stage1_backtest_count(conn, incoming_run) >= expected_n:
+    stored = official_stage1_backtest_count(conn, incoming_run)
+    if stored is None:
+        return "official_stage1_count_unknown"
+    if stored >= expected_n:
         return "official_stage1_experiment_cap"
     return None
 

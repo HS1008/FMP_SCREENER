@@ -2052,9 +2052,14 @@ def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras(
         research_run_id="STAGE1_SPYTrend_other",
         existing_row={"research_run_id": "STAGE1_SPYTrend_other"},
     ) is None
-    assert official_stage1_backtest_count(_NoneConn(), OFFICIAL_STAGE1_RUN) == 0
+    assert official_stage1_backtest_count(_NoneConn(), OFFICIAL_STAGE1_RUN) is None
     assert official_stage1_backtest_upsert_blocked(
         _NoneConn(),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=None,
+    ) == "official_stage1_count_unknown"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
         research_run_id=OFFICIAL_STAGE1_RUN,
         existing_row=None,
     ) is None
