@@ -37,6 +37,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+if [ "$SKIP_IDENTITY" = 1 ] && [ "${DEPLOY_BREAK_GLASS:-}" != "1" ]; then
+  echo "refusing --skip-identity without DEPLOY_BREAK_GLASS=1"
+  exit 4
+fi
+if [ "$SKIP_IDENTITY" = 1 ]; then
+  echo "deploy_break_glass=1 skip_identity=1"
+fi
+
 if [ "$ROLLBACK" = 1 ]; then
   if [ ! -L "$PREVIOUS_LINK" ]; then
     echo "No previous release symlink at $PREVIOUS_LINK"

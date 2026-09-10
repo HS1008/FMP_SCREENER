@@ -42,6 +42,10 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "/opt/fmp/current/scripts/verify_dashboard_identity.sh" in deploy
     assert "immutable current is missing scripts/verify_dashboard_identity.sh" in deploy
     assert "--skip-identity" in script
+    assert "DEPLOY_BREAK_GLASS" in script
+    assert "refusing --skip-identity without DEPLOY_BREAK_GLASS=1" in script
+    assert "--skip-identity" not in deploy
+    assert "DEPLOY_BREAK_GLASS" not in deploy
     assert "qc_research.contracts.digests" in script
     assert "scripts/provision_dashboard_readonly.sh --require" in script
     assert "scripts/verify_dashboard_identity.sh" in script
@@ -107,6 +111,30 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "mi_readonly" not in env.split("DASHBOARD_READONLY_URL=", 1)[1].splitlines()[0]
 
 
+def test_release_script_refuses_skips_without_break_glass(tmp_path):
+    env = os.environ.copy()
+    env.pop("DEPLOY_BREAK_GLASS", None)
+    env["FMP_CURRENT_LINK"] = str(tmp_path / "current")
+    env["FMP_PREVIOUS_LINK"] = str(tmp_path / "previous")
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / "deploy_release.sh"),
+            "--sha",
+            "abc123",
+            "--skip-identity",
+            "--skip-preflight",
+            "--skip-restart",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert result.returncode == 4
+    assert "refusing --skip-identity without DEPLOY_BREAK_GLASS=1" in result.stdout
+
+
 def test_release_script_symlink_layout_without_host_restart(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -123,6 +151,7 @@ def test_release_script_symlink_layout_without_host_restart(tmp_path):
     env = os.environ.copy()
     env["FMP_CURRENT_LINK"] = str(current)
     env["FMP_PREVIOUS_LINK"] = str(previous)
+    env["DEPLOY_BREAK_GLASS"] = "1"
     result = subprocess.run(
         [
             "bash",
@@ -169,6 +198,7 @@ def test_release_script_rebinds_an_existing_tree_to_the_requested_sha(tmp_path):
     env = os.environ.copy()
     env["FMP_CURRENT_LINK"] = str(tmp_path / "current")
     env["FMP_PREVIOUS_LINK"] = str(tmp_path / "previous")
+    env["DEPLOY_BREAK_GLASS"] = "1"
     first_run = subprocess.run(
         [
             "bash",
