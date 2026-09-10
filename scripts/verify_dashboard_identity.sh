@@ -22,7 +22,26 @@ load_dashboard_env() {
   done
 }
 
+clear_inherited_writer_env() {
+  # Parent shells (activate_market_intelligence_host.sh) source the writer
+  # checkout .env before calling this script. Identity verify must not see
+  # those keys, and must not treat them as a dashboard fallback.
+  unset DATABASE_URL MARKET_INTELLIGENCE_DATABASE_URL
+  unset DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD
+}
+
+refuse_writer_keys_in_dashboard_env() {
+  if [ -n "${DATABASE_URL:-}" ] || [ -n "${DB_HOST:-}" ] || [ -n "${DB_USER:-}" ] || \
+     [ -n "${DB_PASSWORD:-}" ] || [ -n "${MARKET_INTELLIGENCE_DATABASE_URL:-}" ]; then
+    echo "dashboard_readonly_verify=writer_fallback_refused"
+    echo "dashboard env must not carry writer database keys"
+    exit 4
+  fi
+}
+
+clear_inherited_writer_env
 load_dashboard_env
+refuse_writer_keys_in_dashboard_env
 fallback=$(printf '%s' "${DASHBOARD_ALLOW_WRITER_FALLBACK:-}" | tr '[:upper:]' '[:lower:]')
 if [ "$fallback" = "1" ] || [ "$fallback" = "true" ] || [ "$fallback" = "yes" ] || [ "$fallback" = "on" ]; then
   echo "dashboard_readonly_verify=writer_fallback_refused"

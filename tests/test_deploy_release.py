@@ -81,6 +81,8 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "DASHBOARD_READONLY_URL" in docs
     assert "FMP_IDENTITY_ENV_ONLY=1" in docs
     assert "does not source `/root/FMP_SCREENER/.env`" in docs
+    assert "Inherited writer keys" in docs
+    assert "activate_market_intelligence_host.sh" in docs
     example = (ROOT / "deploy" / "fmp-dashboard.service.example").read_text(encoding="utf-8")
     assert "DASHBOARD_READONLY_URL" in example
     env = (ROOT / "deploy" / "fmp-dashboard.env.example").read_text(encoding="utf-8")

@@ -100,6 +100,12 @@ def test_identity_script_fails_closed_without_url_or_fallback():
     assert "PYTHON_BIN" in script
     assert "/root/FMP_SCREENER/.env" not in script
     assert "/etc/fmp/fmp-dashboard.env" in script
+    assert "clear_inherited_writer_env" in script
+    assert "refuse_writer_keys_in_dashboard_env" in script
+    assert (
+        "clear_inherited_writer_env\nload_dashboard_env\nrefuse_writer_keys_in_dashboard_env"
+        in script
+    )
 
 
 def test_identity_script_refuses_writer_fallback_on_deploy():
@@ -137,6 +143,57 @@ def test_identity_script_refuses_provider_fetch_on_deploy():
     )
     assert result.returncode == 5
     assert "provider_fetch_refused" in result.stdout
+
+
+def test_identity_script_clears_inherited_writer_keys(tmp_path):
+    dashboard = tmp_path / "fmp-dashboard.env"
+    dashboard.write_text("DASHBOARD_READONLY_URL=\n", encoding="utf-8")
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": str(ROOT),
+            "FMP_IDENTITY_ENV_ONLY": "1",
+            "FMP_DASHBOARD_ENV": str(dashboard),
+            "DATABASE_URL": "postgresql://writer:secret@127.0.0.1/fmp",
+            "DB_USER": "writer",
+            "MARKET_INTELLIGENCE_DATABASE_URL": "postgresql://mi:secret@127.0.0.1/fmp",
+        },
+        check=False,
+    )
+    assert result.returncode == 3
+    assert "DASHBOARD_READONLY_URL required" in result.stdout
+    assert "writer_fallback_refused" not in result.stdout
+    assert "postgresql" not in result.stdout.lower()
+
+
+def test_identity_script_refuses_writer_keys_in_dashboard_env(tmp_path):
+    dashboard = tmp_path / "fmp-dashboard.env"
+    dashboard.write_text(
+        "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:x@127.0.0.1/fmp\n"
+        "DATABASE_URL=postgresql://writer:secret@127.0.0.1/fmp\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": str(ROOT),
+            "FMP_IDENTITY_ENV_ONLY": "1",
+            "FMP_DASHBOARD_ENV": str(dashboard),
+        },
+        check=False,
+    )
+    assert result.returncode == 4
+    assert "writer_fallback_refused" in result.stdout
+    assert "dashboard env must not carry writer database keys" in result.stdout
+    assert "postgresql" not in result.stdout.lower()
 
 
 def _provision_dashboard_role(admin_url: str, role: str, password: str | None, tmp_dir: Path) -> subprocess.CompletedProcess:
