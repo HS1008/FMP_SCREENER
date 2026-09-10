@@ -242,6 +242,23 @@ def test_official_sealed_qc_backtest_ids_come_from_committed_trees():
     assert "STAGE2_CrossSectionalFactorML_e7b24642" not in ids
 
 
+def test_committed_tree_digests_match_and_refuse_drift():
+    from qc_research.contracts.sealed_results import (
+        SealedResultsError,
+        load_sealed_results,
+        verify_committed_tree_digests,
+    )
+
+    checked = verify_committed_tree_digests()
+    data = load_sealed_results()
+    assert set(checked) == set(data["committed_trees"])
+    drifted = dict(data)
+    drifted["committed_tree_digests"] = dict(data["committed_tree_digests"])
+    drifted["committed_tree_digests"]["STAGE1_SPYTrend_c04553d8"] = "0" * 64
+    with pytest.raises(SealedResultsError, match="digest mismatch"):
+        verify_committed_tree_digests(drifted)
+
+
 def test_official_tlt_wrapped_payloads_match_committed_file():
     from qc_research.contracts.sealed_results import (
         SealedResultsError,

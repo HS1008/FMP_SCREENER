@@ -39,6 +39,10 @@ def verify_contract_digests() -> dict[str, str]:
                 "Update contract_digests.json in the same change.".format(name, digest, actual)
             )
         checked[name] = actual
+    from qc_research.contracts.sealed_results import verify_committed_tree_digests
+
+    trees = verify_committed_tree_digests()
+    checked["committed_trees"] = ",".join(sorted(trees))
     return checked
 
 

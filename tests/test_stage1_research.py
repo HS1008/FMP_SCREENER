@@ -2113,8 +2113,12 @@ def test_sync_quantconnect_skips_official_stage1_rewrite():
     assert "and not official_block" in sync_fn
     assert "unlabeled_qc_needs_detail" in sync_fn
     assert "Skipping unlabeled QC insert" in sync_fn
+    assert "detail did not recover" in sync_fn
     assert sync_fn.index("unlabeled_qc_needs_detail") < sync_fn.index(
         "conn.execute(text(LEGACY_UPSERT_SQL), base)"
+    )
+    assert sync_fn.index("detail did not recover") < sync_fn.index(
+        "conn.execute(text(STAGE1_UPSERT_SQL)"
     )
 
 

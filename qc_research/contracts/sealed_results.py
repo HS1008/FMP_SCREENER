@@ -6,6 +6,7 @@ authorize a QuantConnect rerun.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any, Mapping
@@ -67,6 +68,56 @@ def _collect_qc_backtest_ids(value: Any, found: set[str]) -> None:
             _collect_qc_backtest_ids(item, found)
 
 
+def committed_tree_digest(rel: str) -> str:
+    """SHA-256 of a sealed committed file or of its sorted JSON children."""
+    path = REPO_ROOT / str(rel)
+    digest = hashlib.sha256()
+    if path.is_file():
+        digest.update(path.read_bytes())
+        return digest.hexdigest()
+    if not path.is_dir():
+        raise SealedResultsError("Sealed committed tree is missing: {0}".format(rel))
+    files = sorted(
+        candidate for candidate in path.rglob("*.json") if candidate.is_file()
+    )
+    if not files:
+        raise SealedResultsError("Sealed committed tree has no JSON: {0}".format(rel))
+    for json_path in files:
+        relative = json_path.relative_to(path).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(json_path.read_bytes()).digest())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def verify_committed_tree_digests(payload: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """Refuse sealed tree edits that are not pinned in sealed_results.json."""
+    data = dict(payload) if payload is not None else load_sealed_results()
+    pinned = dict(data.get("committed_tree_digests") or {})
+    trees = dict(data.get("committed_trees") or {})
+    if not trees:
+        raise SealedResultsError("sealed_results.json has no committed_trees")
+    if set(pinned) != set(trees):
+        raise SealedResultsError(
+            "committed_tree_digests keys must match committed_trees; "
+            "update sealed_results.json in the same change"
+        )
+    checked: dict[str, str] = {}
+    for run_id, rel in trees.items():
+        actual = committed_tree_digest(str(rel))
+        expected = str(pinned.get(run_id) or "")
+        if actual != expected:
+            raise SealedResultsError(
+                "Sealed committed tree digest mismatch for {0}: expected {1}, got {2}. "
+                "Update sealed_results.json in the same change.".format(
+                    run_id, expected, actual
+                )
+            )
+        checked[str(run_id)] = actual
+    return checked
+
+
 def official_sealed_qc_backtest_ids() -> frozenset[str]:
     """Published QuantConnect IDs in sealed committed trees plus official TLT windows.
 
@@ -76,6 +127,7 @@ def official_sealed_qc_backtest_ids() -> frozenset[str]:
     global _SEALED_QC_BACKTEST_IDS
     if _SEALED_QC_BACKTEST_IDS is not None:
         return _SEALED_QC_BACKTEST_IDS
+    verify_committed_tree_digests()
     found: set[str] = set()
     from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
 

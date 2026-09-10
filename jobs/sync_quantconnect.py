@@ -1594,6 +1594,13 @@ def sync_backtests(
                             "Skipping official sealed QC rewrite for "
                             f"{name} ({backtest_id}): {detail_block}"
                         )
+                    elif unlabeled_qc_needs_detail(row_existing, backtest) and not str(
+                        fields.get("research_run_id") or ""
+                    ).strip():
+                        print(
+                            "Skipping unlabeled QC insert; detail did not recover "
+                            f"a research_run_id for {name} ({backtest_id})"
+                        )
                     else:
                         conn.execute(text(STAGE1_UPSERT_SQL), payload)
                         upsert_research_run(conn, strategy_id, fields)
