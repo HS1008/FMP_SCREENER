@@ -243,6 +243,11 @@ def test_official_sealed_qc_backtest_ids_come_from_committed_trees():
     assert "047ffb600b710df277e81e5cdb3355e1" in ids
     assert "not-an-official-id" not in ids
     assert "STAGE2_CrossSectionalFactorML_e7b24642" not in ids
+    from qc_research.contracts.sealed_results import official_sealed_model_ids
+
+    models = official_sealed_model_ids()
+    assert "ridge-2015-67b04ffc3e6c" in models
+    assert "not-an-official-model" not in models
 
 
 def test_committed_tree_digests_match_and_refuse_drift():
@@ -470,7 +475,26 @@ def test_upsert_signals_seals_official_qc_backtest_id_even_for_unsealed_run():
     assert "DO UPDATE" not in captured[0]
 
 
-def test_official_monitor_strategy_register_is_insert_once():
+def test_upsert_model_seals_official_model_id_even_for_unsealed_run():
+    from qc_research.ingest.stage2_sql import upsert_model_from_metadata
+
+    captured: list[str] = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            captured.append(str(statement))
+
+    upsert_model_from_metadata(
+        _Conn(),
+        {
+            "run_id": "UNSEALED_COPY",
+            "model_id": "ridge-2015-67b04ffc3e6c",
+            "outer_window_id": "2015",
+        },
+    )
+    assert captured
+    assert "DO NOTHING" in captured[0]
+    assert "DO UPDATE" not in captured[0]
     from qc_research.platform_ingest import register_platform_monitor_strategy
 
     captured: list[str] = []

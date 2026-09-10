@@ -40,11 +40,17 @@ def _payload_is_sealed(payload: dict[str, Any] | None) -> bool:
     if _run_is_sealed(record.get("research_run_id") or record.get("run_id")):
         return True
     qc_id = str(record.get("backtest_id") or "")
-    if not qc_id:
-        return False
-    from qc_research.contracts.sealed_results import official_sealed_qc_backtest_ids
+    if qc_id:
+        from qc_research.contracts.sealed_results import official_sealed_qc_backtest_ids
 
-    return qc_id in official_sealed_qc_backtest_ids()
+        if qc_id in official_sealed_qc_backtest_ids():
+            return True
+    model_id = str(record.get("model_id") or "")
+    if not model_id:
+        return False
+    from qc_research.contracts.sealed_results import official_sealed_model_ids
+
+    return model_id in official_sealed_model_ids()
 
 
 UPSERT_ARTIFACT_SQL = """
@@ -217,7 +223,7 @@ def upsert_model_from_metadata(conn, payload: dict[str, Any]) -> None:
         text(
             conflict_sql(
                 UPSERT_MODEL_SQL,
-                sealed=_run_is_sealed(payload.get("run_id") or payload.get("research_run_id")),
+                sealed=_payload_is_sealed(payload),
             )
         ),
         {

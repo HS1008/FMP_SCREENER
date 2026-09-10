@@ -63,6 +63,7 @@ _QC_BACKTEST_ID_KEYS = frozenset(
     }
 )
 _SEALED_QC_BACKTEST_IDS: frozenset[str] | None = None
+_SEALED_MODEL_IDS: frozenset[str] | None = None
 
 
 def _collect_qc_backtest_ids(value: Any, found: set[str]) -> None:
@@ -77,6 +78,19 @@ def _collect_qc_backtest_ids(value: Any, found: set[str]) -> None:
     if isinstance(value, list):
         for item in value:
             _collect_qc_backtest_ids(item, found)
+
+
+def _collect_model_ids(value: Any, found: set[str]) -> None:
+    if isinstance(value, dict):
+        text = str(value.get("model_id") or "").strip()
+        if text:
+            found.add(text)
+        for item in value.values():
+            _collect_model_ids(item, found)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_model_ids(item, found)
 
 
 def committed_tree_digest(rel: str) -> str:
@@ -129,17 +143,14 @@ def verify_committed_tree_digests(payload: Mapping[str, Any] | None = None) -> d
     return checked
 
 
-def official_sealed_qc_backtest_ids() -> frozenset[str]:
-    """Published QuantConnect IDs in sealed committed trees plus official TLT windows.
-
-    Cloud sync must not first-INSERT these even when the QC name omits the
-    sealed run id. Does not invent unpublished ML_TRAIN or e7b24642 IDs.
-    """
-    global _SEALED_QC_BACKTEST_IDS
-    if _SEALED_QC_BACKTEST_IDS is not None:
-        return _SEALED_QC_BACKTEST_IDS
+def _ensure_sealed_tree_ids() -> None:
+    """Load published QC backtest ids and model ids from pinned committed trees."""
+    global _SEALED_QC_BACKTEST_IDS, _SEALED_MODEL_IDS
+    if _SEALED_QC_BACKTEST_IDS is not None and _SEALED_MODEL_IDS is not None:
+        return
     verify_committed_tree_digests()
     found: set[str] = set()
+    models: set[str] = set()
     from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
 
     found.update(official_tlt_qc_backtest_ids())
@@ -157,8 +168,28 @@ def official_sealed_qc_backtest_ids() -> frozenset[str]:
             except (OSError, TypeError, ValueError):
                 continue
             _collect_qc_backtest_ids(payload, found)
+            _collect_model_ids(payload, models)
     _SEALED_QC_BACKTEST_IDS = frozenset(found)
-    return _SEALED_QC_BACKTEST_IDS
+    _SEALED_MODEL_IDS = frozenset(models)
+
+
+def official_sealed_qc_backtest_ids() -> frozenset[str]:
+    """Published QuantConnect IDs in sealed committed trees plus official TLT windows.
+
+    Cloud sync must not first-INSERT these even when the QC name omits the
+    sealed run id. Does not invent unpublished ML_TRAIN or e7b24642 IDs.
+    """
+    _ensure_sealed_tree_ids()
+    return _SEALED_QC_BACKTEST_IDS or frozenset()
+
+
+def official_sealed_model_ids() -> frozenset[str]:
+    """Published model_id values in sealed committed trees.
+
+    Does not invent unpublished ML_TRAIN or e7b24642 model ids.
+    """
+    _ensure_sealed_tree_ids()
+    return _SEALED_MODEL_IDS or frozenset()
 
 
 def _run_id(payload: Mapping[str, Any] | None) -> str:
