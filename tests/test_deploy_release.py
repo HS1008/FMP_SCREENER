@@ -49,6 +49,10 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "/var/lib/fmp/deploy/host_audit.json" in deploy
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
     assert deploy.index("/etc/fmp/fmp-dashboard.env") < deploy.index("jobs.audit_host_dashboard")
+    assert "jobs.cutover_dashboard_systemd" in deploy
+    assert "--apply" not in deploy
+    assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy
+    assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
     assert "systemctl restart fmp-dashboard" in deploy
     assert (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").is_file()
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
@@ -107,6 +111,16 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("DASHBOARD_READONLY_URL", "postgresql://dashboard_readonly:secret@127.0.0.1/fmp")
     monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
     monkeypatch.delenv("STREAMLIT_ALLOW_PROVIDER_FETCH", raising=False)
+    for key in (
+        "DATABASE_URL",
+        "MARKET_INTELLIGENCE_DATABASE_URL",
+        "DB_PASSWORD",
+        "DB_HOST",
+        "DB_USER",
+        "DB_NAME",
+        "DB_PORT",
+    ):
+        monkeypatch.delenv(key, raising=False)
     monkeypatch.setenv("FMP_DASHBOARD_READONLY_PW", str(tmp_path / "missing.pw"))
     monkeypatch.setenv("FMP_CURRENT_LINK", str(tmp_path / "missing-current"))
     monkeypatch.setenv("FMP_SYSTEMD_EXEC_START", "/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py")
@@ -125,6 +139,7 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
     assert record["dashboard_readonly_url_set"] is True
     assert record["dashboard_readonly_password_file_present"] is False
     assert record["writer_fallback"] is False
+    assert record["writer_env_keys_present"] == []
     assert record["provider_fetch"] is False
     assert record["systemd_still_git_pull"] is True
     assert record["systemd_cutover_proven"] is False

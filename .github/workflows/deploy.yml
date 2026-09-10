@@ -153,6 +153,17 @@ jobs:
               exit "$AUDIT_RC"
             fi
 
+            echo "Recording systemd cutover readiness (dry-run, no unit change)..."
+            CUTOVER_RC=0
+            python -m jobs.cutover_dashboard_systemd \
+              --verify-rc "$VERIFY_RC" \
+              --env-file /etc/fmp/fmp-dashboard.env \
+              --out /var/lib/fmp/deploy/cutover_readiness.json || CUTOVER_RC=$?
+            if [ "$CUTOVER_RC" != "0" ]; then
+              echo "systemd cutover readiness failed rc=${CUTOVER_RC}"
+              exit "$CUTOVER_RC"
+            fi
+
             echo "Restarting Streamlit..."
             systemctl restart fmp-dashboard
 

@@ -62,18 +62,31 @@ def collect_facts(
     current = Path(current_link or os.environ.get("FMP_CURRENT_LINK") or DEFAULT_CURRENT_LINK)
     exec_start = systemd_exec if systemd_exec is not None else read_systemd_exec()
     pin = load_csfml_v1_label_integrity()
+    from db.dashboard_engine import WRITER_ENV_KEYS
+
     writer = _truthy(environ.get("DASHBOARD_ALLOW_WRITER_FALLBACK"))
     provider = _truthy(environ.get("STREAMLIT_ALLOW_PROVIDER_FETCH"))
     url_set = bool(str(environ.get("DASHBOARD_READONLY_URL") or "").strip())
+    writer_env_keys_present = [
+        key for key in WRITER_ENV_KEYS if str(environ.get(key) or "").strip()
+    ]
     pw_present = _password_file_present(pw)
     uses_current = "/opt/fmp/current" in exec_start
     uses_root = "/root/FMP_SCREENER" in exec_start
-    readonly_proven = verify_rc == 0 and url_set and pw_present and not writer and not provider
+    readonly_proven = (
+        verify_rc == 0
+        and url_set
+        and pw_present
+        and not writer
+        and not provider
+        and not writer_env_keys_present
+    )
     return {
         "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "dashboard_readonly_url_set": url_set,
         "dashboard_readonly_password_file_present": pw_present,
         "writer_fallback": writer,
+        "writer_env_keys_present": writer_env_keys_present,
         "provider_fetch": provider,
         "systemd_exec_contains_opt_fmp_current": uses_current,
         "systemd_exec_contains_root_checkout": uses_root,
@@ -100,6 +113,7 @@ def print_facts(facts: Mapping[str, Any]) -> None:
         "dashboard_readonly_url_set",
         "dashboard_readonly_password_file_present",
         "writer_fallback",
+        "writer_env_keys_present",
         "provider_fetch",
         "systemd_exec_contains_opt_fmp_current",
         "systemd_exec_contains_root_checkout",
@@ -114,7 +128,7 @@ def print_facts(facts: Mapping[str, Any]) -> None:
 
 
 def audit_exit_code(facts: Mapping[str, Any], *, require_readonly: bool) -> int:
-    if facts.get("writer_fallback"):
+    if facts.get("writer_fallback") or facts.get("writer_env_keys_present"):
         print("host_audit=writer_fallback_refused")
         return 4
     if facts.get("provider_fetch"):

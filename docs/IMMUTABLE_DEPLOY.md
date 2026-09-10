@@ -61,6 +61,9 @@ Secrets stay in `/etc/fmp` and `/root/FMP_SCREENER/.secrets`. Release trees must
 
 ```
 scripts/deploy_release.sh --sha <git_sha> --skip-restart --skip-preflight --skip-identity
+python -m jobs.cutover_dashboard_systemd --verify-rc 0 --out /var/lib/fmp/deploy/cutover_readiness.json
 ```
 
 `--skip-preflight` skips pip, migrations, and pytest. `--skip-identity` also skips contract digests, read-only provision, and identity verify (layout-only). Host cutover still requires the full preflight.
+
+`jobs.cutover_dashboard_systemd` is dry-run by default. Everyday deploy records `/var/lib/fmp/deploy/cutover_readiness.json` and does **not** pass `--apply` or `--require-ready`. Missing `/opt/fmp/current` is recorded, not a deploy failure. Writer keys in `/etc/fmp/fmp-dashboard.env` fail closed (exit 4) before Streamlit restart. `--apply` still does not call `systemctl`; it refuses unless `FMP_ALLOW_SYSTEMD_CUTOVER=1`, and even then it will not mutate the live unit. Install the proposed unit (`--write-unit`) only after host identity is proven.

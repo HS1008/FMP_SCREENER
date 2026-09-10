@@ -51,6 +51,29 @@ def test_collect_facts_proves_readonly_without_cutover(tmp_path):
     assert payload["readonly_proven"] is True
 
 
+def test_audit_refuses_writer_keys_in_process_env(tmp_path):
+    pw = tmp_path / "dashboard_readonly.pw"
+    pw.write_text("x\n", encoding="utf-8")
+    facts = collect_facts(
+        env={
+            "DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp",
+            "DATABASE_URL": "postgresql://fmp:secret@127.0.0.1/fmp",
+        },
+        password_file=pw,
+        systemd_exec="/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py",
+        verify_rc=0,
+    )
+    assert facts["readonly_proven"] is False
+    assert facts["writer_env_keys_present"] == ["DATABASE_URL"]
+    assert audit_exit_code(facts, require_readonly=True) == 4
+    path = tmp_path / "host_audit.json"
+    write_facts(facts, path)
+    text = path.read_text(encoding="utf-8")
+    assert "secret" not in text
+    assert "postgresql://" not in text
+    assert "DATABASE_URL" in text
+
+
 def test_audit_refuses_writer_fallback_and_provider_fetch():
     writer = collect_facts(
         env={"DASHBOARD_ALLOW_WRITER_FALLBACK": "1"},
@@ -94,3 +117,6 @@ def test_everyday_deploy_runs_host_audit_before_restart():
     assert deploy.index("jobs.report_deploy_identity") < deploy.index("jobs.audit_host_dashboard")
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
     assert "host dashboard audit failed" in deploy
+    assert "jobs.cutover_dashboard_systemd" in deploy
+    assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
+    assert "--apply" not in deploy

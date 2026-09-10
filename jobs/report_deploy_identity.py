@@ -37,6 +37,7 @@ def build_record(
         "dashboard_readonly_url_set": facts["dashboard_readonly_url_set"],
         "dashboard_readonly_password_file_present": facts["dashboard_readonly_password_file_present"],
         "writer_fallback": facts["writer_fallback"],
+        "writer_env_keys_present": facts["writer_env_keys_present"],
         "provider_fetch": facts["provider_fetch"],
         "immutable_current_present": facts["immutable_current_present"],
         "systemd_cutover_proven": facts["systemd_cutover_proven"],
