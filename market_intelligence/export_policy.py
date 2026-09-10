@@ -31,6 +31,8 @@ from market_intelligence.nulls import canonical_sha256, normalize_payload
 EXPORT_SCHEMA_VERSION = "export_safe_v2"
 EXPORT_PUBLIC = "PUBLIC"
 EXPORT_INTERNAL_SUMMARY = "INTERNAL_SUMMARY"
+EXPORT_MODE_EXTERNAL = "external"
+EXPORT_MODE_OWNER = "owner"
 
 RESTRICTED_REASON = "Restricted redistribution (ICE BofA via FRED). Values available internally only."
 INTERNAL_ONLY_REASON = "Internal-only source (no redistribution entitlement decided). Values available on the DB-only dashboard."
@@ -88,12 +90,16 @@ def scope_of(entry: dict[str, Any]) -> str | None:
     return str(scope).upper() if scope not in (None, "") else None
 
 
-def decide(entry: dict[str, Any]) -> tuple[bool, str | None]:
+def decide(entry: dict[str, Any], *, export_mode: str = EXPORT_MODE_EXTERNAL) -> tuple[bool, str | None]:
     """Return ``(export_values, redaction_reason)`` for a data entry."""
     scope = scope_of(entry)
     if scope is None:
         return False, UNSCOPED_REASON
     if scope in EXPORTABLE_SCOPES:
+        return True, None
+    if export_mode == EXPORT_MODE_OWNER and scope in REDACTED_SCOPES:
+        # Authenticated owner session: include stored dashboard values. Secrets, binaries,
+        # and unknown scopes still fail closed. This is not a public redistribution grant.
         return True, None
     if scope == EXPORT_RESTRICTED:
         return False, RESTRICTED_REASON
@@ -102,8 +108,8 @@ def decide(entry: dict[str, Any]) -> tuple[bool, str | None]:
     return False, UNKNOWN_SCOPE_REASON.format(scope)
 
 
-def is_restricted(entry: dict[str, Any]) -> bool:
-    return isinstance(entry, dict) and _is_data_entry(entry) and not decide(entry)[0]
+def is_restricted(entry: dict[str, Any], *, export_mode: str = EXPORT_MODE_EXTERNAL) -> bool:
+    return isinstance(entry, dict) and _is_data_entry(entry) and not decide(entry, export_mode=export_mode)[0]
 
 
 def _sanitize_coverage(coverage: Any) -> dict[str, Any] | None:
@@ -125,9 +131,9 @@ def _sanitize_coverage(coverage: Any) -> dict[str, Any] | None:
     return _strip_secrets(kept) if kept else None
 
 
-def redact_entry(entry: dict[str, Any], reason: str | None = None) -> dict[str, Any]:
+def redact_entry(entry: dict[str, Any], reason: str | None = None, *, export_mode: str = EXPORT_MODE_EXTERNAL) -> dict[str, Any]:
     if reason is None:
-        reason = decide(entry)[1] or RESTRICTED_REASON
+        reason = decide(entry, export_mode=export_mode)[1] or RESTRICTED_REASON
     kept: dict[str, Any] = {}
     for k, v in entry.items():
         if k in ALWAYS_EXCLUDED_KEYS or k not in IDENTITY_KEYS or k in VALUE_KEYS or k == "coverage":
@@ -160,7 +166,7 @@ def _order_key(item: Any) -> str:
     return "~"
 
 
-def filter_for_export(obj: Any, inherited_scope: str | None = None) -> Any:
+def filter_for_export(obj: Any, inherited_scope: str | None = None, *, export_mode: str = EXPORT_MODE_EXTERNAL) -> Any:
     """Recursively apply the export policy; returns a deep-copied filtered structure.
 
     ``inherited_scope`` is the export scope of an already-allowed parent series/metric.
@@ -174,25 +180,25 @@ def filter_for_export(obj: Any, inherited_scope: str | None = None) -> Any:
             working = dict(obj)
             working["export_scope"] = inherited_scope
         if _is_data_entry(working):
-            allowed, reason = decide(working)
+            allowed, reason = decide(working, export_mode=export_mode)
             if not allowed:
-                return redact_entry(working, reason)
+                return redact_entry(working, reason, export_mode=export_mode)
             parent_scope = scope_of(working)
             out: dict[str, Any] = {}
             for key, value in obj.items():
                 if key in ALWAYS_EXCLUDED_KEYS:
                     continue
                 child_scope = parent_scope if key in INHERIT_SCOPE_KEYS else None
-                out[key] = filter_for_export(value, child_scope)
+                out[key] = filter_for_export(value, child_scope, export_mode=export_mode)
             return out
         out = {}
         for key, value in obj.items():
             if key in ALWAYS_EXCLUDED_KEYS:
                 continue
-            out[key] = filter_for_export(value, inherited_scope)
+            out[key] = filter_for_export(value, inherited_scope, export_mode=export_mode)
         return out
     if isinstance(obj, list):
-        items = [filter_for_export(item, inherited_scope) for item in obj]
+        items = [filter_for_export(item, inherited_scope, export_mode=export_mode) for item in obj]
         if any(isinstance(i, dict) and i.get("restricted") is True for i in items):
             items = sorted(items, key=_order_key)
         return items
@@ -209,14 +215,14 @@ def restricted_count(obj: Any) -> int:
     return 0
 
 
-def export_safe_body(body: Any) -> tuple[Any, bool]:
+def export_safe_body(body: Any, *, export_mode: str = EXPORT_MODE_EXTERNAL) -> tuple[Any, bool]:
     """Filter ``body``; return ``(filtered, altered)``."""
     normalized = normalize_payload(body)
-    filtered = filter_for_export(normalized)
+    filtered = filter_for_export(normalized, export_mode=export_mode)
     return filtered, filtered != normalized
 
 
-def build_envelope(body: Any, *, provenance: dict[str, Any], **extra: Any) -> dict[str, Any]:
+def build_envelope(body: Any, *, provenance: dict[str, Any], export_mode: str = EXPORT_MODE_EXTERNAL, **extra: Any) -> dict[str, Any]:
     """Assemble the complete (unhashed) export envelope.
 
     ``provenance`` must state where the body came from (``kind`` = FROZEN_SNAPSHOT / LIVE_VIEW,
@@ -224,9 +230,10 @@ def build_envelope(body: Any, *, provenance: dict[str, Any], **extra: Any) -> di
     Extra top-level fields (``available``, ``delivery_health`` ...) are passed here so they
     are part of the hashed contract.
     """
-    filtered, altered = export_safe_body(body)
+    filtered, altered = export_safe_body(body, export_mode=export_mode)
     envelope: dict[str, Any] = {
         "export_schema_version": EXPORT_SCHEMA_VERSION,
+        "export_mode": export_mode,
         "provenance": provenance,
         "source_snapshot_hash": provenance.get("source_snapshot_hash"),
         "export_filtered": altered,
@@ -267,6 +274,8 @@ def verify_export_hash(envelope: dict[str, Any]) -> bool:
 __all__ = [
     "EXPORTABLE_SCOPES",
     "EXPORT_INTERNAL_SUMMARY",
+    "EXPORT_MODE_EXTERNAL",
+    "EXPORT_MODE_OWNER",
     "EXPORT_PUBLIC",
     "EXPORT_SCHEMA_VERSION",
     "INHERIT_SCOPE_KEYS",

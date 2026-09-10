@@ -93,5 +93,11 @@ jobs:
               systemctl restart fmp-ibkr-ingest.service
             fi
 
+            if systemctl cat fmp-ai-context-api.service >/dev/null 2>&1; then
+              echo "Restarting read-only AI gateway..."
+              systemctl restart fmp-ai-context-api.service
+              systemctl is-active --quiet fmp-ai-context-api.service
+            fi
+
             echo "Deployment complete."
           EOF

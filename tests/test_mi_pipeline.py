@@ -520,7 +520,7 @@ def test_readonly_role_can_select_curated_views(ro_engine, populated):
     with ro_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_v_macro_latest")).scalar() > 40
         assert conn.execute(text("SELECT COUNT(*) FROM mi_v_strategy_research_summary WHERE strategy_id='FIXTURE_STRATEGY'")).scalar() == 1
-        for view in readonly_db.REQUIRED_VIEWS + ("mi_v_macro_quarantine_summary", "mi_v_metric_history", "mi_v_industry_latest", "mi_v_research_ideas", "mi_v_pit_sector_artifacts", "mi_v_pit_sector_internals_current", "mi_v_pit_sector_internals_latest"):
+        for view in readonly_db.REQUIRED_VIEWS + ("mi_v_macro_quarantine_summary", "mi_v_metric_history", "mi_v_industry_latest", "mi_v_research_ideas", "mi_v_pit_sector_artifacts", "mi_v_pit_sector_internals_current", "mi_v_pit_sector_internals_latest", "mi_v_strategy_experiments", "mi_v_strategy_oos_windows", "mi_v_strategy_artifact_status"):
             conn.execute(text("SELECT * FROM {0} LIMIT 1".format(view)))
 
 
@@ -969,3 +969,123 @@ def test_refresh_unconfigured_source_is_explicit_skip_not_crash(pg_engine, popul
     assert access.access_status == "CONFIGURATION_REQUIRED" and access.enabled is False
     # No-configured-provider success does not imply freshness: existing freshness rows untouched.
     assert "FRESH" not in json.dumps(out["results"]["fred"])
+
+
+# ---- AI gateway (live semantic tools on the same read-only role) -----------------------------------
+
+GATEWAY_PATHS = (
+    "/api/v1/context/morning",
+    "/api/v1/markets/pulse",
+    "/api/v1/rates",
+    "/api/v1/macro",
+    "/api/v1/credit",
+    "/api/v1/sectors",
+    "/api/v1/industries",
+    "/api/v1/subindustries",
+    "/api/v1/order-flow",
+    "/api/v1/strategies",
+    "/api/v1/data-health",
+    "/api/v1/changes",
+)
+
+
+@pytest.mark.parametrize("path", GATEWAY_PATHS)
+def test_gateway_routes_require_bearer_and_return_envelopes(api, path):
+    assert api.get(path).status_code == 401
+    payload = api.get(path, headers={"Authorization": "Bearer fixture-token"}).json()
+    assert payload["schema_version"] == "ai_gateway_v1"
+    assert payload["export_mode"] == "owner"
+    assert payload["interpretation"] == "NONE"
+    assert "export_sha256" in payload
+    assert verify_export_hash(payload)
+    assert "fixture-token" not in json.dumps(payload)
+
+
+def test_gateway_owner_mode_includes_sector_1d_and_rates_provenance(api):
+    sectors = api.get("/api/v1/sectors", headers={"Authorization": "Bearer fixture-token"}).json()
+    rows = sectors["body"]["rows"]
+    assert rows and any(row.get("ret_1d") is not None for row in rows)
+    assert any(row.get("legacy_fmp") is True for row in rows)
+    rates = api.get("/api/v1/rates", headers={"Authorization": "Bearer fixture-token"}).json()
+    curve = rates["body"]["curve"]
+    ten = next(row for row in curve if row["tenor"] == "10Y")
+    assert ten["yield_pct"] is not None
+    assert ten["observation_date"]
+    assert rates["body"]["source_priority"]["current"].startswith("FRED")
+    assert rates["body"]["source_priority"]["fiscal_data"] == "NOT_IMPLEMENTED"
+
+
+def test_gateway_macro_series_is_bounded_and_rejects_unknown(api):
+    unknown = api.get("/api/v1/macro/NOT_A_SERIES", headers={"Authorization": "Bearer fixture-token"})
+    assert unknown.status_code == 400 and unknown.json()["error"] == "UNKNOWN_SERIES"
+    ok = api.get("/api/v1/macro/DGS10?limit=5", headers={"Authorization": "Bearer fixture-token"}).json()
+    assert ok["available"] is True
+    assert ok["body"]["row_count"] <= 5
+    assert ok["body"]["series_id"] == "DGS10"
+    latest = ok["body"]["latest"]
+    assert latest is not None and latest.get("value") is not None
+    assert latest.get("observation_date")
+
+
+def test_gateway_subindustry_is_explicitly_unavailable(api):
+    payload = api.get("/api/v1/subindustries?sector=Technology", headers={"Authorization": "Bearer fixture-token"}).json()
+    assert payload["available"] is False
+    assert payload["unavailable_reason"]
+    assert payload["body"]["error"] == "DATA_NOT_AVAILABLE"
+    assert payload["body"]["hierarchy"] == "sector > industry"
+
+
+def test_gateway_mcp_initialize_and_tool_call(api):
+    headers = {"Authorization": "Bearer fixture-token", "Content-Type": "application/json"}
+    assert api.post("/mcp", json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}).status_code == 401
+    init = api.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}})
+    assert init.status_code == 200 and init.json()["result"]["serverInfo"]["name"] == "FMP Market Intelligence"
+    listed = api.post("/mcp", headers=headers, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+    names = [tool["name"] for tool in listed.json()["result"]["tools"]]
+    assert "get_data_health" in names and "execute_sql" not in names
+    called = api.post(
+        "/mcp",
+        headers=headers,
+        json={"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "get_data_health", "arguments": {}}},
+    )
+    body = json.loads(called.json()["result"]["content"][0]["text"])
+    assert body["tool"] == "get_data_health"
+    assert body["body"]["sources"]
+    forbidden = api.post(
+        "/mcp",
+        headers=headers,
+        json={"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "place_order", "arguments": {}}},
+    )
+    assert forbidden.json()["error"]["message"] == "TOOL_FORBIDDEN"
+
+
+def test_gateway_oauth_metadata_is_public(api):
+    resource = api.get("/.well-known/oauth-protected-resource")
+    server = api.get("/.well-known/oauth-authorization-server")
+    assert resource.status_code == 200 and "authorization_servers" in resource.json()
+    assert server.status_code == 200 and server.json()["code_challenge_methods_supported"] == ["S256"]
+    page = api.get("/oauth/authorize", params={"response_type": "code", "client_id": "test", "redirect_uri": "https://example.com/cb", "code_challenge": "abc", "code_challenge_method": "S256"})
+    assert page.status_code == 200 and "API token" in page.text
+
+
+def test_gateway_ready_and_health(api):
+    assert api.get("/health").json() == {"status": "ok"}
+    assert api.get("/ready").status_code == 401
+    ready = api.get("/ready", headers={"Authorization": "Bearer fixture-token"})
+    assert ready.status_code == 200 and ready.json()["ready"] is True
+
+
+def test_gateway_strategy_holdout_view_excludes_2025(pg_engine, populated):
+    with pg_engine.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO research_oos_windows (research_run_id, outer_window_id, oos_start, oos_end, metrics_json)
+                VALUES
+                    ('FIXTURE_RUN', '2015', DATE '2015-01-01', DATE '2015-12-31', '{"rank_ic": 0.1}'::jsonb),
+                    ('FIXTURE_RUN', '2025H', DATE '2025-01-01', DATE '2025-12-31', '{"rank_ic": 0.9}'::jsonb)
+                """
+            )
+        )
+        visible = [row[0] for row in conn.execute(text("SELECT outer_window_id FROM mi_v_strategy_oos_windows WHERE research_run_id='FIXTURE_RUN' ORDER BY outer_window_id"))]
+    assert visible == ["2015"]
