@@ -40,6 +40,7 @@ from qc_research.read_models.monitor_queries import (
 )
 from qc_research.platform_presentation import UNAVAILABLE, display_strategy_name, picker_label
 from qc_research.research_library import (
+    OfficialResearchIdentityError,
     filter_library,
     library_display_frame,
     load_research_library,
@@ -881,6 +882,10 @@ if strategies.empty:
 
 try:
     library = load_research_library(engine)
+except OfficialResearchIdentityError as exc:
+    logger.exception("Strategy Monitor refused official research library identity")
+    st.error(str(exc))
+    st.stop()
 except Exception:
     logger.exception("Strategy Monitor failed to load the research library")
     st.error(
@@ -982,6 +987,13 @@ if previous is not None and str(previous) != str(selected_id):
 st.session_state["strategy_monitor_last_strategy"] = selected_id
 try:
     runs = load_strategy_runs(engine, selected_id)
+except OfficialResearchIdentityError as exc:
+    logger.exception(
+        "Strategy Monitor refused official research run identity for strategy_id=%s",
+        selected_id,
+    )
+    st.error(str(exc))
+    st.stop()
 except Exception:
     logger.exception(
         "Strategy Monitor failed to load research runs for strategy_id=%s",

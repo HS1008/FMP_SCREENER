@@ -666,16 +666,23 @@ def compute_research_run_progress(
 
 
 def pin_terminal_run_status(existing: str | None, computed: str) -> str:
-    """Keep imported COMPLETE/INCOMPLETE from being reopened as IN_PROGRESS.
+    """Keep imported terminal status from being reopened as IN_PROGRESS.
 
     Row-status math may still report IN_PROGRESS when the summary JSON is
     missing. Refresh must not undo an authoritative terminal import.
-    COMPLETE never downgrades. INCOMPLETE may upgrade to COMPLETE.
+    COMPLETE never downgrades. RESEARCH_COMPLETE / NON_HOLDOUT_COMPLETE may
+    upgrade to COMPLETE. INCOMPLETE may upgrade to COMPLETE.
     """
     current = str(existing or "").strip()
     nxt = str(computed or "").strip()
     if current == COMPLETE:
         return COMPLETE
+    if current in {"RESEARCH_COMPLETE", "NON_HOLDOUT_COMPLETE"} and nxt not in {
+        COMPLETE,
+        "RESEARCH_COMPLETE",
+        "NON_HOLDOUT_COMPLETE",
+    }:
+        return current
     if current == INCOMPLETE and nxt not in TERMINAL_SUMMARY_STATUSES:
         return INCOMPLETE
     return nxt or current

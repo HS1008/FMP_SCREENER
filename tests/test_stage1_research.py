@@ -1576,6 +1576,9 @@ def test_refresh_does_not_reopen_terminal_run_status():
     assert pin_terminal_run_status(INCOMPLETE, COMPLETE) == COMPLETE
     assert pin_terminal_run_status(IN_PROGRESS, IN_PROGRESS) == IN_PROGRESS
     assert pin_terminal_run_status(None, IN_PROGRESS) == IN_PROGRESS
+    assert pin_terminal_run_status("RESEARCH_COMPLETE", IN_PROGRESS) == "RESEARCH_COMPLETE"
+    assert pin_terminal_run_status("NON_HOLDOUT_COMPLETE", IN_PROGRESS) == "NON_HOLDOUT_COMPLETE"
+    assert pin_terminal_run_status("RESEARCH_COMPLETE", COMPLETE) == COMPLETE
 
     class _Conn:
         def __init__(self, run_status: str):

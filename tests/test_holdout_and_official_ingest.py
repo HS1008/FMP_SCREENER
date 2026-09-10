@@ -319,3 +319,6 @@ def test_library_sql_excludes_holdout_accessed_flag():
 
     assert "COALESCE(rr.holdout_accessed, FALSE) IS NOT TRUE" in LIBRARY_RUNS_SQL
     assert "rr.holdout_accessed" in LIBRARY_RUNS_SQL
+    assert "rr.git_commit" in LIBRARY_RUNS_SQL
+    assert "rr.holdout_access_count" in LIBRARY_RUNS_SQL
+    assert "rr.skipped_count" in LIBRARY_RUNS_SQL

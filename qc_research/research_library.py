@@ -18,6 +18,73 @@ from qc_research.research_readout import plain_status_line
 
 UNAVAILABLE = "Unavailable / Not applicable"
 
+
+class OfficialResearchIdentityError(RuntimeError):
+    """Official library/run identity refused. Not an economic PASS/WATCH/FAIL."""
+
+
+def _row_mapping(row: Any) -> dict[str, Any]:
+    if hasattr(row, "to_dict"):
+        return {str(key): value for key, value in row.to_dict().items()}
+    return dict(row)
+
+
+def official_research_identity_blockers(
+    rows: pd.DataFrame | None,
+    *,
+    engine: Any = None,
+) -> list[str]:
+    """Blockers for official Stage 1 / CSFML / TLT rows in a library or run list."""
+    if rows is None or getattr(rows, "empty", True):
+        return []
+    from qc_research.contracts.sealed_results import official_stage1_identity_blockers
+    from qc_research.tlt_duration_momentum import official_tlt_v0_identity_blockers
+    from qc_research.verify_csfml_v1 import official_csfml_v1_identity_blockers
+
+    found: list[str] = []
+    for _, row in rows.iterrows():
+        record = _row_mapping(row)
+        strategy_id = str(record.get("strategy_id") or "")
+        run_id = str(record.get("research_run_id") or "")
+        if not run_id:
+            continue
+        checks = (
+            official_stage1_identity_blockers(
+                strategy_id=strategy_id,
+                research_run_id=run_id,
+                row=record,
+                engine=engine,
+            ),
+            official_csfml_v1_identity_blockers(
+                strategy_id=strategy_id,
+                research_run_id=run_id,
+                row=record,
+                engine=engine,
+            ),
+            official_tlt_v0_identity_blockers(
+                strategy_id=strategy_id,
+                research_run_id=run_id,
+                engine=engine,
+            ),
+        )
+        for blockers in checks:
+            found.extend("{0}:{1}".format(run_id, item) for item in blockers)
+    return found
+
+
+def refuse_official_research_identity(
+    rows: pd.DataFrame | None,
+    *,
+    engine: Any = None,
+) -> None:
+    blockers = official_research_identity_blockers(rows, engine=engine)
+    if blockers:
+        raise OfficialResearchIdentityError(
+            "Official research identity refused ({0}). "
+            "Stored metrics are not shown as official. "
+            "This is not an economic PASS/WATCH/FAIL.".format(", ".join(blockers))
+        )
+
 SMOKE_KIND = "smoke"
 HOLDOUT_ACCESSED = {"ACCESSED"}
 COMPLETE_STATUSES = {COMPLETE, RESEARCH_COMPLETE, "NON_HOLDOUT_COMPLETE"}
@@ -35,10 +102,13 @@ SELECT DISTINCT ON (rr.strategy_id)
     rr.promotion_gate,
     rr.holdout_status,
     rr.holdout_accessed,
+    rr.holdout_access_count,
     rr.delivery_status,
     rr.last_seen_at,
+    rr.git_commit,
     rr.completed_count,
     rr.failed_count,
+    rr.skipped_count,
     rr.expected_experiment_count,
     rr.synced_experiment_count
 FROM research_runs rr
@@ -67,10 +137,15 @@ SELECT
     economic_gate,
     promotion_gate,
     holdout_status,
+    holdout_accessed,
+    holdout_access_count,
     delivery_status,
     last_seen_at,
+    git_commit,
     completed_count,
-    failed_count
+    failed_count,
+    skipped_count,
+    expected_experiment_count
 FROM research_runs
 WHERE strategy_id = :strategy_id
 ORDER BY last_seen_at DESC NULLS LAST
@@ -233,11 +308,14 @@ def load_research_library(engine) -> pd.DataFrame:
                 or (row.get("failed_count") not in {None, 0, "0"} and str(row.get("run_status") or "").upper() not in COMPLETE_STATUSES),
             }
         )
+    refuse_official_research_identity(runs, engine=engine)
     return pd.DataFrame(rows)
 
 
 def load_strategy_runs(engine, strategy_id: str) -> pd.DataFrame:
-    return _read_sql(engine, ALL_RUNS_SQL, {"strategy_id": strategy_id})
+    rows = _read_sql(engine, ALL_RUNS_SQL, {"strategy_id": strategy_id})
+    refuse_official_research_identity(rows, engine=engine)
+    return rows
 
 
 def library_display_frame(library: pd.DataFrame, *, include_smoke: bool = False) -> pd.DataFrame:
