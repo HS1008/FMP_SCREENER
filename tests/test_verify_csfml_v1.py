@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
@@ -25,6 +26,25 @@ def test_missing_official_run_is_recorded_not_a_deploy_failure():
     assert report["rerun_authorized"] is False
     assert verify_exit_code(report, require_present=False) == 0
     assert verify_exit_code(report, require_present=True) == 3
+
+
+def test_live_report_is_written_without_secrets(tmp_path):
+    from qc_research.verify_csfml_v1 import write_live_report
+
+    out = tmp_path / "csfml_v1_live.json"
+    write_live_report(
+        evaluate_csfml_v1_row(None, PIN),
+        str(out),
+        code_root="/opt/fmp/current",
+    )
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["present"] is False
+    assert payload["identity_ok"] is False
+    assert payload["blockers"] == ["official_run_missing"]
+    assert payload["code_root"] == "/opt/fmp/current"
+    assert payload["historical_v1_impact"] == "CANNOT_RULE_OUT"
+    assert payload["rerun_authorized"] is False
+    assert "postgresql://" not in out.read_text(encoding="utf-8")
 
 
 def test_pinned_qc_sha_and_integration_sha_are_accepted():

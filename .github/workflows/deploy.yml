@@ -80,6 +80,7 @@ jobs:
             python -m qc_research.contracts.digests
 
             echo "Applying database migrations..."
+            unset MIGRATIONS_BACKFILL_SHA256
             python -m jobs.apply_migrations
 
             echo "Provisioning dashboard_readonly (password file required)..."
@@ -113,6 +114,29 @@ jobs:
                   echo "immutable current is missing scripts/verify_dashboard_identity.sh"
                   exit 6
                 fi
+                echo "Applying migrations from the immutable release tree..."
+                (
+                  cd /opt/fmp/current
+                  if [ -f /opt/fmp/current/venv/bin/activate ]; then
+                    # shellcheck disable=SC1091
+                    source /opt/fmp/current/venv/bin/activate
+                  fi
+                  export PYTHONPATH=/opt/fmp/current
+                  unset MIGRATIONS_BACKFILL_SHA256
+                  if [ -f /etc/fmp/fmp-writer.env ]; then
+                    set -a
+                    # shellcheck disable=SC1091
+                    . /etc/fmp/fmp-writer.env
+                    set +a
+                  elif [ -f /root/FMP_SCREENER/.env ]; then
+                    set -a
+                    # shellcheck disable=SC1091
+                    . /root/FMP_SCREENER/.env
+                    set +a
+                  fi
+                  python -m qc_research.contracts.digests
+                  python -m jobs.apply_migrations
+                )
                 echo "Verifying Streamlit identity from immutable release checkout..."
                 IMMUTABLE_VERIFY_RC=0
                 (
@@ -200,14 +224,33 @@ jobs:
               echo "FAIL: /etc/fmp/fmp-dashboard.env is required for CSFML V1 query-back"
               exit 1
             fi
+            CSFML_CODE_ROOT=/root/FMP_SCREENER
+            if [ -d /opt/fmp/current ] && [ -f /opt/fmp/current/qc_research/verify_csfml_v1.py ]; then
+              CSFML_CODE_ROOT=/opt/fmp/current
+            fi
+            CSFML_RC=0
             (
+              cd "$CSFML_CODE_ROOT"
+              if [ -f "$CSFML_CODE_ROOT/venv/bin/activate" ]; then
+                # shellcheck disable=SC1091
+                source "$CSFML_CODE_ROOT/venv/bin/activate"
+              fi
+              export PYTHONPATH="$CSFML_CODE_ROOT"
               set -a
               # shellcheck disable=SC1091
               . /etc/fmp/fmp-dashboard.env
               set +a
               unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-              python -m qc_research.verify_csfml_v1 --live
-            )
+              python -m qc_research.verify_csfml_v1 --live --code-root "$CSFML_CODE_ROOT" --out /var/lib/fmp/deploy/csfml_v1_live.json
+            ) || CSFML_RC=$?
+            if [ "$CSFML_RC" = "2" ] || [ "$CSFML_RC" = "4" ]; then
+              echo "official CSFML V1 identity refused rc=${CSFML_RC}"
+              exit "$CSFML_RC"
+            fi
+            if [ "$CSFML_RC" != "0" ]; then
+              echo "official CSFML V1 query-back failed rc=${CSFML_RC}"
+              exit "$CSFML_RC"
+            fi
 
             echo "Recording systemd cutover readiness (dry-run, no unit change)..."
             if [ ! -f /etc/fmp/fmp-dashboard.env ]; then

@@ -130,10 +130,41 @@ def verify_exit_code(report: Mapping[str, Any], *, require_present: bool) -> int
     return 0
 
 
+def write_live_report(
+    report: Mapping[str, Any],
+    path: str,
+    *,
+    code_root: str = "",
+) -> None:
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from jobs.audit_host_dashboard import write_facts
+
+    write_facts(
+        {
+            "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "code_root": str(code_root or "").strip(),
+            "present": bool(report.get("present")),
+            "identity_ok": bool(report.get("identity_ok")),
+            "blockers": [str(item) for item in (report.get("blockers") or [])],
+            "git_commit_pinned": bool(report.get("git_commit_pinned")),
+            "holdout_accessed": bool(report.get("holdout_accessed")),
+            "economic_gate": report.get("economic_gate"),
+            "historical_v1_impact": report.get("historical_v1_impact"),
+            "rerun_authorized": bool(report.get("rerun_authorized")),
+            "research_run_id": report.get("research_run_id"),
+        },
+        Path(path),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify official CSFML V1 Postgres identity")
     parser.add_argument("--live", action="store_true", default=False)
     parser.add_argument("--require-present", action="store_true", default=False)
+    parser.add_argument("--out", default="")
+    parser.add_argument("--code-root", default="")
     args = parser.parse_args(argv)
     pin = load_csfml_v1_label_integrity()
     if not args.live:
@@ -178,6 +209,9 @@ def main(argv: list[str] | None = None) -> int:
             }
         )
     )
+    if args.out:
+        write_live_report(report, args.out, code_root=args.code_root)
+        print("csfml_v1_live_written={0}".format(args.out))
     return verify_exit_code(report, require_present=args.require_present)
 
 

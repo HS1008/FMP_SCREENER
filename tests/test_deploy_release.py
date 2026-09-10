@@ -106,6 +106,17 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "jobs.cutover_dashboard_systemd" in deploy
     assert "qc_research.verify_csfml_v1 --live" in deploy
     assert "--require-present" not in deploy
+    assert "/var/lib/fmp/deploy/csfml_v1_live.json" in deploy
+    assert "CSFML_CODE_ROOT=/opt/fmp/current" in deploy
+    assert deploy.index("CSFML_CODE_ROOT=/opt/fmp/current") < deploy.index(
+        "qc_research.verify_csfml_v1 --live"
+    )
+    assert "unset MIGRATIONS_BACKFILL_SHA256" in deploy
+    assert "Applying migrations from the immutable release tree" in deploy
+    assert deploy.index("Applying migrations from the immutable release tree") < deploy.index(
+        "Verifying Streamlit identity from immutable release checkout"
+    )
+    assert "official CSFML V1 identity refused" in deploy
     assert "--apply" not in deploy
     assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
