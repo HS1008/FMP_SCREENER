@@ -38,14 +38,17 @@ import sector_dashboard_ui
 import spy_sector_rotation_engine
 import tech_rotation_engine
 import utilities_rotation_engine
-from db.dashboard_engine import load_streamlit_env, strip_writer_database_env
+from db.dashboard_engine import load_streamlit_env
 from qc_research.ui_boundary import provider_fetch_allowed, refuse_provider_fetch
 
 ROOT = Path(__file__).resolve().parent
 _CACHE_TTL_SECONDS: int = int(getattr(config, "DASHBOARD_CACHE_TTL_SECONDS", 86400))
 _WARM_DELAY_S: float = float(getattr(config, "DASHBOARD_BACKGROUND_WARM_DELAY_SECONDS", 45.0))
-_ENABLE_BACKGROUND_WARM: bool = bool(getattr(config, "DASHBOARD_ENABLE_BACKGROUND_WARM", False)) and provider_fetch_allowed()
 _real_create_http_session = data_loader.create_http_session
+
+
+def _background_warm_enabled() -> bool:
+    return bool(getattr(config, "DASHBOARD_ENABLE_BACKGROUND_WARM", False)) and provider_fetch_allowed()
 
 
 def create_http_session(*args, **kwargs):
@@ -456,6 +459,7 @@ def _spawn_background_sector_warm(api_key: str, active_page: str) -> None:
 
 
 def render_legacy_fmp_dashboard() -> None:
+    load_streamlit_env(ROOT / ".env")
     st.title("Legacy FMP comparison")
     ttl_h = _CACHE_TTL_SECONDS / 3600.0
     col_cap, col_btn = st.columns([5, 1])
@@ -466,11 +470,10 @@ def render_legacy_fmp_dashboard() -> None:
             "Pick a sector to view trend, relative strength, industry rotation, risk, and breadth."
         )
     with col_btn:
-        if st.button("Force reload", type="secondary", key="force_reload_cache", help="Clear dashboard cache and refetch from FMP on next load."):
+        if st.button("Force reload", type="secondary", key="force_reload_cache", help="Clear dashboard cache. Provider refetch stays disabled unless STREAMLIT_ALLOW_PROVIDER_FETCH=1."):
             st.cache_data.clear()
             st.rerun()
 
-    load_streamlit_env(ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
 
     sector_options = (SPY_OVERVIEW_PAGE_LABEL,) + tuple(s.page_radio_label for s in SECTOR_SPECS)
@@ -500,7 +503,7 @@ def render_legacy_fmp_dashboard() -> None:
                 )
                 break
 
-    if api_key and _ENABLE_BACKGROUND_WARM and provider_fetch_allowed():
+    if api_key and _background_warm_enabled():
         skip_prefetch = bool(st.session_state.pop("_dashboard_skip_background_warm_once", False))
         if not skip_prefetch:
             if _WARM_DELAY_S > 0:

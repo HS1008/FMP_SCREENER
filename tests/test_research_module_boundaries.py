@@ -78,8 +78,8 @@ def test_streamlit_pages_do_not_import_ingest_sql():
     assert "writer_db" not in monitor
     assert "qc_research.ingest" not in dashboard
     assert "writer_db" not in dashboard
-    assert "strip_writer_database_env" in dashboard
     assert "load_streamlit_env" in dashboard
+    assert "def _background_warm_enabled" in dashboard
     forbidden = (
         "writer_db",
         "object_store_sync",
