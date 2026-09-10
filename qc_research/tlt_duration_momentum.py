@@ -373,8 +373,10 @@ def wrap_tlt_duration_momentum_record(record: dict[str, Any]) -> list[tuple[str,
 
 def register_tlt_monitor_strategy(conn) -> None:
     """Idempotent research-only Strategy Monitor row. No execution project."""
+    from qc_research.ingest.stage2_sql import conflict_sql
+
     conn.execute(
-        text(REGISTER_STRATEGY_SQL),
+        text(conflict_sql(REGISTER_STRATEGY_SQL, sealed=True)),
         {
             "strategy_id": STRATEGY_ID,
             "name": "TLT Duration Momentum",

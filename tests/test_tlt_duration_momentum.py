@@ -152,6 +152,23 @@ def test_tlt_ingest_is_idempotent_and_registers_monitor_strategy():
     )
 
 
+def test_register_tlt_monitor_strategy_inserts_once():
+    from qc_research.tlt_duration_momentum import register_tlt_monitor_strategy
+
+    statements = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            statements.append(str(statement))
+
+    register_tlt_monitor_strategy(_Conn())
+    assert statements
+    sql = statements[0]
+    conflict = sql.split("ON CONFLICT", 1)[1]
+    assert "DO NOTHING" in conflict
+    assert "DO UPDATE" not in conflict
+
+
 def test_tlt_labels_and_cli_dry_run(monkeypatch):
     labels = infer_research_labels(strategy_id=STRATEGY_ID, run_summary={})
     assert labels["research_mode"] == "ML_DISCOVERY"
