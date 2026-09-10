@@ -582,17 +582,17 @@ def _official_stage1_equity_immutable(conn, backtest_id: str) -> bool:
         {"backtest_id": backtest_id},
     )
     if count_result is None:
-        return False
+        return True
     count_mappings = getattr(count_result, "mappings", None)
     if count_mappings is None:
-        return False
+        return True
     count_row = count_mappings().first()
     if isinstance(count_row, dict):
         return int(count_row.get("n") or 0) > 0
     mapping = getattr(count_row, "_mapping", None) if count_row is not None else None
     if mapping is not None:
         return int(mapping.get("n") or 0) > 0
-    return False
+    return True
 
 
 def insert_equity_points(conn, strategy_id: str, backtest_id: str, points: list[dict[str, Any]]) -> int:

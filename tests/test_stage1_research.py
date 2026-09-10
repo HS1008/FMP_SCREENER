@@ -2241,6 +2241,46 @@ def test_insert_equity_points_skips_existing_official_stage1():
     )
 
 
+def test_insert_equity_points_skips_official_when_count_unknown():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "INSERT INTO backtest_equity_points" in sql:
+                raise AssertionError("official equity must not be written when count is unknown")
+            if "FROM backtests" in sql:
+
+                class _Result:
+                    def mappings(self_inner):
+                        class _Mappings:
+                            def first(self_map):
+                                return {"research_run_id": OFFICIAL_STAGE1_RUN}
+
+                        return _Mappings()
+
+                return _Result()
+            return None
+
+    assert (
+        insert_equity_points(
+            _Conn(),
+            "SPYTrend",
+            "bt-official",
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 0
+    )
+
+
 def test_insert_equity_points_skips_published_sealed_qc_ids():
     from datetime import datetime, timezone
 
