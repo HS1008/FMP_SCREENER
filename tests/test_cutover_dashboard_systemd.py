@@ -243,6 +243,7 @@ def test_everyday_deploy_records_cutover_dry_run_and_never_applies():
     assert "--apply" in docs
     assert "prefer `/opt/fmp/current`" in docs
     assert "/opt/fmp/current/venv/bin/streamlit" in docs
+    assert "post-restart" in docs.lower() or "after restart" in docs.lower()
     assert "Creating release venv" in (
         ROOT / "scripts" / "deploy_release.sh"
     ).read_text(encoding="utf-8")

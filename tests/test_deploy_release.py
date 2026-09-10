@@ -20,6 +20,10 @@ def test_release_script_is_additive_and_supports_rollback():
     assert rollback_block.index("verify_dashboard_identity.sh") < rollback_block.index(
         "systemctl restart fmp-dashboard"
     )
+    assert "post-restart dashboard identity verify failed" in rollback_block
+    assert rollback_block.index("systemctl restart fmp-dashboard") < rollback_block.index(
+        "post-restart dashboard identity verify failed"
+    )
     assert "rollback_identity=skipped" in rollback_block
     assert "--skip-restart" in script
     assert "git reset --hard" not in script
@@ -180,6 +184,22 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
     assert "systemctl restart fmp-dashboard" in deploy
+    restart = deploy.split("Restarting Streamlit", 1)[1]
+    assert "systemctl is-active --quiet fmp-dashboard" in restart
+    assert "Re-verifying Streamlit database identity after restart" in restart
+    assert "post-restart dashboard identity verify failed" in restart
+    assert restart.index("systemctl restart fmp-dashboard") < restart.index(
+        "Re-verifying Streamlit database identity after restart"
+    )
+    assert restart.index("systemctl is-active --quiet fmp-dashboard") < restart.index(
+        "scripts/verify_dashboard_identity.sh"
+    )
+    assert "FMP_IDENTITY_ENV_ONLY=1" in restart
+    assert "FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env" in restart
+    assert "/opt/fmp/current/scripts/verify_dashboard_identity.sh" in restart
+    assert ". /root/FMP_SCREENER/.env" not in restart
+    assert "source /root/FMP_SCREENER/.env" not in restart
+    assert "jobs.record_deploy_identity_db" not in restart
     assert (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").is_file()
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
     assert "one INSERT" in docs

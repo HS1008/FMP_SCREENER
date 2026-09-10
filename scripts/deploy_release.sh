@@ -78,6 +78,19 @@ if [ "$ROLLBACK" = 1 ]; then
   echo "rolled_back_to=$(basename "$prev")"
   if [ "$SKIP_RESTART" != 1 ]; then
     systemctl restart fmp-dashboard
+    if [ "$SKIP_IDENTITY" != 1 ]; then
+      POST_VERIFY_RC=0
+      (
+        cd "$prev"
+        export FMP_IDENTITY_ENV_ONLY=1
+        export FMP_DASHBOARD_ENV="${FMP_DASHBOARD_ENV:-/etc/fmp/fmp-dashboard.env}"
+        bash scripts/verify_dashboard_identity.sh
+      ) || POST_VERIFY_RC=$?
+      if [ "$POST_VERIFY_RC" != "0" ]; then
+        echo "post-restart dashboard identity verify failed rc=${POST_VERIFY_RC}"
+        exit "$POST_VERIFY_RC"
+      fi
+    fi
   fi
   exit 0
 fi
@@ -149,4 +162,17 @@ ln -sfn "$target" "$CURRENT_LINK"
 echo "current_release=$SHA"
 if [ "$SKIP_RESTART" != 1 ] && systemctl is-enabled fmp-dashboard >/dev/null 2>&1; then
   systemctl restart fmp-dashboard
+  if [ "$SKIP_IDENTITY" != 1 ]; then
+    POST_VERIFY_RC=0
+    (
+      cd "$target"
+      export FMP_IDENTITY_ENV_ONLY=1
+      export FMP_DASHBOARD_ENV="${FMP_DASHBOARD_ENV:-/etc/fmp/fmp-dashboard.env}"
+      bash scripts/verify_dashboard_identity.sh
+    ) || POST_VERIFY_RC=$?
+    if [ "$POST_VERIFY_RC" != "0" ]; then
+      echo "post-restart dashboard identity verify failed rc=${POST_VERIFY_RC}"
+      exit "$POST_VERIFY_RC"
+    fi
+  fi
 fi

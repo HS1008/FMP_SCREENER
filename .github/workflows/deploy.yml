@@ -333,6 +333,28 @@ jobs:
             echo "Verifying Streamlit service..."
             systemctl is-active --quiet fmp-dashboard
 
+            echo "Re-verifying Streamlit database identity after restart..."
+            POST_VERIFY_RC=0
+            POST_VERIFY_ROOT=/root/FMP_SCREENER
+            if [ -f /opt/fmp/current/scripts/verify_dashboard_identity.sh ]; then
+              POST_VERIFY_ROOT=/opt/fmp/current
+            fi
+            (
+              cd "$POST_VERIFY_ROOT"
+              if [ -f "$POST_VERIFY_ROOT/venv/bin/activate" ]; then
+                # shellcheck disable=SC1091
+                source "$POST_VERIFY_ROOT/venv/bin/activate"
+              fi
+              export PYTHONPATH="$POST_VERIFY_ROOT"
+              export FMP_IDENTITY_ENV_ONLY=1
+              export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
+              bash scripts/verify_dashboard_identity.sh
+            ) || POST_VERIFY_RC=$?
+            if [ "$POST_VERIFY_RC" != "0" ]; then
+              echo "post-restart dashboard identity verify failed rc=${POST_VERIFY_RC}"
+              exit "$POST_VERIFY_RC"
+            fi
+
             if systemctl cat fmp-ibkr-ingest.service >/dev/null 2>&1; then
               echo "Restarting private IBKR ingest API..."
               systemctl restart fmp-ibkr-ingest.service
