@@ -87,6 +87,21 @@ def test_fetch_remote_artifact_refuses_empty_ref():
         )
 
 
+def test_fetch_remote_artifact_refuses_branch_names_and_short_shas():
+    from qc_research.fetch_remote_artifact import github_contents_url, github_raw_url, require_source_ref
+
+    sha = "ef270841621933f5039680cb070559f43bd1e3c8"
+    assert require_source_ref(sha) == sha
+    assert require_source_ref(sha.upper()) == sha
+    assert sha in github_raw_url("hs1008/quant-strategies", sha, "research/platform_smokes/x.json")
+    assert "ref={0}".format(sha) in github_contents_url("hs1008/quant-strategies", sha, "research/platform_smokes")
+    for floating in ("main", "research-integration", "abc", "csfml-v1-nonholdout-complete", "EF270841"):
+        with pytest.raises(ValueError, match="SHA"):
+            github_raw_url("hs1008/quant-strategies", floating, "research/platform_smokes/x.json")
+        with pytest.raises(ValueError, match="SHA"):
+            github_contents_url("hs1008/quant-strategies", floating, "research/platform_smokes")
+
+
 def test_committed_contract_digests_match_files():
     from qc_research.contracts.digests import verify_contract_digests
 

@@ -5,16 +5,24 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+FULL_GIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 
 
 def require_source_ref(ref: str) -> str:
     value = str(ref or "").strip()
     if not value:
         raise ValueError("SOURCE_REF is required; remote fetch will not float to the provider default branch")
-    return value
+    if not FULL_GIT_SHA.fullmatch(value):
+        raise ValueError(
+            "SOURCE_REF must be a full 40-character git SHA; "
+            "branch names and tags are refused so ingest cannot float"
+        )
+    return value.lower()
 
 
 def github_raw_url(repo: str, ref: str, path: str) -> str:
@@ -26,10 +34,11 @@ def github_raw_url(repo: str, ref: str, path: str) -> str:
 
 
 def github_contents_url(repo: str, ref: str, path: str) -> str:
-    url = "https://api.github.com/repos/{0}/contents/{1}".format(repo.strip("/"), path.lstrip("/"))
-    if ref:
-        url += "?ref={0}".format(ref)
-    return url
+    return "https://api.github.com/repos/{0}/contents/{1}?ref={2}".format(
+        repo.strip("/"),
+        path.lstrip("/"),
+        require_source_ref(ref),
+    )
 
 
 def _token() -> str:

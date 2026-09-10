@@ -32,7 +32,12 @@ def _blocked_pull_report(tmp_path: Path) -> Path:
     original = pull.list_remote_json_paths
     pull.list_remote_json_paths = _raise
     try:
-        report = pull.pull_complete_artifacts(tmp_path / "incoming", repo="hs1008/quant-strategies", path="research/platform_smokes", ref="")
+        report = pull.pull_complete_artifacts(
+            tmp_path / "incoming",
+            repo="hs1008/quant-strategies",
+            path="research/platform_smokes",
+            ref="ef270841621933f5039680cb070559f43bd1e3c8",
+        )
     finally:
         pull.list_remote_json_paths = original
     out = tmp_path / "pull.json"
@@ -40,11 +45,34 @@ def _blocked_pull_report(tmp_path: Path) -> Path:
     return out
 
 
+def test_pull_refuses_branch_names_without_listing(tmp_path, monkeypatch):
+    def _boom(*_a, **_k):
+        raise AssertionError("listing must not run for a floating ref")
+
+    monkeypatch.setattr(pull, "list_remote_json_paths", _boom)
+    report = pull.pull_complete_artifacts(
+        tmp_path / "incoming",
+        repo="hs1008/quant-strategies",
+        path="research/platform_smokes",
+        ref="main",
+    )
+    assert report["blocked"] is True and report["pulled"] == 0
+    assert "SHA" in report["reason"]
+    empty = pull.pull_complete_artifacts(
+        tmp_path / "incoming",
+        repo="hs1008/quant-strategies",
+        path="research/platform_smokes",
+        ref="",
+    )
+    assert empty["blocked"] is True and "SOURCE_REF" in empty["reason"]
+
+
 def test_pull_reports_404_as_blocked_without_token_leak(tmp_path, monkeypatch):
     monkeypatch.setenv("QS_READ_TOKEN", "ghp_secret_value")
     report = json.loads(_blocked_pull_report(tmp_path).read_text())
     assert report["blocked"] is True and report["pulled"] == 0 and report["delivery_status"] == "BLOCKED"
-    assert "404" in report["reason"] and "research/platform_smokes" in report["reason"] and "default branch" in report["reason"]
+    assert "404" in report["reason"] and "research/platform_smokes" in report["reason"]
+    assert "ef270841621933f5039680cb070559f43bd1e3c8" in report["reason"]
     assert "ghp_secret_value" not in json.dumps(report)
     assert not list((tmp_path / "incoming").glob("*.json"))
 
@@ -114,6 +142,8 @@ def test_workflow_and_live_script_wire_explicit_ref_and_report():
     assert "--report \"$DELIVERY_DIR/pull.json\"" in WORKFLOW
     assert "LAST_KNOWN_GOOD, not a new delivery" in WORKFLOW
     assert "will not float to the provider default branch" in WORKFLOW
+    assert "[0-9a-fA-F]{40}" in WORKFLOW
+    assert "full 40-character git SHA" in WORKFLOW
     assert "qc_research.contracts.digests" in LIVE_SCRIPT
     assert "qc_research.delivery_visibility record" in LIVE_SCRIPT
     # The fallback is preserved: committed artifacts still ingest when remote is blocked.

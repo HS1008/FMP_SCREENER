@@ -347,6 +347,7 @@ def test_generic_ingest_workflow_is_event_driven():
     assert "DO_SSH_KEY" in verify
     from qc_research.fetch_remote_artifact import github_raw_url
 
-    assert github_raw_url("hs1008/quant-strategies", "abc", "research/platform_smokes/x.json").endswith(
+    sha = "ef270841621933f5039680cb070559f43bd1e3c8"
+    assert github_raw_url("hs1008/quant-strategies", sha, "research/platform_smokes/x.json").endswith(
         "research/platform_smokes/x.json"
     )

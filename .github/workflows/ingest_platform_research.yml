@@ -40,8 +40,9 @@ jobs:
     env:
       SOURCE_REPO: ${{ github.event.client_payload.source_repo || github.event.inputs.source_repo }}
       # Explicit source ref precedence: dispatch payload > manual input > repository variable
-      # QS_ARTIFACT_SOURCE_REF (set by a human to an already-published ref).
-      # An unset scheduled ref does not float to the provider default branch.
+      # QS_ARTIFACT_SOURCE_REF must be a full 40-character git SHA of an
+      # already-published commit. Branch names and tags are refused so ingest
+      # cannot float. An unset scheduled ref does not float to default.
       SOURCE_REF: ${{ github.event.client_payload.source_ref || github.event.inputs.source_ref || vars.QS_ARTIFACT_SOURCE_REF }}
       SOURCE_REF_SOURCE: ${{ (github.event.client_payload.source_ref && 'repository_dispatch payload') || (github.event.inputs.source_ref && 'workflow_dispatch input') || (vars.QS_ARTIFACT_SOURCE_REF && 'repository variable QS_ARTIFACT_SOURCE_REF') || 'unset -> refuse default-branch float' }}
       # Directory listed on the scheduled public pull. research/platform_smokes exists on the
@@ -81,6 +82,7 @@ jobs:
           TARGET="$LOCAL_ROOT"
           REPO="${SOURCE_REPO:-hs1008/quant-strategies}"
           BUILD_ARGS=(--event "${{ github.event_name }}" --repo "$REPO" --ref "${SOURCE_REF:-}" --ref-source "$SOURCE_REF_SOURCE" --out "$DELIVERY_DIR/report.json" --summary "$GITHUB_STEP_SUMMARY")
+          is_full_sha() { echo "$1" | grep -Eq '^[0-9a-fA-F]{40}$'; }
           if [ -n "${ARTIFACT_PATH:-}" ]; then
             DEST="$DEST_DIR/$(basename "$ARTIFACT_PATH")"
             LOCAL_CANDIDATE="qc_research/platform_artifacts/$(basename "$ARTIFACT_PATH")"
@@ -92,6 +94,16 @@ jobs:
                 BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF unset; remote fetch will not float to the provider default branch" --path "$ARTIFACT_PATH")
               else
                 echo "FAIL: SOURCE_REF unset and no local copy of $ARTIFACT_PATH"
+                exit 1
+              fi
+            elif ! is_full_sha "$SOURCE_REF"; then
+              echo "SOURCE_REF is not a full git SHA; remote fetch will not follow a moving branch"
+              if [ -f "$LOCAL_CANDIDATE" ]; then
+                echo "REMOTE FETCH SKIPPED (non-SHA ref); using committed FMP copy $LOCAL_CANDIDATE (LAST_KNOWN_GOOD, not a new delivery)"
+                TARGET="$LOCAL_CANDIDATE"
+                BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF must be a full 40-character git SHA" --path "$ARTIFACT_PATH")
+              else
+                echo "FAIL: SOURCE_REF must be a full 40-character git SHA and no local copy of $ARTIFACT_PATH"
                 exit 1
               fi
             elif python -m qc_research.fetch_remote_artifact \
@@ -115,6 +127,11 @@ jobs:
               echo "REMOTE PULL SKIPPED (unpinned); re-ingesting committed FMP canonical artifacts (LAST_KNOWN_GOOD, not a new delivery)"
               TARGET="$LOCAL_ROOT"
               BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF unset; scheduled ingest will not float to the provider default branch" --path "$ARTIFACT_LIST_PATH")
+            elif ! is_full_sha "$SOURCE_REF"; then
+              echo "SOURCE_REF is not a full git SHA; scheduled ingest will not follow a moving branch"
+              echo "REMOTE PULL SKIPPED (non-SHA ref); re-ingesting committed FMP canonical artifacts (LAST_KNOWN_GOOD, not a new delivery)"
+              TARGET="$LOCAL_ROOT"
+              BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF must be a full 40-character git SHA" --path "$ARTIFACT_LIST_PATH")
             else
               echo "Scheduled pull of complete public QS artifacts from $REPO @ $SOURCE_REF ($SOURCE_REF_SOURCE), path $ARTIFACT_LIST_PATH"
               python -m qc_research.pull_public_platform_artifacts \
