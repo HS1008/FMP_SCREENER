@@ -54,6 +54,7 @@ def identity_env_from_file(path: Path, base: Mapping[str, str] | None = None) ->
         "DASHBOARD_READONLY_URL",
         "DASHBOARD_ALLOW_WRITER_FALLBACK",
         "STREAMLIT_ALLOW_PROVIDER_FETCH",
+        "FMP_STREAMLIT_READONLY",
     ):
         environ.pop(key, None)
     if not path.is_file():
@@ -63,6 +64,7 @@ def identity_env_from_file(path: Path, base: Mapping[str, str] | None = None) ->
         "DASHBOARD_READONLY_URL",
         "DASHBOARD_ALLOW_WRITER_FALLBACK",
         "STREAMLIT_ALLOW_PROVIDER_FETCH",
+        "FMP_STREAMLIT_READONLY",
     ):
         value = _assignment_value(text, key)
         if value:
@@ -113,6 +115,7 @@ def collect_facts(
 
     writer = _truthy(environ.get("DASHBOARD_ALLOW_WRITER_FALLBACK"))
     provider = _truthy(environ.get("STREAMLIT_ALLOW_PROVIDER_FETCH"))
+    streamlit_readonly = _truthy(environ.get("FMP_STREAMLIT_READONLY"))
     url_set = bool(str(environ.get("DASHBOARD_READONLY_URL") or "").strip())
     writer_env_keys_present = [
         key for key in WRITER_ENV_KEYS if str(environ.get(key) or "").strip()
@@ -127,6 +130,7 @@ def collect_facts(
         and not writer
         and not provider
         and not writer_env_keys_present
+        and streamlit_readonly
     )
     return {
         "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
@@ -135,6 +139,7 @@ def collect_facts(
         "writer_fallback": writer,
         "writer_env_keys_present": writer_env_keys_present,
         "provider_fetch": provider,
+        "streamlit_readonly": streamlit_readonly,
         "systemd_exec_contains_opt_fmp_current": uses_current,
         "systemd_exec_contains_root_checkout": uses_root,
         "immutable_current_present": current.exists() or current.is_symlink(),
@@ -162,6 +167,7 @@ def print_facts(facts: Mapping[str, Any]) -> None:
         "writer_fallback",
         "writer_env_keys_present",
         "provider_fetch",
+        "streamlit_readonly",
         "systemd_exec_contains_opt_fmp_current",
         "systemd_exec_contains_root_checkout",
         "immutable_current_present",

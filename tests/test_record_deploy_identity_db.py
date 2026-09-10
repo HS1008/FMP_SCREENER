@@ -96,6 +96,10 @@ def test_streamlit_reads_identity_from_ops_view_not_host_json():
     assert "dashboard_readonly_proven" in sql
     assert "deploy_git_sha" in sql
     assert "postgresql://" not in sql
+    added = (ROOT / "db" / "migrations" / "023_streamlit_readonly_identity.sql").read_text(encoding="utf-8")
+    assert "streamlit_readonly" in added
+    assert "dashboard_streamlit_readonly" in added
+    assert "postgresql://" not in added
 
 
 def test_insert_record_is_visible_on_ops_view(pg_engine, monkeypatch):

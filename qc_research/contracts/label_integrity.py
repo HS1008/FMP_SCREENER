@@ -95,6 +95,11 @@ def refuse_impersonated_official_csfml_v1(payload: Mapping[str, Any] | None) -> 
         )
     if record.get("rerun_authorized") is True or nested.get("rerun_authorized") is True:
         raise ArtifactContractError("Official CSFML V1 pin has rerun_authorized=false")
+    impact = _first_present(record, nested, "historical_v1_impact")
+    if impact is None:
+        impact = _first_present(record, nested, "historical_impact")
+    if impact is not None and str(impact) != str(pin.get("historical_v1_impact") or "CANNOT_RULE_OUT"):
+        raise ArtifactContractError("Official CSFML V1 historical_v1_impact cannot be changed")
 
 
 def csfml_v1_integrity_caption(
@@ -119,3 +124,68 @@ def csfml_v1_historical_impact_for_run(
     if not run_id or csfml_v1_integrity_caption(strategy_id, run_id) is None:
         return None
     return str(load_csfml_v1_label_integrity()["historical_v1_impact"])
+
+
+HISTORICAL_LABEL_FIELDS = (
+    "delisted_target_count",
+    "invalid_target_count",
+    "label_quality",
+    "delisting_event_date",
+    "resolution_reason",
+    "exit_reason",
+    "proceeds_known",
+)
+
+OFFICIAL_CSFML_V1_TREE = (
+    Path(__file__).resolve().parents[2]
+    / "stage2_results"
+    / "CrossSectionalFactorML"
+    / "STAGE2_CrossSectionalFactorML_54a5543f"
+)
+
+
+def _json_keys(value: Any) -> set[str]:
+    found: set[str] = set()
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found.add(str(key))
+            found |= _json_keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            found |= _json_keys(item)
+    return found
+
+
+def scan_official_csfml_v1_published_tree() -> dict[str, Any]:
+    """Bound historical V1 from committed artifacts. Does not quantify contamination.
+
+    Published JSON lacks per-row exit reasons. cohorts_rejected=0 is not proof
+    of zero missing-t+21 plus later-delist impact.
+    """
+    pin = load_csfml_v1_label_integrity()
+    tree = OFFICIAL_CSFML_V1_TREE
+    if not tree.is_dir():
+        raise ArtifactContractError("Official CSFML V1 published tree is missing")
+    present: set[str] = set()
+    json_files = 0
+    for path in tree.rglob("*.json"):
+        if not path.is_file():
+            continue
+        json_files += 1
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        present |= _json_keys(payload) & set(HISTORICAL_LABEL_FIELDS)
+    if str(pin.get("historical_v1_impact") or "") != "CANNOT_RULE_OUT":
+        raise ArtifactContractError("Official CSFML V1 pin historical_v1_impact must stay CANNOT_RULE_OUT")
+    if pin.get("rerun_authorized") is not False:
+        raise ArtifactContractError("Official CSFML V1 pin has rerun_authorized=false")
+    if present:
+        raise ArtifactContractError(
+            "Official CSFML V1 published tree contains {0}; do not treat "
+            "cohorts_rejected=0 as zero historical impact".format(sorted(present))
+        )
+    return {
+        "json_files": json_files,
+        "historical_fields_present": [],
+        "historical_v1_impact": pin["historical_v1_impact"],
+        "rerun_authorized": pin["rerun_authorized"],
+    }

@@ -55,3 +55,13 @@ def test_new_apply_does_not_overwrite_recorded_sha256_on_conflict():
     insert_block = source.split("INSERT INTO schema_migrations", 1)[1].split("applied.append", 1)[0]
     assert "DO UPDATE SET sha256" not in insert_block
     assert "ON CONFLICT" not in insert_block
+
+
+def test_null_recorded_sha256_requires_explicit_backfill():
+    source = (Path(__file__).resolve().parents[1] / "jobs" / "apply_migrations.py").read_text(
+        encoding="utf-8"
+    )
+    assert "MIGRATIONS_BACKFILL_SHA256" in source
+    skip_block = source.split("if not recorded:", 1)[1].split("applied.append", 1)[0]
+    assert "MigrationDriftError" in skip_block
+    assert "MIGRATIONS_BACKFILL_SHA256" in skip_block

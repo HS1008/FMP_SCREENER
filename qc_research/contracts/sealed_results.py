@@ -31,6 +31,16 @@ def sealed_results_run_ids() -> frozenset[str]:
     return frozenset(str(item) for item in (data.get("run_ids") or []) if item)
 
 
+def sealed_without_tree_run_ids() -> frozenset[str]:
+    data = load_sealed_results()
+    return frozenset(str(item) for item in (data.get("sealed_without_tree") or []) if item)
+
+
+def is_sealed_results_run(run_id: str | None) -> bool:
+    key = str(run_id or "").strip()
+    return bool(key) and key in sealed_results_run_ids()
+
+
 def _run_id(payload: Mapping[str, Any] | None) -> str:
     record = dict(payload or {})
     nested = record.get("payload") if isinstance(record.get("payload"), dict) else {}

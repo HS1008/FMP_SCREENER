@@ -84,6 +84,7 @@ def test_migration_is_idempotent_and_additive():
         "020_ops_status_and_migration_checksum.sql",
         "021_ops_status_extended.sql",
         "022_deploy_host_identity.sql",
+        "023_streamlit_readonly_identity.sql",
     ]
     assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})

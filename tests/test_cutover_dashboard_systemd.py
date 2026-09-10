@@ -27,7 +27,11 @@ def _ready_tree(tmp_path: Path) -> dict[str, Path]:
     pw = tmp_path / "dashboard_readonly.pw"
     pw.write_text("x\n", encoding="utf-8")
     env_file = tmp_path / "fmp-dashboard.env"
-    env_file.write_text("DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:secret@127.0.0.1/fmp\n", encoding="utf-8")
+    env_file.write_text(
+        "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:secret@127.0.0.1/fmp\n"
+        "FMP_STREAMLIT_READONLY=1\n",
+        encoding="utf-8",
+    )
     return {"current": current, "pw": pw, "env_file": env_file}
 
 
@@ -47,7 +51,10 @@ def test_scan_systemd_env_file_lists_writer_keys_not_values(tmp_path):
 def test_dry_run_is_ready_while_systemd_still_uses_git_pull(tmp_path):
     tree = _ready_tree(tmp_path)
     report = evaluate_cutover(
-        env={"DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp"},
+        env={
+            "DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp",
+            "FMP_STREAMLIT_READONLY": "1",
+        },
         password_file=tree["pw"],
         current_link=tree["current"],
         systemd_exec="/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py",
@@ -71,7 +78,10 @@ def test_writer_keys_in_systemd_env_block_ready_and_exit_4(tmp_path):
         encoding="utf-8",
     )
     report = evaluate_cutover(
-        env={"DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp"},
+        env={
+            "DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp",
+            "FMP_STREAMLIT_READONLY": "1",
+        },
         password_file=tree["pw"],
         current_link=tree["current"],
         systemd_exec="/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py",
@@ -87,7 +97,10 @@ def test_writer_keys_in_systemd_env_block_ready_and_exit_4(tmp_path):
 def test_apply_without_allow_flag_refuses_and_does_not_mutate(tmp_path):
     tree = _ready_tree(tmp_path)
     report = evaluate_cutover(
-        env={"DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp"},
+        env={
+            "DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp",
+            "FMP_STREAMLIT_READONLY": "1",
+        },
         password_file=tree["pw"],
         current_link=tree["current"],
         systemd_exec="/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py",
@@ -107,6 +120,7 @@ def test_apply_with_allow_flag_still_does_not_mutate_systemd(tmp_path):
     report = evaluate_cutover(
         env={
             "DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp",
+            "FMP_STREAMLIT_READONLY": "1",
             "FMP_ALLOW_SYSTEMD_CUTOVER": "1",
         },
         password_file=tree["pw"],
@@ -199,7 +213,10 @@ def test_write_facts_strips_secrets_from_cutover_report(tmp_path):
 
     tree = _ready_tree(tmp_path)
     report = evaluate_cutover(
-        env={"DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp"},
+        env={
+            "DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp",
+            "FMP_STREAMLIT_READONLY": "1",
+        },
         password_file=tree["pw"],
         current_link=tree["current"],
         systemd_exec="/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py",

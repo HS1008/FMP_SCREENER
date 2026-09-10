@@ -239,3 +239,25 @@ def test_csfml_v1_label_integrity_pin_matches_producer_forensic():
         producer_digest["files"]["csfml_v1_label_integrity.json"]
         == consumer_digest["files"]["csfml_v1_label_integrity.json"]
     )
+
+
+def test_official_csfml_v1_published_tree_cannot_prove_zero_delisting_impact():
+    from qc_research.contracts.label_integrity import scan_official_csfml_v1_published_tree
+
+    bound = scan_official_csfml_v1_published_tree()
+    assert bound["historical_v1_impact"] == "CANNOT_RULE_OUT"
+    assert bound["rerun_authorized"] is False
+    assert bound["historical_fields_present"] == []
+    assert bound["json_files"] > 0
+
+
+@pytest.mark.skipif(QS_ROOT is None, reason="quant-strategies sibling repo not present")
+def test_producer_sealed_run_ids_are_covered_by_consumer():
+    sys.path.insert(0, str(QS_ROOT))
+    from research.launch_seal import sealed_results_run_ids as producer_ids
+
+    from qc_research.contracts.sealed_results import sealed_results_run_ids
+
+    qs_ids = producer_ids()
+    fmp_ids = set(sealed_results_run_ids())
+    assert qs_ids <= fmp_ids

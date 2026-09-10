@@ -1692,6 +1692,57 @@ def test_refresh_does_not_rewrite_official_stage1_pin_counts():
     assert updated[0]["run_status"] == COMPLETE
 
 
+def test_refresh_does_not_rewrite_sealed_csfml_or_tlt_counts():
+    from jobs.stage1_backtests import refresh_research_run_progress
+
+    class _Conn:
+        def __init__(self, run_id):
+            self.run_id = run_id
+            self.updates: list[dict] = []
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+
+            class _Result:
+                def mappings(self_inner):
+                    if "FROM research_runs" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": self.run_id,
+                                    "expected_experiment_count": 10,
+                                    "orchestrator_summary_json": {},
+                                    "run_status": COMPLETE,
+                                }
+                            ]
+                        )
+                    if "FROM backtests" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": self.run_id,
+                                    "status": "Completed.",
+                                    "research_test_type": "ML_TRAIN",
+                                }
+                            ]
+                        )
+                    return iter([])
+
+            if "UPDATE research_runs" in sql:
+                self.updates.append(params)
+            return _Result()
+
+    for run_id in (
+        "STAGE2_CrossSectionalFactorML_54a5543f",
+        "PLATFORM_TLTDurationMomentum_V0",
+    ):
+        conn = _Conn(run_id)
+        updated = refresh_research_run_progress(conn, "CrossSectionalFactorML")
+        assert conn.updates == []
+        assert updated[0]["research_run_id"] == run_id
+        assert updated[0]["sealed"] is True
+
+
 def test_case5_smoke_excluded_from_stage1_counts_and_equity():
     smoke_row = _monitor_backtest_row(
         backtest_id="smoke-1",
@@ -1962,6 +2013,16 @@ def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras(
         research_run_id=OFFICIAL_STAGE1_RUN,
         existing_row=None,
     ) is None
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id="STAGE2_CrossSectionalFactorML_54a5543f",
+        existing_row=None,
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id="PLATFORM_TLTDurationMomentum_V0",
+        existing_row={"research_run_id": "PLATFORM_TLTDurationMomentum_V0"},
+    ) == "official_stage1_backtest_immutable"
     completed = {"name": official_name, "status": "Completed."}
     assert needs_detail_read(existing, completed) is False
     assert needs_equity_curve(existing, completed, 0) is False

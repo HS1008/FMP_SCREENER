@@ -719,6 +719,7 @@ def render_data_health() -> None:
                     "ibkr_quote_count": ops.get("ibkr_quote_count"),
                     "deploy_git_sha": ops.get("deploy_git_sha"),
                     "dashboard_readonly_proven": ops.get("dashboard_readonly_proven"),
+                    "dashboard_streamlit_readonly": ops.get("dashboard_streamlit_readonly"),
                     "systemd_still_git_pull": ops.get("systemd_still_git_pull"),
                     "systemd_cutover_proven": ops.get("systemd_cutover_proven"),
                     "immutable_current_present": ops.get("immutable_current_present"),

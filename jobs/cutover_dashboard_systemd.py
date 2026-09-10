@@ -168,6 +168,7 @@ def evaluate_cutover(
         "writer_env_keys_present": facts["writer_env_keys_present"],
         "writer_keys_in_systemd_env": env_scan["writer_keys_present"],
         "provider_fetch": facts["provider_fetch"],
+        "streamlit_readonly": facts["streamlit_readonly"],
         "readonly_proven": facts["readonly_proven"],
         "readonly_verify_rc": facts["readonly_verify_rc"],
         "immutable_current_present": facts["immutable_current_present"],

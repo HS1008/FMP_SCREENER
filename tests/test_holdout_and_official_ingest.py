@@ -51,6 +51,20 @@ def test_official_csfml_v1_wrong_sha_is_refused():
         ingest_artifact(_RefuseConn(), key="fake-official", kind="run_summary", payload=payload)
 
 
+def test_official_csfml_v1_cannot_claim_zero_historical_impact():
+    payload = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": PIN["full_suite_run_id"],
+        "strategy_id": "CrossSectionalFactorML",
+        "run_status": "COMPLETE",
+        "holdout_accessed": False,
+        "git_commit": PIN["authoritative_csfml_v1_qc_sha"],
+        "historical_v1_impact": "ZERO",
+    }
+    with pytest.raises(ArtifactContractError, match="historical_v1_impact"):
+        refuse_impersonated_official_csfml_v1(payload)
+
+
 def test_official_csfml_v1_missing_sha_is_refused():
     with pytest.raises(ArtifactContractError, match="requires git_commit"):
         refuse_impersonated_official_csfml_v1(
@@ -195,6 +209,23 @@ def test_sealed_run_without_committed_tree_refuses_first_ingest():
                 "economic_gate": "NOT_DEFINED",
             },
         )
+
+
+def test_sealed_without_tree_is_explicit_and_covers_e7b24642():
+    from qc_research.contracts.sealed_results import (
+        load_sealed_results,
+        sealed_results_run_ids,
+        sealed_without_tree_run_ids,
+    )
+
+    data = load_sealed_results()
+    trees = set(data.get("committed_trees") or {})
+    without = sealed_without_tree_run_ids()
+    assert "STAGE2_CrossSectionalFactorML_e7b24642" in without
+    missing = sealed_results_run_ids() - trees - without
+    assert not missing, missing
+    overlap = trees & without
+    assert not overlap, overlap
 
 
 def test_official_tlt_wrapped_payloads_match_committed_file():

@@ -4,6 +4,7 @@ Default behavior:
   - create schema_migrations
   - skip filenames already recorded
   - fail if an already-applied file's sha256 drifted
+  - fail if an already-applied file has no sha256 unless MIGRATIONS_BACKFILL_SHA256=1
   - execute only unapplied migrations
   - insert the filename and sha256 only after successful execution
 
@@ -117,6 +118,19 @@ def apply_migrations(
                     )
                 )
             if not recorded:
+                allowed = (os.environ.get("MIGRATIONS_BACKFILL_SHA256") or "").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+                if not allowed:
+                    raise MigrationDriftError(
+                        "Migration {0} is applied but sha256 is missing. "
+                        "Set MIGRATIONS_BACKFILL_SHA256=1 to record the current file hash once.".format(
+                            path.name
+                        )
+                    )
                 conn.execute(
                     text("UPDATE schema_migrations SET sha256 = :sha256 WHERE filename = :filename"),
                     {"filename": path.name, "sha256": digest},

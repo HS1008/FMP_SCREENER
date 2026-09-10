@@ -141,15 +141,19 @@ def official_stage1_backtest_upsert_blocked(
     expected_experiment_count is stored. Existing official rows are never
     rewritten. Official research_runs identity is not created here.
     """
-    from qc_research.contracts.sealed_results import official_stage1_pin
+    from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
 
     existing_run = str((existing_row or {}).get("research_run_id") or "").strip()
     incoming_run = str(research_run_id or "").strip()
     existing_pin = official_stage1_pin(existing_run)
     incoming_pin = official_stage1_pin(incoming_run)
-    if existing_row is not None and (existing_pin or incoming_pin):
+    existing_sealed = is_sealed_results_run(existing_run)
+    incoming_sealed = is_sealed_results_run(incoming_run)
+    if existing_row is not None and (existing_pin or incoming_pin or existing_sealed or incoming_sealed):
         return "official_stage1_backtest_immutable"
     if incoming_pin is None:
+        if incoming_sealed:
+            return "sealed_results_backtest_immutable"
         return None
     try:
         expected_n = int(incoming_pin.get("expected_experiment_count"))
@@ -167,9 +171,9 @@ def needs_detail_read(existing: dict[str, Any] | None, backtest: dict[str, Any])
     failed = is_failed_status(status, backtest)
     if not is_stage1_name(name):
         return False
-    from qc_research.contracts.sealed_results import official_stage1_pin
+    from qc_research.contracts.sealed_results import is_sealed_results_run
 
-    if existing is not None and official_stage1_pin(existing.get("research_run_id")):
+    if existing is not None and is_sealed_results_run(existing.get("research_run_id")):
         return False
     if not completed and not failed:
         return True
@@ -192,9 +196,9 @@ def needs_legacy_date_hydration(
         name = str(existing.get("name") or "")
     if is_stage1_name(name):
         return False
-    from qc_research.contracts.sealed_results import official_stage1_pin
+    from qc_research.contracts.sealed_results import is_sealed_results_run
 
-    if existing and official_stage1_pin(existing.get("research_run_id")):
+    if existing and is_sealed_results_run(existing.get("research_run_id")):
         return False
     if existing and existing.get("backtest_start") and existing.get("backtest_end"):
         return False
@@ -294,9 +298,9 @@ def needs_equity_curve(existing: dict[str, Any] | None, backtest: dict[str, Any]
     status = str(backtest.get("status") or "").lower()
     if not is_stage1_name(name):
         return False
-    from qc_research.contracts.sealed_results import official_stage1_pin
+    from qc_research.contracts.sealed_results import is_sealed_results_run
 
-    if existing is not None and official_stage1_pin(existing.get("research_run_id")):
+    if existing is not None and is_sealed_results_run(existing.get("research_run_id")):
         return False
     if "completed" not in status:
         return False
@@ -391,9 +395,9 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
     run_id = fields.get("research_run_id")
     if not run_id:
         return
-    from qc_research.contracts.sealed_results import official_stage1_pin
+    from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
 
-    if official_stage1_pin(run_id):
+    if official_stage1_pin(run_id) or is_sealed_results_run(run_id):
         return
     from qc_research.parsing import is_smoke_test
 
@@ -490,7 +494,7 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
 
 def _official_stage1_equity_immutable(conn, backtest_id: str) -> bool:
     """True when official Stage 1 equity already exists and must not be rewritten."""
-    from qc_research.contracts.sealed_results import official_stage1_pin
+    from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
 
     result = conn.execute(
         text("SELECT research_run_id FROM backtests WHERE backtest_id = :backtest_id"),
@@ -508,7 +512,7 @@ def _official_stage1_equity_immutable(conn, backtest_id: str) -> bool:
             mapping = getattr(row, "_mapping", None)
             if mapping is not None:
                 run_id = str(mapping.get("research_run_id") or "")
-    if not official_stage1_pin(run_id):
+    if not official_stage1_pin(run_id) and not is_sealed_results_run(run_id):
         return False
     count_result = conn.execute(
         text(
@@ -1001,9 +1005,9 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
         progress["run_status"] = pin_terminal_run_status(
             meta.get("run_status"), progress["run_status"]
         )
-        from qc_research.contracts.sealed_results import official_stage1_pin
+        from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
 
-        if official_stage1_pin(str(run_id)):
+        if official_stage1_pin(str(run_id)) or is_sealed_results_run(str(run_id)):
             updated.append(
                 {
                     "research_run_id": run_id,

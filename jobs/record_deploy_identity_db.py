@@ -45,6 +45,7 @@ INSERT INTO mi_deploy_host_identity (
     writer_fallback,
     writer_env_keys_present,
     provider_fetch,
+    streamlit_readonly,
     csfml_v1_label_integrity,
     csfml_v1_rerun_authorized
 ) VALUES (
@@ -63,6 +64,7 @@ INSERT INTO mi_deploy_host_identity (
     :writer_fallback,
     :writer_env_keys_present,
     :provider_fetch,
+    :streamlit_readonly,
     :csfml_v1_label_integrity,
     :csfml_v1_rerun_authorized
 )
@@ -135,6 +137,7 @@ def sanitize_record(raw: Mapping[str, Any]) -> dict[str, Any]:
         "writer_fallback": _as_bool(raw.get("writer_fallback")),
         "writer_env_keys_present": _writer_keys(raw.get("writer_env_keys_present")),
         "provider_fetch": _as_bool(raw.get("provider_fetch")),
+        "streamlit_readonly": _as_bool(raw.get("streamlit_readonly")),
         "csfml_v1_label_integrity": str(raw.get("csfml_v1_label_integrity") or "") or None,
         "csfml_v1_rerun_authorized": _as_bool(raw.get("csfml_v1_rerun_authorized")),
     }
@@ -162,6 +165,7 @@ def print_record(record: Mapping[str, Any]) -> None:
         "git_sha",
         "deploy_mode",
         "readonly_proven",
+        "streamlit_readonly",
         "systemd_still_git_pull",
         "systemd_cutover_proven",
         "immutable_current_present",

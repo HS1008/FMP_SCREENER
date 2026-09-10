@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -678,3 +679,52 @@ def test_platform_run_summary_upserts_generic_identity_not_stage2(monkeypatch):
         in UPSERT_PLATFORM_RUN
     )
     assert "run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status)" not in UPSERT_PLATFORM_RUN
+
+
+def test_register_platform_monitor_strategy_does_not_invent_qc_project():
+    from qc_research.platform_ingest import (
+        platform_run_identity,
+        register_platform_monitor_strategy,
+    )
+
+    captured: list[dict] = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            captured.append(params)
+
+    identity = platform_run_identity(
+        {
+            "research_run_id": "PLATFORM_Future_V0",
+            "strategy_id": "FutureBondTrend",
+            "display_name": "Future",
+            "project_id": 999,
+            "project_name": "OtherProject",
+        }
+    )
+    register_platform_monitor_strategy(_Conn(), identity)
+    assert captured[0]["qc_research_project_id"] == "999"
+    assert captured[0]["qc_research_project_name"] == "OtherProject"
+    captured.clear()
+    identity = platform_run_identity(
+        {
+            "research_run_id": "PLATFORM_Future_V0",
+            "strategy_id": "FutureBondTrend",
+        }
+    )
+    register_platform_monitor_strategy(_Conn(), identity)
+    assert captured[0]["qc_research_project_id"] is None
+    assert captured[0]["qc_research_project_name"] is None
+    wrap = (Path(__file__).resolve().parents[1] / "qc_research" / "platform_ingest.py").read_text(
+        encoding="utf-8"
+    )
+    wrap_fn = wrap.split("def wrap_canonical_platform_record", 1)[1].split(
+        "def is_live_canonical_file", 1
+    )[0]
+    assert "36108691" not in wrap_fn
+    assert "PlatformResearch" not in wrap_fn
+    register_fn = wrap.split("def register_platform_monitor_strategy", 1)[1].split(
+        "def repo_root", 1
+    )[0]
+    assert "36108691" not in register_fn
+    assert "PlatformResearch" not in register_fn

@@ -18,11 +18,13 @@ def test_identity_env_from_file_strips_writer_keys_and_overlays_url(tmp_path, mo
     monkeypatch.setenv("DASHBOARD_READONLY_URL", "")
     env_file = tmp_path / "fmp-dashboard.env"
     env_file.write_text(
-        "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:secret@127.0.0.1/fmp\n",
+        "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:secret@127.0.0.1/fmp\n"
+        "FMP_STREAMLIT_READONLY=1\n",
         encoding="utf-8",
     )
     environ = identity_env_from_file(env_file)
     assert environ["DASHBOARD_READONLY_URL"].startswith("postgresql://dashboard_readonly:")
+    assert environ.get("FMP_STREAMLIT_READONLY") == "1"
     assert "DATABASE_URL" not in environ or not environ.get("DATABASE_URL")
 
 
@@ -50,13 +52,14 @@ def test_collect_facts_proves_readonly_without_cutover(tmp_path):
     pw = tmp_path / "dashboard_readonly.pw"
     pw.write_text("x\n", encoding="utf-8")
     facts = collect_facts(
-        env={"DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp"},
+        env={"DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp", "FMP_STREAMLIT_READONLY": "1"},
         password_file=pw,
         current_link=tmp_path / "missing-current",
         systemd_exec="/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py",
         verify_rc=0,
     )
     assert facts["readonly_proven"] is True
+    assert facts["streamlit_readonly"] is True
     assert facts["dashboard_readonly_url_set"] is True
     assert facts["systemd_cutover_proven"] is False
     assert audit_exit_code(facts, require_readonly=True) == 0
@@ -67,6 +70,21 @@ def test_collect_facts_proves_readonly_without_cutover(tmp_path):
     assert "postgresql://" not in text
     payload = json.loads(text)
     assert payload["readonly_proven"] is True
+
+
+def test_collect_facts_requires_streamlit_readonly_flag(tmp_path):
+    pw = tmp_path / "dashboard_readonly.pw"
+    pw.write_text("x\n", encoding="utf-8")
+    facts = collect_facts(
+        env={"DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp"},
+        password_file=pw,
+        current_link=tmp_path / "missing-current",
+        systemd_exec="/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py",
+        verify_rc=0,
+    )
+    assert facts["streamlit_readonly"] is False
+    assert facts["readonly_proven"] is False
+    assert audit_exit_code(facts, require_readonly=True) == 3
 
 
 def test_audit_refuses_writer_keys_in_process_env(tmp_path):

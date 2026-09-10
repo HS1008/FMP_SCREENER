@@ -48,6 +48,7 @@ def build_record(
         "writer_fallback": facts["writer_fallback"],
         "writer_env_keys_present": facts["writer_env_keys_present"],
         "provider_fetch": facts["provider_fetch"],
+        "streamlit_readonly": facts["streamlit_readonly"],
         "immutable_current_present": facts["immutable_current_present"],
         "systemd_cutover_proven": facts["systemd_cutover_proven"],
         "readonly_verify_rc": facts["readonly_verify_rc"],

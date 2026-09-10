@@ -79,6 +79,10 @@ def test_streamlit_entrypoints_strip_writer_and_never_call_load_dotenv():
     assert "def load_streamlit_env" in engine
     assert "load_dotenv" in engine
     assert allowed_dotenv == {ROOT / "db" / "dashboard_engine.py"}  # only helper may reload .env
+    dashboard = (ROOT / "dashboard.py").read_text(encoding="utf-8")
+    main = dashboard.split("def main()", 1)[1].split("\n\n", 1)[0]
+    assert "load_streamlit_env()" in main
+    assert "if api_key and _ENABLE_BACKGROUND_WARM and provider_fetch_allowed():" in dashboard
 
 
 def test_provider_fetch_opt_in(monkeypatch):

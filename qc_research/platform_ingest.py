@@ -172,6 +172,8 @@ def platform_run_identity(payload: dict[str, Any]) -> dict[str, Any]:
         "economic_gate": inner.get("economic_gate") or payload.get("economic_gate"),
         "delivery_status": inner.get("delivery_status") or payload.get("delivery_status") or "PENDING",
         "name": inner.get("display_name") or payload.get("display_name"),
+        "project_id": inner.get("project_id") or payload.get("project_id") or identity.get("project_id"),
+        "project_name": inner.get("project_name") or payload.get("project_name") or identity.get("project_name"),
     }
 
 
@@ -413,6 +415,8 @@ def register_platform_monitor_strategy(conn, identity: Mapping[str, Any] | None 
     strategy_id = str(row.get("strategy_id") or "")
     if not strategy_id:
         return
+    project_id = row.get("project_id") or row.get("qc_research_project_id")
+    project_name = row.get("project_name") or row.get("qc_research_project_name")
     conn.execute(
         text(REGISTER_STRATEGY_SQL),
         {
@@ -420,8 +424,8 @@ def register_platform_monitor_strategy(conn, identity: Mapping[str, Any] | None 
             "name": row.get("name") or strategy_id,
             "environment": "research",
             "status": row.get("run_status") or "COMPLETE",
-            "qc_research_project_id": str(row.get("project_id") or "36108691"),
-            "qc_research_project_name": row.get("project_name") or "PlatformResearch",
+            "qc_research_project_id": str(project_id).strip() if project_id not in (None, "") else None,
+            "qc_research_project_name": str(project_name).strip() if project_name not in (None, "") else None,
         },
     )
 
@@ -692,8 +696,8 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
         "ml_minus_baseline": delta_mean,
         "selected_model_stability": aggregate.get("selected_model_stability"),
         "robustness": aggregate.get("selected_model_stability") or record.get("robustness"),
-        "project_id": record.get("project_id") or 36108691,
-        "project_name": record.get("project_name") or "PlatformResearch",
+        "project_id": record.get("project_id"),
+        "project_name": record.get("project_name"),
         "provenance": provenance,
         "observation_provenance": record.get("observation_provenance") or "REAL_HISTORICAL_PRE_2025",
         "qc_creates_official": record.get("qc_creates_official") or record.get("qc_creates"),

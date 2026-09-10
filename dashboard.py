@@ -500,7 +500,7 @@ def render_legacy_fmp_dashboard() -> None:
                 )
                 break
 
-    if api_key and _ENABLE_BACKGROUND_WARM:
+    if api_key and _ENABLE_BACKGROUND_WARM and provider_fetch_allowed():
         skip_prefetch = bool(st.session_state.pop("_dashboard_skip_background_warm_once", False))
         if not skip_prefetch:
             if _WARM_DELAY_S > 0:
@@ -513,7 +513,7 @@ def render_legacy_fmp_dashboard() -> None:
 
 
 def main() -> None:
-    strip_writer_database_env()
+    load_streamlit_env()
     st.set_page_config(page_title="Market Intelligence", page_icon="📊", layout="wide")
     from market_intelligence import pages_ui
     from market_intelligence.page_registry import (

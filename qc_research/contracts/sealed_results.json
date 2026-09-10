@@ -15,6 +15,9 @@
     "STAGE2_CrossSectionalFactorML_ebe7d1a4": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_ebe7d1a4",
     "PLATFORM_TLTDurationMomentum_V0": "qc_research/platform_artifacts/tlt_duration_momentum.json"
   },
+  "sealed_without_tree": [
+    "STAGE2_CrossSectionalFactorML_e7b24642"
+  ],
   "stage1_pins": {
     "STAGE1_SPYTrend_c04553d8": {
       "strategy_id": "SPYTrend",
