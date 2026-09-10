@@ -27,6 +27,7 @@ from qc_research.contracts.sealed_results import (
     existing_artifact_sha,
     refuse_sealed_artifact_overwrite,
     refuse_sealed_committed_mismatch,
+    refuse_sealed_path_run_mismatch,
     sealed_results_run_ids,
 )
 
@@ -250,6 +251,7 @@ def ingest_artifact(
     sha = verify_hash(payload, expected_hash)
     run_id = str(payload.get("research_run_id") or payload.get("run_id") or "")
     try:
+        refuse_sealed_path_run_mismatch(key=key, logical_path=logical_path, run_id=run_id)
         refuse_sealed_artifact_overwrite(conn, key=key, run_id=run_id, incoming_sha=sha)
     except ValueError as exc:
         raise ArtifactSyncError(str(exc)) from exc

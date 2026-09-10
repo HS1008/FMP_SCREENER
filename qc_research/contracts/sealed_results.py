@@ -448,6 +448,55 @@ def existing_artifact_sha(conn, key: str) -> str | None:
     return None
 
 
+def existing_artifact_run_id(conn, key: str) -> str | None:
+    from sqlalchemy import text
+
+    result = conn.execute(
+        text("SELECT research_run_id FROM research_artifacts WHERE artifact_key = :key"),
+        {"key": key},
+    )
+    if result is None:
+        return None
+    mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return None
+    row = mappings().first()
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return str(row.get("research_run_id") or "") or None
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return str(mapping.get("research_run_id") or "") or None
+    return None
+
+
+def sealed_run_id_in_path(path: str | None) -> str | None:
+    """Return a sealed run id that appears as a path component, if any."""
+    parts = str(path or "").replace("\\", "/").split("/")
+    ids = sealed_results_run_ids()
+    found = [part for part in parts if part in ids]
+    return found[-1] if found else None
+
+
+def refuse_sealed_path_run_mismatch(
+    *,
+    key: str,
+    logical_path: str | None,
+    run_id: str,
+) -> None:
+    """Refuse a payload whose run id does not match a sealed path component."""
+    incoming = str(run_id or "")
+    for candidate in (key, logical_path):
+        path_run = sealed_run_id_in_path(candidate)
+        if path_run and incoming != path_run:
+            raise SealedResultsError(
+                "refusing payload run_id {0} under sealed path {1}".format(
+                    incoming or "<empty>", path_run
+                )
+            )
+
+
 def research_run_exists(conn, run_id: str) -> bool:
     """True when research_runs already has this id. Missing lookup is False."""
     from sqlalchemy import text
@@ -471,10 +520,19 @@ def research_run_exists(conn, run_id: str) -> bool:
 
 
 def refuse_sealed_artifact_overwrite(conn, *, key: str, run_id: str, incoming_sha: str) -> None:
-    if run_id not in sealed_results_run_ids():
+    path_run = sealed_run_id_in_path(key)
+    existing_run = existing_artifact_run_id(conn, key)
+    freeze = bool(
+        run_id in sealed_results_run_ids()
+        or path_run
+        or (existing_run and existing_run in sealed_results_run_ids())
+    )
+    if not freeze:
         return
     existing = existing_artifact_sha(conn, key)
     if existing and existing != incoming_sha:
         raise SealedResultsError(
-            "refusing sealed {0} overwrite of {1}".format(run_id, key)
+            "refusing sealed {0} overwrite of {1}".format(
+                path_run or existing_run or run_id, key
+            )
         )

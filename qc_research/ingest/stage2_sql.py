@@ -172,8 +172,13 @@ def upsert_artifact(
     transport: str | None = None,
     logical_path: str | None = None,
 ) -> None:
+    path_run = None
+    if key or logical_path:
+        from qc_research.contracts.sealed_results import sealed_run_id_in_path
+
+        path_run = sealed_run_id_in_path(key) or sealed_run_id_in_path(logical_path)
     conn.execute(
-        text(conflict_sql(UPSERT_ARTIFACT_SQL, sealed=_run_is_sealed(run_id))),
+        text(conflict_sql(UPSERT_ARTIFACT_SQL, sealed=_run_is_sealed(run_id) or _run_is_sealed(path_run))),
         {
             "artifact_key": key,
             "research_run_id": run_id,

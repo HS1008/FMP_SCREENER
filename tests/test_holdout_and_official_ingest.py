@@ -583,6 +583,57 @@ def test_object_store_get_refused_before_account_read():
         ObjectStoreClient(_fail).object_get("stage2/model.pkl")
 
 
+def test_payload_run_id_cannot_use_a_sealed_path():
+    from qc_research.contracts.sealed_results import (
+        SealedResultsError,
+        refuse_sealed_artifact_overwrite,
+        refuse_sealed_path_run_mismatch,
+    )
+
+    official = "STAGE2_CrossSectionalFactorML_54a5543f"
+    with pytest.raises(SealedResultsError, match="under sealed path"):
+        refuse_sealed_path_run_mismatch(
+            key="github_stage2_results/CrossSectionalFactorML/{0}/run_summary.json".format(
+                official
+            ),
+            logical_path="stage2_results/CrossSectionalFactorML/{0}/run_summary.json".format(
+                official
+            ),
+            run_id="UNSEALED_COPY",
+        )
+    refuse_sealed_path_run_mismatch(
+        key="ok-official-2015",
+        logical_path="stage2_results/CrossSectionalFactorML/{0}/2015/training_summary.json".format(
+            official
+        ),
+        run_id=official,
+    )
+
+    class _Existing:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+
+            class _Result:
+                def mappings(self_inner):
+                    class _Mappings:
+                        def first(self_map):
+                            if "research_run_id" in sql:
+                                return {"research_run_id": official}
+                            return {"sha256": "aaa"}
+
+                    return _Mappings()
+
+            return _Result()
+
+    with pytest.raises(SealedResultsError, match="overwrite"):
+        refuse_sealed_artifact_overwrite(
+            _Existing(),
+            key="github_stage2_results/run_summary.json",
+            run_id="UNSEALED_COPY",
+            incoming_sha="bbb",
+        )
+
+
 def test_qc_ingest_post_refuses_create_and_object_get():
     from jobs.sync_quantconnect import qc_post
 
