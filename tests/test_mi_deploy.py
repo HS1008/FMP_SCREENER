@@ -69,7 +69,8 @@ def test_apply_renders_units_idempotently_and_never_touches_other_units(fake_hos
 
 def test_timer_schedule_is_weekday_new_york_and_persistent():
     timer = (TEMPLATES / "fmp-mi-refresh.timer").read_text()
-    assert timer.count("OnCalendar=Mon..Fri") == 2
+    assert timer.count("OnCalendar=Mon..Fri") == 3
+    assert "OnCalendar=Mon..Fri 16:05 America/New_York" in timer
     assert "America/New_York" in timer and "Persistent=true" in timer
 
 
@@ -81,7 +82,7 @@ def test_env_example_has_only_placeholders_and_documents_every_consumed_variable
         cleaned = value.split("#")[0].strip().strip('"')
         assert cleaned in {"", "0", "127.0.0.1", "8765", "5432", "fmp", "fmp_writer", "FMP Research ops@example.com", "/root/FMP_SCREENER/outputs/precomputed"} or "CHANGE_ME" in cleaned, (name, value)
     names = {n for n, _ in assigned}
-    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL"):
+    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "MI_FMP_FREE", "MI_ALLOW_LEGACY_FMP", "MI_EQUITY_PROVIDER", "MI_TREASURY_ENABLED"):
         assert required in names
 
 
@@ -123,6 +124,8 @@ def _systemd_analyze() -> str | None:
         ("2026-11-02 00:00:00 UTC", "Mon..Fri 18:30 America/New_York", "2026-11-02 23:30:00 UTC"),
         # Weekend skipped: Saturday base rolls to Monday.
         ("2026-09-12 00:00:00 UTC", "Mon..Fri 09:15 America/New_York", "2026-09-14 13:15:00 UTC"),
+        ("2026-03-06 00:00:00 UTC", "Mon..Fri 16:05 America/New_York", "2026-03-06 21:05:00 UTC"),
+        ("2026-03-09 00:00:00 UTC", "Mon..Fri 16:05 America/New_York", "2026-03-09 20:05:00 UTC"),
     ],
 )
 def test_timer_calendar_follows_new_york_dst_and_skips_weekends(base_time, spec, expected_utc):

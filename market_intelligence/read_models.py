@@ -63,9 +63,22 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
         cadence = row.get("dataset_cadence") or row.get("expected_cadence")
         latest = row.get("latest_observation_date")
         latest_d = date.fromisoformat(latest) if isinstance(latest, str) else latest
-        assessment = assess_freshness(latest_d, cadence, today)
+        dataset = str(row.get("freshness_dataset") or row.get("dataset") or "")
+        series_id = dataset.split("series:", 1)[1] if dataset.startswith("series:") else None
+        assessment = assess_freshness(
+            latest_d,
+            cadence,
+            today,
+            series_id=series_id,
+            source_id=row.get("source_id"),
+            transport_status=row.get("transport_status"),
+        )
         row["stored_freshness_status"] = row.get("freshness_status")
-        row["freshness_status"] = assessment.status if latest_d is not None else (row.get("freshness_status") or "UNKNOWN")
+        if str(row.get("access_status") or "") in {"RETIRED_OPTIONAL", "RETIRED"}:
+            row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
+            row["retired_optional"] = True
+        else:
+            row["freshness_status"] = assessment.status if latest_d is not None else (row.get("freshness_status") or "MISSING")
         row["age_days"] = assessment.age_days
         row["tolerance_days"] = assessment.tolerance_days if assessment.tolerance_days is not None else row.get("tolerance_days")
         row.pop("expected_next_release", None)  # pre-012 view column name; never an official release date
@@ -264,46 +277,141 @@ def macro_context(conn, *, today: date | None = None) -> dict[str, Any]:
     }
 
 
+def _normalize_obs_date(raw: Any) -> date | None:
+    if raw is None:
+        return None
+    if isinstance(raw, date):
+        return raw
+    return date.fromisoformat(str(raw)[:10])
+
+
 def rates_context(conn) -> dict[str, Any]:
-    latest = {r["series_id"]: r for r in macro_latest(conn)}
+    from market_intelligence.ingest_treasury import TREASURY_ATTRIBUTION
+    from market_intelligence.source_resolve import EQUIVALENTS, latest_common_observation_date, resolve_observation
+    from market_intelligence.treasury_xml import COMPLETE_NOMINAL_TENORS
+
+    latest_rows = list(macro_latest(conn))
+    latest = {r["series_id"]: r for r in latest_rows}
     metrics = metric_latest(conn)
-    curve = []
+    per_tenor_resolved: dict[str, dict[date, Any]] = {}
+    per_tenor_row: dict[str, dict[date, dict[str, Any]]] = {}
     for tenor, sid in CURVE_TENORS.items():
-        row = latest.get(sid)
-        scope = (row.get("export_scope") if row else None) or (CATALOG_BY_ID[sid].export_scope if sid in CATALOG_BY_ID else None)
-        curve.append(
-            {
-                "tenor": tenor,
-                "series_id": sid,
-                "yield_pct": row.get("value") if row else None,
-                "observation_date": row.get("observation_date") if row else None,
-                "retrieved_at": row.get("retrieved_at") if row else None,
-                "revision_seq": row.get("revision_seq") if row else None,
-                "ingestion_run_id": row.get("ingestion_run_id") if row else None,
-                "publication_status": row.get("publication_status") if row else None,
-                "chg_prev_bps": (_metric_entry(metrics, sid + ".chg_prev_bps") or {}).get("value"),
-                "chg_1w_bps": (_metric_entry(metrics, sid + ".chg_1w_bps") or {}).get("value"),
-                "chg_1m_bps": (_metric_entry(metrics, sid + ".chg_1m_bps") or {}).get("value"),
-                "chg_3m_bps": (_metric_entry(metrics, sid + ".chg_3m_bps") or {}).get("value"),
-                "export_scope": scope,
+        alts = EQUIVALENTS.get(sid, (sid,))
+        by_date: dict[date, list[dict[str, Any]]] = {}
+        for alt in alts:
+            meta = latest.get(alt) or {}
+            source = meta.get("source_id") or ("TREASURY" if str(alt).startswith("UST_") else "FRED")
+            for hist in observation_history(conn, alt, limit=40):
+                day = _normalize_obs_date(hist.get("observation_date"))
+                if day is None or hist.get("value") is None:
+                    continue
+                by_date.setdefault(day, []).append(
+                    {
+                        "series_id": alt,
+                        "source_id": source,
+                        "observation_date": day,
+                        "value": hist.get("value"),
+                        "retrieved_at": meta.get("retrieved_at"),
+                        "revision_seq": meta.get("revision_seq"),
+                        "ingestion_run_id": meta.get("ingestion_run_id"),
+                        "publication_status": meta.get("publication_status"),
+                        "export_scope": meta.get("export_scope"),
+                    }
+                )
+        resolved_rows: dict[date, dict[str, Any]] = {}
+        resolved_values: dict[date, Any] = {}
+        for day, candidates in by_date.items():
+            picked = resolve_observation(sid, candidates)
+            if picked is None:
+                continue
+            base = next(c for c in candidates if c.get("series_id") == picked.series_id and _normalize_obs_date(c.get("observation_date")) == picked.observation_date)
+            resolved_rows[day] = {
+                **base,
+                "source_id": picked.source_id,
+                "selection_reason": picked.selection_reason,
+                "fallback": picked.fallback,
+                "value": picked.value,
             }
-        )
-    # Slopes are derived from Treasury constant-maturity series (attribution-required scope).
+            resolved_values[day] = picked.value
+        per_tenor_resolved[tenor] = resolved_values
+        per_tenor_row[tenor] = resolved_rows
+
+    complete_day = latest_common_observation_date(per_tenor_resolved, COMPLETE_NOMINAL_TENORS)
+    complete_date = complete_day.isoformat() if complete_day else None
+
+    def _leg(tenor: str, sid: str, row: dict[str, Any] | None, obs_day: date | None) -> dict[str, Any]:
+        scope = (row.get("export_scope") if row else None) or (CATALOG_BY_ID[sid].export_scope if sid in CATALOG_BY_ID else None)
+        return {
+            "tenor": tenor,
+            "series_id": sid,
+            "provider_series_id": (row or {}).get("series_id") or sid,
+            "yield_pct": (row or {}).get("value"),
+            "observation_date": obs_day.isoformat() if obs_day else None,
+            "retrieved_at": (row or {}).get("retrieved_at"),
+            "revision_seq": (row or {}).get("revision_seq"),
+            "ingestion_run_id": (row or {}).get("ingestion_run_id"),
+            "publication_status": (row or {}).get("publication_status"),
+            "source_id": (row or {}).get("source_id"),
+            "selection_reason": (row or {}).get("selection_reason"),
+            "fallback": bool((row or {}).get("fallback")),
+            "chg_prev_bps": (_metric_entry(metrics, sid + ".chg_prev_bps") or {}).get("value"),
+            "chg_1w_bps": (_metric_entry(metrics, sid + ".chg_1w_bps") or {}).get("value"),
+            "chg_1m_bps": (_metric_entry(metrics, sid + ".chg_1m_bps") or {}).get("value"),
+            "chg_3m_bps": (_metric_entry(metrics, sid + ".chg_3m_bps") or {}).get("value"),
+            "export_scope": scope,
+        }
+
+    complete_curve = []
+    if complete_day is not None:
+        for tenor, sid in CURVE_TENORS.items():
+            row = (per_tenor_row.get(tenor) or {}).get(complete_day)
+            complete_curve.append(_leg(tenor, sid, row, complete_day if row else None))
+    latest_curve = []
+    for tenor, sid in CURVE_TENORS.items():
+        rows = per_tenor_row.get(tenor) or {}
+        latest_day = max(rows) if rows else None
+        latest_curve.append(_leg(tenor, sid, rows.get(latest_day) if latest_day else None, latest_day))
+    partial = [
+        leg
+        for leg in latest_curve
+        if complete_day is not None and leg.get("observation_date") and date.fromisoformat(str(leg["observation_date"])[:10]) > complete_day
+    ]
+    curve = complete_curve or latest_curve
     slopes = {name: _metric_entry(metrics, "curve.slope_{0}_bps".format(name), export_scope=EXPORT_ATTRIBUTION_REQUIRED) for name in CURVE_SLOPES}
     dates = {c["observation_date"] for c in curve if c["observation_date"]}
-    real = [_series_block(latest[s], metrics) for s in ("DFII5", "DFII10", "DFII20", "DFII30") if s in latest and latest[s].get("observation_date")]
+    real = [_series_block(latest[s], metrics) for s in ("DFII5", "DFII10", "DFII20", "DFII30", "UST_REAL_5Y", "UST_REAL_10Y", "UST_REAL_20Y", "UST_REAL_30Y") if s in latest and latest[s].get("observation_date")]
     comp = [_series_block(latest[s], metrics) for s in ("T5YIE", "T10YIE", "T5YIFR") if s in latest and latest[s].get("observation_date")]
+    derived_be = []
+    for tenor, nom_id, real_id in (("5Y", "DGS5", "DFII5"), ("10Y", "DGS10", "DFII10")):
+        nom = next((c for c in complete_curve if c["tenor"] == tenor), None)
+        real_row = latest.get("UST_REAL_{0}".format(tenor)) or latest.get(real_id)
+        if nom and nom.get("yield_pct") is not None and real_row and real_row.get("value") is not None and str(nom.get("observation_date") or "")[:10] == str(real_row.get("observation_date") or "")[:10]:
+            derived_be.append(
+                {
+                    "tenor": tenor,
+                    "value": float(nom["yield_pct"]) - float(real_row["value"]),
+                    "observation_date": nom["observation_date"],
+                    "kind": "derived_nominal_minus_real",
+                    "note": "Not the published T5YIE/T10YIE breakeven series.",
+                }
+            )
     policy = [_series_block(latest[s], metrics) for s in ("DFF", "SOFR") if s in latest and latest[s].get("observation_date")]
+    sources = sorted({c.get("source_id") for c in curve if c.get("source_id")})
     return {
-        "curve": curve,
-        "curve_dates_mixed": len(dates) > 1,
+        "curve": complete_curve or curve,
+        "partial_newer": partial,
+        "complete_curve_date": complete_date,
+        "curve_dates_mixed": complete_date is None and len(dates) > 1,
         "curve_observation_dates": sorted(d for d in dates),
         "slopes": slopes,
         "real_yields": real,
         "inflation_compensation": comp,
+        "derived_nominal_minus_real": derived_be,
         "policy": policy,
-        "units_note": "Yields in percent; changes in basis points (percent x 100).",
-        "attribution": FRED_ATTRIBUTION,
+        "source_ids": sources,
+        "fallback": any(c.get("fallback") for c in curve),
+        "units_note": "Yields in percent; changes in basis points (percent x 100). Same-date legs only.",
+        "attribution": TREASURY_ATTRIBUTION if "TREASURY" in sources else FRED_ATTRIBUTION,
     }
 
 
@@ -421,6 +529,8 @@ def industries_context(conn) -> dict[str, Any]:
                 "benchmark": row["benchmark"],
                 "return_basis": row["return_basis"],
                 "metrics": row["metrics_json"],
+                "coverage": row.get("provenance_json") or {},
+                "source_id": row["source_id"],
                 "export_scope": "INTERNAL_ONLY" if row["source_id"] == "FMP_LEGACY" else "ATTRIBUTION_REQUIRED",
             }
         )
@@ -684,8 +794,12 @@ def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
     finra_quarantine = _rows(conn, "SELECT * FROM mi_v_finra_aggregate_quarantine ORDER BY created_at DESC LIMIT 200") if _view_exists(conn, "mi_v_finra_aggregate_quarantine") else []
     return {
         "sources": health,
-        "stale": [h for h in health if h.get("freshness_status") == "STALE"],
-        "failed_transport": [h for h in health if h.get("transport_status") in ("FAILED", "METADATA_REJECTED", "PARTIAL")],
+        "stale": [h for h in health if h.get("freshness_status") == "STALE" and not h.get("retired_optional")],
+        "failed_transport": [
+            h
+            for h in health
+            if h.get("transport_status") in ("FAILED", "METADATA_REJECTED", "PARTIAL") and not h.get("retired_optional")
+        ],
         "quarantine": quarantine,
         "finra_quarantine": finra_quarantine,
         "export_scope": "INTERNAL_SUMMARY",
