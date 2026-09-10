@@ -2010,6 +2010,18 @@ def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras(
         _CountConn(0),
         research_run_id=None,
         existing_row=None,
+        backtest_id="7dc2afca65a22195d4845bc4ecb3d465",
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=None,
+        existing_row=None,
+        backtest_id="75d7feae6d9c09c1a0b914a0ce2fdbe5",
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=None,
+        existing_row=None,
         backtest_id="not-an-official-tlt-id",
     ) is None
     synthetic = "S2__SyntheticStage2__run__ML_OOS_TEST__2015__002"

@@ -228,6 +228,20 @@ def test_sealed_without_tree_is_explicit_and_covers_e7b24642():
     assert not overlap, overlap
 
 
+def test_official_sealed_qc_backtest_ids_come_from_committed_trees():
+    from qc_research.contracts.sealed_results import official_sealed_qc_backtest_ids
+    from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
+
+    ids = official_sealed_qc_backtest_ids()
+    tlt = official_tlt_qc_backtest_ids()
+    assert tlt <= ids
+    assert "7dc2afca65a22195d4845bc4ecb3d465" in ids
+    assert "75d7feae6d9c09c1a0b914a0ce2fdbe5" in ids
+    assert "047ffb600b710df277e81e5cdb3355e1" in ids
+    assert "not-an-official-id" not in ids
+    assert "STAGE2_CrossSectionalFactorML_e7b24642" not in ids
+
+
 def test_official_tlt_wrapped_payloads_match_committed_file():
     from qc_research.contracts.sealed_results import (
         SealedResultsError,

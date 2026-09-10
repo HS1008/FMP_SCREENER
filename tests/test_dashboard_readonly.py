@@ -286,41 +286,37 @@ def test_verify_job_covers_monitor_tables():
     assert "INSERT INTO backtests" in text
     assert "INSERT INTO research_artifacts" in text
     assert "INSERT INTO strategies" in text
+    assert "INSERT INTO backtest_equity_points" in text
+    assert "INSERT INTO ml_trials" in text
+    assert "INSERT INTO ml_models" in text
+    assert "INSERT INTO research_experiments" in text
     assert "CREATE TABLE dashboard_readonly_probe" in text
     required = "\n".join(REQUIRED_SELECTS)
     assert "FROM backtests" in required
     assert "FROM research_artifacts" in required
+    assert "FROM ml_trials" in required
     optional = "\n".join(OPTIONAL_SELECTS)
     assert "mi_v_ops_status" in optional
     live = "\n".join(sql for sql, _label in OPTIONAL_MUTATION_PROBES)
     assert "live_snapshots" in live
     assert "positions" in live
+    assert "ml_signal_points" in live
+    assert "research_oos_windows" in live
     job = (ROOT / "jobs" / "verify_dashboard_readonly.py").read_text(encoding="utf-8")
     assert "readonly_monitor_tables=denied" in job
 
 
 def test_dashboard_readonly_role_selects_and_denies_writes(dashboard_ro_engine):
+    from jobs.verify_dashboard_readonly import CORE_MUTATION_PROBES
+
     engine, _url = dashboard_ro_engine
     with engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM research_runs")).scalar() >= 0
         assert conn.execute(text("SELECT COUNT(*) FROM strategies")).scalar() >= 0
         assert conn.execute(text("SELECT COUNT(*) FROM backtests")).scalar() >= 0
         assert conn.execute(text("SELECT COUNT(*) FROM research_artifacts")).scalar() >= 0
-    for sql in (
-        "INSERT INTO research_runs (research_run_id, strategy_id) VALUES ('x', 'x')",
-        "UPDATE research_runs SET strategy_id = strategy_id WHERE FALSE",
-        "DELETE FROM research_runs WHERE FALSE",
-        "INSERT INTO backtests (backtest_id, strategy_id) VALUES ('x', 'x')",
-        "UPDATE backtests SET strategy_id = strategy_id WHERE FALSE",
-        "DELETE FROM backtests WHERE FALSE",
-        "INSERT INTO research_artifacts (artifact_key) VALUES ('x')",
-        "UPDATE research_artifacts SET artifact_type = artifact_type WHERE FALSE",
-        "DELETE FROM research_artifacts WHERE FALSE",
-        "INSERT INTO strategies (strategy_id) VALUES ('x')",
-        "UPDATE strategies SET strategy_id = strategy_id WHERE FALSE",
-        "DELETE FROM strategies WHERE FALSE",
-        "CREATE TABLE dashboard_readonly_probe (id int)",
-    ):
+        assert conn.execute(text("SELECT COUNT(*) FROM ml_trials")).scalar() >= 0
+    for sql, _label in CORE_MUTATION_PROBES:
         with pytest.raises(Exception) as excinfo:
             with engine.begin() as conn:
                 conn.execute(text(sql))
@@ -329,22 +325,10 @@ def test_dashboard_readonly_role_selects_and_denies_writes(dashboard_ro_engine):
 
 
 def test_dashboard_readonly_privileges_hold_when_session_default_overridden(dashboard_ro_engine):
+    from jobs.verify_dashboard_readonly import CORE_MUTATION_PROBES
+
     engine, _url = dashboard_ro_engine
-    for sql in (
-        "INSERT INTO research_runs (research_run_id, strategy_id) VALUES ('x', 'x')",
-        "UPDATE research_runs SET strategy_id = strategy_id WHERE FALSE",
-        "DELETE FROM research_runs WHERE FALSE",
-        "INSERT INTO backtests (backtest_id, strategy_id) VALUES ('x', 'x')",
-        "UPDATE backtests SET strategy_id = strategy_id WHERE FALSE",
-        "DELETE FROM backtests WHERE FALSE",
-        "INSERT INTO research_artifacts (artifact_key) VALUES ('x')",
-        "UPDATE research_artifacts SET artifact_type = artifact_type WHERE FALSE",
-        "DELETE FROM research_artifacts WHERE FALSE",
-        "INSERT INTO strategies (strategy_id) VALUES ('x')",
-        "UPDATE strategies SET strategy_id = strategy_id WHERE FALSE",
-        "DELETE FROM strategies WHERE FALSE",
-        "CREATE TABLE dashboard_readonly_probe_rw (id int)",
-    ):
+    for sql, _label in CORE_MUTATION_PROBES:
         with pytest.raises(Exception) as excinfo:
             with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
                 conn.execute(text("SET default_transaction_read_only = off"))

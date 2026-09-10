@@ -41,6 +41,63 @@ def is_sealed_results_run(run_id: str | None) -> bool:
     return bool(key) and key in sealed_results_run_ids()
 
 
+_QC_BACKTEST_ID_KEYS = frozenset(
+    {
+        "backtest_id",
+        "qc_backtest_id",
+        "train_backtest_id",
+        "winner_backtest_id",
+        "baseline_backtest_id",
+    }
+)
+_SEALED_QC_BACKTEST_IDS: frozenset[str] | None = None
+
+
+def _collect_qc_backtest_ids(value: Any, found: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _QC_BACKTEST_ID_KEYS:
+                text = str(item or "").strip()
+                if text:
+                    found.add(text)
+            _collect_qc_backtest_ids(item, found)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_qc_backtest_ids(item, found)
+
+
+def official_sealed_qc_backtest_ids() -> frozenset[str]:
+    """Published QuantConnect IDs in sealed committed trees plus official TLT windows.
+
+    Cloud sync must not first-INSERT these even when the QC name omits the
+    sealed run id. Does not invent unpublished ML_TRAIN or e7b24642 IDs.
+    """
+    global _SEALED_QC_BACKTEST_IDS
+    if _SEALED_QC_BACKTEST_IDS is not None:
+        return _SEALED_QC_BACKTEST_IDS
+    found: set[str] = set()
+    from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
+
+    found.update(official_tlt_qc_backtest_ids())
+    for rel in (load_sealed_results().get("committed_trees") or {}).values():
+        path = REPO_ROOT / str(rel)
+        if path.is_file():
+            files = [path]
+        elif path.is_dir():
+            files = [candidate for candidate in path.rglob("*.json") if candidate.is_file()]
+        else:
+            continue
+        for json_path in files:
+            try:
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                continue
+            _collect_qc_backtest_ids(payload, found)
+    _SEALED_QC_BACKTEST_IDS = frozenset(found)
+    return _SEALED_QC_BACKTEST_IDS
+
+
 def _run_id(payload: Mapping[str, Any] | None) -> str:
     record = dict(payload or {})
     nested = record.get("payload") if isinstance(record.get("payload"), dict) else {}
