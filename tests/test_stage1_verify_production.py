@@ -202,9 +202,28 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     assert "--backtests-only" in workflow
     assert "python -m jobs.apply_migrations" in workflow
     assert "verify_stage1_production.py" in workflow
+    assert "/etc/fmp/fmp-dashboard.env" in workflow
+    assert "DASHBOARD_ALLOW_WRITER_FALLBACK" in workflow
     assert "lean cloud backtest" not in workflow
     assert "BEGIN OPENSSH" not in workflow
     assert "-----BEGIN" not in workflow
+
+
+def test_stage1_production_verify_uses_dashboard_readonly():
+    script = (
+        Path(__file__).resolve().parent.parent / "scripts" / "verify_stage1_production.py"
+    ).read_text(encoding="utf-8")
+    assert "from db.dashboard_engine import dashboard_engine, writer_fallback_allowed" in script
+    assert "from db.connection import engine" not in script
+    assert "DASHBOARD_ALLOW_WRITER_FALLBACK is not a Stage 1 production verify path" in script
+    workflow = _workflow_text("stage1_verify.yml")
+    query = workflow.split("python -m jobs.apply_migrations", 1)[1]
+    assert "source /etc/fmp/fmp-dashboard.env" in query
+    assert "unset DATABASE_URL" in query
+    assert "source /root/FMP_SCREENER/.env" not in query
+    assert query.index("source /etc/fmp/fmp-dashboard.env") < query.index(
+        "python scripts/verify_stage1_production.py"
+    )
 
 
 def test_deploy_installs_backtest_sync_cron_after_migrations():

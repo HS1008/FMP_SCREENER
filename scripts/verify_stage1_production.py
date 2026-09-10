@@ -1,7 +1,7 @@
-"""Stage 1 production verification against the deployed PostgreSQL database.
+"""Stage 1 production verification against dashboard_readonly PostgreSQL.
 
-Uses the application's SQLAlchemy engine (db.connection) so PostgreSQL
-credentials never enter the shell. Never prints secrets.
+Live query-back uses DASHBOARD_READONLY_URL only. Writer fallback is refused.
+Credentials never enter the shell. Never prints secrets.
 
 Exit 0 on overall PASS, 1 on FAIL.
 """
@@ -911,7 +911,13 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        from db.connection import engine
+        from db.dashboard_engine import dashboard_engine, writer_fallback_allowed
+
+        if writer_fallback_allowed():
+            raise RuntimeError(
+                "DASHBOARD_ALLOW_WRITER_FALLBACK is not a Stage 1 production verify path"
+            )
+        engine = dashboard_engine()
 
         with engine.connect() as conn:
             tables, columns, migrations = load_schema(conn)

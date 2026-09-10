@@ -114,9 +114,20 @@ jobs:
             echo "Waiting up to 180s for outputs/backtest_sync.flock if the one-minute cron is running..."
             flock -w 180 /root/FMP_SCREENER/outputs/backtest_sync.flock -c 'cd /root/FMP_SCREENER && python -m jobs.sync_quantconnect --backtests-only'
 
-            python scripts/verify_stage1_production.py \
-              --git-sha "$GIT_SHA" \
-              --working-tree CLEAN \
-              --streamlit ACTIVE \
-              --migration PASS
+            if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
+              echo "FAIL: /etc/fmp/fmp-dashboard.env is required for Stage 1 query-back"
+              exit 1
+            fi
+            (
+              set -a
+              # shellcheck disable=SC1091
+              source /etc/fmp/fmp-dashboard.env
+              set +a
+              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+              python scripts/verify_stage1_production.py \
+                --git-sha "$GIT_SHA" \
+                --working-tree CLEAN \
+                --streamlit ACTIVE \
+                --migration PASS
+            )
           EOF
