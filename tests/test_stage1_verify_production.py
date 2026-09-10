@@ -1,6 +1,8 @@
 from datetime import date, datetime
 from pathlib import Path
 
+import pytest
+
 from qc_research.holdout import STATUS_EXPOSED_PRIOR_TO_STAGE1
 from scripts.verify_stage1_production import (
     EXPECTED_RESEARCH_PROJECT_ID,
@@ -217,6 +219,39 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     assert "lean cloud backtest" not in workflow
     assert "BEGIN OPENSSH" not in workflow
     assert "-----BEGIN" not in workflow
+    assert "jobs.record_stage1_verify" in workflow
+    assert "trap" in workflow
+    assert "/var/lib/fmp/deploy/stage1_verify.json" in workflow
+    assert workflow.index("trap") < workflow.index("verify_stage1_production.py --working-tree-only")
+    assert "source /root/FMP_SCREENER/.env" not in workflow
+
+
+def test_stage1_verify_outcome_is_recorded_without_secrets(tmp_path):
+    from jobs.record_stage1_verify import build_record, main
+
+    record = build_record(git_sha="abc123", code_root="/opt/fmp/current", verify_rc=0)
+    assert record["ok"] is True
+    assert record["stage1_verify_rc"] == 0
+    assert record["csfml_v1_label_integrity"] == "CANNOT_RULE_OUT"
+    assert record["csfml_v1_rerun_authorized"] is False
+    out = tmp_path / "stage1_verify.json"
+    assert main(["--git-sha", "abc123", "--code-root", "/opt/fmp/current", "--rc", "0", "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")
+    assert "postgresql://" not in text
+    assert "CANNOT_RULE_OUT" in text
+    with pytest.raises(RuntimeError, match="secret-bearing"):
+        main(
+            [
+                "--git-sha",
+                "abc123",
+                "--code-root",
+                "postgresql://writer:secret@127.0.0.1/fmp",
+                "--rc",
+                "1",
+                "--out",
+                str(tmp_path / "bad.json"),
+            ]
+        )
 
 
 def test_stage1_production_verify_uses_dashboard_readonly():

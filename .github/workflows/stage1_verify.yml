@@ -102,6 +102,10 @@ jobs:
               source /root/FMP_SCREENER/venv/bin/activate
             fi
 
+            STAGE1_RC=1
+            GIT_SHA=""
+            trap 'python -m jobs.record_stage1_verify --git-sha "${GIT_SHA:-}" --code-root "${CODE_ROOT:-}" --rc "${STAGE1_RC:-1}" --out /var/lib/fmp/deploy/stage1_verify.json || true' EXIT
+
             python scripts/verify_stage1_production.py --working-tree-only
 
             GIT_SHA="$(git rev-parse HEAD)"
@@ -144,4 +148,5 @@ jobs:
                 --streamlit ACTIVE \
                 --migration PASS
             )
+            STAGE1_RC=0
           EOF
