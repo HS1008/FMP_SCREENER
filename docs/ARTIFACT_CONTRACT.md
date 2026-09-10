@@ -55,8 +55,13 @@ Producer forensic bound: `research/stage2/forensic_csfml_v1_official.json`.
 Consumer pin: `qc_research/contracts/csfml_v1_label_integrity.json`.
 
 `historical_v1_impact=CANNOT_RULE_OUT` and `rerun_authorized=false`. Strategy Monitor
-shows that caption for official CSFML V1 only. It does not change `economic_gate`,
-open holdout, or authorize a QuantConnect rerun.
+shows that historical caption for official CSFML V1 only, separately from
+engineering completion of current-code delisting semantics and from
+`economic_gate=NOT_DEFINED`. Passing engineering tests does not clear V1.
+Future authorized runs may nest optional `data_quality.label_diagnostics`
+aggregates. Historical artifacts without that object remain valid. Canonical
+SHA-256 rules are unchanged. This does not open holdout or authorize a
+QuantConnect rerun.
 
 ## Sealed official results
 

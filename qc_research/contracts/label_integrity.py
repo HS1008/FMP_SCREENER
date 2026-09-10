@@ -138,6 +138,30 @@ def csfml_v1_integrity_caption(
     return str(pin["monitor_caption"])
 
 
+def csfml_status_distinction(
+    strategy_id: str | None = None,
+    research_run_id: str | None = None,
+) -> dict[str, str] | None:
+    """Separate historical integrity, engineering completion, and economic approval.
+
+    Passing current-code tests does not clear official V1. economic_gate stays
+    NOT_DEFINED.
+    """
+    caption = csfml_v1_integrity_caption(strategy_id, research_run_id)
+    if caption is None:
+        return None
+    pin = load_csfml_v1_label_integrity()
+    return {
+        "historical_integrity": str(pin["historical_v1_impact"]),
+        "historical_caption": caption,
+        "engineering_completion": (
+            "Engineering completion of delisting-event semantics does not "
+            "quantify or clear official V1 results."
+        ),
+        "economic_approval": str(pin.get("economic_gate") or "NOT_DEFINED"),
+    }
+
+
 def csfml_v1_historical_impact_for_run(
     strategy_id: str | None,
     research_run_id: str | None,

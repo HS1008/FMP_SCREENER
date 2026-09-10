@@ -103,6 +103,7 @@ def collect_facts(
     current_link: Path | None = None,
     systemd_exec: str | None = None,
     verify_rc: int | None = None,
+    running_observation: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
 
@@ -132,6 +133,11 @@ def collect_facts(
         and not writer_env_keys_present
         and streamlit_readonly
     )
+    if running_observation is None:
+        from jobs.observe_running_dashboard import observe_running_dashboard
+
+        running_observation = observe_running_dashboard(current_link=current)
+    observed = dict(running_observation)
     return {
         "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "dashboard_readonly_url_set": url_set,
@@ -148,6 +154,17 @@ def collect_facts(
         "systemd_cutover_proven": uses_current and not uses_root,
         "csfml_v1_label_integrity": pin["historical_v1_impact"],
         "csfml_v1_rerun_authorized": bool(pin["rerun_authorized"]),
+        "configured_identity_source": "env_file",
+        "configured_readonly_url_set": url_set,
+        "observed_running_identity": observed.get("observed_running_identity") or "unproven",
+        "observed_pid": observed.get("observed_pid"),
+        "observed_working_directory": observed.get("observed_working_directory") or "unproven",
+        "observed_executable": observed.get("observed_executable") or "unproven",
+        "observed_code_sha": observed.get("observed_code_sha") or "unproven",
+        "observed_env_file_paths": list(observed.get("observed_env_file_paths") or []),
+        "observed_uses_opt_fmp_current": observed.get("observed_uses_opt_fmp_current"),
+        "running_service_identity_proven": observed.get("observed_running_identity") == "recorded"
+        and bool(observed.get("observed_pid")),
     }
 
 
@@ -176,6 +193,9 @@ def print_facts(facts: Mapping[str, Any]) -> None:
         "systemd_cutover_proven",
         "csfml_v1_label_integrity",
         "csfml_v1_rerun_authorized",
+        "configured_readonly_url_set",
+        "observed_running_identity",
+        "running_service_identity_proven",
     ):
         print("{0}={1}".format(key, facts.get(key)))
 

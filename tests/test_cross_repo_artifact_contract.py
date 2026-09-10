@@ -174,6 +174,7 @@ def test_official_fixtures_include_producer_required_fields():
 
 def test_csfml_v1_label_integrity_pin_does_not_change_economics():
     from qc_research.contracts.label_integrity import (
+        csfml_status_distinction,
         csfml_v1_historical_impact_for_run,
         csfml_v1_integrity_caption,
         load_csfml_v1_label_integrity,
@@ -204,10 +205,18 @@ def test_csfml_v1_label_integrity_pin_does_not_change_economics():
     assert csfml_v1_historical_impact_for_run("CrossSectionalFactorML", None) is None
     assert csfml_v1_historical_impact_for_run("SPYTrend", pin["full_suite_run_id"]) is None
     assert "PASS" not in caption
+    distinction = csfml_status_distinction("CrossSectionalFactorML", pin["full_suite_run_id"])
+    assert distinction is not None
+    assert distinction["historical_integrity"] == "CANNOT_RULE_OUT"
+    assert distinction["economic_approval"] == "NOT_DEFINED"
+    assert "does not quantify or clear official V1" in distinction["engineering_completion"]
+    assert csfml_status_distinction("SPYTrend") is None
     ui = (
         Path(__file__).resolve().parents[1] / "qc_research" / "ml_monitor_ui.py"
     ).read_text(encoding="utf-8")
     assert "csfml_v1_integrity_caption" in ui
+    assert "csfml_status_distinction" in ui
+    assert "Engineering completion is not an economic PASS" in ui
 
 
 @pytest.mark.skipif(QS_ROOT is None, reason="quant-strategies sibling repo not present")

@@ -41,6 +41,7 @@ from qc_research.ml_aggregation import (
     stage2_research_rows,
 )
 from qc_research.contracts.label_integrity import (
+    csfml_status_distinction,
     csfml_v1_integrity_caption,
     load_csfml_v1_label_integrity,
 )
@@ -588,6 +589,12 @@ def render_platform_view(view: dict[str, Any]) -> None:
                     view.get("research_run_id"),
                 )
                 else None
+            ),
+            engineering_completion=(
+                (csfml_status_distinction(
+                    str(view.get("strategy_id") or ""),
+                    view.get("research_run_id"),
+                ) or {}).get("engineering_completion")
             ),
         )
     )
@@ -1198,7 +1205,15 @@ def render_stage2_section(
                 "This is not an economic PASS/WATCH/FAIL.".format(", ".join(blockers))
             )
             st.stop()
+        distinction = csfml_status_distinction(strategy_id, selected_run) or {}
         st.caption(integrity_caption)
+        if distinction.get("engineering_completion"):
+            st.caption(distinction["engineering_completion"])
+        st.caption(
+            "Economic approval is {0}. Engineering completion is not an economic PASS.".format(
+                distinction.get("economic_approval") or "NOT_DEFINED"
+            )
+        )
     accounting = view.get("create_accounting") or {}
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Original suite QC creates", accounting.get("original_suite_qc_creates") if accounting.get("original_suite_qc_creates") is not None else "—")

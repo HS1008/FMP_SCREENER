@@ -31,9 +31,21 @@ def test_plain_status_does_not_treat_review_or_undefined_as_fail():
         holdout_status="LOCKED",
         label_integrity="CANNOT_RULE_OUT",
     )
-    assert bounded.endswith("Label integrity CANNOT_RULE_OUT")
+    assert bounded.endswith("Historical label integrity CANNOT_RULE_OUT")
     assert "Economic criteria not defined" in bounded
     assert "FAIL" not in bounded
+    distinguished = plain_status_line(
+        research_status="COMPLETE",
+        economic_gate="NOT_DEFINED",
+        promotion_gate="HUMAN_REVIEW_REQUIRED",
+        holdout_status="LOCKED",
+        label_integrity="CANNOT_RULE_OUT",
+        engineering_completion="Engineering completion does not clear historical V1",
+    )
+    assert "Historical label integrity CANNOT_RULE_OUT" in distinguished
+    assert "Engineering completion does not clear historical V1" in distinguished
+    assert "Economic criteria not defined" in distinguished
+    assert "approved" not in distinguished.lower()
 
 
 def test_readout_counts_comparable_windows_and_does_not_zero_fill_missing():

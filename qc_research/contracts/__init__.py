@@ -12,6 +12,7 @@ from qc_research.contracts.kinds import (
 from qc_research.contracts.label_integrity import (
     csfml_v1_historical_impact_for_run,
     csfml_v1_integrity_caption,
+    csfml_status_distinction,
     load_csfml_v1_label_integrity,
     refuse_impersonated_official_csfml_v1,
 )
@@ -28,6 +29,7 @@ __all__ = [
     "canonical_dumps",
     "csfml_v1_historical_impact_for_run",
     "csfml_v1_integrity_caption",
+    "csfml_status_distinction",
     "load_csfml_v1_label_integrity",
     "payload_for_hash",
     "refuse_impersonated_official_csfml_v1",
