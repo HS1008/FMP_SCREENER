@@ -98,6 +98,10 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
 
     monkeypatch.setenv("DASHBOARD_READONLY_URL", "postgresql://dashboard_readonly:secret@127.0.0.1/fmp")
     monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
+    monkeypatch.delenv("STREAMLIT_ALLOW_PROVIDER_FETCH", raising=False)
+    monkeypatch.setenv("FMP_DASHBOARD_READONLY_PW", str(tmp_path / "missing.pw"))
+    monkeypatch.setenv("FMP_CURRENT_LINK", str(tmp_path / "missing-current"))
+    monkeypatch.setenv("FMP_SYSTEMD_EXEC_START", "/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py")
     path = tmp_path / "current.json"
     record = build_record(sha="abc123", checkout="/root/FMP_SCREENER", mode="git_pull", immutable_rc=0)
     write_record(record, path)
@@ -105,8 +109,11 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
     assert "secret" not in text
     assert "postgresql://" not in text
     assert record["dashboard_readonly_url_set"] is True
+    assert record["dashboard_readonly_password_file_present"] is False
     assert record["writer_fallback"] is False
+    assert record["provider_fetch"] is False
     assert record["systemd_still_git_pull"] is True
+    assert record["systemd_cutover_proven"] is False
     assert record["csfml_v1_label_integrity"] == "CANNOT_RULE_OUT"
     assert record["csfml_v1_rerun_authorized"] is False
 

@@ -344,6 +344,9 @@ def test_generic_ingest_workflow_is_event_driven():
     ).read_text(encoding="utf-8")
     assert "verify_tlt_monitor --live" in verify
     assert "Does not create QuantConnect jobs" in verify
+    assert "jobs.audit_host_dashboard" in verify
+    assert "verify_dashboard_identity.sh" in verify
+    assert "--require-readonly" in verify
     assert "DO_SSH_KEY" in verify
     from qc_research.fetch_remote_artifact import github_raw_url
 

@@ -17,9 +17,9 @@ def state_path() -> Path:
 
 
 def build_record(*, sha: str, checkout: str, mode: str, immutable_rc: int) -> dict[str, object]:
-    from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
+    from jobs.audit_host_dashboard import collect_facts
 
-    pin = load_csfml_v1_label_integrity()
+    facts = collect_facts()
     return {
         "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "git_sha": sha,
@@ -27,11 +27,14 @@ def build_record(*, sha: str, checkout: str, mode: str, immutable_rc: int) -> di
         "deploy_mode": mode,
         "immutable_release_rc": immutable_rc,
         "systemd_still_git_pull": mode == "git_pull",
-        "dashboard_readonly_url_set": bool((os.environ.get("DASHBOARD_READONLY_URL") or "").strip()),
-        "writer_fallback": (os.environ.get("DASHBOARD_ALLOW_WRITER_FALLBACK") or "").strip().lower()
-        in {"1", "true", "yes", "on"},
-        "csfml_v1_label_integrity": pin["historical_v1_impact"],
-        "csfml_v1_rerun_authorized": bool(pin["rerun_authorized"]),
+        "dashboard_readonly_url_set": facts["dashboard_readonly_url_set"],
+        "dashboard_readonly_password_file_present": facts["dashboard_readonly_password_file_present"],
+        "writer_fallback": facts["writer_fallback"],
+        "provider_fetch": facts["provider_fetch"],
+        "immutable_current_present": facts["immutable_current_present"],
+        "systemd_cutover_proven": facts["systemd_cutover_proven"],
+        "csfml_v1_label_integrity": facts["csfml_v1_label_integrity"],
+        "csfml_v1_rerun_authorized": facts["csfml_v1_rerun_authorized"],
     }
 
 

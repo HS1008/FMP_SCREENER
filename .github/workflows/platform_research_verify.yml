@@ -69,3 +69,26 @@ jobs:
             python -m qc_research.verify_tlt_monitor --live
             python -m qc_research.verify_tlt_monitor --live --apptest
           EOF
+
+      - name: Audit live Streamlit identity and systemd path
+        env:
+          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_USER: ${{ secrets.DO_USER }}
+        run: |
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+            set -euo pipefail
+            cd /root/FMP_SCREENER
+            source /root/FMP_SCREENER/venv/bin/activate
+            set -a
+            # shellcheck disable=SC1091
+            source /root/FMP_SCREENER/.env
+            set +a
+            echo "HOST DASHBOARD IDENTITY AUDIT"
+            echo "This does not create QuantConnect jobs or change systemd."
+            verify_rc=0
+            bash scripts/verify_dashboard_identity.sh || verify_rc=$?
+            python -m jobs.audit_host_dashboard \
+              --verify-rc "$verify_rc" \
+              --out /var/lib/fmp/deploy/host_audit.json \
+              --require-readonly
+          EOF
