@@ -1541,6 +1541,33 @@ def test_apply_run_summary_refuses_complete_downgrade():
         )
 
 
+def test_apply_run_summary_refuses_in_progress_and_unknown():
+    class _Conn:
+        def execute(self, statement, params=None):
+            raise AssertionError("non-terminal summary must not upsert")
+
+    with pytest.raises(RunSummaryImportError, match="IN_PROGRESS"):
+        apply_run_summary(
+            _Conn(),
+            _orchestrator_summary(run_status="IN_PROGRESS", completed_count=40),
+        )
+    with pytest.raises(RunSummaryImportError, match="RUNNING"):
+        apply_run_summary(
+            _Conn(),
+            _orchestrator_summary(run_status="RUNNING"),
+        )
+    with pytest.raises(RunSummaryImportError, match="unknown"):
+        apply_run_summary(
+            _Conn(),
+            _orchestrator_summary(run_status=""),
+        )
+    apply_run_summary(
+        _RecordingConn(),
+        _orchestrator_summary(run_status="INCOMPLETE", completed_count=80, skipped_count=1),
+    )
+    apply_run_summary(_RecordingConn(), _orchestrator_summary(run_status="COMPLETE"))
+
+
 def test_case5_smoke_excluded_from_stage1_counts_and_equity():
     smoke_row = _monitor_backtest_row(
         backtest_id="smoke-1",

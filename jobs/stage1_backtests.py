@@ -583,10 +583,11 @@ def audit_holdout_exposures(conn, strategy_id: str) -> dict[str, Any] | None:
 IN_PROGRESS = "IN_PROGRESS"
 COMPLETE = "COMPLETE"
 INCOMPLETE = "INCOMPLETE"
+TERMINAL_SUMMARY_STATUSES = {COMPLETE, INCOMPLETE}
 
 
 class RunSummaryImportError(ValueError):
-    """Orchestrator summary would downgrade authoritative COMPLETE state."""
+    """Orchestrator summary is not importable as authoritative state."""
 
 
 def existing_run_status(conn, research_run_id: str) -> str | None:
@@ -665,11 +666,24 @@ def compute_research_run_progress(
 
 
 def apply_run_summary(conn, payload: dict[str, Any]) -> None:
-    """Upsert compact orchestrator run_summary.json into research_runs."""
+    """Upsert compact orchestrator run_summary.json into research_runs.
+
+    Only COMPLETE and INCOMPLETE become authoritative. IN_PROGRESS and
+    unknown statuses stay computed from QuantConnect row statuses until a
+    terminal summary arrives. Skipped-OOS Stage 1 trees publish INCOMPLETE
+    and must still import.
+    """
     if not payload or not payload.get("research_run_id"):
         raise ValueError("run summary is missing research_run_id")
     run_id = payload["research_run_id"]
-    incoming = str(payload.get("run_status") or "")
+    incoming = str(payload.get("run_status") or "").strip()
+    if incoming not in TERMINAL_SUMMARY_STATUSES:
+        raise RunSummaryImportError(
+            "refusing to import {0} with run_status={1!r}; "
+            "authoritative summaries require COMPLETE or INCOMPLETE".format(
+                run_id, incoming or "unknown"
+            )
+        )
     existing = existing_run_status(conn, run_id)
     if existing == COMPLETE and incoming != COMPLETE:
         raise RunSummaryImportError(
