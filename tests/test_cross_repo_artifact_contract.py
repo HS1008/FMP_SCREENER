@@ -137,12 +137,18 @@ def test_csfml_v1_label_integrity_pin_matches_producer_forensic():
     from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
 
     pin = load_csfml_v1_label_integrity()
+    producer_pin = json.loads(
+        (QS_ROOT / "research" / "contracts" / "csfml_v1_label_integrity.json").read_text(
+            encoding="utf-8"
+        )
+    )
     forensic = json.loads(
         (QS_ROOT / "research" / "stage2" / "forensic_csfml_v1_official.json").read_text(
             encoding="utf-8"
         )
     )
     state = json.loads((QS_ROOT / "research" / "integration_state.json").read_text(encoding="utf-8"))
+    assert pin == producer_pin
     assert forensic["historical_v1_impact"] == pin["historical_v1_impact"]
     assert forensic["rerun_authorized"] is pin["rerun_authorized"]
     assert forensic["safe_when_t21_present"] is pin["safe_when_t21_present"]

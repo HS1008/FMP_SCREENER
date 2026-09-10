@@ -94,6 +94,8 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
     assert record["dashboard_readonly_url_set"] is True
     assert record["writer_fallback"] is False
     assert record["systemd_still_git_pull"] is True
+    assert record["csfml_v1_label_integrity"] == "CANNOT_RULE_OUT"
+    assert record["csfml_v1_rerun_authorized"] is False
 
 
 def test_data_health_keeps_ops_off_main_pages():

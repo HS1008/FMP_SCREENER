@@ -17,6 +17,9 @@ def state_path() -> Path:
 
 
 def build_record(*, sha: str, checkout: str, mode: str, immutable_rc: int) -> dict[str, object]:
+    from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
+
+    pin = load_csfml_v1_label_integrity()
     return {
         "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "git_sha": sha,
@@ -27,6 +30,8 @@ def build_record(*, sha: str, checkout: str, mode: str, immutable_rc: int) -> di
         "dashboard_readonly_url_set": bool((os.environ.get("DASHBOARD_READONLY_URL") or "").strip()),
         "writer_fallback": (os.environ.get("DASHBOARD_ALLOW_WRITER_FALLBACK") or "").strip().lower()
         in {"1", "true", "yes", "on"},
+        "csfml_v1_label_integrity": pin["historical_v1_impact"],
+        "csfml_v1_rerun_authorized": bool(pin["rerun_authorized"]),
     }
 
 
