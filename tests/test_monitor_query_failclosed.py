@@ -30,6 +30,14 @@ def test_monitor_page_refuses_to_treat_query_failure_as_empty_library():
     assert "A query failure is not treated as an empty run list" in MONITOR
     assert "A query failure is not treated as missing research" in MONITOR
     assert "except Exception:\n        return False" not in MONITOR.split("def strategy_has_platform_research", 1)[1]
+    library_block = MONITOR.split("load_research_library(engine)", 1)[1].split("filter_col", 1)[0]
+    assert "st.stop()" in library_block
+    assert "library = pd.DataFrame()" not in library_block
+    runs_block = MONITOR.split("load_strategy_runs(engine, selected_id)", 1)[1].split(
+        "if runs is not None", 1
+    )[0]
+    assert "st.stop()" in runs_block
+    assert "runs = pd.DataFrame()" not in runs_block
 
 
 def test_research_sql_helpers_do_not_swallow_generic_errors():

@@ -886,7 +886,7 @@ except Exception:
         "Unable to read the research library from PostgreSQL. "
         "A query failure is not treated as an empty library."
     )
-    library = pd.DataFrame()
+    st.stop()
 filter_col, asset_col, status_col, smoke_col, auto_col = st.columns([2, 2, 2, 2, 1])
 with filter_col:
     scope = st.radio(
@@ -990,7 +990,7 @@ except Exception:
         "Unable to read research runs from PostgreSQL. "
         "A query failure is not treated as an empty run list."
     )
-    runs = pd.DataFrame()
+    st.stop()
 if runs is not None and not runs.empty and len(runs) > 1:
     run_labels = []
     for _, run in runs.iterrows():
