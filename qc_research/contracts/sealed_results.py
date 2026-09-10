@@ -30,6 +30,17 @@ MINIMUM_SEALED_RESULTS_RUN_IDS = frozenset(
         "PLATFORM_TLTDurationMomentum_V0",
     }
 )
+MINIMUM_STAGE1_PINS = {
+    "STAGE1_SPYTrend_c04553d8": {
+        "strategy_id": "SPYTrend",
+        "git_commit": "f04dbfb1a936c753a42a1389d9181f7c22f551a3",
+        "run_status": "COMPLETE",
+        "expected_experiment_count": 81,
+        "completed_count": 81,
+        "failed_count": 0,
+        "skipped_count": 0,
+    }
+}
 
 
 class SealedResultsError(ArtifactContractError):
@@ -267,12 +278,21 @@ def _pin_value_matches(incoming: Any, expected: Any) -> bool:
 
 
 def official_stage1_pin(run_id: str | None) -> dict[str, Any] | None:
-    """Pinned official Stage 1 identity, or None when the run is not sealed."""
+    """Pinned official Stage 1 identity, or None when the run is not sealed.
+
+    Code-level pins win on overlapping keys so emptied or weakened JSON cannot
+    drop the official Stage 1 Monitor identity check.
+    """
     key = str(run_id or "").strip()
     if not key:
         return None
-    pin = (load_sealed_results().get("stage1_pins") or {}).get(key)
-    return dict(pin) if isinstance(pin, dict) else None
+    pinned = dict(MINIMUM_STAGE1_PINS.get(key) or {})
+    data = (load_sealed_results().get("stage1_pins") or {}).get(key)
+    if isinstance(data, dict):
+        merged = dict(data)
+        merged.update(pinned)
+        return merged or None
+    return pinned or None
 
 
 def official_stage1_identity_blockers(

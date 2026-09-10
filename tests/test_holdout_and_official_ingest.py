@@ -244,6 +244,38 @@ def test_official_seal_survives_empty_sealed_results_json(tmp_path, monkeypatch)
     assert "STAGE2_CrossSectionalFactorML_e7b24642" in ids
     assert "STAGE2_CrossSectionalFactorML_ebe7d1a4" in ids
     assert "PLATFORM_TLTDurationMomentum_V0" in ids
+    pin = sealed.official_stage1_pin("STAGE1_SPYTrend_c04553d8")
+    assert pin is not None
+    assert pin["strategy_id"] == "SPYTrend"
+    assert pin["git_commit"] == "f04dbfb1a936c753a42a1389d9181f7c22f551a3"
+    assert pin["expected_experiment_count"] == 81
+    assert pin["completed_count"] == 81
+    assert pin["run_status"] == "COMPLETE"
+    weakened = tmp_path / "weak.json"
+    weakened.write_text(
+        json.dumps(
+            {
+                "stage1_pins": {
+                    "STAGE1_SPYTrend_c04553d8": {
+                        "strategy_id": "SPYTrend",
+                        "git_commit": "0" * 40,
+                        "run_status": "INCOMPLETE",
+                        "expected_experiment_count": 1,
+                        "completed_count": 0,
+                        "failed_count": 0,
+                        "skipped_count": 0,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sealed, "SNAPSHOT", weakened)
+    hardened = sealed.official_stage1_pin("STAGE1_SPYTrend_c04553d8")
+    assert hardened["git_commit"] == "f04dbfb1a936c753a42a1389d9181f7c22f551a3"
+    assert hardened["completed_count"] == 81
+    assert hardened["run_status"] == "COMPLETE"
+    assert hardened["expected_experiment_count"] == 81
 
 
 def test_official_sealed_qc_backtest_ids_come_from_committed_trees():
