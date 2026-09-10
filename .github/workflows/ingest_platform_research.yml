@@ -40,10 +40,10 @@ jobs:
     env:
       SOURCE_REPO: ${{ github.event.client_payload.source_repo || github.event.inputs.source_repo }}
       # Explicit source ref precedence: dispatch payload > manual input > repository variable
-      # QS_ARTIFACT_SOURCE_REF (set by a human to an already-published ref) > provider default branch.
-      # Never floats to an arbitrary research branch; an unset ref is reported as such.
+      # QS_ARTIFACT_SOURCE_REF (set by a human to an already-published ref).
+      # An unset scheduled ref does not float to the provider default branch.
       SOURCE_REF: ${{ github.event.client_payload.source_ref || github.event.inputs.source_ref || vars.QS_ARTIFACT_SOURCE_REF }}
-      SOURCE_REF_SOURCE: ${{ (github.event.client_payload.source_ref && 'repository_dispatch payload') || (github.event.inputs.source_ref && 'workflow_dispatch input') || (vars.QS_ARTIFACT_SOURCE_REF && 'repository variable QS_ARTIFACT_SOURCE_REF') || 'unset -> provider default branch' }}
+      SOURCE_REF_SOURCE: ${{ (github.event.client_payload.source_ref && 'repository_dispatch payload') || (github.event.inputs.source_ref && 'workflow_dispatch input') || (vars.QS_ARTIFACT_SOURCE_REF && 'repository variable QS_ARTIFACT_SOURCE_REF') || 'unset -> refuse default-branch float' }}
       # Directory listed on the scheduled public pull. research/platform_smokes exists on the
       # integration branches, not on QS main; override with repository variable QS_ARTIFACT_SOURCE_PATH.
       ARTIFACT_LIST_PATH: ${{ vars.QS_ARTIFACT_SOURCE_PATH || 'research/platform_smokes' }}
@@ -100,19 +100,26 @@ jobs:
               exit 1
             fi
           elif [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "Scheduled pull of complete public QS artifacts from $REPO @ ${SOURCE_REF:-<default branch>} ($SOURCE_REF_SOURCE), path $ARTIFACT_LIST_PATH"
-            python -m qc_research.pull_public_platform_artifacts \
-              --repo "$REPO" \
-              --ref "${SOURCE_REF:-}" \
-              --path "$ARTIFACT_LIST_PATH" \
-              --dest "$DEST_DIR" \
-              --report "$DELIVERY_DIR/pull.json" || true
-            BUILD_ARGS+=(--pull-report "$DELIVERY_DIR/pull.json" --path "$ARTIFACT_LIST_PATH")
-            if ls "$DEST_DIR"/*.json >/dev/null 2>&1; then
-              TARGET="$DEST_DIR"
-            else
-              echo "REMOTE PULL EMPTY OR BLOCKED; re-ingesting committed FMP canonical artifacts (LAST_KNOWN_GOOD, not a new delivery)"
+            if [ -z "${SOURCE_REF:-}" ]; then
+              echo "SOURCE_REF unset; scheduled ingest will not float to the provider default branch"
+              echo "REMOTE PULL SKIPPED (unpinned); re-ingesting committed FMP canonical artifacts (LAST_KNOWN_GOOD, not a new delivery)"
               TARGET="$LOCAL_ROOT"
+              BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF unset; scheduled ingest will not float to the provider default branch" --path "$ARTIFACT_LIST_PATH")
+            else
+              echo "Scheduled pull of complete public QS artifacts from $REPO @ $SOURCE_REF ($SOURCE_REF_SOURCE), path $ARTIFACT_LIST_PATH"
+              python -m qc_research.pull_public_platform_artifacts \
+                --repo "$REPO" \
+                --ref "$SOURCE_REF" \
+                --path "$ARTIFACT_LIST_PATH" \
+                --dest "$DEST_DIR" \
+                --report "$DELIVERY_DIR/pull.json" || true
+              BUILD_ARGS+=(--pull-report "$DELIVERY_DIR/pull.json" --path "$ARTIFACT_LIST_PATH")
+              if ls "$DEST_DIR"/*.json >/dev/null 2>&1; then
+                TARGET="$DEST_DIR"
+              else
+                echo "REMOTE PULL EMPTY OR BLOCKED; re-ingesting committed FMP canonical artifacts (LAST_KNOWN_GOOD, not a new delivery)"
+                TARGET="$LOCAL_ROOT"
+              fi
             fi
           else
             BUILD_ARGS+=(--explicit-local)

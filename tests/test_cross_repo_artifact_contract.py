@@ -73,6 +73,14 @@ def test_sanitized_fixtures_share_sha256():
         assert consumer.get("economic_gate", "NOT_DEFINED") in {None, "NOT_DEFINED"} or consumer_name == "stage1_run_summary"
 
 
+def test_committed_contract_digests_match_files():
+    from qc_research.contracts.digests import verify_contract_digests
+
+    checked = verify_contract_digests()
+    assert "producer_required_fields.json" in checked
+    assert "csfml_v1_label_integrity.json" in checked
+
+
 def test_pinned_producer_required_fields_are_satisfied_by_official_fixtures():
     pinned = required_by_kind()
     assert pinned
