@@ -1730,4 +1730,119 @@ def test_backtests_only_imports_run_summary_after_qc_sync():
     assert "stage1_results" in source
 
 
+OFFICIAL_STAGE1_RUN = "STAGE1_SPYTrend_c04553d8"
+OFFICIAL_STAGE1_SHA = "f04dbfb1a936c753a42a1389d9181f7c22f551a3"
+
+
+def _official_stage1_row(**overrides):
+    row = {
+        "research_run_id": OFFICIAL_STAGE1_RUN,
+        "strategy_id": "SPYTrend",
+        "git_commit": OFFICIAL_STAGE1_SHA,
+        "run_status": "COMPLETE",
+        "expected_experiment_count": 81,
+        "completed_count": 81,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "holdout_accessed": False,
+        "holdout_access_count": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_official_stage1_identity_blockers_are_run_scoped():
+    from qc_research.contracts.sealed_results import (
+        load_sealed_results,
+        official_stage1_identity_blockers,
+    )
+
+    pin = load_sealed_results()["stage1_pins"][OFFICIAL_STAGE1_RUN]
+    assert "holdout_accessed" not in pin
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id="STAGE1_SPYTrend_other",
+        row={"git_commit": "0" * 40},
+    ) == []
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(),
+    ) == []
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(
+            expected_experiment_count="81",
+            completed_count=81.0,
+            failed_count="0",
+            skipped_count=0,
+        ),
+    ) == []
+    drifted = official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(git_commit="0" * 40, completed_count=1),
+    )
+    assert "git_commit" in drifted
+    assert "completed_count" in drifted
+    assert official_stage1_identity_blockers(
+        strategy_id="Other",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(),
+    ) == ["strategy_id_mismatch"]
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        engine=None,
+    ) == ["identity_query_failed"]
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(holdout_accessed=True),
+    ) == ["holdout_accessed"]
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(holdout_access_count=1),
+    ) == ["holdout_access_count"]
+
+    class _EmptyEngine:
+        def connect(self):
+            class _Conn:
+                def __enter__(self_inner):
+                    return self_inner
+
+                def __exit__(self_inner, *args):
+                    return False
+
+                def execute(self_inner, *args, **kwargs):
+                    class _Result:
+                        def mappings(self_map):
+                            class _Mappings:
+                                def first(self_first):
+                                    return None
+
+                            return _Mappings()
+
+                    return _Result()
+
+            return _Conn()
+
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        engine=_EmptyEngine(),
+    ) == ["official_run_missing"]
+
+
+def test_monitor_ui_fail_closes_official_stage1_identity():
+    ui = (
+        Path(__file__).resolve().parent.parent / "qc_research" / "monitor_ui.py"
+    ).read_text(encoding="utf-8")
+    assert "official_stage1_identity_blockers" in ui
+    assert "This is not an economic PASS/WATCH/FAIL." in ui
+    assert "st.stop()" in ui.split("official_stage1_identity_blockers", 1)[1]
+
+
 

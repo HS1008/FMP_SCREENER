@@ -35,6 +35,8 @@ def test_monitor_still_renders_research_sections():
     assert "render_stage1_section" in MONITOR
     assert "render_backtest_vs_paper" in MONITOR
     assert "STAGE 1 RESEARCH RESULTS" in UI
+    assert "official_stage1_identity_blockers" in UI
+    assert "This is not an economic PASS/WATCH/FAIL" in UI
     assert "### Smoke Tests" in UI
     assert "Walk-Forward" in UI
     assert "FINAL_HOLDOUT" in UI

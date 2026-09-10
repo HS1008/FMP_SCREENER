@@ -43,6 +43,64 @@ def _run_id(payload: Mapping[str, Any] | None) -> str:
     ).strip()
 
 
+def _pin_value_matches(incoming: Any, expected: Any) -> bool:
+    if incoming == expected:
+        return True
+    if isinstance(expected, bool):
+        if expected:
+            return incoming in {True, 1, "true", "t"}
+        return incoming in {False, 0, "false", "f", None, ""}
+    if isinstance(expected, int) and not isinstance(expected, bool):
+        try:
+            return int(incoming) == expected
+        except (TypeError, ValueError):
+            return False
+    return str(incoming or "") == str(expected or "")
+
+
+def official_stage1_identity_blockers(
+    *,
+    strategy_id: str | None,
+    research_run_id: str | None,
+    row: Mapping[str, Any] | None = None,
+    engine: Any = None,
+) -> list[str]:
+    """Blockers when the selected run is official Stage 1. Empty otherwise.
+
+    Query failures fail closed. This is not an economic PASS/WATCH/FAIL.
+    """
+    run_id = str(research_run_id or "").strip()
+    pin = (load_sealed_results().get("stage1_pins") or {}).get(run_id)
+    if not pin:
+        return []
+    if strategy_id and str(strategy_id) != str(pin.get("strategy_id") or ""):
+        return ["strategy_id_mismatch"]
+    record: Mapping[str, Any] | None = row
+    if record is None:
+        if engine is None:
+            return ["identity_query_failed"]
+        try:
+            from qc_research.read_models.monitor_queries import load_research_run_row
+
+            record = load_research_run_row(engine, run_id)
+        except Exception:
+            return ["identity_query_failed"]
+    if not record:
+        return ["official_run_missing"]
+    blockers: list[str] = []
+    for key, expected in pin.items():
+        if not _pin_value_matches(record.get(key), expected):
+            blockers.append(key)
+    if record.get("holdout_accessed") in {True, 1, "true", "t"}:
+        blockers.append("holdout_accessed")
+    try:
+        if int(record.get("holdout_access_count") or 0) != 0:
+            blockers.append("holdout_access_count")
+    except (TypeError, ValueError):
+        blockers.append("holdout_access_count")
+    return blockers
+
+
 def refuse_sealed_stage1_summary(payload: Mapping[str, Any] | None) -> None:
     """Refuse official Stage 1 summaries that do not match the pin."""
     record = dict(payload or {})

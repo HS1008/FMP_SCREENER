@@ -11,6 +11,7 @@ import pandas as pd
 ROOT = Path(__file__).resolve().parents[1]
 MONITOR = (ROOT / "pages" / "strategy_monitor.py").read_text(encoding="utf-8")
 PLATFORM = (ROOT / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
+UI = (ROOT / "qc_research" / "monitor_ui.py").read_text(encoding="utf-8")
 
 
 def test_monitor_has_library_filters_and_stable_selection():
@@ -52,6 +53,9 @@ def test_platform_view_uses_investment_tabs_and_readout():
     assert "official_csfml_v1_identity_blockers" in PLATFORM
     assert "official_tlt_v0_identity_blockers" in PLATFORM
     assert "This is not an economic PASS/WATCH/FAIL" in PLATFORM
+    assert "official_stage1_identity_blockers" in UI
+    assert "This is not an economic PASS/WATCH/FAIL" in UI
+    assert "engine=engine" in MONITOR.split("render_stage1_section(", 1)[1]
 
 
 def test_filter_library_keeps_failed_and_hides_smoke_by_default():

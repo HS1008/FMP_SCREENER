@@ -735,6 +735,7 @@ def _render_live_monitor_body(
                 load_equity=load_backtest_equity,
                 load_run_row=load_research_run,
                 strategy_row=strategy,
+                engine=engine,
             )
         except Exception:
             logger.exception(
