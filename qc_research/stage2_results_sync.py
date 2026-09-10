@@ -76,8 +76,11 @@ def logical_artifact_path(path: Path, root: Path | None = None) -> str:
     base = Path(root) if root is not None else repo_root()
     try:
         relative = path.resolve().relative_to(base.resolve())
-    except ValueError:
-        relative = Path(path.name)
+    except ValueError as exc:
+        raise ValueError(
+            "artifact path {0} is outside research root {1}; "
+            "refusing filename-only ingest key".format(path, base)
+        ) from exc
     return relative.as_posix()
 
 

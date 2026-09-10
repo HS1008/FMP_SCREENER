@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from jobs.apply_migrations import MIGRATIONS_DIR, pending_migration_files
 from qc_research.aggregation import is_stage1, stage1_backtests
@@ -1042,4 +1043,39 @@ def test_audit_stage2_model_objects_does_not_update_sealed_runs():
     summary = audit_stage2_model_objects(_Engine(), strategy_id="CrossSectionalFactorML", store=_Store())
     assert summary["exists"] == 2
     assert [row["model_id"] for row in shared.updates] == ["open"]
+
+
+def test_stage2_ingest_refuses_filename_only_key_outside_root(tmp_path):
+    from qc_research.stage2_results_sync import ingest_stage2_result_files, logical_artifact_path
+
+    outside = tmp_path / "elsewhere" / "run_summary.json"
+    outside.parent.mkdir()
+    payload = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+        "strategy_id": "CrossSectionalFactorML",
+        "run_status": "COMPLETE",
+        "expected_qc_experiments": 1,
+        "completed_qc_experiments": 1,
+        "failed_qc_experiments": 0,
+        "skipped_qc_experiments": 0,
+    }
+    outside.write_text(json.dumps(payload), encoding="utf-8")
+    root = tmp_path / "repo"
+    root.mkdir()
+    with pytest.raises(ValueError, match="outside research root"):
+        logical_artifact_path(outside, root=root)
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    result = ingest_stage2_result_files(FakeConn(), [outside], root=root)
+    assert result["ingested"] == 0
+    assert result["errors"]
+    assert "outside research root" in result["errors"][0]
+    assert "filename-only" in result["errors"][0]
 

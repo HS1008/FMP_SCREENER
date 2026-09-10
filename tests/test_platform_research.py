@@ -732,3 +732,36 @@ def test_register_platform_monitor_strategy_does_not_invent_qc_project():
     )[0]
     assert "36108691" not in register_fn
     assert "PlatformResearch" not in register_fn
+
+
+def test_platform_ingest_refuses_empty_research_run_id(tmp_path):
+    from qc_research.platform_ingest import ingest_platform_files
+
+    path = tmp_path / "empty_run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "platform_artifact_v1",
+                "kind": "run_summary",
+                "research_run_id": "",
+                "strategy_id": "EmptyRun",
+                "payload": {"research_run_id": ""},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    conn = FakeConn()
+    summary = ingest_platform_files(conn, [path], root=tmp_path)
+    assert summary["ingested"] == 0
+    assert not conn.calls
+    assert summary["errors"]
+    assert "without research_run_id" in summary["errors"][0]
+    assert "platform_research//" not in str(summary)

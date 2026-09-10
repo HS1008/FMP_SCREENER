@@ -891,7 +891,14 @@ def ingest_platform_files(conn, paths: Iterable[Path], *, root: Path | None = No
             summary["errors"].append("{0}: {1}".format(path, exc))
             continue
         for kind, artifact in items:
-            run_id = str(artifact.get("research_run_id") or "")
+            run_id = str(artifact.get("research_run_id") or "").strip()
+            if not run_id:
+                summary["errors"].append(
+                    "{0}: refusing platform ingest without research_run_id (kind={1})".format(
+                        path, kind
+                    )
+                )
+                continue
             key = "platform_research/{0}/{1}".format(run_id, kind)
             if key in seen:
                 summary["skipped"] += 1
