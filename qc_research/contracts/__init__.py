@@ -10,6 +10,7 @@ from qc_research.contracts.kinds import (
     reject_synthetic_official,
 )
 from qc_research.contracts.label_integrity import (
+    csfml_v1_historical_impact_for_run,
     csfml_v1_integrity_caption,
     load_csfml_v1_label_integrity,
     refuse_impersonated_official_csfml_v1,
@@ -21,6 +22,7 @@ __all__ = [
     "PRICE_TECH_V1_FEATURE_ORDER",
     "SCHEMA_VERSION",
     "canonical_dumps",
+    "csfml_v1_historical_impact_for_run",
     "csfml_v1_integrity_caption",
     "load_csfml_v1_label_integrity",
     "payload_for_hash",

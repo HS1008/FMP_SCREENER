@@ -130,6 +130,8 @@ def test_stage2_sql_holdout_fields_are_monotonic():
         assert "holdout_accessed = COALESCE(research_runs.holdout_accessed, FALSE)" in source
         assert "OR COALESCE(EXCLUDED.holdout_accessed, FALSE)" in source
         assert "holdout_status = COALESCE(EXCLUDED.holdout_status, research_runs.holdout_status)" not in source
+    assert "WHEN research_runs.run_status = 'COMPLETE' THEN research_runs.run_status" in sql
+    assert "AND COALESCE(run_status, '') <> 'COMPLETE'" in sql
     assert "research_is_holdout = COALESCE(backtests.research_is_holdout, FALSE)" in sync
     assert "OR COALESCE(EXCLUDED.research_is_holdout, FALSE)" in sync
 

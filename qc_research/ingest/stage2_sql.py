@@ -259,6 +259,7 @@ def mark_run_incomplete(conn, run_id: str, warning: str) -> None:
             SET run_status = 'INCOMPLETE',
                 last_seen_at = NOW()
             WHERE research_run_id = :run_id
+              AND COALESCE(run_status, '') <> 'COMPLETE'
             """
         ),
         {"run_id": run_id},
@@ -364,7 +365,10 @@ def update_run_metadata(conn, payload: dict[str, Any]) -> None:
                 completed_count = COALESCE(EXCLUDED.completed_count, research_runs.completed_count),
                 failed_count = COALESCE(EXCLUDED.failed_count, research_runs.failed_count),
                 skipped_count = COALESCE(EXCLUDED.skipped_count, research_runs.skipped_count),
-                run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status),
+                run_status = CASE
+                    WHEN research_runs.run_status = 'COMPLETE' THEN research_runs.run_status
+                    ELSE COALESCE(EXCLUDED.run_status, research_runs.run_status)
+                END,
                 holdout_start = COALESCE(EXCLUDED.holdout_start, research_runs.holdout_start),
                 holdout_end = COALESCE(EXCLUDED.holdout_end, research_runs.holdout_end),
                 research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, research_runs.research_lineage_id),

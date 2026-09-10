@@ -108,3 +108,14 @@ def csfml_v1_integrity_caption(
     if research_run_id and official_run and str(research_run_id) != official_run:
         return None
     return str(pin["monitor_caption"])
+
+
+def csfml_v1_historical_impact_for_run(
+    strategy_id: str | None,
+    research_run_id: str | None,
+) -> str | None:
+    """V1 forensic bound applies only to the official full-suite run id."""
+    run_id = str(research_run_id or "").strip()
+    if not run_id or csfml_v1_integrity_caption(strategy_id, run_id) is None:
+        return None
+    return str(load_csfml_v1_label_integrity()["historical_v1_impact"])

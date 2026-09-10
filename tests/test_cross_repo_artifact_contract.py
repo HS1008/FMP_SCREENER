@@ -163,6 +163,7 @@ def test_official_fixtures_include_producer_required_fields():
 
 def test_csfml_v1_label_integrity_pin_does_not_change_economics():
     from qc_research.contracts.label_integrity import (
+        csfml_v1_historical_impact_for_run,
         csfml_v1_integrity_caption,
         load_csfml_v1_label_integrity,
     )
@@ -179,6 +180,18 @@ def test_csfml_v1_label_integrity_pin_does_not_change_economics():
     assert csfml_v1_integrity_caption("TLTDurationMomentum") is None
     assert csfml_v1_integrity_caption("CrossSectionalFactorML", pin["full_suite_run_id"]) == caption
     assert csfml_v1_integrity_caption("CrossSectionalFactorML", "STAGE2_CrossSectionalFactorML_FIXTURE01") is None
+    assert (
+        csfml_v1_historical_impact_for_run("CrossSectionalFactorML", pin["full_suite_run_id"])
+        == "CANNOT_RULE_OUT"
+    )
+    assert (
+        csfml_v1_historical_impact_for_run(
+            "CrossSectionalFactorML", "STAGE2_CrossSectionalFactorML_FIXTURE01"
+        )
+        is None
+    )
+    assert csfml_v1_historical_impact_for_run("CrossSectionalFactorML", None) is None
+    assert csfml_v1_historical_impact_for_run("SPYTrend", pin["full_suite_run_id"]) is None
     assert "PASS" not in caption
     ui = (
         Path(__file__).resolve().parents[1] / "qc_research" / "ml_monitor_ui.py"
