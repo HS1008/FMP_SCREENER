@@ -495,6 +495,9 @@ def test_upsert_model_seals_official_model_id_even_for_unsealed_run():
     assert captured
     assert "DO NOTHING" in captured[0]
     assert "DO UPDATE" not in captured[0]
+
+
+def test_official_monitor_strategy_register_is_insert_once():
     from qc_research.platform_ingest import register_platform_monitor_strategy
 
     captured: list[str] = []
