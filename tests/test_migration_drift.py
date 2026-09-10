@@ -9,6 +9,17 @@ import pytest
 from sqlalchemy import text
 
 
+def test_recheck_cli_requires_explicit_opt_in(monkeypatch):
+    from jobs.apply_migrations import main
+
+    monkeypatch.delenv("MIGRATIONS_RECHECK_OK", raising=False)
+    assert main(["--recheck"]) == 3
+    source = (Path(__file__).resolve().parents[1] / "jobs" / "apply_migrations.py").read_text(
+        encoding="utf-8"
+    )
+    assert "MIGRATIONS_RECHECK_OK" in source
+
+
 def test_migration_sha256_is_stable_for_unchanged_bytes(tmp_path: Path):
     path = tmp_path / "001_example.sql"
     path.write_text("SELECT 1;\n", encoding="utf-8")

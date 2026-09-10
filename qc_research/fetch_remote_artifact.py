@@ -10,10 +10,17 @@ import urllib.request
 from pathlib import Path
 
 
+def require_source_ref(ref: str) -> str:
+    value = str(ref or "").strip()
+    if not value:
+        raise ValueError("SOURCE_REF is required; remote fetch will not float to the provider default branch")
+    return value
+
+
 def github_raw_url(repo: str, ref: str, path: str) -> str:
     return "https://raw.githubusercontent.com/{0}/{1}/{2}".format(
         repo.strip("/"),
-        ref or "main",
+        require_source_ref(ref),
         path.lstrip("/"),
     )
 
@@ -44,6 +51,7 @@ def fetch_remote_artifact(
 ) -> Path:
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    ref = require_source_ref(ref)
     secret = token if token is not None else _token()
     raw = github_raw_url(repo, ref, path)
     headers = {"User-Agent": "fmp-platform-ingest"}

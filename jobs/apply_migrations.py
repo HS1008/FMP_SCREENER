@@ -7,14 +7,15 @@ Default behavior:
   - execute only unapplied migrations
   - insert the filename and sha256 only after successful execution
 
-``--recheck`` re-executes already-applied SQL and is not the default.
-Changed SQL requires a new migration filename.
+``--recheck`` re-executes already-applied SQL and requires
+``MIGRATIONS_RECHECK_OK=1``. Changed SQL requires a new migration filename.
 """
 
 from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 from pathlib import Path
 
 from sqlalchemy import text
@@ -149,6 +150,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Re-execute already applied SQL files. Not the default.",
     )
     args = parser.parse_args(argv)
+    if args.recheck and (os.environ.get("MIGRATIONS_RECHECK_OK") or "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        print("FAIL: --recheck requires MIGRATIONS_RECHECK_OK=1")
+        return 3
     applied = apply_migrations(recheck=bool(args.recheck))
     print("Migrations:")
     for name in applied:

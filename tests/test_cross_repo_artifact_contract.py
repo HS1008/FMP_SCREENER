@@ -73,6 +73,20 @@ def test_sanitized_fixtures_share_sha256():
         assert consumer.get("economic_gate", "NOT_DEFINED") in {None, "NOT_DEFINED"} or consumer_name == "stage1_run_summary"
 
 
+def test_fetch_remote_artifact_refuses_empty_ref():
+    from qc_research.fetch_remote_artifact import fetch_remote_artifact, github_raw_url
+
+    with pytest.raises(ValueError, match="SOURCE_REF"):
+        github_raw_url("hs1008/quant-strategies", "", "research/platform_smokes/x.json")
+    with pytest.raises(ValueError, match="SOURCE_REF"):
+        fetch_remote_artifact(
+            repo="hs1008/quant-strategies",
+            path="research/platform_smokes/x.json",
+            dest=Path("/tmp/unused.json"),
+            ref="",
+        )
+
+
 def test_committed_contract_digests_match_files():
     from qc_research.contracts.digests import verify_contract_digests
 
@@ -169,3 +183,15 @@ def test_csfml_v1_label_integrity_pin_matches_producer_forensic():
     assert state["cross_sectional_factor_ml"]["label_integrity"]["historical_impact"] == pin[
         "historical_v1_impact"
     ]
+    producer_digest = json.loads(
+        (QS_ROOT / "research" / "contracts" / "contract_digests.json").read_text(encoding="utf-8")
+    )
+    consumer_digest = json.loads(
+        (Path(__file__).resolve().parents[1] / "qc_research" / "contracts" / "contract_digests.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert (
+        producer_digest["files"]["csfml_v1_label_integrity.json"]
+        == consumer_digest["files"]["csfml_v1_label_integrity.json"]
+    )

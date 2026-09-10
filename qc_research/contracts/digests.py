@@ -40,3 +40,14 @@ def verify_contract_digests() -> dict[str, str]:
             )
         checked[name] = actual
     return checked
+
+
+def main(argv: list[str] | None = None) -> int:
+    del argv
+    checked = verify_contract_digests()
+    print("contract_digests=ok count={0}".format(len(checked)))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

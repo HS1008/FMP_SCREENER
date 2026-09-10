@@ -45,6 +45,9 @@ cd "$ROOT"
 export PYTHONPATH="$ROOT"
 export PYTHONUNBUFFERED=1
 
+echo "Verifying contract digests..."
+python -m qc_research.contracts.digests
+
 echo "Applying additive migrations..."
 python -m jobs.apply_migrations
 

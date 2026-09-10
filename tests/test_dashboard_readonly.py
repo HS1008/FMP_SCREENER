@@ -118,6 +118,24 @@ def test_identity_script_refuses_writer_fallback_on_deploy():
     assert "skipped_explicit_writer_fallback" not in result.stdout
 
 
+def test_identity_script_refuses_provider_fetch_on_deploy():
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": str(ROOT),
+            "FMP_IDENTITY_ENV_ONLY": "1",
+            "STREAMLIT_ALLOW_PROVIDER_FETCH": "1",
+        },
+        check=False,
+    )
+    assert result.returncode == 5
+    assert "provider_fetch_refused" in result.stdout
+
+
 def _provision_dashboard_role(admin_url: str, role: str, password: str | None, tmp_dir: Path) -> subprocess.CompletedProcess:
     psql = shutil.which("psql")
     if psql is None:

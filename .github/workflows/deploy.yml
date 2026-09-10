@@ -76,6 +76,9 @@ jobs:
               pip install -r requirements.txt
             fi
 
+            echo "Verifying contract digests..."
+            python -m qc_research.contracts.digests
+
             echo "Applying database migrations..."
             python -m jobs.apply_migrations
 

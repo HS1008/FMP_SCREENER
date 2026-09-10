@@ -84,9 +84,19 @@ jobs:
           if [ -n "${ARTIFACT_PATH:-}" ]; then
             DEST="$DEST_DIR/$(basename "$ARTIFACT_PATH")"
             LOCAL_CANDIDATE="qc_research/platform_artifacts/$(basename "$ARTIFACT_PATH")"
-            if python -m qc_research.fetch_remote_artifact \
+            if [ -z "${SOURCE_REF:-}" ]; then
+              echo "SOURCE_REF unset; remote fetch will not float to the provider default branch"
+              if [ -f "$LOCAL_CANDIDATE" ]; then
+                echo "REMOTE FETCH SKIPPED (unpinned); using committed FMP copy $LOCAL_CANDIDATE (LAST_KNOWN_GOOD, not a new delivery)"
+                TARGET="$LOCAL_CANDIDATE"
+                BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF unset; remote fetch will not float to the provider default branch" --path "$ARTIFACT_PATH")
+              else
+                echo "FAIL: SOURCE_REF unset and no local copy of $ARTIFACT_PATH"
+                exit 1
+              fi
+            elif python -m qc_research.fetch_remote_artifact \
               --repo "$REPO" \
-              --ref "${SOURCE_REF:-}" \
+              --ref "$SOURCE_REF" \
               --path "$ARTIFACT_PATH" \
               --dest "$DEST"; then
               TARGET="$DEST"

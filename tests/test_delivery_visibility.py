@@ -114,6 +114,7 @@ def test_workflow_and_live_script_wire_explicit_ref_and_report():
     assert "--report \"$DELIVERY_DIR/pull.json\"" in WORKFLOW
     assert "LAST_KNOWN_GOOD, not a new delivery" in WORKFLOW
     assert "will not float to the provider default branch" in WORKFLOW
+    assert "qc_research.contracts.digests" in LIVE_SCRIPT
     assert "qc_research.delivery_visibility record" in LIVE_SCRIPT
     # The fallback is preserved: committed artifacts still ingest when remote is blocked.
     assert 'TARGET="$LOCAL_ROOT"' in WORKFLOW and 'TARGET="$LOCAL_CANDIDATE"' in WORKFLOW

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Load host Streamlit identity and verify it. Never prints URLs or passwords.
-# Exit 0 ok, 2 mutations succeeded, 3 identity missing, 4 writer fallback refused.
+# Exit 0 ok, 2 mutations succeeded, 3 identity missing, 4 writer fallback refused, 5 provider fetch refused.
 set -euo pipefail
 
 load_dashboard_env() {
@@ -29,6 +29,12 @@ if [ "$fallback" = "1" ] || [ "$fallback" = "true" ] || [ "$fallback" = "yes" ] 
   echo "dashboard_readonly_verify=writer_fallback_refused"
   echo "DASHBOARD_ALLOW_WRITER_FALLBACK is not a production deploy path"
   exit 4
+fi
+provider=$(printf '%s' "${STREAMLIT_ALLOW_PROVIDER_FETCH:-}" | tr '[:upper:]' '[:lower:]')
+if [ "$provider" = "1" ] || [ "$provider" = "true" ] || [ "$provider" = "yes" ] || [ "$provider" = "on" ]; then
+  echo "dashboard_readonly_verify=provider_fetch_refused"
+  echo "STREAMLIT_ALLOW_PROVIDER_FETCH is not a production deploy path"
+  exit 5
 fi
 if command -v python >/dev/null 2>&1; then
   PYTHON_BIN=python
