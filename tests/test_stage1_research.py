@@ -2102,8 +2102,9 @@ def test_sync_quantconnect_skips_official_stage1_rewrite():
     assert "official_stage1_backtest_upsert_blocked" in sync_fn
     assert "listed_stage1_run_id" in sync_fn
     assert "backtest_id=str(backtest_id" in sync_fn
+    assert "stage1_upsert_sql" in sync_fn
     assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
-        "conn.execute(text(STAGE1_UPSERT_SQL)"
+        "stage1_upsert_sql(payload.get("
     )
     assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
         "LEGACY_UPSERT_SQL"
@@ -2118,8 +2119,20 @@ def test_sync_quantconnect_skips_official_stage1_rewrite():
         "conn.execute(text(LEGACY_UPSERT_SQL), base)"
     )
     assert sync_fn.index("detail did not recover") < sync_fn.index(
-        "conn.execute(text(STAGE1_UPSERT_SQL)"
+        "stage1_upsert_sql(payload.get("
     )
+
+
+def test_stage1_upsert_sql_insert_once_for_official_run():
+    from jobs.sync_quantconnect import STAGE1_UPSERT_SQL, stage1_upsert_sql
+
+    official = stage1_upsert_sql(OFFICIAL_STAGE1_RUN)
+    assert "DO NOTHING" in official
+    assert "DO UPDATE" not in official
+    assert "DO UPDATE" in STAGE1_UPSERT_SQL
+    open_run = stage1_upsert_sql("STAGE1_SPYTrend_156c40e7")
+    assert open_run == STAGE1_UPSERT_SQL
+    assert stage1_upsert_sql(None) == STAGE1_UPSERT_SQL
 
 
 def test_audit_holdout_exposures_skips_official_stage1():
@@ -2231,6 +2244,16 @@ def test_insert_equity_points_skips_published_sealed_qc_ids():
         )
         == 0
     )
+
+
+def test_insert_equity_points_does_not_rewrite_on_conflict():
+    source = (
+        Path(__file__).resolve().parent.parent / "jobs" / "stage1_backtests.py"
+    ).read_text(encoding="utf-8")
+    fn = source.split("def insert_equity_points", 1)[1].split("\ndef ", 1)[0]
+    assert "ON CONFLICT (backtest_id, timestamp, series_name)" in fn
+    assert "DO NOTHING" in fn
+    assert "DO UPDATE SET" not in fn
 
 
 def test_monitor_ui_fail_closes_official_stage1_identity():

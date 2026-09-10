@@ -1269,6 +1269,18 @@ STAGE1_UPSERT_SQL = """
 """
 
 
+def stage1_upsert_sql(research_run_id: str | None) -> str:
+    """Official/sealed Stage 1 rows insert once; in-progress runs still update."""
+    from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
+    from qc_research.ingest.stage2_sql import conflict_sql
+
+    run_id = str(research_run_id or "")
+    return conflict_sql(
+        STAGE1_UPSERT_SQL,
+        sealed=bool(official_stage1_pin(run_id) or is_sealed_results_run(run_id)),
+    )
+
+
 STAGE1_LIGHTWEIGHT_UPSERT_SQL = """
     INSERT INTO backtests (
         backtest_id,
@@ -1602,7 +1614,10 @@ def sync_backtests(
                             f"a research_run_id for {name} ({backtest_id})"
                         )
                     else:
-                        conn.execute(text(STAGE1_UPSERT_SQL), payload)
+                        conn.execute(
+                            text(stage1_upsert_sql(payload.get("research_run_id"))),
+                            payload,
+                        )
                         upsert_research_run(conn, strategy_id, fields)
                 except Exception as exc:
                     print(

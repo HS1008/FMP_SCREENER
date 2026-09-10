@@ -616,9 +616,7 @@ def insert_equity_points(conn, strategy_id: str, backtest_id: str, points: list[
                     :series_name
                 )
                 ON CONFLICT (backtest_id, timestamp, series_name)
-                DO UPDATE SET
-                    equity = EXCLUDED.equity,
-                    period_return = EXCLUDED.period_return
+                DO NOTHING
                 """
             ),
             {
