@@ -311,6 +311,46 @@ def test_activate_verify_phase_does_not_source_writer_checkout_env():
     assert "load_streamlit_env" in mi_verify
 
 
+def test_activate_ingest_unsets_streamlit_identity_after_writer_env():
+    text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
+    block = text.split("load_writer_env() {", 1)[1].split("writer_db_meta()", 1)[0]
+    unset = (
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH "
+        "DASHBOARD_ALLOW_WRITER_FALLBACK"
+    )
+    assert unset in block
+    assert block.index('source "$DASHBOARD_ENV"') < block.index(unset)
+    assert block.index('source "$ENV_FILE"') < block.index(unset)
+    ingest = text.split("phase_ingest_fred()", 1)[1].split("phase_ingest_finra()", 1)[0]
+    assert "load_writer_env" in ingest
+    assert ingest.index("load_writer_env") < ingest.index("jobs.market_intelligence_refresh")
+
+
+def test_mi_writer_engine_refuses_streamlit_only_when_writer_url_present(monkeypatch):
+    from market_intelligence.writer_db import WriterConfigurationError, writer_engine
+    from qc_research.platform_ingest import StreamlitIngestRefused
+
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://writer:secret@127.0.0.1:5432/fmp")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("Streamlit identity must not create an MI writer engine")
+
+    monkeypatch.setattr("sqlalchemy.create_engine", _boom)
+    with pytest.raises(StreamlitIngestRefused, match="Streamlit read-only"):
+        writer_engine()
+    with pytest.raises(StreamlitIngestRefused, match="Streamlit read-only"):
+        writer_engine("postgresql://writer:secret@127.0.0.1:5432/fmp")
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("MARKET_INTELLIGENCE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("DB_NAME", raising=False)
+    monkeypatch.delenv("DB_USER", raising=False)
+    with pytest.raises(WriterConfigurationError, match="No writer database configured"):
+        writer_engine()
+
+
 def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
     assert "MI_ADMIN_DATABASE_URL" in text

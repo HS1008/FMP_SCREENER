@@ -69,6 +69,7 @@ load_writer_env() {
     source "$ENV_FILE"
     set +a
   fi
+  unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
 }
 
 writer_db_meta() {
