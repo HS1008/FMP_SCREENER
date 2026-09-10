@@ -15,7 +15,7 @@ class ArtifactHashError(ValueError):
 
 
 def canonical_dumps(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str, ensure_ascii=True)
 
 
 def sha256_payload(value: Any) -> str:

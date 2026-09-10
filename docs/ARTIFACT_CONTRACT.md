@@ -45,5 +45,6 @@ A schema change requires a new `schema_version` and fixtures on both sides.
 | Platform `platform_artifact_v1` | research adapters | `qc_research/platform_ingest.py` | 2025+ windows rejected |
 
 Sanitized fixtures: producer `research/artifact_fixtures.py`, consumer `qc_research/contracts/fixtures.py`.
+When both repos are present, `tests/test_cross_repo_artifact_contract.py` requires identical SHA-256 for each sanitized kind.
 `SANITIZED_CONTRACT_FIXTURE` is for tests. `SYNTHETIC_TEST_ONLY` is refused as official evidence.
 `model.pkl` stays on QuantConnect Object Store and is never downloaded by FMP.

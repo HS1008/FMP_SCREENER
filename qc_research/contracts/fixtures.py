@@ -132,10 +132,7 @@ def stage2_training_summary() -> dict[str, Any]:
             "model_id": "MODEL_FIXTURE",
             "object_store_key": "stage2/CrossSectionalFactorML/{0}/2015/model.pkl".format(RUN_ID),
             "model_sha256": "0" * 64,
-            "feature_diagnostics": [
-                {"feature_name": name, "ridge_coefficient": None, "coefficient_rank": None}
-                for name in PRICE_TECH_V1_FEATURE_ORDER
-            ],
+            "feature_diagnostics": {"feature_order": list(PRICE_TECH_V1_FEATURE_ORDER)},
             "warnings": [],
             "holdout_accessed": False,
             "provenance": "SANITIZED_CONTRACT_FIXTURE",
