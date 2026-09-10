@@ -10,8 +10,9 @@ from db import dashboard_engine as module
 
 
 @pytest.fixture(autouse=True)
-def _reset_engine():
+def _reset_engine(monkeypatch):
     module.reset_dashboard_engine_for_tests()
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     yield
     module.reset_dashboard_engine_for_tests()
 
@@ -40,6 +41,7 @@ def test_load_streamlit_env_reloads_then_strips_writer(tmp_path, monkeypatch):
     monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("FMP_API_KEY", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     removed = module.load_streamlit_env(env_file)
     assert "DATABASE_URL" in removed
     assert os.environ.get("DATABASE_URL") in {None, ""}
@@ -59,6 +61,7 @@ def test_load_streamlit_env_clears_escape_flags_from_checkout_env(tmp_path, monk
     monkeypatch.delenv("STREAMLIT_ALLOW_PROVIDER_FETCH", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DASHBOARD_READONLY_URL", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     removed = module.load_streamlit_env(env_file)
     assert "DASHBOARD_ALLOW_WRITER_FALLBACK" in removed
     assert "STREAMLIT_ALLOW_PROVIDER_FETCH" in removed
@@ -67,6 +70,35 @@ def test_load_streamlit_env_clears_escape_flags_from_checkout_env(tmp_path, monk
     assert os.environ.get("STREAMLIT_ALLOW_PROVIDER_FETCH") in {None, ""}
     assert os.environ.get("DATABASE_URL") in {None, ""}
     assert os.environ["DASHBOARD_READONLY_URL"].startswith("postgresql://dashboard_readonly:")
+    assert module.writer_fallback_allowed() is False
+
+
+def test_load_streamlit_env_skips_checkout_writer_keys_when_already_readonly(tmp_path, monkeypatch):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "FMP_API_KEY=from-checkout\n"
+        "DATABASE_URL=postgresql://writer:secret@127.0.0.1/fmp\n"
+        "DASHBOARD_ALLOW_WRITER_FALLBACK=1\n"
+        "STREAMLIT_ALLOW_PROVIDER_FETCH=1\n"
+        "DB_PASSWORD=writer-password\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.setenv("DASHBOARD_READONLY_URL", "postgresql://dashboard_readonly:x@127.0.0.1/fmp")
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
+    monkeypatch.delenv("STREAMLIT_ALLOW_PROVIDER_FETCH", raising=False)
+    monkeypatch.delenv("DB_PASSWORD", raising=False)
+    removed = module.load_streamlit_env(env_file)
+    assert "DATABASE_URL" not in removed
+    assert os.environ.get("DATABASE_URL") in {None, ""}
+    assert os.environ.get("DB_PASSWORD") in {None, ""}
+    assert os.environ.get("DASHBOARD_ALLOW_WRITER_FALLBACK") in {None, ""}
+    assert os.environ.get("STREAMLIT_ALLOW_PROVIDER_FETCH") in {None, ""}
+    assert os.environ.get("FMP_API_KEY") == "from-checkout"
+    assert os.environ["DASHBOARD_READONLY_URL"].startswith("postgresql://dashboard_readonly:")
+    assert os.environ[module.STREAMLIT_READONLY_ENV] == "1"
     assert module.writer_fallback_allowed() is False
 
 

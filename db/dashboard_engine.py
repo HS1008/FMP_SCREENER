@@ -40,6 +40,10 @@ STREAMLIT_ESCAPE_KEYS = (
     "STREAMLIT_ALLOW_PROVIDER_FETCH",
 )
 
+# Checkout ``.env`` is writer-capable. Once systemd (or a prior strip) has
+# already imposed Streamlit read-only, only FMP_API_KEY may be filled from it.
+READONLY_DOTENV_ALLOWLIST = frozenset({"FMP_API_KEY"})
+
 WRITER_ENV_KEYS = (
     "DATABASE_URL",
     "MARKET_INTELLIGENCE_DATABASE_URL",
@@ -49,6 +53,15 @@ WRITER_ENV_KEYS = (
     "DB_NAME",
     "DB_PORT",
 )
+
+
+def streamlit_readonly_active() -> bool:
+    return (os.environ.get(STREAMLIT_READONLY_ENV) or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def strip_writer_database_env() -> list[str]:
@@ -74,11 +87,21 @@ def load_streamlit_env(path: str | os.PathLike[str] | None = None) -> list[str]:
 
     Checkout ``.env`` is writer-capable for ingest/CLI. It must not re-enable
     Streamlit writer fallback or provider fetch after systemd already refused
-    those flags.
+    those flags. When ``FMP_STREAMLIT_READONLY`` is already set, the full
+    checkout file is not loaded; only missing ``FMP_API_KEY`` may be copied.
     """
-    from dotenv import load_dotenv
+    from dotenv import dotenv_values, load_dotenv
 
-    if path:
+    if streamlit_readonly_active():
+        values = dotenv_values(path) if path else dotenv_values()
+        if isinstance(values, dict):
+            for key in READONLY_DOTENV_ALLOWLIST:
+                if os.environ.get(key):
+                    continue
+                value = values.get(key)
+                if value:
+                    os.environ[key] = str(value)
+    elif path:
         load_dotenv(path)
     else:
         load_dotenv()

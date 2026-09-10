@@ -45,7 +45,15 @@ def _repo_root() -> Path:
 
 def load_api_key() -> str:
     """Load `FMP_API_KEY` from `.env` next to this project."""
-    load_dotenv(_repo_root() / ".env")
+    from db.connection import streamlit_readonly_active
+
+    env_path = _repo_root() / ".env"
+    if streamlit_readonly_active():
+        from db.dashboard_engine import load_streamlit_env
+
+        load_streamlit_env(env_path)
+    else:
+        load_dotenv(env_path)
     key = os.getenv("FMP_API_KEY")
     if key is None:
         print("Error: FMP_API_KEY is missing from environment/.env", file=sys.stderr)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+import os
 
 import pandas as pd
 import pytest
@@ -175,6 +176,27 @@ def test_cli_filesystem_write_allowed_without_readonly(monkeypatch, tmp_path):
     assert streamlit_filesystem_write_allowed() is True
     ensure_streamlit_cache_dir(tmp_path / "cache")
     assert (tmp_path / "cache").is_dir()
+
+
+def test_load_api_key_does_not_reinject_writer_when_readonly(monkeypatch, tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "FMP_API_KEY=from-checkout\n"
+        "DATABASE_URL=postgresql://writer:secret@127.0.0.1/fmp\n"
+        "STREAMLIT_ALLOW_PROVIDER_FETCH=1\n",
+        encoding="utf-8",
+    )
+    import data_loader
+
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.delenv("FMP_API_KEY", raising=False)
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("STREAMLIT_ALLOW_PROVIDER_FETCH", raising=False)
+    monkeypatch.setattr(data_loader, "_repo_root", lambda: tmp_path)
+    key = data_loader.load_api_key()
+    assert key == "from-checkout"
+    assert os.environ.get("DATABASE_URL") in {None, ""}
+    assert os.environ.get("STREAMLIT_ALLOW_PROVIDER_FETCH") in {None, ""}
 
 
 def test_streamlit_readonly_skips_price_cache_write(monkeypatch, tmp_path):
