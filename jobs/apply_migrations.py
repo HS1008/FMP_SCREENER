@@ -133,7 +133,6 @@ def apply_migrations(
                         """
                         INSERT INTO schema_migrations (filename, sha256)
                         VALUES (:filename, :sha256)
-                        ON CONFLICT (filename) DO UPDATE SET sha256 = EXCLUDED.sha256
                         """
                     ),
                     {"filename": path.name, "sha256": digest},

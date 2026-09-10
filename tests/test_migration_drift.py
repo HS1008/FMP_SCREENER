@@ -46,3 +46,12 @@ def test_changed_applied_migration_fails_closed(tmp_path: Path, monkeypatch):
     first.write_text("CREATE TABLE IF NOT EXISTS demo (id int);\n-- drifted\n", encoding="utf-8")
     with pytest.raises(MigrationDriftError, match="drift"):
         apply_migrations(staged, engine=engine)
+
+
+def test_new_apply_does_not_overwrite_recorded_sha256_on_conflict():
+    source = (Path(__file__).resolve().parents[1] / "jobs" / "apply_migrations.py").read_text(
+        encoding="utf-8"
+    )
+    insert_block = source.split("INSERT INTO schema_migrations", 1)[1].split("applied.append", 1)[0]
+    assert "DO UPDATE SET sha256" not in insert_block
+    assert "ON CONFLICT" not in insert_block
