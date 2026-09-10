@@ -39,8 +39,10 @@ def verify_contract_digests() -> dict[str, str]:
                 "Update contract_digests.json in the same change.".format(name, digest, actual)
             )
         checked[name] = actual
+    from qc_research.contracts.label_integrity import refuse_pin_shas_outside_minimum
     from qc_research.contracts.sealed_results import verify_committed_tree_digests
 
+    refuse_pin_shas_outside_minimum()
     trees = verify_committed_tree_digests()
     checked["committed_trees"] = ",".join(sorted(trees))
     return checked

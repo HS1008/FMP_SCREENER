@@ -1889,7 +1889,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Sync QuantConnect live state and/or backtests into PostgreSQL.",
     )
-    mode = parser.add_mutually_exclusive_group()
+    mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--live-only",
         action="store_true",

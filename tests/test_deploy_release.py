@@ -41,6 +41,12 @@ def test_release_script_is_additive_and_supports_rollback():
     assert deploy.index("FMP_IDENTITY_ENV_ONLY=1") < deploy.index("scripts/verify_dashboard_identity.sh")
     assert "/opt/fmp/current/scripts/verify_dashboard_identity.sh" in deploy
     assert "immutable current is missing scripts/verify_dashboard_identity.sh" in deploy
+    assert "source /opt/fmp/current/venv/bin/activate" in deploy
+    assert "PYTHONPATH=/opt/fmp/current" in deploy
+    immutable_verify = deploy.split("Verifying Streamlit identity from immutable release checkout", 1)[1]
+    assert immutable_verify.index("source /opt/fmp/current/venv/bin/activate") < immutable_verify.index(
+        "scripts/verify_dashboard_identity.sh"
+    )
     assert "--skip-identity" in script
     assert "DEPLOY_BREAK_GLASS" in script
     assert "refusing --skip-identity without DEPLOY_BREAK_GLASS=1" in script

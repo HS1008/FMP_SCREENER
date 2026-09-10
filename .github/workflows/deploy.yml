@@ -117,6 +117,11 @@ jobs:
                 IMMUTABLE_VERIFY_RC=0
                 (
                   cd /opt/fmp/current
+                  if [ -f /opt/fmp/current/venv/bin/activate ]; then
+                    # shellcheck disable=SC1091
+                    source /opt/fmp/current/venv/bin/activate
+                  fi
+                  export PYTHONPATH=/opt/fmp/current
                   export FMP_IDENTITY_ENV_ONLY=1
                   export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
                   bash scripts/verify_dashboard_identity.sh

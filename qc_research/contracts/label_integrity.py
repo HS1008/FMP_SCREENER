@@ -15,19 +15,42 @@ from qc_research.contracts.kinds import ArtifactContractError
 
 SNAPSHOT = Path(__file__).resolve().parent / "csfml_v1_label_integrity.json"
 
+# JSON cannot expand these. Digest updates still require the pin SHAs to stay
+# inside this floor so a copied Actions tree cannot reopen a third V1 SHA.
+MINIMUM_AUTHORITATIVE_CSFML_V1_SHAS = frozenset(
+    {
+        "ef270841621933f5039680cb070559f43bd1e3c8",
+        "54a5543f5796073cdf9192b04daa5dc08e8d1747",
+    }
+)
+
 
 def load_csfml_v1_label_integrity() -> dict[str, Any]:
     return json.loads(SNAPSHOT.read_text(encoding="utf-8"))
 
 
-def official_csfml_v1_shas(pin: Mapping[str, Any] | None = None) -> frozenset[str]:
+def pin_declared_csfml_v1_shas(pin: Mapping[str, Any] | None = None) -> set[str]:
     data = dict(pin or load_csfml_v1_label_integrity())
-    return frozenset(
-        {
-            str(data["authoritative_csfml_v1_sha"]),
-            str(data["authoritative_csfml_v1_qc_sha"]),
-        }
-    )
+    found = {
+        str(data.get("authoritative_csfml_v1_sha") or ""),
+        str(data.get("authoritative_csfml_v1_qc_sha") or ""),
+    }
+    return {item for item in found if item}
+
+
+def refuse_pin_shas_outside_minimum(pin: Mapping[str, Any] | None = None) -> None:
+    extra = sorted(pin_declared_csfml_v1_shas(pin) - set(MINIMUM_AUTHORITATIVE_CSFML_V1_SHAS))
+    if extra:
+        raise ArtifactContractError(
+            "csfml_v1_label_integrity.json SHAs not in MINIMUM_AUTHORITATIVE_CSFML_V1_SHAS: {0}".format(
+                ", ".join(extra)
+            )
+        )
+
+
+def official_csfml_v1_shas(pin: Mapping[str, Any] | None = None) -> frozenset[str]:
+    refuse_pin_shas_outside_minimum(pin)
+    return frozenset(pin_declared_csfml_v1_shas(pin) | set(MINIMUM_AUTHORITATIVE_CSFML_V1_SHAS))
 
 
 def _first_present(record: Mapping[str, Any], nested: Mapping[str, Any], key: str) -> Any:

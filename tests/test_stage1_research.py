@@ -877,6 +877,15 @@ def test_migration_failure_exits_nonzero_for_live_only_and_backtests():
     assert migration_failure_exit_code(None, True) is None
 
 
+def test_sync_quantconnect_requires_explicit_mode():
+    from jobs.sync_quantconnect import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args([])
+    assert parse_args(["--backtests-only"]).backtests_only is True
+    assert parse_args(["--live-only"]).live_only is True
+
+
 def test_stage2_results_ingest_errors_are_not_swallowed():
     from jobs.sync_quantconnect import stage2_results_ingest_failed
 

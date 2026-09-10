@@ -837,6 +837,17 @@ def test_official_csfml_v1_mutated_pin_fields_are_refused():
 
 
 def test_official_csfml_v1_pin_shas_are_accepted():
+    from qc_research.contracts.label_integrity import (
+        MINIMUM_AUTHORITATIVE_CSFML_V1_SHAS,
+        official_csfml_v1_shas,
+        refuse_pin_shas_outside_minimum,
+    )
+
+    refuse_pin_shas_outside_minimum()
+    allowed = official_csfml_v1_shas()
+    assert MINIMUM_AUTHORITATIVE_CSFML_V1_SHAS <= allowed
+    assert PIN["authoritative_csfml_v1_sha"] in MINIMUM_AUTHORITATIVE_CSFML_V1_SHAS
+    assert PIN["authoritative_csfml_v1_qc_sha"] in MINIMUM_AUTHORITATIVE_CSFML_V1_SHAS
     for sha in (PIN["authoritative_csfml_v1_sha"], PIN["authoritative_csfml_v1_qc_sha"]):
         refuse_impersonated_official_csfml_v1(
             {
@@ -845,6 +856,10 @@ def test_official_csfml_v1_pin_shas_are_accepted():
                 "holdout_accessed": False,
             }
         )
+    drifted = dict(PIN)
+    drifted["authoritative_csfml_v1_sha"] = "ffffffffffffffffffffffffffffffffffffffff"
+    with pytest.raises(ArtifactContractError, match="MINIMUM_AUTHORITATIVE_CSFML_V1_SHAS"):
+        refuse_pin_shas_outside_minimum(drifted)
 
 
 def test_non_official_csfml_run_is_not_bound_to_v1_sha():
