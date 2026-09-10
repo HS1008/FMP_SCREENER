@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -156,6 +157,16 @@ def test_tlt_labels_and_cli_dry_run(monkeypatch):
 
     assert verify_main(["--dry-run", "--root", str(_tlt_path())]) == 0
     assert verify_main(["--dry-run", "--apptest-preview", "--root", str(_tlt_path())]) == 0
+    monkeypatch.setenv("DATABASE_URL", "postgresql://writer:secret@127.0.0.1/fmp")
+    monkeypatch.delenv("DASHBOARD_READONLY_URL", raising=False)
+    monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
+    from db.dashboard_engine import reset_dashboard_engine_for_tests
+
+    reset_dashboard_engine_for_tests()
+    assert verify_main(["--live", "--root", str(_tlt_path())]) == 1
+    monkeypatch.setenv("DASHBOARD_ALLOW_WRITER_FALLBACK", "1")
+    reset_dashboard_engine_for_tests()
+    assert verify_main(["--live", "--root", str(_tlt_path())]) == 1
     from qc_research.verify_tlt_monitor import find_selectbox
 
     class _Box:
@@ -343,6 +354,12 @@ def test_generic_ingest_workflow_is_event_driven():
         DEFAULT_ARTIFACT_ROOT.parent.parent / ".github" / "workflows" / "platform_research_verify.yml"
     ).read_text(encoding="utf-8")
     assert "verify_tlt_monitor --live" in verify
+    assert "postgres_engine" not in Path(
+        DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
+    ).read_text(encoding="utf-8")
+    assert "dashboard_engine" in Path(
+        DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
+    ).read_text(encoding="utf-8")
     assert "Does not create QuantConnect jobs" in verify
     assert "jobs.audit_host_dashboard" in verify
     assert "verify_dashboard_identity.sh" in verify

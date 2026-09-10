@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Query-back TLTDurationMomentum V0 from live PostgreSQL / Monitor read model.
 
-Does not launch QuantConnect. Does not invent DATABASE_URL.
+Does not launch QuantConnect. Live query-back uses DASHBOARD_READONLY_URL only.
 """
 
 from __future__ import annotations
@@ -44,10 +44,8 @@ def main(argv: list[str] | None = None) -> int:
     ns = parser.parse_args(argv)
 
     from qc_research.platform_ingest import (
-        live_postgres_configured,
         monitor_view_from_artifacts,
         normalize_platform_file,
-        postgres_engine,
     )
     from qc_research.tlt_duration_momentum import (
         STRATEGY_ID,
@@ -69,16 +67,31 @@ def main(argv: list[str] | None = None) -> int:
         "research_state": view.get("research_state"),
         "holdout_accessed": view.get("holdout_accessed"),
     }
-    want_live = ns.live or (live_postgres_configured() and not ns.dry_run)
-    if ns.live and not live_postgres_configured():
-        print("DATABASE_URL / DB_* unset. Live TLT query-back cannot run. Do not invent credentials.")
+    from db.dashboard_engine import (
+        DashboardIdentityError,
+        dashboard_database_url,
+        dashboard_engine,
+        writer_fallback_allowed,
+    )
+
+    want_live = ns.live or (bool(dashboard_database_url()) and not ns.dry_run)
+    if want_live and writer_fallback_allowed():
+        print("DASHBOARD_ALLOW_WRITER_FALLBACK is not a live TLT verify path")
+        return 1
+    if ns.live and not dashboard_database_url():
+        print("DASHBOARD_READONLY_URL unset. Live TLT query-back requires dashboard_readonly.")
         return 1
     if want_live:
-        engine = postgres_engine()
-        with engine.begin() as conn:
+        try:
+            engine = dashboard_engine()
+        except DashboardIdentityError as exc:
+            print(str(exc))
+            return 1
+        with engine.connect() as conn:
             report["live"] = verify_tlt_postgres(conn)
+        report["live_identity"] = "dashboard_readonly"
     elif not ns.dry_run:
-        report["live_skipped"] = "DATABASE_URL / DB_* unset"
+        report["live_skipped"] = "DASHBOARD_READONLY_URL unset"
     if ns.apptest:
         from streamlit.testing.v1 import AppTest
 
