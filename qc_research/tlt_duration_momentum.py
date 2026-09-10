@@ -536,6 +536,31 @@ def verify_tlt_postgres(conn) -> dict[str, Any]:
     }
 
 
+def official_tlt_v0_identity_blockers(
+    *,
+    strategy_id: str | None,
+    research_run_id: str | None,
+    engine: Any = None,
+) -> list[str]:
+    """Blockers when the selected run is official TLT V0. Empty otherwise.
+
+    Query failures fail closed. This is not an economic PASS/WATCH/FAIL.
+    """
+    if str(research_run_id or "").strip() != RUN_ID:
+        return []
+    if strategy_id and str(strategy_id) != STRATEGY_ID:
+        return ["strategy_id_mismatch"]
+    if engine is None:
+        return ["identity_query_failed"]
+    try:
+        with engine.connect() as conn:
+            verify_tlt_postgres(conn)
+    except Exception as exc:
+        text = str(exc).strip() or "identity_refused"
+        return [text]
+    return []
+
+
 def verify_tlt_monitor_view(view: dict[str, Any] | None) -> dict[str, Any]:
     from qc_research.ml_monitor_ui import UNAVAILABLE
     from qc_research.platform_ingest import verify_monitor_view

@@ -881,6 +881,20 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     )
     if not selected_run:
         return
+    from qc_research.tlt_duration_momentum import official_tlt_v0_identity_blockers
+
+    tlt_blockers = official_tlt_v0_identity_blockers(
+        strategy_id=strategy_id,
+        research_run_id=selected_run,
+        engine=engine,
+    )
+    if tlt_blockers:
+        st.error(
+            "Official TLT V0 identity refused ({0}). "
+            "Stored metrics are not shown as official. "
+            "This is not an economic PASS/WATCH/FAIL.".format(", ".join(tlt_blockers))
+        )
+        st.stop()
     run_summary = load_stage2_artifact_payload(engine, selected_run, "run_summary")
     assessment = load_stage2_artifact_payload(engine, selected_run, "assessment")
     oos = load_stage2_artifact_payload(engine, selected_run, "oos_aggregate")

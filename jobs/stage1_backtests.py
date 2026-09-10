@@ -700,6 +700,12 @@ def apply_run_summary(conn, payload: dict[str, Any]) -> None:
                 run_id, incoming or "unknown"
             )
         )
+    from qc_research.contracts.sealed_results import SealedResultsError, refuse_sealed_stage1_summary
+
+    try:
+        refuse_sealed_stage1_summary(payload)
+    except SealedResultsError as exc:
+        raise RunSummaryImportError(str(exc)) from exc
     existing = existing_run_status(conn, run_id)
     if existing == COMPLETE and incoming != COMPLETE:
         raise RunSummaryImportError(

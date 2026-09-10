@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -71,6 +72,66 @@ def test_official_csfml_v1_window_artifact_without_sha_is_allowed():
             "holdout_accessed": False,
         }
     )
+
+
+def test_sealed_official_stage1_and_csfml_payloads_cannot_mutate():
+    from jobs.stage1_backtests import RunSummaryImportError, apply_run_summary
+    from qc_research.contracts.sealed_results import sealed_results_run_ids
+
+    assert PIN["full_suite_run_id"] in sealed_results_run_ids()
+    assert "STAGE1_SPYTrend_c04553d8" in sealed_results_run_ids()
+    mutated_stage1 = {
+        "research_run_id": "STAGE1_SPYTrend_c04553d8",
+        "strategy_id": "SPYTrend",
+        "run_status": "COMPLETE",
+        "expected_experiment_count": 81,
+        "completed_count": 1,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "git_commit": "f04dbfb1a936c753a42a1389d9181f7c22f551a3",
+    }
+    with pytest.raises(RunSummaryImportError, match="sealed"):
+        apply_run_summary(_RefuseConn(), mutated_stage1)
+    official = json.loads(
+        (
+            ROOT
+            / "stage2_results"
+            / "CrossSectionalFactorML"
+            / PIN["full_suite_run_id"]
+            / "2015"
+            / "training_summary.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    class _OkConn:
+        def execute(self, statement, params=None):
+            return None
+
+    ingest_artifact(
+        _OkConn(),
+        key="ok-official-2015",
+        kind="training_summary",
+        payload=official,
+        logical_path="stage2_results/CrossSectionalFactorML/{0}/2015/training_summary.json".format(
+            PIN["full_suite_run_id"]
+        ),
+    )
+    mutated = dict(official)
+    trials = list(mutated.get("candidate_trials") or [])
+    if trials:
+        first = dict(trials[0])
+        first["median_rank_ic"] = 999
+        mutated["candidate_trials"] = [first] + trials[1:]
+    with pytest.raises(ArtifactSyncError, match="sealed"):
+        ingest_artifact(
+            _RefuseConn(),
+            key="mutated-official-2015",
+            kind="training_summary",
+            payload=mutated,
+            logical_path="stage2_results/CrossSectionalFactorML/{0}/2015/training_summary.json".format(
+                PIN["full_suite_run_id"]
+            ),
+        )
 
 
 def test_official_csfml_v1_mutated_pin_fields_are_refused():

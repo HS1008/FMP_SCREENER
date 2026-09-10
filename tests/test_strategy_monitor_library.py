@@ -50,6 +50,7 @@ def test_platform_view_uses_investment_tabs_and_readout():
     assert "csfml_v1_historical_impact_for_run" in library
     assert "label_integrity" in PLATFORM
     assert "official_csfml_v1_identity_blockers" in PLATFORM
+    assert "official_tlt_v0_identity_blockers" in PLATFORM
     assert "This is not an economic PASS/WATCH/FAIL" in PLATFORM
 
 

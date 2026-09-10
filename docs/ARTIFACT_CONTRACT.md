@@ -55,5 +55,14 @@ Producer forensic bound: `research/stage2/forensic_csfml_v1_official.json`.
 Consumer pin: `qc_research/contracts/csfml_v1_label_integrity.json`.
 
 `historical_v1_impact=CANNOT_RULE_OUT` and `rerun_authorized=false`. Strategy Monitor
-shows that caption for CrossSectionalFactorML. It does not change `economic_gate`,
+shows that caption for official CSFML V1 only. It does not change `economic_gate`,
 open holdout, or authorize a QuantConnect rerun.
+
+## Sealed official results
+
+Consumer pin: `qc_research/contracts/sealed_results.json`.
+
+Official Stage 1 / CSFML / TLT V0 run ids cannot be overwritten with a
+different payload. Identical re-ingest is allowed. A sealed Stage 2 window
+file that does not match the committed official tree is refused even on
+first insert. This does not change `economic_gate` or authorize a rerun.

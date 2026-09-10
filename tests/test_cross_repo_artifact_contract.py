@@ -108,6 +108,7 @@ def test_committed_contract_digests_match_files():
     checked = verify_contract_digests()
     assert "producer_required_fields.json" in checked
     assert "csfml_v1_label_integrity.json" in checked
+    assert "sealed_results.json" in checked
 
 
 def test_pinned_producer_required_fields_are_satisfied_by_official_fixtures():

@@ -25,6 +25,7 @@ from qc_research.tlt_duration_momentum import (
     STRATEGY_ID,
     WINDOW_IDS,
     is_tlt_duration_momentum_record,
+    official_tlt_v0_identity_blockers,
     platform_oos_window_frame,
     verify_tlt_monitor_view,
     wrap_tlt_duration_momentum_record,
@@ -43,6 +44,24 @@ def _tlt_path():
     path = DEFAULT_ARTIFACT_ROOT / "tlt_duration_momentum.json"
     assert path.is_file()
     return path
+
+
+def test_official_tlt_v0_identity_blockers_are_run_scoped():
+    assert official_tlt_v0_identity_blockers(
+        strategy_id=STRATEGY_ID,
+        research_run_id="PLATFORM_OTHER",
+        engine=None,
+    ) == []
+    assert official_tlt_v0_identity_blockers(
+        strategy_id=STRATEGY_ID,
+        research_run_id=RUN_ID,
+        engine=None,
+    ) == ["identity_query_failed"]
+    assert official_tlt_v0_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=RUN_ID,
+        engine=object(),
+    ) == ["strategy_id_mismatch"]
 
 
 def test_official_tlt_artifact_wraps_ten_windows_and_identity():

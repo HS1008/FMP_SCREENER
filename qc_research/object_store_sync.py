@@ -23,6 +23,10 @@ from qc_research.contracts.kinds import (
     reject_synthetic_official,
 )
 from qc_research.contracts.label_integrity import refuse_impersonated_official_csfml_v1
+from qc_research.contracts.sealed_results import (
+    refuse_sealed_artifact_overwrite,
+    refuse_sealed_committed_mismatch,
+)
 
 REQUIRED_RUN_ARTIFACTS = ("run_manifest", "run_summary")
 
@@ -239,9 +243,15 @@ def ingest_artifact(
         reject_synthetic_official(payload)
         reject_holdout_access(payload)
         refuse_impersonated_official_csfml_v1(payload)
+        refuse_sealed_committed_mismatch(payload, logical_path=logical_path)
     except ValueError as exc:
         raise ArtifactSyncError(str(exc)) from exc
     sha = verify_hash(payload, expected_hash)
+    run_id = str(payload.get("research_run_id") or payload.get("run_id") or "")
+    try:
+        refuse_sealed_artifact_overwrite(conn, key=key, run_id=run_id, incoming_sha=sha)
+    except ValueError as exc:
+        raise ArtifactSyncError(str(exc)) from exc
     upsert_artifact(
         conn,
         key=key,

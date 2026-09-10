@@ -1,0 +1,28 @@
+{
+  "schema_version": "sealed_results_v1",
+  "run_ids": [
+    "STAGE1_SPYTrend_c04553d8",
+    "STAGE2_CrossSectionalFactorML_54a5543f",
+    "STAGE2_CrossSectionalFactorML_437cdbdc",
+    "STAGE2_CrossSectionalFactorML_e7b24642",
+    "STAGE2_CrossSectionalFactorML_ebe7d1a4",
+    "PLATFORM_TLTDurationMomentum_V0"
+  ],
+  "committed_trees": {
+    "STAGE1_SPYTrend_c04553d8": "stage1_results/SPYTrend/STAGE1_SPYTrend_c04553d8",
+    "STAGE2_CrossSectionalFactorML_54a5543f": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_54a5543f",
+    "STAGE2_CrossSectionalFactorML_437cdbdc": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_437cdbdc",
+    "STAGE2_CrossSectionalFactorML_ebe7d1a4": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_ebe7d1a4"
+  },
+  "stage1_pins": {
+    "STAGE1_SPYTrend_c04553d8": {
+      "strategy_id": "SPYTrend",
+      "git_commit": "f04dbfb1a936c753a42a1389d9181f7c22f551a3",
+      "run_status": "COMPLETE",
+      "expected_experiment_count": 81,
+      "completed_count": 81,
+      "failed_count": 0,
+      "skipped_count": 0
+    }
+  }
+}
