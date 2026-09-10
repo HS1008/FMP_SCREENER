@@ -342,10 +342,17 @@ def main(argv: list[str] | None = None) -> int:
     if report is None:
         print("delivery report missing or unreadable; nothing recorded")
         return 2 if ns.require_postgres else 0
-    from qc_research.platform_ingest import IngestEnvironmentError, postgres_engine
+    from qc_research.platform_ingest import (
+        IngestEnvironmentError,
+        StreamlitIngestRefused,
+        postgres_engine,
+    )
 
     try:
         engine = postgres_engine()
+    except StreamlitIngestRefused as exc:
+        print("FAIL: delivery record is not a Streamlit path ({0})".format(exc))
+        return 4
     except IngestEnvironmentError as exc:
         print("PostgreSQL not configured; delivery report not recorded ({0})".format(exc.__class__.__name__))
         return 2 if ns.require_postgres else 0

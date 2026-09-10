@@ -288,3 +288,17 @@ def test_record_require_postgres_fails_closed_without_writer(monkeypatch, tmp_pa
     report.write_text(json.dumps({"event": "schedule"}), encoding="utf-8")
     assert dv.main(["record", "--report", str(report), "--require-postgres"]) == 2
     assert dv.main(["record", "--report", str(missing)]) == 0
+
+
+def test_delivery_record_refuses_streamlit_readonly_even_with_database_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://writer:secret@127.0.0.1:5432/fmp")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("Streamlit identity must not create a writer engine")
+
+    monkeypatch.setattr("sqlalchemy.create_engine", _boom)
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"event": "schedule"}), encoding="utf-8")
+    assert dv.main(["record", "--report", str(report), "--require-postgres"]) == 4
+    assert dv.main(["record", "--report", str(report)]) == 4

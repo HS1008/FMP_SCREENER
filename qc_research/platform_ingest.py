@@ -29,6 +29,27 @@ class IngestEnvironmentError(RuntimeError):
     """Live PostgreSQL ingest is blocked until DATABASE_URL / DB_* are set."""
 
 
+class StreamlitIngestRefused(RuntimeError):
+    """Live ingest is refused while Streamlit read-only identity is active."""
+
+
+def streamlit_readonly_active() -> bool:
+    return (os.environ.get("FMP_STREAMLIT_READONLY") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def refuse_streamlit_ingest() -> None:
+    """Writer ingest must not run under Streamlit identity, even if DATABASE_URL is set."""
+    if streamlit_readonly_active():
+        raise StreamlitIngestRefused(
+            "platform ingest is refused in the Streamlit read-only process"
+        )
+
+
 _UNSAFE_INGEST_PARTS = frozenset({"outputs", ".git", "venv", "node_modules", "__pycache__"})
 
 
@@ -122,6 +143,7 @@ def live_postgres_configured() -> bool:
 
 def require_live_postgres_ingest() -> None:
     """Human environment gate. Unit tests may use FakeConn without this."""
+    refuse_streamlit_ingest()
     if not live_postgres_configured():
         raise IngestEnvironmentError(
             "DATABASE_URL / DB_* unset. Live Strategy Monitor ingest is a human environment gate. "
@@ -550,6 +572,7 @@ def postgres_url_from_env() -> str | None:
 
 def postgres_engine():
     """Live engine only after the environment gate. Never invents a URL."""
+    refuse_streamlit_ingest()
     require_live_postgres_ingest()
     url = postgres_url_from_env()
     if not url:

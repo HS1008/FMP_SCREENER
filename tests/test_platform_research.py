@@ -556,6 +556,36 @@ def test_licensed_ml_discovery_real_qc_artifacts_ingest_without_live_postgres(mo
         require_live_postgres_ingest()
 
 
+def test_live_ingest_refuses_streamlit_readonly_even_with_database_url(monkeypatch):
+    from qc_research.ingest_platform_artifacts import main as ingest_main
+    from qc_research.platform_ingest import (
+        StreamlitIngestRefused,
+        postgres_engine,
+        require_live_postgres_ingest,
+    )
+
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://writer:secret@127.0.0.1:5432/fmp")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("Streamlit identity must not create a writer engine")
+
+    monkeypatch.setattr("sqlalchemy.create_engine", _boom)
+    with pytest.raises(StreamlitIngestRefused, match="Streamlit read-only"):
+        require_live_postgres_ingest()
+    with pytest.raises(StreamlitIngestRefused, match="Streamlit read-only"):
+        postgres_engine()
+
+    tlt = (
+        Path(__file__).resolve().parents[1]
+        / "qc_research"
+        / "platform_artifacts"
+        / "tlt_duration_momentum.json"
+    )
+    assert ingest_main(["--root", str(tlt), "--dry-run"]) == 0
+    assert ingest_main(["--root", str(tlt)]) == 4
+
+
 def test_vendored_licensed_smoke_wraps_and_ingests_idempotently(tmp_path, monkeypatch):
     from qc_research.ingest_platform_artifacts import main as ingest_main
     from qc_research.platform_ingest import (
