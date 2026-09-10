@@ -1,97 +1,62 @@
 name: Deploy FMP Dashboard
 
+# MERGING TO MAIN IS A PRODUCTION DEPLOY EVENT.
+# This workflow auto-deploys on push to main via SSH to DigitalOcean.
 on:
   push:
     branches:
       - main
+
+concurrency:
+  group: fmp-deploy-main
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Configure SSH
+      - name: Checkout deploy orchestrator
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure pinned SSH trust
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
-          DO_HOST: ${{ secrets.DO_HOST }}
+          DO_SSH_KNOWN_HOSTS: ${{ secrets.DO_SSH_KNOWN_HOSTS }}
         run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
+            echo "FAIL: DO_SSH_KEY is required"
+            exit 3
+          fi
+          if [ -z "${DO_SSH_KNOWN_HOSTS:-}" ]; then
+            echo "FAIL: DO_SSH_KNOWN_HOSTS is required (pinned host key, not ssh-keyscan)"
+            exit 3
+          fi
           mkdir -p ~/.ssh
-
           printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-
-          ssh-keyscan -H "$DO_HOST" >> ~/.ssh/known_hosts
+          printf "%s\n" "$DO_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 600 ~/.ssh/known_hosts
+          unset SSH_PRIVATE_KEY DO_SSH_KNOWN_HOSTS
 
       - name: Deploy to DigitalOcean
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" << 'EOF'
-            set -e
-
-            cd /root/FMP_SCREENER
-
-            echo "Fetching latest code..."
-            git fetch origin main
-
-            echo "Preserving host-modified activation scripts outside the checkout (not secrets)"
-            preserve_dir=/root/fmp_backups/checkout_preserve
-            install -d -m 0700 "$preserve_dir"
-            stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-            for rel in scripts/activate_market_intelligence_host.sh scripts/materialize_ai_context_env.py scripts/install_market_intelligence_timers.sh; do
-              if [ ! -e "$rel" ]; then
-                continue
-              fi
-              tracked=0
-              git ls-files --error-unmatch -- "$rel" >/dev/null 2>&1 && tracked=1
-              dirty=0
-              if [ "$tracked" = 1 ] && ! git diff --quiet -- "$rel"; then
-                dirty=1
-              fi
-              if [ "$tracked" = 0 ]; then
-                dirty=1
-              fi
-              if [ "$dirty" = 1 ]; then
-                echo "preserving $rel -> $preserve_dir"
-                cp -a "$rel" "$preserve_dir/$(basename "$rel").$stamp"
-                if [ "$tracked" = 1 ]; then
-                  git checkout -- "$rel"
-                else
-                  rm -f "$rel"
-                fi
-              fi
-            done
-            echo "working_tree_porcelain=$(git status --porcelain | tr '\n' '|')"
-
-            echo "Updating server..."
-            git pull --ff-only origin main
-
-            echo "Activating virtual environment..."
-            source venv/bin/activate
-
-            if [ -f requirements.txt ]; then
-              echo "Updating dependencies..."
-              pip install -r requirements.txt
-            fi
-
-            echo "Applying database migrations..."
-            python -m jobs.apply_migrations
-
-            echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
-            bash scripts/install_backtest_sync_cron.sh /root/FMP_SCREENER
-
-            echo "Restarting Streamlit..."
-            systemctl restart fmp-dashboard
-
-            echo "Verifying Streamlit service..."
-            systemctl is-active --quiet fmp-dashboard
-
-            if systemctl cat fmp-ibkr-ingest.service >/dev/null 2>&1; then
-              echo "Restarting private IBKR ingest API..."
-              systemctl restart fmp-ibkr-ingest.service
-            fi
-
-            echo "Deployment complete."
-          EOF
+          set -euo pipefail
+          if [ -z "${DO_HOST:-}" ] || [ -z "${DO_USER:-}" ]; then
+            echo "FAIL: DO_HOST and DO_USER are required"
+            exit 3
+          fi
+          SHA="$(git rev-parse HEAD)"
+          # Pipe this SHA's deploy_host.sh. The host script takes the flock.
+          # Do not pull main on the host first: concurrent pushes must not
+          # move the checkout to a different SHA before this script runs.
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "$DO_USER@$DO_HOST" \
+            "bash -s -- --sha $SHA" \
+            < scripts/deploy_host.sh

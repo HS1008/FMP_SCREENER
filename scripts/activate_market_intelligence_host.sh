@@ -14,6 +14,7 @@
 #   /root/FMP_SCREENER/.secrets/finra_client_id
 #   /root/FMP_SCREENER/.secrets/finra_client_secret
 #   /root/FMP_SCREENER/.secrets/mi_readonly.pw
+#   /root/FMP_SCREENER/.secrets/dashboard_readonly.pw   # Strategy Monitor; provision_dashboard_readonly.sh
 #   /root/FMP_SCREENER/.secrets/ai_context_api_token
 #
 # CREATE ROLE uses an admin identity, never the dashboard writer:
@@ -29,6 +30,7 @@ FRED_KEY_FILE="/root/FMP_SCREENER/.secrets/fred_api_key"
 FINRA_ID_FILE="/root/FMP_SCREENER/.secrets/finra_client_id"
 FINRA_SECRET_FILE="/root/FMP_SCREENER/.secrets/finra_client_secret"
 RO_PW_FILE="/root/FMP_SCREENER/.secrets/mi_readonly.pw"
+DASH_RO_PW_FILE="/root/FMP_SCREENER/.secrets/dashboard_readonly.pw"
 AI_TOKEN_FILE="/root/FMP_SCREENER/.secrets/ai_context_api_token"
 API_ENV_FILE="/etc/fmp/ai_context_api.env"
 
@@ -42,6 +44,7 @@ while [ $# -gt 0 ]; do
     --finra-id-file) FINRA_ID_FILE="$2"; shift 2 ;;
     --finra-secret-file) FINRA_SECRET_FILE="$2"; shift 2 ;;
     --readonly-pw-file) RO_PW_FILE="$2"; shift 2 ;;
+    --dashboard-readonly-pw-file) DASH_RO_PW_FILE="$2"; shift 2 ;;
     --ai-token-file) AI_TOKEN_FILE="$2"; shift 2 ;;
     -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
@@ -66,6 +69,7 @@ load_writer_env() {
     source "$ENV_FILE"
     set +a
   fi
+  unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
 }
 
 writer_db_meta() {
@@ -176,6 +180,7 @@ phase_probe() {
   echo "finra_id_file=$([ -s "$FINRA_ID_FILE" ] && echo present || echo absent)"
   echo "finra_secret_file=$([ -s "$FINRA_SECRET_FILE" ] && echo present || echo absent)"
   echo "readonly_pw_file=$([ -s "$RO_PW_FILE" ] && echo present || echo absent)"
+  echo "dashboard_readonly_pw_file=$([ -s "$DASH_RO_PW_FILE" ] && echo present || echo absent)"
   echo "ai_token_file=$([ -s "$AI_TOKEN_FILE" ] && echo present || echo absent)"
   if [ -z "${DATABASE_URL:-}" ] && { [ -z "${DB_HOST:-}" ] || [ -z "${DB_NAME:-}" ]; }; then
     echo "writer_db=missing"
@@ -316,6 +321,12 @@ PY
   load_writer_env
   echo "Applying mi_readonly grants via admin/peer (password file, not printed)"
   apply_readonly_role_sql
+  bash "$ROOT/scripts/provision_dashboard_readonly.sh" \
+    --require \
+    --root "$ROOT" \
+    --pw-file "$DASH_RO_PW_FILE" \
+    --dashboard-env "$DASHBOARD_ENV" \
+    --systemd-env /etc/fmp/fmp-dashboard.env
   unset PGPASSWORD
   echo "provision complete"
 }
@@ -397,10 +408,23 @@ phase_ingest() {
 
 phase_verify() {
   echo "PHASE verify"
-  load_writer_env
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "missing ${ENV_FILE}" >&2
+    exit 1
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+  unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL
+  unset FMP_DATABASE_URL FMP_DATABASE_WRITER_URL
+  unset DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+  export FMP_IDENTITY_ENV_ONLY=1
+  export FMP_DASHBOARD_ENV="${FMP_DASHBOARD_ENV:-/etc/fmp/fmp-dashboard.env}"
   systemctl is-active --quiet fmp-dashboard
   echo "dashboard_active=yes"
   python -m jobs.verify_mi_dashboard --json
+  bash "$ROOT/scripts/verify_dashboard_identity.sh"
   echo "verify complete"
 }
 

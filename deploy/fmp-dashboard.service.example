@@ -1,0 +1,33 @@
+# Example systemd unit for Streamlit / Strategy Monitor.
+# Live hosts still run from /root/FMP_SCREENER until scripts/deploy_release.sh is cut over.
+# After cutover, WorkingDirectory and ExecStart should point at /opt/fmp/current.
+#
+# Required host env (0600, not in Git):
+#   /etc/fmp/fmp-dashboard.env  must set DASHBOARD_READONLY_URL
+#   Do not put the writer DATABASE_URL in this unit.
+#
+# Placeholders: __ROOT__ __USER__ __ENV_FILE__
+# Production target user: fmp-dashboard (non-login). Do not install from Cursor.
+
+[Unit]
+Description=FMP Streamlit dashboard (read-only PostgreSQL identity)
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=__ROOT__
+EnvironmentFile=__ENV_FILE__
+Environment=FMP_STREAMLIT_READONLY=1
+# Streamlit must use DASHBOARD_READONLY_URL. Writer credentials stay out of this unit.
+ExecStart=__ROOT__/venv/bin/streamlit run dashboard.py --server.address 127.0.0.1 --server.headless true
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/fmp /var/log/fmp
+
+[Install]
+WantedBy=multi-user.target

@@ -34,9 +34,9 @@ def _active_environment() -> str:
 
 
 def _fmp_key_detected() -> bool:
-    from dotenv import load_dotenv
+    from db.dashboard_engine import load_streamlit_env
 
-    load_dotenv(config.PROJECT_ROOT / ".env")
+    load_streamlit_env(config.PROJECT_ROOT / ".env")
     return bool((os.getenv("FMP_API_KEY") or "").strip())
 
 

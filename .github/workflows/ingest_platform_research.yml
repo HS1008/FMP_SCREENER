@@ -40,10 +40,11 @@ jobs:
     env:
       SOURCE_REPO: ${{ github.event.client_payload.source_repo || github.event.inputs.source_repo }}
       # Explicit source ref precedence: dispatch payload > manual input > repository variable
-      # QS_ARTIFACT_SOURCE_REF (set by a human to an already-published ref) > provider default branch.
-      # Never floats to an arbitrary research branch; an unset ref is reported as such.
+      # QS_ARTIFACT_SOURCE_REF must be a full 40-character git SHA of an
+      # already-published commit. Branch names and tags are refused so ingest
+      # cannot float. An unset scheduled ref does not float to default.
       SOURCE_REF: ${{ github.event.client_payload.source_ref || github.event.inputs.source_ref || vars.QS_ARTIFACT_SOURCE_REF }}
-      SOURCE_REF_SOURCE: ${{ (github.event.client_payload.source_ref && 'repository_dispatch payload') || (github.event.inputs.source_ref && 'workflow_dispatch input') || (vars.QS_ARTIFACT_SOURCE_REF && 'repository variable QS_ARTIFACT_SOURCE_REF') || 'unset -> provider default branch' }}
+      SOURCE_REF_SOURCE: ${{ (github.event.client_payload.source_ref && 'repository_dispatch payload') || (github.event.inputs.source_ref && 'workflow_dispatch input') || (vars.QS_ARTIFACT_SOURCE_REF && 'repository variable QS_ARTIFACT_SOURCE_REF') || 'unset -> refuse default-branch float' }}
       # Directory listed on the scheduled public pull. research/platform_smokes exists on the
       # integration branches, not on QS main; override with repository variable QS_ARTIFACT_SOURCE_PATH.
       ARTIFACT_LIST_PATH: ${{ vars.QS_ARTIFACT_SOURCE_PATH || 'research/platform_smokes' }}
@@ -81,12 +82,33 @@ jobs:
           TARGET="$LOCAL_ROOT"
           REPO="${SOURCE_REPO:-hs1008/quant-strategies}"
           BUILD_ARGS=(--event "${{ github.event_name }}" --repo "$REPO" --ref "${SOURCE_REF:-}" --ref-source "$SOURCE_REF_SOURCE" --out "$DELIVERY_DIR/report.json" --summary "$GITHUB_STEP_SUMMARY")
+          is_full_sha() { echo "$1" | grep -Eq '^[0-9a-fA-F]{40}$'; }
           if [ -n "${ARTIFACT_PATH:-}" ]; then
             DEST="$DEST_DIR/$(basename "$ARTIFACT_PATH")"
             LOCAL_CANDIDATE="qc_research/platform_artifacts/$(basename "$ARTIFACT_PATH")"
-            if python -m qc_research.fetch_remote_artifact \
+            if [ -z "${SOURCE_REF:-}" ]; then
+              echo "SOURCE_REF unset; remote fetch will not float to the provider default branch"
+              if [ -f "$LOCAL_CANDIDATE" ]; then
+                echo "REMOTE FETCH SKIPPED (unpinned); using committed FMP copy $LOCAL_CANDIDATE (LAST_KNOWN_GOOD, not a new delivery)"
+                TARGET="$LOCAL_CANDIDATE"
+                BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF unset; remote fetch will not float to the provider default branch" --path "$ARTIFACT_PATH")
+              else
+                echo "FAIL: SOURCE_REF unset and no local copy of $ARTIFACT_PATH"
+                exit 1
+              fi
+            elif ! is_full_sha "$SOURCE_REF"; then
+              echo "SOURCE_REF is not a full git SHA; remote fetch will not follow a moving branch"
+              if [ -f "$LOCAL_CANDIDATE" ]; then
+                echo "REMOTE FETCH SKIPPED (non-SHA ref); using committed FMP copy $LOCAL_CANDIDATE (LAST_KNOWN_GOOD, not a new delivery)"
+                TARGET="$LOCAL_CANDIDATE"
+                BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF must be a full 40-character git SHA" --path "$ARTIFACT_PATH")
+              else
+                echo "FAIL: SOURCE_REF must be a full 40-character git SHA and no local copy of $ARTIFACT_PATH"
+                exit 1
+              fi
+            elif python -m qc_research.fetch_remote_artifact \
               --repo "$REPO" \
-              --ref "${SOURCE_REF:-}" \
+              --ref "$SOURCE_REF" \
               --path "$ARTIFACT_PATH" \
               --dest "$DEST"; then
               TARGET="$DEST"
@@ -100,19 +122,31 @@ jobs:
               exit 1
             fi
           elif [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "Scheduled pull of complete public QS artifacts from $REPO @ ${SOURCE_REF:-<default branch>} ($SOURCE_REF_SOURCE), path $ARTIFACT_LIST_PATH"
-            python -m qc_research.pull_public_platform_artifacts \
-              --repo "$REPO" \
-              --ref "${SOURCE_REF:-}" \
-              --path "$ARTIFACT_LIST_PATH" \
-              --dest "$DEST_DIR" \
-              --report "$DELIVERY_DIR/pull.json" || true
-            BUILD_ARGS+=(--pull-report "$DELIVERY_DIR/pull.json" --path "$ARTIFACT_LIST_PATH")
-            if ls "$DEST_DIR"/*.json >/dev/null 2>&1; then
-              TARGET="$DEST_DIR"
-            else
-              echo "REMOTE PULL EMPTY OR BLOCKED; re-ingesting committed FMP canonical artifacts (LAST_KNOWN_GOOD, not a new delivery)"
+            if [ -z "${SOURCE_REF:-}" ]; then
+              echo "SOURCE_REF unset; scheduled ingest will not float to the provider default branch"
+              echo "REMOTE PULL SKIPPED (unpinned); re-ingesting committed FMP canonical artifacts (LAST_KNOWN_GOOD, not a new delivery)"
               TARGET="$LOCAL_ROOT"
+              BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF unset; scheduled ingest will not float to the provider default branch" --path "$ARTIFACT_LIST_PATH")
+            elif ! is_full_sha "$SOURCE_REF"; then
+              echo "SOURCE_REF is not a full git SHA; scheduled ingest will not follow a moving branch"
+              echo "REMOTE PULL SKIPPED (non-SHA ref); re-ingesting committed FMP canonical artifacts (LAST_KNOWN_GOOD, not a new delivery)"
+              TARGET="$LOCAL_ROOT"
+              BUILD_ARGS+=(--remote-status BLOCKED --remote-reason "SOURCE_REF must be a full 40-character git SHA" --path "$ARTIFACT_LIST_PATH")
+            else
+              echo "Scheduled pull of complete public QS artifacts from $REPO @ $SOURCE_REF ($SOURCE_REF_SOURCE), path $ARTIFACT_LIST_PATH"
+              python -m qc_research.pull_public_platform_artifacts \
+                --repo "$REPO" \
+                --ref "$SOURCE_REF" \
+                --path "$ARTIFACT_LIST_PATH" \
+                --dest "$DEST_DIR" \
+                --report "$DELIVERY_DIR/pull.json" || true
+              BUILD_ARGS+=(--pull-report "$DELIVERY_DIR/pull.json" --path "$ARTIFACT_LIST_PATH")
+              if ls "$DEST_DIR"/*.json >/dev/null 2>&1; then
+                TARGET="$DEST_DIR"
+              else
+                echo "REMOTE PULL EMPTY OR BLOCKED; re-ingesting committed FMP canonical artifacts (LAST_KNOWN_GOOD, not a new delivery)"
+                TARGET="$LOCAL_ROOT"
+              fi
             fi
           else
             BUILD_ARGS+=(--explicit-local)
@@ -130,8 +164,14 @@ jobs:
           fi
           python -m qc_research.ingest_platform_artifacts "${ARGS[@]}"
 
+      - name: Refuse live ingest from a non-main ref
+        if: env.DRY_RUN != 'true' && github.ref != 'refs/heads/main'
+        run: |
+          echo "FAIL: live PostgreSQL ingest is allowed only from refs/heads/main (got ${{ github.ref }})"
+          exit 1
+
       - name: Configure SSH
-        if: env.DRY_RUN != 'true'
+        if: env.DRY_RUN != 'true' && github.ref == 'refs/heads/main'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
           DO_HOST: ${{ secrets.DO_HOST }}
@@ -143,7 +183,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Copy ingest tree to droplet
-        if: env.DRY_RUN != 'true'
+        if: env.DRY_RUN != 'true' && github.ref == 'refs/heads/main'
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -153,11 +193,21 @@ jobs:
             | ssh "$DO_USER@$DO_HOST" 'tar xzf - -C /tmp/fmp-platform-ingest'
 
       - name: Ingest and verify on authorized DB host
-        if: env.DRY_RUN != 'true'
+        if: env.DRY_RUN != 'true' && github.ref == 'refs/heads/main'
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
           TARGET: ${{ steps.fetch.outputs.target }}
         run: |
-          ssh "$DO_USER@$DO_HOST" \
-            "STRATEGY_ID='${STRATEGY_ID:-}' bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/${TARGET}"
+          ssh "$DO_USER@$DO_HOST" << EOF
+            set -euo pipefail
+            if [ -f /opt/fmp/current/scripts/ingest_platform_live.sh ]; then
+              LIVE_INGEST=/opt/fmp/current/scripts/ingest_platform_live.sh
+            elif [ -f /root/FMP_SCREENER/scripts/ingest_platform_live.sh ]; then
+              LIVE_INGEST=/root/FMP_SCREENER/scripts/ingest_platform_live.sh
+            else
+              echo "FAIL: ingest_platform_live.sh missing on droplet"
+              exit 1
+            fi
+            STRATEGY_ID='${STRATEGY_ID:-}' bash "\$LIVE_INGEST" /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/${TARGET}
+          EOF

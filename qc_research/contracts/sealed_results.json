@@ -1,0 +1,39 @@
+{
+  "schema_version": "sealed_results_v1",
+  "run_ids": [
+    "STAGE1_SPYTrend_c04553d8",
+    "STAGE2_CrossSectionalFactorML_54a5543f",
+    "STAGE2_CrossSectionalFactorML_437cdbdc",
+    "STAGE2_CrossSectionalFactorML_e7b24642",
+    "STAGE2_CrossSectionalFactorML_ebe7d1a4",
+    "PLATFORM_TLTDurationMomentum_V0"
+  ],
+  "committed_trees": {
+    "STAGE1_SPYTrend_c04553d8": "stage1_results/SPYTrend/STAGE1_SPYTrend_c04553d8",
+    "STAGE2_CrossSectionalFactorML_54a5543f": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_54a5543f",
+    "STAGE2_CrossSectionalFactorML_437cdbdc": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_437cdbdc",
+    "STAGE2_CrossSectionalFactorML_ebe7d1a4": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_ebe7d1a4",
+    "PLATFORM_TLTDurationMomentum_V0": "qc_research/platform_artifacts/tlt_duration_momentum.json"
+  },
+  "sealed_without_tree": [
+    "STAGE2_CrossSectionalFactorML_e7b24642"
+  ],
+  "committed_tree_digests": {
+    "STAGE1_SPYTrend_c04553d8": "9acaa02ddde35a2c04e47bf356d01f3d03a4205139a815e9f521d316430d68aa",
+    "STAGE2_CrossSectionalFactorML_54a5543f": "4c2b5313e0fb36cecb554743d73e8e02ffe41ef3cd31d1f55694553fbdf6d957",
+    "STAGE2_CrossSectionalFactorML_437cdbdc": "c5f2a5166ca3a23dee1e46d8a04c2feffa900a4bacf5bbfec4d2509beb11ec3d",
+    "STAGE2_CrossSectionalFactorML_ebe7d1a4": "cf3f62eff2706fb3c105626df20060f0d7ad6fa896e8f769b0012da8f5bd53ac",
+    "PLATFORM_TLTDurationMomentum_V0": "7329111c2b3fb43d7c36bee29c37a271b81024943ce9791cfda87764e10a7688"
+  },
+  "stage1_pins": {
+    "STAGE1_SPYTrend_c04553d8": {
+      "strategy_id": "SPYTrend",
+      "git_commit": "f04dbfb1a936c753a42a1389d9181f7c22f551a3",
+      "run_status": "COMPLETE",
+      "expected_experiment_count": 81,
+      "completed_count": 81,
+      "failed_count": 0,
+      "skipped_count": 0
+    }
+  }
+}

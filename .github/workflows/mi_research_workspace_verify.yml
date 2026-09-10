@@ -171,11 +171,18 @@ jobs:
           cd /root/FMP_SCREENER
           /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase verify
           source venv/bin/activate
+          if [ ! -f /etc/fmp/market_intelligence.env ]; then
+            echo "missing /etc/fmp/market_intelligence.env" >&2
+            exit 1
+          fi
           set -a
-          # Same files AppTest uses; values are not printed.
-          [ -f /root/FMP_SCREENER/.env ] && . /root/FMP_SCREENER/.env
-          [ -f /etc/fmp/market_intelligence.env ] && . /etc/fmp/market_intelligence.env
+          # Identity report uses mi_readonly only. Writer checkout .env stays out.
+          # shellcheck disable=SC1091
+          . /etc/fmp/market_intelligence.env
           set +a
+          unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL
+          unset FMP_DATABASE_URL FMP_DATABASE_WRITER_URL
+          unset DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
           python - <<'PY'
           from sqlalchemy import text
           from market_intelligence.readonly_db import readonly_connection

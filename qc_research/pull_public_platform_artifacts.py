@@ -10,7 +10,7 @@ import json
 import os
 from pathlib import Path
 
-from qc_research.fetch_remote_artifact import fetch_remote_artifact, github_contents_url
+from qc_research.fetch_remote_artifact import fetch_remote_artifact, github_contents_url, require_source_ref
 
 
 def _is_complete_canonical(payload: dict) -> bool:
@@ -45,7 +45,7 @@ def _request_json(url: str) -> list[dict] | dict:
 
 
 def list_remote_json_paths(repo: str, path: str, ref: str = "") -> list[str]:
-    payload = _request_json(github_contents_url(repo, ref, path))
+    payload = _request_json(github_contents_url(repo, require_source_ref(ref), path))
     if not isinstance(payload, list):
         raise RuntimeError("GitHub contents listing is not an array")
     found = []
@@ -71,6 +71,20 @@ def pull_complete_artifacts(
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
     try:
+        ref = require_source_ref(ref)
+    except ValueError as exc:
+        return {
+            "pulled": 0,
+            "skipped": 0,
+            "blocked": True,
+            "delivery_status": "BLOCKED",
+            "reason": _redact(str(exc)),
+            "repo": repo,
+            "ref": ref or None,
+            "path": path,
+            "paths": [],
+        }
+    try:
         remote_paths = list_remote_json_paths(repo, path, ref=ref)
     except Exception as exc:
         return {
@@ -78,9 +92,9 @@ def pull_complete_artifacts(
             "skipped": 0,
             "blocked": True,
             "delivery_status": "BLOCKED",
-            "reason": _redact("Public artifact listing unavailable ({0} @ {1}, path {2}): {3}".format(repo, ref or "default branch", path, exc)),
+            "reason": _redact("Public artifact listing unavailable ({0} @ {1}, path {2}): {3}".format(repo, ref, path, exc)),
             "repo": repo,
-            "ref": ref or None,
+            "ref": ref,
             "path": path,
             "paths": [],
         }

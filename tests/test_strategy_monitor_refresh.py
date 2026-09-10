@@ -35,6 +35,8 @@ def test_monitor_still_renders_research_sections():
     assert "render_stage1_section" in MONITOR
     assert "render_backtest_vs_paper" in MONITOR
     assert "STAGE 1 RESEARCH RESULTS" in UI
+    assert "official_stage1_identity_blockers" in UI
+    assert "This is not an economic PASS/WATCH/FAIL" in UI
     assert "### Smoke Tests" in UI
     assert "Walk-Forward" in UI
     assert "FINAL_HOLDOUT" in UI
@@ -89,6 +91,10 @@ def test_backtests_only_cron_remains_operational():
     assert "jobs.sync_quantconnect --backtests-only" in CRON
     assert "flock -n" in CRON
     assert "* * * * *" in CRON
+    assert "/etc/fmp/fmp-writer.env" in CRON
+    assert "fmp-dashboard.env" not in [
+        row for row in CRON.splitlines() if row.startswith("LINE=")
+    ][0]
     assert "--backtests-only" in SYNC
     assert "folderWatchBlacklist" in CONFIG
     assert '"outputs"' in CONFIG or "'outputs'" in CONFIG

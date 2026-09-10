@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -162,9 +163,203 @@ def test_experiment_manifest_ingests_without_object_store():
     )
     assert any("research_experiments" in sql.lower() for sql, _ in conn.calls)
     assert {row[1]["experiment_id"] for row in conn.calls} == {"ML_TRAIN", "ML_OOS_TEST", "FIXED_BASELINE_OOS"}
+    child_sql = [sql for sql, _ in conn.calls if "research_experiments" in sql.lower()]
+    assert child_sql
+    assert all("DO UPDATE" in sql for sql in child_sql)
+    assert all("DO NOTHING" not in sql for sql in child_sql)
     reconstructed = format_monitor_value(-0.2, reconstructed=True)
     assert reconstructed["source_label"].startswith("monthly-sampled")
     assert "QuantConnect Max Drawdown" in reconstructed["source_label"]
+
+
+def test_ingest_platform_payload_refuses_sealed_mismatch():
+    from qc_research.contracts.sealed_results import SealedResultsError
+    from qc_research.platform_ingest import ingest_platform_payload
+
+    class Boom:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("sealed mismatch must not reach SQL")
+
+    with pytest.raises(SealedResultsError, match="sealed"):
+        ingest_platform_payload(
+            Boom(),
+            kind="run_summary",
+            payload={
+                "research_run_id": "STAGE1_SPYTrend_c04553d8",
+                "strategy_id": "SPYTrend",
+                "run_status": "COMPLETE",
+            },
+        )
+
+
+def test_canonical_wrap_refuses_holdout_instead_of_overwriting():
+    from qc_research.contracts.kinds import ArtifactContractError
+    from qc_research.platform_ingest import wrap_canonical_platform_record
+
+    record = {
+        "strategy_id": "FutureBondTrend",
+        "holdout_accessed": True,
+        "economic_gate": "NOT_DEFINED",
+        "official_windows": [
+            {"window_id": "W2019", "oos_start": "2019-01-02", "oos_end": "2019-12-31"}
+        ],
+    }
+    with pytest.raises(ArtifactContractError, match="holdout_accessed"):
+        wrap_canonical_platform_record(record)
+    record["holdout_accessed"] = False
+    record["holdout_spec"] = {"accessed": True}
+    with pytest.raises(ArtifactContractError, match="holdout_spec"):
+        wrap_canonical_platform_record(record)
+
+
+def test_canonical_wrap_refuses_inventing_official_run_id():
+    from qc_research.platform_ingest import wrap_canonical_platform_record
+
+    windows = [
+        {"window_id": "W2019", "oos_start": "2019-01-02", "oos_end": "2019-12-31"}
+    ]
+    future = {
+        "strategy_id": "FutureBondTrend",
+        "research_status": "COMPLETE",
+        "economic_gate": "NOT_DEFINED",
+        "official_windows": windows,
+        "provenance": "REAL_QC",
+        "holdout_locked": True,
+    }
+    wrapped = wrap_canonical_platform_record(future)
+    assert wrapped[0][1]["research_run_id"] == "PLATFORM_FutureBondTrend_V0"
+    for strategy_id in ("TLTDurationMomentum", "SPYTrend", "CrossSectionalFactorML"):
+        official = dict(future)
+        official["strategy_id"] = strategy_id
+        with pytest.raises(ValueError, match="missing research_run_id"):
+            wrap_canonical_platform_record(official)
+        invented = dict(official)
+        invented["research_run_id"] = "PLATFORM_{0}_V1".format(strategy_id)
+        with pytest.raises(ValueError, match="unofficial identity"):
+            wrap_canonical_platform_record(invented)
+    sealed = dict(future)
+    sealed["strategy_id"] = "TLTDurationMomentum"
+    sealed["research_run_id"] = "PLATFORM_TLTDurationMomentum_V0"
+    wrapped_official = wrap_canonical_platform_record(sealed)
+    assert wrapped_official[0][1]["research_run_id"] == "PLATFORM_TLTDurationMomentum_V0"
+    from qc_research.platform_ingest import wrap_smoke_record
+
+    with pytest.raises(ValueError, match="unofficial identity"):
+        wrap_smoke_record(
+            {
+                "strategy_id": "SPYTrend",
+                "run_id": "PLATFORM_SPYTrend_V1",
+                "research_status": "COMPLETE",
+                "economic_gate": "NOT_DEFINED",
+                "provenance": "REAL_QC",
+                "holdout_locked": True,
+            }
+        )
+
+
+def test_discover_platform_files_applies_canonical_only_to_file_roots(tmp_path):
+    from qc_research.platform_ingest import discover_platform_files
+
+    smoke = tmp_path / "not_canonical.json"
+    smoke.write_text(
+        json.dumps(
+            {
+                "schema_version": "platform_artifact_v1",
+                "kind": "run_summary",
+                "provenance": "SYNTHETIC_TEST_ONLY",
+                "research_run_id": "FAKE",
+                "strategy_id": "FutureBondTrend",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert discover_platform_files(smoke, canonical_only=False) == [smoke]
+    assert discover_platform_files(smoke, canonical_only=True) == []
+    tlt = (
+        Path(__file__).resolve().parents[1]
+        / "qc_research"
+        / "platform_artifacts"
+        / "tlt_duration_momentum.json"
+    )
+    assert discover_platform_files(tlt, canonical_only=True) == [tlt]
+
+
+def test_discover_platform_files_refuses_outputs_tree(tmp_path):
+    from qc_research.ingest_platform_artifacts import main as ingest_main
+    from qc_research.platform_ingest import discover_platform_files, ingest_platform_files
+
+    planted = tmp_path / "outputs" / "stale.json"
+    planted.parent.mkdir()
+    planted.write_text(
+        json.dumps(
+            {
+                "schema_version": "platform_artifact_v1",
+                "kind": "run_summary",
+                "provenance": "REAL_QC",
+                "research_run_id": "PLANTED",
+                "strategy_id": "FutureBondTrend",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="outputs"):
+        discover_platform_files(planted.parent)
+    with pytest.raises(ValueError, match="outputs"):
+        discover_platform_files(planted)
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            raise AssertionError("outputs/ must not reach SQL")
+
+    summary = ingest_platform_files(FakeConn(), [planted], root=planted.parent)
+    assert summary["ingested"] == 0
+    assert not summary.get("artifacts")
+    assert summary["errors"]
+    assert "outputs" in summary["errors"][0]
+    assert ingest_main(["--root", str(planted.parent), "--dry-run"]) == 1
+
+
+def test_discover_platform_files_refuses_repository_root_and_venv(tmp_path):
+    from qc_research.platform_ingest import discover_platform_files
+
+    checkout = tmp_path / "checkout"
+    (checkout / "qc_research").mkdir(parents=True)
+    (checkout / "qc_research" / "ingest_platform_artifacts.py").write_text("# stub\n", encoding="utf-8")
+    planted = checkout / "extra.json"
+    planted.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="repository root"):
+        discover_platform_files(checkout)
+
+    venv_json = tmp_path / "venv" / "planted.json"
+    venv_json.parent.mkdir()
+    venv_json.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="venv"):
+        discover_platform_files(venv_json.parent)
+    with pytest.raises(ValueError, match="venv"):
+        discover_platform_files(venv_json)
+
+
+def test_platform_payload_refuses_real_qc_shadow_official_identity():
+    from qc_research.platform_ingest import ingest_platform_payload
+
+    class _Boom:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("unofficial official-strategy payload must not reach SQL")
+
+    with pytest.raises(ValueError, match="unofficial identity"):
+        ingest_platform_payload(
+            _Boom(),
+            kind="run_summary",
+            payload={
+                "schema_version": "platform_artifact_v1",
+                "kind": "run_summary",
+                "provenance": "REAL_QC",
+                "research_run_id": "PLATFORM_TLT_FIXTURE01",
+                "strategy_id": "TLTDurationMomentum",
+                "economic_gate": "NOT_DEFINED",
+                "holdout_accessed": False,
+            },
+        )
 
 
 def test_synthetic_artifacts_are_rejected_from_ingest():
@@ -357,8 +552,59 @@ def test_licensed_ml_discovery_real_qc_artifacts_ingest_without_live_postgres(mo
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     with pytest.raises(IngestEnvironmentError, match="DATABASE_URL"):
         require_live_postgres_ingest()
+
+
+def test_live_ingest_refuses_streamlit_readonly_even_with_database_url(monkeypatch):
+    from qc_research.ingest_platform_artifacts import main as ingest_main
+    from qc_research.platform_ingest import (
+        StreamlitIngestRefused,
+        postgres_engine,
+        require_live_postgres_ingest,
+    )
+
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://writer:secret@127.0.0.1:5432/fmp")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("Streamlit identity must not create a writer engine")
+
+    monkeypatch.setattr("sqlalchemy.create_engine", _boom)
+    with pytest.raises(StreamlitIngestRefused, match="Streamlit read-only"):
+        require_live_postgres_ingest()
+    with pytest.raises(StreamlitIngestRefused, match="Streamlit read-only"):
+        postgres_engine()
+
+    tlt = (
+        Path(__file__).resolve().parents[1]
+        / "qc_research"
+        / "platform_artifacts"
+        / "tlt_duration_momentum.json"
+    )
+    assert ingest_main(["--root", str(tlt), "--dry-run"]) == 0
+    assert ingest_main(["--root", str(tlt)]) == 4
+
+
+def test_missing_writer_url_skips_even_if_streamlit_readonly_leaked(monkeypatch):
+    from qc_research.ingest_platform_artifacts import main as ingest_main
+    from qc_research.platform_ingest import IngestEnvironmentError, require_live_postgres_ingest
+
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("DB_NAME", raising=False)
+    monkeypatch.delenv("DB_USER", raising=False)
+    with pytest.raises(IngestEnvironmentError, match="DATABASE_URL"):
+        require_live_postgres_ingest()
+    tlt = (
+        Path(__file__).resolve().parents[1]
+        / "qc_research"
+        / "platform_artifacts"
+        / "tlt_duration_momentum.json"
+    )
+    assert ingest_main(["--root", str(tlt)]) == 0
 
 
 def test_vendored_licensed_smoke_wraps_and_ingests_idempotently(tmp_path, monkeypatch):
@@ -404,6 +650,7 @@ def test_vendored_licensed_smoke_wraps_and_ingests_idempotently(tmp_path, monkey
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
     assert ingest_main(["--root", str(smoke), "--verify-monitor"]) == 0
 
@@ -464,6 +711,7 @@ def test_vendored_ml_cloud_train_smoke_ingests_without_object_store(tmp_path, mo
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
 
 
@@ -552,6 +800,7 @@ def test_vendored_ridge_transport_smoke_wraps_without_object_store(tmp_path, mon
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
 
 
@@ -633,3 +882,90 @@ def test_platform_run_summary_upserts_generic_identity_not_stage2(monkeypatch):
     assert identity["research_lineage_id"] == "LINEAGE_QQQ_RIDGE_TRANSPORT_V0"
     assert "platform_research" in UPSERT_PLATFORM_RUN
     assert "ON CONFLICT (research_run_id)" in UPSERT_PLATFORM_RUN
+    assert (
+        "WHEN research_runs.run_status IN ('COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE')"
+        in UPSERT_PLATFORM_RUN
+    )
+    assert "run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status)" not in UPSERT_PLATFORM_RUN
+
+
+def test_register_platform_monitor_strategy_does_not_invent_qc_project():
+    from qc_research.platform_ingest import (
+        platform_run_identity,
+        register_platform_monitor_strategy,
+    )
+
+    captured: list[dict] = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            captured.append(params)
+
+    identity = platform_run_identity(
+        {
+            "research_run_id": "PLATFORM_Future_V0",
+            "strategy_id": "FutureBondTrend",
+            "display_name": "Future",
+            "project_id": 999,
+            "project_name": "OtherProject",
+        }
+    )
+    register_platform_monitor_strategy(_Conn(), identity)
+    assert captured[0]["qc_research_project_id"] == "999"
+    assert captured[0]["qc_research_project_name"] == "OtherProject"
+    captured.clear()
+    identity = platform_run_identity(
+        {
+            "research_run_id": "PLATFORM_Future_V0",
+            "strategy_id": "FutureBondTrend",
+        }
+    )
+    register_platform_monitor_strategy(_Conn(), identity)
+    assert captured[0]["qc_research_project_id"] is None
+    assert captured[0]["qc_research_project_name"] is None
+    wrap = (Path(__file__).resolve().parents[1] / "qc_research" / "platform_ingest.py").read_text(
+        encoding="utf-8"
+    )
+    wrap_fn = wrap.split("def wrap_canonical_platform_record", 1)[1].split(
+        "def is_live_canonical_file", 1
+    )[0]
+    assert "36108691" not in wrap_fn
+    assert "PlatformResearch" not in wrap_fn
+    register_fn = wrap.split("def register_platform_monitor_strategy", 1)[1].split(
+        "def repo_root", 1
+    )[0]
+    assert "36108691" not in register_fn
+    assert "PlatformResearch" not in register_fn
+
+
+def test_platform_ingest_refuses_empty_research_run_id(tmp_path):
+    from qc_research.platform_ingest import ingest_platform_files
+
+    path = tmp_path / "empty_run.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": "platform_artifact_v1",
+                "kind": "run_summary",
+                "research_run_id": "",
+                "strategy_id": "EmptyRun",
+                "payload": {"research_run_id": ""},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    conn = FakeConn()
+    summary = ingest_platform_files(conn, [path], root=tmp_path)
+    assert summary["ingested"] == 0
+    assert not conn.calls
+    assert summary["errors"]
+    assert "without research_run_id" in summary["errors"][0]
+    assert "platform_research//" not in str(summary)

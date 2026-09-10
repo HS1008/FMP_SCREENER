@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from jobs.apply_migrations import MIGRATIONS_DIR, pending_migration_files
 from qc_research.aggregation import is_stage1, stage1_backtests
@@ -40,6 +41,7 @@ MONITOR = (ROOT / "pages" / "strategy_monitor.py").read_text(encoding="utf-8")
 SYNC = (ROOT / "jobs" / "sync_quantconnect.py").read_text(encoding="utf-8")
 ML_UI = (ROOT / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
 STORE = (ROOT / "qc_research" / "object_store_sync.py").read_text(encoding="utf-8")
+STAGE2_SQL = (ROOT / "qc_research" / "ingest" / "stage2_sql.py").read_text(encoding="utf-8")
 CRON = (ROOT / "scripts" / "install_backtest_sync_cron.sh").read_text(encoding="utf-8")
 
 
@@ -80,6 +82,12 @@ def test_migration_is_idempotent_and_additive():
         "017_finra_order_flow.sql",
         "018_ibkr_callback_freshness.sql",
         "019_finra_identity_quarantine.sql",
+        "020_ops_status_and_migration_checksum.sql",
+        "021_ops_status_extended.sql",
+        "022_deploy_host_identity.sql",
+        "023_streamlit_readonly_identity.sql",
+        "024_research_live_identity.sql",
+        "025_stage1_live_identity.sql",
     ]
     assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})
@@ -370,17 +378,68 @@ def test_baseline_and_ml_oos_files_ingest_as_distinct_artifacts(tmp_path):
     }
     (window / "oos_diagnostics.json").write_text(json.dumps(ml), encoding="utf-8")
     (window / "baseline_oos_diagnostics.json").write_text(json.dumps(baseline), encoding="utf-8")
+    (window.parent / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+                "strategy_id": "CrossSectionalFactorML",
+                "run_status": "COMPLETE",
+                "expected_qc_experiments": 2,
+                "completed_qc_experiments": 2,
+                "failed_qc_experiments": 0,
+                "skipped_qc_experiments": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
     paths = discover_stage2_result_paths(tmp_path)
-    assert {path.name for path in paths} == {"oos_diagnostics.json", "baseline_oos_diagnostics.json"}
+    assert {path.name for path in paths} == {
+        "run_summary.json",
+        "oos_diagnostics.json",
+        "baseline_oos_diagnostics.json",
+    }
     conn = FakeConn()
     result = ingest_stage2_result_files(conn, paths, root=tmp_path)
     assert result["errors"] == []
-    assert result["ingested"] == 2
+    assert result["ingested"] == 3
     keys = {row.get("artifact_key") for row in conn.calls if row and row.get("artifact_key")}
     assert any(key and key.endswith("oos_diagnostics.json") for key in keys)
     assert any(key and key.endswith("baseline_oos_diagnostics.json") for key in keys)
     backtests = {row.get("backtest_id") for row in conn.calls if row and row.get("backtest_id")}
     assert backtests == {"ml-bt", "base-bt"}
+
+
+def test_stage2_discovery_ignores_gitignored_outputs_tree(tmp_path):
+    from qc_research.stage2_results_sync import discover_stage2_result_paths
+
+    committed = (
+        tmp_path
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_abc"
+    )
+    committed.mkdir(parents=True)
+    payload = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+        "strategy_id": "CrossSectionalFactorML",
+        "run_status": "COMPLETE",
+    }
+    (committed / "run_summary.json").write_text(json.dumps(payload), encoding="utf-8")
+    ignored = (
+        tmp_path
+        / "outputs"
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_extra"
+    )
+    ignored.mkdir(parents=True)
+    extra = dict(payload)
+    extra["research_run_id"] = "STAGE2_CrossSectionalFactorML_extra"
+    (ignored / "run_summary.json").write_text(json.dumps(extra), encoding="utf-8")
+    paths = discover_stage2_result_paths(tmp_path)
+    assert paths == [committed / "run_summary.json"]
 
 
 def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
@@ -401,12 +460,19 @@ def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert "window.parent.location.reload" not in MONITOR
     assert "jobs.sync_quantconnect --backtests-only" in CRON
     assert "sync_stage2_results" in SYNC
+    assert "verify_contract_digests" in SYNC
+    assert "stage2_results_ingest_failed" in SYNC
+    assert "ERROR: Stage 2 results ingest failed" in SYNC
     assert "object_get" not in SYNC
     assert "/object/get" not in SYNC
     assert "--live-only" in SYNC
-    assert "ON CONFLICT" in STORE
+    assert "ON CONFLICT" in STAGE2_SQL
+    assert "from qc_research.ingest.stage2_sql import" in STORE
+    assert "promotion_gate" in STAGE2_SQL
+    assert "normalize_research_lifecycle" in STAGE2_SQL
     assert SYNC.find("sync_stage2_results") < SYNC.find("Skipping backtest sync (--live-only)")
     assert "object_get(" not in STORE[STORE.find("def sync_stage2_object_store") :]
+    assert "sealed_results_run_ids" in STORE[STORE.find("def audit_stage2_model_objects") :]
     live_001 = (ROOT / "db" / "migrations" / "001_stage1_research.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS research_runs" in live_001
     assert "CREATE TABLE IF NOT EXISTS backtests" in live_001
@@ -495,13 +561,28 @@ def test_stage2_results_tree_ingest_is_idempotent_and_keeps_null_rank_ic(tmp_pat
     (smoke / "training_summary.json").write_text(json.dumps(training), encoding="utf-8")
     (smoke / "model_metadata.json").write_text(json.dumps(model), encoding="utf-8")
     (smoke / "oos_diagnostics.json").write_text(json.dumps(oos), encoding="utf-8")
+    (root / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_CrossSectionalFactorML_abc123de",
+                "strategy_id": "CrossSectionalFactorML",
+                "run_status": "COMPLETE",
+                "expected_qc_experiments": 1,
+                "completed_qc_experiments": 1,
+                "failed_qc_experiments": 0,
+                "skipped_qc_experiments": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
     paths = discover_stage2_result_paths(tmp_path)
-    assert len(paths) == 3
+    assert len(paths) == 4
     conn = FakeConn()
     first = ingest_stage2_result_files(conn, paths, root=tmp_path)
     second = ingest_stage2_result_files(conn, paths, root=tmp_path)
-    assert first["ingested"] == 3
-    assert second["ingested"] == 3
+    assert first["ingested"] == 4
+    assert second["ingested"] == 4
     trial_ids = {row["trial_id"] for row in conn.calls if row and row.get("trial_id")}
     assert trial_ids == {"a=0.1", "a=1.0", "a=10.0", "a=100.0", "a=1000.0"}
     features = {row["feature_name"] for row in conn.calls if row and row.get("feature_name")}
@@ -513,6 +594,63 @@ def test_stage2_results_tree_ingest_is_idempotent_and_keeps_null_rank_ic(tmp_pat
     assert model_rows[0]["object_store_key"].endswith("/SMOKE/model.pkl")
     transports = {row.get("transport") for row in conn.calls if row and row.get("transport")}
     assert transports == {"github_stage2_results"}
+
+
+def test_stage2_ingest_refuses_incomplete_or_orphan_trees(tmp_path):
+    from qc_research.stage2_results_sync import (
+        discover_stage2_result_paths,
+        ingest_stage2_result_files,
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    orphan = (
+        tmp_path
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_orphan"
+        / "2015"
+    )
+    orphan.mkdir(parents=True)
+    (orphan / "oos_diagnostics.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_CrossSectionalFactorML_orphan",
+                "window_id": "2015",
+                "monthly_signal_diagnostics": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    incomplete_root = (
+        tmp_path
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_incomplete"
+    )
+    incomplete_root.mkdir(parents=True)
+    (incomplete_root / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_CrossSectionalFactorML_incomplete",
+                "strategy_id": "CrossSectionalFactorML",
+                "run_status": "INCOMPLETE",
+            }
+        ),
+        encoding="utf-8",
+    )
+    paths = discover_stage2_result_paths(tmp_path)
+    result = ingest_stage2_result_files(FakeConn(), paths, root=tmp_path)
+    assert result["ingested"] == 0
+    assert any("without a COMPLETE run_summary" in item for item in result["errors"])
+    assert any("INCOMPLETE" in item for item in result["errors"])
 
 
 def test_published_437cdbdc_smoke_json_ingests_without_object_store():
@@ -880,4 +1018,98 @@ def test_published_54a5543f_suite_json_ingests_without_object_store():
         "ABOVE_200",
     ]
     assert "2025" not in set(view["windows"]["window_id"].astype(str))
+
+
+def test_audit_stage2_model_objects_does_not_update_sealed_runs():
+    from qc_research.object_store_sync import audit_stage2_model_objects
+
+    class _Store:
+        def object_properties(self, key):
+            return {"success": True}
+
+    class _Conn:
+        def __init__(self):
+            self.updates = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "UPDATE ml_models" in sql:
+                self.updates.append(params)
+
+            class _Result:
+                def mappings(self_inner):
+                    class _Mappings:
+                        def all(self_map):
+                            return [
+                                {
+                                    "model_id": "sealed",
+                                    "object_store_key": "obj-sealed",
+                                    "research_run_id": "STAGE2_CrossSectionalFactorML_54a5543f",
+                                    "metadata_json": {},
+                                },
+                                {
+                                    "model_id": "open",
+                                    "object_store_key": "obj-open",
+                                    "research_run_id": "STAGE2_CrossSectionalFactorML_FIXTURE01",
+                                    "metadata_json": {},
+                                },
+                            ]
+
+                    return _Mappings()
+
+            return _Result()
+
+    shared = _Conn()
+
+    class _Engine:
+        def connect(self):
+            return shared
+
+        def begin(self):
+            return shared
+
+    summary = audit_stage2_model_objects(_Engine(), strategy_id="CrossSectionalFactorML", store=_Store())
+    assert summary["exists"] == 2
+    assert [row["model_id"] for row in shared.updates] == ["open"]
+
+
+def test_stage2_ingest_refuses_filename_only_key_outside_root(tmp_path):
+    from qc_research.stage2_results_sync import ingest_stage2_result_files, logical_artifact_path
+
+    outside = tmp_path / "elsewhere" / "run_summary.json"
+    outside.parent.mkdir()
+    payload = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+        "strategy_id": "CrossSectionalFactorML",
+        "run_status": "COMPLETE",
+        "expected_qc_experiments": 1,
+        "completed_qc_experiments": 1,
+        "failed_qc_experiments": 0,
+        "skipped_qc_experiments": 0,
+    }
+    outside.write_text(json.dumps(payload), encoding="utf-8")
+    root = tmp_path / "repo"
+    root.mkdir()
+    with pytest.raises(ValueError, match="outside research root"):
+        logical_artifact_path(outside, root=root)
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    result = ingest_stage2_result_files(FakeConn(), [outside], root=root)
+    assert result["ingested"] == 0
+    assert result["errors"]
+    assert "outside research root" in result["errors"][0]
+    assert "filename-only" in result["errors"][0]
 

@@ -14,7 +14,6 @@ from typing import Callable
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
 import config
 import data_loader
@@ -24,6 +23,19 @@ import sector_pages
 import spy_sector_rotation_engine
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _streamlit_http_session():
+    """Create an HTTP session only when provider fetch is explicitly allowed.
+
+    Cached rotation / price files still render when this returns None.
+    """
+    from qc_research.ui_boundary import provider_fetch_allowed
+
+    if not provider_fetch_allowed():
+        return None
+    return data_loader.create_http_session()
+
 
 ROTATION_CORR_CAPTION = (
     "Corr vs SPY is trailing 63 trading day daily return correlation. "
@@ -142,7 +154,9 @@ def render_sector_tab(
 
     st.subheader(f"{label} Sector Analysis")
 
-    load_dotenv(ROOT / ".env")
+    from db.dashboard_engine import load_streamlit_env
+
+    load_streamlit_env(ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
     if not api_key:
         st.warning(
@@ -151,10 +165,13 @@ def render_sector_tab(
         return
 
     try:
-        session = data_loader.create_http_session()
+        session = _streamlit_http_session()
     except Exception as e:
         st.warning(f"Could not create HTTP session: {e}")
-        return
+        session = None
+
+    if session is None:
+        st.caption("Live FMP fetch is disabled. Cached rotation and price files still render.")
 
     # Rotation runs in a background thread while ETF trend is rendering.
     _rot_box: dict[str, object] = {}
@@ -477,7 +494,9 @@ def render_spy_benchmark_tab(
 
     st.subheader(f"{label} ({etf}) overview")
 
-    load_dotenv(ROOT / ".env")
+    from db.dashboard_engine import load_streamlit_env
+
+    load_streamlit_env(ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
     if not api_key:
         st.warning(
@@ -486,10 +505,13 @@ def render_spy_benchmark_tab(
         return
 
     try:
-        session = data_loader.create_http_session()
+        session = _streamlit_http_session()
     except Exception as e:
         st.warning(f"Could not create HTTP session: {e}")
-        return
+        session = None
+
+    if session is None:
+        st.caption("Live FMP fetch is disabled. Cached rotation and price files still render.")
 
     _rot_box: dict[str, object] = {}
     rot_fp = rotation_correlation.rotation_cache_revision(

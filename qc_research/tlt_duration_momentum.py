@@ -98,6 +98,18 @@ OFFICIAL_WINDOWS = {
     },
 }
 
+
+def official_tlt_qc_backtest_ids() -> frozenset[str]:
+    """Official TLT V0 QuantConnect backtest IDs. Cloud sync must not first-INSERT these."""
+    found: set[str] = set()
+    for window in OFFICIAL_WINDOWS.values():
+        for key in ("train_backtest_id", "winner_backtest_id", "baseline_backtest_id"):
+            value = str(window.get(key) or "").strip()
+            if value:
+                found.add(value)
+    return frozenset(found)
+
+
 REGISTER_STRATEGY_SQL = """
 INSERT INTO strategies (
     strategy_id, name, environment, status,
@@ -170,8 +182,9 @@ def _merge_windows(record: dict[str, Any]) -> list[dict[str, Any]]:
 
 def wrap_tlt_duration_momentum_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     """Turn the official 10-window TLT V0 JSON into hashed Monitor artifacts."""
-    from qc_research.platform_ingest import _hashed_envelope
+    from qc_research.platform_ingest import _hashed_envelope, refuse_tainted_source
 
+    refuse_tainted_source(record)
     if str(record.get("strategy_id") or "") not in {"", STRATEGY_ID}:
         raise ValueError("TLT V0 artifact strategy_id must be {0}".format(STRATEGY_ID))
     if str(record.get("research_lineage_id") or "") not in {"", LINEAGE_ID}:
@@ -360,8 +373,10 @@ def wrap_tlt_duration_momentum_record(record: dict[str, Any]) -> list[tuple[str,
 
 def register_tlt_monitor_strategy(conn) -> None:
     """Idempotent research-only Strategy Monitor row. No execution project."""
+    from qc_research.ingest.stage2_sql import conflict_sql
+
     conn.execute(
-        text(REGISTER_STRATEGY_SQL),
+        text(conflict_sql(REGISTER_STRATEGY_SQL, sealed=True)),
         {
             "strategy_id": STRATEGY_ID,
             "name": "TLT Duration Momentum",
@@ -380,6 +395,10 @@ def platform_oos_window_frame(windows: list[dict[str, Any]] | None):
 
 
 def assert_tlt_identity(payload: dict[str, Any]) -> None:
+    if str(payload.get("research_run_id") or "") != RUN_ID:
+        raise ValueError(
+            "research_run_id is {0}, expected {1}".format(payload.get("research_run_id"), RUN_ID)
+        )
     if str(payload.get("strategy_id") or "") != STRATEGY_ID:
         raise ValueError("strategy_id is {0}, expected {1}".format(payload.get("strategy_id"), STRATEGY_ID))
     if str(payload.get("research_lineage_id") or "") != LINEAGE_ID:
@@ -405,14 +424,11 @@ def query_tlt_identity(conn) -> dict[str, Any]:
                 research_mode, asset_class, strategy_family_id, holdout_accessed,
                 holdout_access_count, run_status
             FROM research_runs
-            WHERE strategy_id = :strategy_id
-               OR research_lineage_id = :lineage
-               OR research_run_id = :run_id
-            ORDER BY last_seen_at DESC NULLS LAST
+            WHERE research_run_id = :run_id
             LIMIT 1
             """
         ),
-        {"strategy_id": STRATEGY_ID, "lineage": LINEAGE_ID, "run_id": RUN_ID},
+        {"run_id": RUN_ID},
     ).mappings().first()
     if not run:
         raise ValueError("TLTDurationMomentum research_runs row is missing")
@@ -477,6 +493,8 @@ def verify_tlt_postgres(conn) -> dict[str, Any]:
     if int(identity.get("holdout_access_count") or 0) != 0:
         raise ValueError("holdout_access_count must be 0")
     run_id = str(identity.get("research_run_id") or "")
+    if run_id != RUN_ID:
+        raise ValueError("persisted research_run_id is {0}, expected {1}".format(run_id, RUN_ID))
     windows = query_tlt_windows(conn, run_id)
     found = {str(row.get("outer_window_id") or "") for row in windows}
     if found != set(WINDOW_IDS):
@@ -514,6 +532,7 @@ def verify_tlt_postgres(conn) -> dict[str, Any]:
     inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else payload
     assert_tlt_identity(
         {
+            "research_run_id": run_id,
             "strategy_id": inner.get("strategy_id") or payload.get("strategy_id"),
             "research_lineage_id": inner.get("research_lineage_id"),
             "research_kind": inner.get("research_kind") or RESEARCH_KIND,
@@ -533,6 +552,72 @@ def verify_tlt_postgres(conn) -> dict[str, Any]:
         "window_ids": list(WINDOW_IDS),
         "window_count": len(windows),
     }
+
+
+def evaluate_tlt_v0(conn) -> dict[str, Any]:
+    """Record missing vs identity-refused without changing the frozen TLT contract."""
+    report: dict[str, Any] = {
+        "present": False,
+        "identity_ok": False,
+        "blockers": [],
+        "research_run_id": RUN_ID,
+        "strategy_id": STRATEGY_ID,
+        "economic_gate": ECONOMIC_GATE,
+        "holdout_accessed": False,
+        "window_count": None,
+    }
+    try:
+        identity = query_tlt_identity(conn)
+    except ValueError as exc:
+        message = str(exc).strip() or "identity_refused"
+        if "research_runs row is missing" in message:
+            report["blockers"] = ["official_run_missing"]
+            return report
+        report["blockers"] = [message]
+        return report
+    try:
+        live = verify_tlt_postgres(conn)
+    except ValueError as exc:
+        report["present"] = True
+        report["blockers"] = [str(exc).strip() or "identity_refused"]
+        report["holdout_accessed"] = bool(identity.get("holdout_accessed"))
+        return report
+    report.update(
+        {
+            "present": True,
+            "identity_ok": True,
+            "blockers": [],
+            "economic_gate": live.get("economic_gate") or ECONOMIC_GATE,
+            "holdout_accessed": False,
+            "window_count": live.get("window_count"),
+        }
+    )
+    return report
+
+
+def official_tlt_v0_identity_blockers(
+    *,
+    strategy_id: str | None,
+    research_run_id: str | None,
+    engine: Any = None,
+) -> list[str]:
+    """Blockers when the selected run is official TLT V0. Empty otherwise.
+
+    Query failures fail closed. This is not an economic PASS/WATCH/FAIL.
+    """
+    if str(research_run_id or "").strip() != RUN_ID:
+        return []
+    if strategy_id and str(strategy_id) != STRATEGY_ID:
+        return ["strategy_id_mismatch"]
+    if engine is None:
+        return ["identity_query_failed"]
+    try:
+        with engine.connect() as conn:
+            verify_tlt_postgres(conn)
+    except Exception as exc:
+        text = str(exc).strip() or "identity_refused"
+        return [text]
+    return []
 
 
 def verify_tlt_monitor_view(view: dict[str, Any] | None) -> dict[str, Any]:

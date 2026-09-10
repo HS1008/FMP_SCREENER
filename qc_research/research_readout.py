@@ -67,8 +67,10 @@ def plain_status_line(
     holdout_status: Any = None,
     delivery_status: Any = None,
     run_complete: bool | None = None,
+    label_integrity: Any = None,
+    engineering_completion: Any = None,
 ) -> str:
-    """Separate execution, economic acceptance, and human review."""
+    """Separate execution, historical integrity, engineering, and economic approval."""
     status = str(research_status or "").upper()
     economic = str(economic_gate or "").upper()
     promotion = str(promotion_gate or "").upper()
@@ -107,6 +109,12 @@ def plain_status_line(
         parts.append("Holdout locked")
     elif holdout == "ACCESSED":
         parts.append("Holdout accessed")
+    integrity = str(label_integrity or "").strip()
+    if integrity:
+        parts.append("Historical label integrity {0}".format(integrity))
+    completion = str(engineering_completion or "").strip()
+    if completion:
+        parts.append(completion)
     if run_complete is False:
         parts.append("Latest run is not complete")
     return " · ".join(parts)
@@ -203,6 +211,15 @@ def build_readout(view: Mapping[str, Any] | None) -> list[str]:
     holdout = str(view.get("holdout_status") or "")
     if holdout.upper() == "LOCKED":
         statements.append("The protected holdout remains sealed and is not opened from this page.")
+
+    historical = str(view.get("label_integrity") or view.get("historical_v1_impact") or "").strip()
+    if historical:
+        statements.append(
+            "Official historical label integrity is {0}; this is not an economic result "
+            "and is not cleared by current-code engineering tests.".format(historical)
+        )
+    if view.get("engineering_completion"):
+        statements.append(str(view.get("engineering_completion")))
 
     cleaned = []
     for line in statements:

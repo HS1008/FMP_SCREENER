@@ -5,10 +5,9 @@ from hashlib import sha256
 from time import time
 
 import requests
-from dotenv import load_dotenv
 from sqlalchemy import text
 
-from db.connection import engine
+from db.connection import engine, load_writer_dotenv, streamlit_readonly_active
 from jobs.stage1_backtests import (
     audit_holdout_exposures,
     discover_run_summary_paths,
@@ -19,16 +18,19 @@ from jobs.stage1_backtests import (
     json_param,
     legacy_hydration_fields,
     list_metrics_from_summary,
+    listed_stage1_run_id,
     merge_stage1_lightweight_metrics,
     needs_detail_read,
     needs_equity_curve,
     needs_legacy_date_hydration,
+    official_stage1_backtest_upsert_blocked,
     refresh_research_run_progress,
     stage1_upsert_fields,
+    unlabeled_qc_needs_detail,
     upsert_research_run,
 )
 from qc_research.dates import chart_request_window
-from qc_research.parsing import is_stage1_name, parse_equity_chart
+from qc_research.parsing import is_failed_status, is_stage1_name, parse_equity_chart
 
 
 # Shared lock for the one-minute backtests-only cron and production
@@ -40,7 +42,8 @@ BACKTEST_SYNC_LOCK_WAIT_SECONDS = 180
 # CONFIG
 # =========================================================
 
-load_dotenv()
+if not streamlit_readonly_active():
+    load_writer_dotenv()
 
 QC_USER_ID = os.getenv("QC_USER_ID")
 QC_API_TOKEN = os.getenv("QC_API_TOKEN")
@@ -217,7 +220,30 @@ def update_strategy_status(
 # API HELPERS
 # =========================================================
 
+QC_INGEST_ALLOWED_ENDPOINTS = frozenset(
+    {
+        "/live/read",
+        "/live/portfolio/read",
+        "/live/orders/read",
+        "/live/trades/read",
+        "/projects/read",
+        "/backtests/list",
+        "/backtests/read",
+        "/backtests/chart/read",
+        "/account/read",
+        "/object/properties",
+    }
+)
+
+
 def qc_post(endpoint, payload):
+    path = str(endpoint or "")
+    if path not in QC_INGEST_ALLOWED_ENDPOINTS:
+        raise RuntimeError(
+            "QuantConnect {0} is refused from FMP ingest; read-only endpoints only".format(
+                path
+            )
+        )
     response = requests.post(
         f"{BASE_URL}{endpoint}",
         headers=get_headers(),
@@ -1242,7 +1268,8 @@ STAGE1_UPSERT_SQL = """
         research_phase = COALESCE(EXCLUDED.research_phase, backtests.research_phase),
         research_window_id = COALESCE(EXCLUDED.research_window_id, backtests.research_window_id),
         research_git_commit = COALESCE(EXCLUDED.research_git_commit, backtests.research_git_commit),
-        research_is_holdout = COALESCE(EXCLUDED.research_is_holdout, backtests.research_is_holdout),
+        research_is_holdout = COALESCE(backtests.research_is_holdout, FALSE)
+            OR COALESCE(EXCLUDED.research_is_holdout, FALSE),
         research_dirty = COALESCE(EXCLUDED.research_dirty, backtests.research_dirty),
         train_start = COALESCE(EXCLUDED.train_start, backtests.train_start),
         train_end = COALESCE(EXCLUDED.train_end, backtests.train_end),
@@ -1263,6 +1290,42 @@ STAGE1_UPSERT_SQL = """
         backtest_end = COALESCE(EXCLUDED.backtest_end, backtests.backtest_end),
         error_message = COALESCE(EXCLUDED.error_message, backtests.error_message)
 """
+
+
+def backtest_upsert_sql(
+    statement: str,
+    *,
+    research_run_id: str | None = None,
+    backtest_id: str | None = None,
+) -> str:
+    """Official/sealed rows insert once; in-progress and live rows still update."""
+    from qc_research.contracts.sealed_results import (
+        is_sealed_results_run,
+        official_sealed_qc_backtest_ids,
+        official_stage1_pin,
+    )
+    from qc_research.ingest.stage2_sql import conflict_sql
+
+    run_id = str(research_run_id or "")
+    qc_id = str(backtest_id or "")
+    sealed = bool(
+        official_stage1_pin(run_id)
+        or is_sealed_results_run(run_id)
+        or (qc_id and qc_id in official_sealed_qc_backtest_ids())
+    )
+    return conflict_sql(statement, sealed=sealed)
+
+
+def stage1_upsert_sql(
+    research_run_id: str | None,
+    backtest_id: str | None = None,
+) -> str:
+    """Official/sealed Stage 1 rows insert once; in-progress runs still update."""
+    return backtest_upsert_sql(
+        STAGE1_UPSERT_SQL,
+        research_run_id=research_run_id,
+        backtest_id=backtest_id,
+    )
 
 
 STAGE1_LIGHTWEIGHT_UPSERT_SQL = """
@@ -1479,6 +1542,7 @@ def sync_backtests(
     backtests = result.get("backtests", []) or []
     detail_reads = 0
     chart_reads = 0
+    research_failures: list[str] = []
 
     with engine.begin() as conn:
         existing = existing_backtest_map(conn, strategy_id)
@@ -1513,6 +1577,20 @@ def sync_backtests(
             )
             if fetch_chart and not has_dates and not fetch_detail and is_stage1_name(name):
                 fetch_detail = True
+
+            official_block = official_stage1_backtest_upsert_blocked(
+                conn,
+                research_run_id=listed_stage1_run_id(name, row_existing) or None,
+                existing_row=row_existing,
+                backtest_id=str(backtest_id or ""),
+            )
+            if official_block:
+                action = "insert" if not row_existing else "rewrite"
+                print(
+                    f"Skipping official sealed QC {action} for "
+                    f"{name} ({backtest_id}): {official_block}"
+                )
+                continue
 
             detail = None
             if fetch_detail:
@@ -1564,17 +1642,81 @@ def sync_backtests(
                         "backtest_end": fields.get("backtest_end"),
                         "error_message": fields.get("error_message"),
                     }
-                    conn.execute(text(STAGE1_UPSERT_SQL), payload)
-                    upsert_research_run(conn, strategy_id, fields)
+                    detail_block = official_stage1_backtest_upsert_blocked(
+                        conn,
+                        research_run_id=fields.get("research_run_id"),
+                        existing_row=row_existing,
+                        backtest_id=str(backtest_id or ""),
+                    )
+                    if detail_block:
+                        print(
+                            "Skipping official sealed QC rewrite for "
+                            f"{name} ({backtest_id}): {detail_block}"
+                        )
+                    elif unlabeled_qc_needs_detail(row_existing, backtest) and not str(
+                        fields.get("research_run_id") or ""
+                    ).strip():
+                        print(
+                            "Skipping unlabeled QC insert; detail did not recover "
+                            f"a research_run_id for {name} ({backtest_id})"
+                        )
+                    else:
+                        conn.execute(
+                            text(
+                                stage1_upsert_sql(
+                                    payload.get("research_run_id"),
+                                    payload.get("backtest_id"),
+                                )
+                            ),
+                            payload,
+                        )
+                        upsert_research_run(conn, strategy_id, fields)
                 except Exception as exc:
                     print(
                         "Stage 1 detail read failed for "
                         f"{name} ({backtest_id}): {exc}"
                     )
-                    conn.execute(text(LEGACY_UPSERT_SQL), base)
-            elif is_stage1_name(name) and row_existing and row_existing.get("research_run_id"):
+                    if stage1_detail_failure_is_blocking(name, backtest):
+                        research_failures.append(
+                            "Stage 1 detail read failed for {0} ({1}): {2}".format(
+                                name, backtest_id, exc
+                            )
+                        )
+                    elif unlabeled_qc_needs_detail(row_existing, backtest):
+                        print(
+                            "Skipping unlabeled QC insert until detail recovers "
+                            f"a research_run_id for {name} ({backtest_id}): {exc}"
+                        )
+                    else:
+                        conn.execute(
+                            text(
+                                backtest_upsert_sql(
+                                    LEGACY_UPSERT_SQL,
+                                    research_run_id=listed_stage1_run_id(
+                                        name, row_existing
+                                    ),
+                                    backtest_id=str(backtest_id or ""),
+                                )
+                            ),
+                            base,
+                        )
+            elif (
+                is_stage1_name(name)
+                and row_existing
+                and row_existing.get("research_run_id")
+                and not official_block
+            ):
                 merged = merge_stage1_lightweight_metrics(row_existing, metrics)
-                conn.execute(text(STAGE1_LIGHTWEIGHT_UPSERT_SQL), {**base, **merged})
+                conn.execute(
+                    text(
+                        backtest_upsert_sql(
+                            STAGE1_LIGHTWEIGHT_UPSERT_SQL,
+                            research_run_id=row_existing.get("research_run_id"),
+                            backtest_id=str(backtest_id or ""),
+                        )
+                    ),
+                    {**base, **merged},
+                )
             elif needs_legacy_date_hydration(row_existing, backtest):
                 try:
                     detail_result = get_backtest_detail(project_id, backtest_id)
@@ -1582,7 +1724,15 @@ def sync_backtests(
                     detail = detail_result.get("backtest") or detail_result
                     dates = legacy_hydration_fields(detail)
                     conn.execute(
-                        text(LEGACY_DATE_UPSERT_SQL),
+                        text(
+                            backtest_upsert_sql(
+                                LEGACY_DATE_UPSERT_SQL,
+                                research_run_id=listed_stage1_run_id(
+                                    name, row_existing
+                                ),
+                                backtest_id=str(backtest_id or ""),
+                            )
+                        ),
                         {
                             **base,
                             "backtest_start": dates.get("backtest_start"),
@@ -1595,9 +1745,29 @@ def sync_backtests(
                         "Legacy date hydration failed for "
                         f"{name} ({backtest_id}): {exc}"
                     )
-                    conn.execute(text(LEGACY_UPSERT_SQL), base)
+                    conn.execute(
+                        text(
+                            backtest_upsert_sql(
+                                LEGACY_UPSERT_SQL,
+                                research_run_id=listed_stage1_run_id(
+                                    name, row_existing
+                                ),
+                                backtest_id=str(backtest_id or ""),
+                            )
+                        ),
+                        base,
+                    )
             else:
-                conn.execute(text(LEGACY_UPSERT_SQL), base)
+                conn.execute(
+                    text(
+                        backtest_upsert_sql(
+                            LEGACY_UPSERT_SQL,
+                            research_run_id=listed_stage1_run_id(name, row_existing),
+                            backtest_id=str(backtest_id or ""),
+                        )
+                    ),
+                    base,
+                )
 
             if fetch_chart:
                 try:
@@ -1626,21 +1796,39 @@ def sync_backtests(
                             "Equity curve not available yet for "
                             f"{name} ({backtest_id})"
                         )
+                        if stage1_chart_failure_is_blocking(name, backtest):
+                            research_failures.append(
+                                "Equity curve missing for {0} ({1})".format(
+                                    name, backtest_id
+                                )
+                            )
                 except Exception as exc:
                     print(
                         "Equity chart sync failed for "
                         f"{name} ({backtest_id}): {exc}"
                     )
+                    if stage1_chart_failure_is_blocking(name, backtest):
+                        research_failures.append(
+                            "Equity chart sync failed for {0} ({1}): {2}".format(
+                                name, backtest_id, exc
+                            )
+                        )
 
         try:
             audit_holdout_exposures(conn, strategy_id)
         except Exception as exc:
-            print(f"Holdout exposure audit skipped: {exc}")
+            raise ResearchStateSyncError(
+                "Holdout exposure audit failed for {0}: {1}".format(strategy_id, exc)
+            ) from exc
         try:
             refresh_research_run_progress(conn, strategy_id)
         except Exception as exc:
-            print(f"Research run progress refresh skipped: {exc}")
+            raise ResearchStateSyncError(
+                "Research run progress refresh failed for {0}: {1}".format(strategy_id, exc)
+            ) from exc
 
+    if research_failures:
+        raise ResearchStateSyncError("; ".join(research_failures))
     print(
         f"Backtest sync: {len(backtests)} listed, "
         f"{detail_reads} detail reads, {chart_reads} chart reads"
@@ -1701,7 +1889,7 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Sync QuantConnect live state and/or backtests into PostgreSQL.",
     )
-    mode = parser.add_mutually_exclusive_group()
+    mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument(
         "--live-only",
         action="store_true",
@@ -1726,10 +1914,41 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def migration_failure_exit_code(migration_error, sync_backtests_requested: bool):
-    if migration_error and sync_backtests_requested:
+class ResearchStateSyncError(RuntimeError):
+    """Holdout audit, progress refresh, or finished Stage 1 evidence failed."""
+
+
+def stage1_detail_failure_is_blocking(name, backtest) -> bool:
+    """Finished Stage 1 rows must not fall back to a metadata-less legacy upsert."""
+    if not is_stage1_name(name):
+        return False
+    status = str((backtest or {}).get("status") or "").lower()
+    return "completed" in status or is_failed_status(status, backtest)
+
+
+def stage1_chart_failure_is_blocking(name, backtest) -> bool:
+    """Completed Stage 1 rows must persist an equity curve once we request one."""
+    if not is_stage1_name(name):
+        return False
+    status = str((backtest or {}).get("status") or "").lower()
+    if is_failed_status(status, backtest):
+        return False
+    return "completed" in status
+
+
+def migration_failure_exit_code(migration_error, sync_backtests_requested: bool = True):
+    """Any QuantConnect sync, including --live-only, requires applied migrations."""
+    del sync_backtests_requested
+    if migration_error:
         return 1
     return None
+
+
+def stage2_results_ingest_failed(summary=None, error=None) -> bool:
+    """Canonical GitHub stage2-results ingest must not be swallowed."""
+    if error is not None:
+        return True
+    return bool(summary and summary.get("errors"))
 
 
 def main(argv=None):
@@ -1751,13 +1970,22 @@ def main(argv=None):
     blocked = migration_failure_exit_code(migration_error, sync_bts)
     if blocked is not None:
         print(
-            "ERROR: Stage 1 backtest sync requires a successful migration. "
-            "Refusing to continue and downgrade Stage 1 rows to legacy upserts."
+            "ERROR: QuantConnect sync requires a successful migration. "
+            "Refusing to continue --live-only or backtest ingest on a drifted schema."
         )
         return blocked
-    if migration_error and not sync_bts:
-        print("WARNING: continuing --live-only without Stage 1 schema updates.")
 
+    if sync_bts:
+        try:
+            from qc_research.contracts.digests import verify_contract_digests
+
+            verify_contract_digests()
+        except Exception as exc:
+            print("ERROR: contract digest verify failed before Stage 2 ingest: {0}".format(exc))
+            return 1
+
+    stage2_failures: list[str] = []
+    research_state_failures: list[str] = []
     strategies = get_strategies()
 
     print(
@@ -1795,11 +2023,13 @@ def main(argv=None):
                 research_id = resolve_research_project_id(strategy)
                 execution_id = execution_project_id(strategy)
                 if research_id and execution_id and str(research_id) == str(execution_id):
-                    print(
+                    collision = (
                         "Research and execution QuantConnect projects must be "
-                        "separate. Skipping research backtest sync rather than "
-                        "falling back to the execution project."
+                        "separate for {0}. Skipping research backtest sync rather than "
+                        "falling back to the execution project.".format(strategy_id)
                     )
+                    print(collision)
+                    research_state_failures.append(collision)
                 elif research_id:
                     backtests_result = get_backtests(research_id)
                     backtest_count = sync_backtests(
@@ -1823,17 +2053,38 @@ def main(argv=None):
                                     len(store_summary.get("errors") or []),
                                 )
                             )
+                        if stage2_results_ingest_failed(store_summary):
+                            stage2_failures.append(
+                                "{0}: {1}".format(
+                                    strategy_id,
+                                    "; ".join(store_summary.get("errors") or ["ingest failed"]),
+                                )
+                            )
                     except Exception as store_exc:
                         print("Stage 2 results ingest error: {0}".format(store_exc))
+                        stage2_failures.append("{0}: {1}".format(strategy_id, store_exc))
+                elif strategy.get("qc_research_project_name"):
+                    missing = (
+                        "Skipping research backtest sync; dedicated research "
+                        "project is not initialized for {0}.".format(strategy_id)
+                    )
+                    print(missing)
+                    research_state_failures.append(missing)
                 else:
                     print(
                         "Skipping research backtest sync; dedicated research "
                         "project is not initialized."
                     )
 
+            except ResearchStateSyncError as exc:
+                print(str(exc))
+                research_state_failures.append(str(exc))
             except Exception as exc:
                 print(
                     f"Backtest sync error: {exc}"
+                )
+                research_state_failures.append(
+                    "Backtest sync error for {0}: {1}".format(strategy_id, exc)
                 )
         else:
             print("Skipping backtest sync (--live-only).")
@@ -2023,6 +2274,17 @@ def main(argv=None):
             except Exception as exc:
                 print("ERROR: failed to import run summary: {0}".format(exc))
                 return 1
+
+    if stage2_failures:
+        print("ERROR: Stage 2 results ingest failed")
+        for item in stage2_failures:
+            print("  {0}".format(item))
+        return 1
+    if research_state_failures:
+        print("ERROR: research-state sync failed")
+        for item in research_state_failures:
+            print("  {0}".format(item))
+        return 1
 
     return 0
 

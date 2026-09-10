@@ -33,9 +33,12 @@ from qc_research.parsing import (
 )
 from jobs.apply_migrations import pending_migration_files
 from jobs.stage1_backtests import (
+    RunSummaryImportError,
     apply_run_summary,
     compute_research_run_progress,
     discover_run_summary_paths,
+    pin_terminal_run_status,
+    refresh_research_run_progress,
     hydrate_legacy_and_classify,
     import_run_summaries,
     legacy_hydration_fields,
@@ -860,16 +863,99 @@ def test_skipped_oos_finalizes_incomplete_via_run_summary():
     assert finalized["label"] == INCOMPLETE
 
 
-def test_migration_failure_exits_nonzero_when_backtests_requested():
+def test_migration_failure_exits_nonzero_for_live_only_and_backtests():
     from jobs.sync_quantconnect import migration_failure_exit_code
     from pathlib import Path
 
     source = Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py"
     text = source.read_text(encoding="utf-8")
     assert "raise SystemExit(main())" in text
+    assert "continuing --live-only without Stage 1 schema updates" not in text
+    assert "verify_contract_digests" in text
     assert migration_failure_exit_code(RuntimeError("boom"), True) == 1
-    assert migration_failure_exit_code(RuntimeError("boom"), False) is None
+    assert migration_failure_exit_code(RuntimeError("boom"), False) == 1
     assert migration_failure_exit_code(None, True) is None
+
+
+def test_sync_quantconnect_requires_explicit_mode():
+    from jobs.sync_quantconnect import parse_args
+
+    with pytest.raises(SystemExit):
+        parse_args([])
+    assert parse_args(["--backtests-only"]).backtests_only is True
+    assert parse_args(["--live-only"]).live_only is True
+
+
+def test_stage2_results_ingest_errors_are_not_swallowed():
+    from jobs.sync_quantconnect import stage2_results_ingest_failed
+
+    assert stage2_results_ingest_failed({"errors": []}) is False
+    assert stage2_results_ingest_failed({"ingested": 2, "errors": []}) is False
+    assert stage2_results_ingest_failed({"errors": ["bad hash"]}) is True
+    assert stage2_results_ingest_failed(error=RuntimeError("boom")) is True
+    source = (Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py").read_text(
+        encoding="utf-8"
+    )
+    assert "stage2_failures.append" in source
+    assert "ERROR: Stage 2 results ingest failed" in source
+
+
+def test_holdout_audit_and_progress_refresh_are_not_skipped():
+    from jobs.sync_quantconnect import ResearchStateSyncError
+
+    source = (Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py").read_text(
+        encoding="utf-8"
+    )
+    assert "Holdout exposure audit skipped" not in source
+    assert "Research run progress refresh skipped" not in source
+    assert "ResearchStateSyncError" in source
+    assert "research_state_failures" in source
+    assert "ERROR: research-state sync failed" in source
+    assert issubclass(ResearchStateSyncError, RuntimeError)
+
+
+def test_completed_stage1_detail_failure_is_blocking():
+    from jobs.sync_quantconnect import stage1_detail_failure_is_blocking
+
+    name = "S1__SPYTrend__WFO-abc123de__TRAIN__IS__001"
+    assert stage1_detail_failure_is_blocking(name, {"status": "Completed"}) is True
+    assert stage1_detail_failure_is_blocking(name, {"status": "Runtime Error"}) is True
+    assert stage1_detail_failure_is_blocking(name, {"status": "In Progress"}) is False
+    assert stage1_detail_failure_is_blocking("live-bot", {"status": "Completed"}) is False
+    source = (Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py").read_text(
+        encoding="utf-8"
+    )
+    assert "stage1_detail_failure_is_blocking" in source
+    detail_block = source.split("Stage 1 detail read failed", 1)[1]
+    assert "research_failures.append" in detail_block.split("LEGACY_UPSERT_SQL", 1)[0]
+    assert "raise ResearchStateSyncError" in source.split("if research_failures:", 1)[1]
+
+
+def test_completed_stage1_chart_failure_is_blocking():
+    from jobs.sync_quantconnect import stage1_chart_failure_is_blocking
+
+    name = "S1__SPYTrend__WFO-abc123de__TRAIN__IS__001"
+    assert stage1_chart_failure_is_blocking(name, {"status": "Completed"}) is True
+    assert stage1_chart_failure_is_blocking(name, {"status": "Runtime Error"}) is False
+    assert stage1_chart_failure_is_blocking(name, {"status": "In Progress"}) is False
+    assert stage1_chart_failure_is_blocking("live-bot", {"status": "Completed"}) is False
+    source = (Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py").read_text(
+        encoding="utf-8"
+    )
+    assert "stage1_chart_failure_is_blocking" in source
+    chart_block = source.split("Equity curve not available yet", 1)[1]
+    assert "research_failures.append" in chart_block.split("except Exception", 1)[0]
+    fail_block = source.split("Equity chart sync failed", 1)[1]
+    assert "research_failures.append" in fail_block.split("audit_holdout_exposures", 1)[0]
+
+
+def test_generic_backtest_sync_errors_are_not_swallowed():
+    source = (Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py").read_text(
+        encoding="utf-8"
+    )
+    error_block = source.split('f"Backtest sync error: {exc}"', 1)[1].split("else:", 1)[0]
+    assert "research_state_failures.append" in error_block
+    assert "ERROR: research-state sync failed" in source
 
 
 def test_backtest_cron_installer_uses_nonblocking_flock():
@@ -886,6 +972,12 @@ def test_backtest_cron_installer_uses_nonblocking_flock():
     assert "flock -n" in text
     assert "--backtests-only" in text
     assert BACKTEST_SYNC_LOCK_RELATIVE in text
+    assert 'CODE_ROOT="/opt/fmp/current"' in text
+    assert "LOCK_ROOT" in text
+    assert "cd ${CODE_ROOT}" in text
+    assert "/etc/fmp/fmp-writer.env" in text
+    assert 'CHECKOUT_ENV="${LOCK_ROOT}/.env"' in text
+    assert "unset FMP_STREAMLIT_READONLY" in text
     assert "live" in text.lower()
     assert "Does NOT run unless you execute this script yourself." not in text
     assert "Deploy" in text or "deploy" in text
@@ -1030,6 +1122,26 @@ def test_upsert_research_run_skips_smoke():
     )
 
 
+def test_upsert_research_run_skips_official_stage1_pin():
+    from jobs.stage1_backtests import upsert_research_run
+
+    class Boom:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("official Stage 1 must not be upserted from QC sync")
+
+    upsert_research_run(
+        Boom(),
+        "SPYTrend",
+        {
+            "research_run_id": "STAGE1_SPYTrend_c04553d8",
+            "research_test_type": "PARAM_SENS",
+            "research_git_commit": "0" * 40,
+            "expected_experiment_count": 1,
+            "research_is_holdout": True,
+        },
+    )
+
+
 def test_strategy_monitor_has_smoke_section_and_fragment_refresh():
     from pathlib import Path
 
@@ -1097,6 +1209,8 @@ def test_backtest_cron_installer_is_idempotent_and_preserves_live_cron(tmp_path)
     text = crontab_file.read_text()
     assert text.count("jobs.sync_quantconnect --backtests-only") == 1
     assert "flock -n" in text
+    assert "/etc/fmp/fmp-writer.env" in text
+    assert "unset FMP_STREAMLIT_READONLY" in text
     assert live_line in text
     assert text.count(live_line) == 1
     assert "* * * * *" in text
@@ -1224,17 +1338,24 @@ def test_strategy_monitor_shows_research_and_execution_labels():
     monitor = (
         Path(__file__).resolve().parent.parent / "pages" / "strategy_monitor.py"
     ).read_text(encoding="utf-8")
+    queries = (
+        Path(__file__).resolve().parent.parent / "qc_research" / "read_models" / "monitor_queries.py"
+    ).read_text(encoding="utf-8")
     assert "Research Project:" in monitor
     assert "Execution Project:" in monitor
     assert "qc_research_project_name" in monitor
     assert "qc_research_project_id" in monitor
-    assert "orchestrator_summary_json" in monitor
+    assert "orchestrator_summary_json" in queries
+    assert "load_research_run" in monitor
+    assert "from qc_research.read_models.monitor_queries import" in monitor
     ui = (
         Path(__file__).resolve().parent.parent / "qc_research" / "monitor_ui.py"
     ).read_text(encoding="utf-8")
     assert "STAGE 1 RESEARCH RESULTS" in ui
     assert "Audit / Safety" in ui
     assert "Equity Curves" in ui
+    assert "Unable to classify holdout exposure across all backtests" in ui
+    assert "except Exception:\n        pass" not in ui
 
 
 class _RecordingConn:
@@ -1249,6 +1370,9 @@ class _RecordingConn:
         class _Result:
             def mappings(self_inner):
                 return iter([])
+
+            def fetchone(self_inner):
+                return None
 
         return _Result()
 
@@ -1434,6 +1558,206 @@ def test_case4_summary_retry_is_idempotent(tmp_path):
         Path(__file__).resolve().parent.parent / "jobs" / "stage1_backtests.py"
     ).read_text(encoding="utf-8")
     assert "ON CONFLICT (research_run_id)" in source
+    assert "WHEN research_runs.run_status = 'COMPLETE'" in source
+
+
+def test_apply_run_summary_refuses_complete_downgrade():
+    class _CompleteConn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "SELECT run_status" in sql:
+                class _Result:
+                    def fetchone(self_inner):
+                        return ("COMPLETE",)
+
+                return _Result()
+            raise AssertionError("downgrade must not upsert")
+
+    with pytest.raises(RunSummaryImportError, match="downgrade"):
+        apply_run_summary(
+            _CompleteConn(),
+            _orchestrator_summary(run_status="INCOMPLETE", skipped_count=1),
+        )
+
+
+def test_apply_run_summary_refuses_in_progress_and_unknown():
+    class _Conn:
+        def execute(self, statement, params=None):
+            raise AssertionError("non-terminal summary must not upsert")
+
+    with pytest.raises(RunSummaryImportError, match="IN_PROGRESS"):
+        apply_run_summary(
+            _Conn(),
+            _orchestrator_summary(run_status="IN_PROGRESS", completed_count=40),
+        )
+    with pytest.raises(RunSummaryImportError, match="RUNNING"):
+        apply_run_summary(
+            _Conn(),
+            _orchestrator_summary(run_status="RUNNING"),
+        )
+    with pytest.raises(RunSummaryImportError, match="unknown"):
+        apply_run_summary(
+            _Conn(),
+            _orchestrator_summary(run_status=""),
+        )
+    apply_run_summary(
+        _RecordingConn(),
+        _orchestrator_summary(run_status="INCOMPLETE", completed_count=80, skipped_count=1),
+    )
+    apply_run_summary(_RecordingConn(), _orchestrator_summary(run_status="COMPLETE"))
+
+
+def test_refresh_does_not_reopen_terminal_run_status():
+    assert pin_terminal_run_status(COMPLETE, IN_PROGRESS) == COMPLETE
+    assert pin_terminal_run_status(INCOMPLETE, IN_PROGRESS) == INCOMPLETE
+    assert pin_terminal_run_status(INCOMPLETE, COMPLETE) == COMPLETE
+    assert pin_terminal_run_status(IN_PROGRESS, IN_PROGRESS) == IN_PROGRESS
+    assert pin_terminal_run_status(None, IN_PROGRESS) == IN_PROGRESS
+    assert pin_terminal_run_status("RESEARCH_COMPLETE", IN_PROGRESS) == "RESEARCH_COMPLETE"
+    assert pin_terminal_run_status("NON_HOLDOUT_COMPLETE", IN_PROGRESS) == "NON_HOLDOUT_COMPLETE"
+    assert pin_terminal_run_status("RESEARCH_COMPLETE", COMPLETE) == COMPLETE
+
+    class _Conn:
+        def __init__(self, run_status: str):
+            self.run_status = run_status
+            self.updates: list[dict] = []
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+
+            class _Result:
+                def mappings(self_inner):
+                    if "FROM research_runs" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                                    "expected_experiment_count": 81,
+                                    "orchestrator_summary_json": {},
+                                    "run_status": self.run_status,
+                                }
+                            ]
+                        )
+                    if "FROM backtests" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                                    "status": "Completed.",
+                                    "research_test_type": "PARAM_SENS",
+                                }
+                                for _ in range(40)
+                            ]
+                        )
+                    return iter([])
+
+            if "UPDATE research_runs" in sql:
+                self.updates.append(params)
+            return _Result()
+
+    complete_conn = _Conn(COMPLETE)
+    refresh_research_run_progress(complete_conn, "SPYTrend")
+    assert complete_conn.updates[0]["run_status"] == COMPLETE
+    incomplete_conn = _Conn(INCOMPLETE)
+    refresh_research_run_progress(incomplete_conn, "SPYTrend")
+    assert incomplete_conn.updates[0]["run_status"] == INCOMPLETE
+
+
+def test_refresh_does_not_rewrite_official_stage1_pin_counts():
+    class _Conn:
+        def __init__(self):
+            self.updates: list[dict] = []
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+
+            class _Result:
+                def mappings(self_inner):
+                    if "FROM research_runs" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_c04553d8",
+                                    "expected_experiment_count": 81,
+                                    "orchestrator_summary_json": {},
+                                    "run_status": COMPLETE,
+                                }
+                            ]
+                        )
+                    if "FROM backtests" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_c04553d8",
+                                    "status": "Completed.",
+                                    "research_test_type": "PARAM_SENS",
+                                }
+                                for _ in range(40)
+                            ]
+                        )
+                    return iter([])
+
+            if "UPDATE research_runs" in sql:
+                self.updates.append(params)
+            return _Result()
+
+    conn = _Conn()
+    updated = refresh_research_run_progress(conn, "SPYTrend")
+    assert conn.updates == []
+    assert updated[0]["research_run_id"] == "STAGE1_SPYTrend_c04553d8"
+    assert updated[0]["sealed"] is True
+    assert updated[0]["run_status"] == COMPLETE
+
+
+def test_refresh_does_not_rewrite_sealed_csfml_or_tlt_counts():
+    from jobs.stage1_backtests import refresh_research_run_progress
+
+    class _Conn:
+        def __init__(self, run_id):
+            self.run_id = run_id
+            self.updates: list[dict] = []
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+
+            class _Result:
+                def mappings(self_inner):
+                    if "FROM research_runs" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": self.run_id,
+                                    "expected_experiment_count": 10,
+                                    "orchestrator_summary_json": {},
+                                    "run_status": COMPLETE,
+                                }
+                            ]
+                        )
+                    if "FROM backtests" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": self.run_id,
+                                    "status": "Completed.",
+                                    "research_test_type": "ML_TRAIN",
+                                }
+                            ]
+                        )
+                    return iter([])
+
+            if "UPDATE research_runs" in sql:
+                self.updates.append(params)
+            return _Result()
+
+    for run_id in (
+        "STAGE2_CrossSectionalFactorML_54a5543f",
+        "PLATFORM_TLTDurationMomentum_V0",
+    ):
+        conn = _Conn(run_id)
+        updated = refresh_research_run_progress(conn, "CrossSectionalFactorML")
+        assert conn.updates == []
+        assert updated[0]["research_run_id"] == run_id
+        assert updated[0]["sealed"] is True
 
 
 def test_case5_smoke_excluded_from_stage1_counts_and_equity():
@@ -1489,6 +1813,8 @@ def test_case6_research_execution_separation_hard_fails_stage1_fallback():
     ).read_text(encoding="utf-8")
     assert "str(research_id) == str(execution_id)" in source
     assert "Skipping research backtest sync rather than" in source
+    assert "research_state_failures.append(collision)" in source
+    assert "research_state_failures.append(missing)" in source
     assert resolve_research_project_id(same, persist=False) == "111"
 
 
@@ -1512,6 +1838,17 @@ def test_discover_and_attach_run_summary(tmp_path):
     path.write_text(json.dumps(payload), encoding="utf-8")
     found = discover_run_summary_paths(tmp_path)
     assert found == [path]
+    ignored = (
+        tmp_path
+        / "outputs"
+        / "stage1_results"
+        / "SPYTrend"
+        / payload["research_run_id"]
+        / "run_summary.json"
+    )
+    ignored.parent.mkdir(parents=True)
+    ignored.write_text(json.dumps(payload), encoding="utf-8")
+    assert discover_run_summary_paths(tmp_path) == [path]
     parsed = parse_orchestrator_summary({"orchestrator_summary_json": payload})
     assert parsed["skipped_count"] == 1
     start, end = research_date_range(
@@ -1539,6 +1876,565 @@ def test_backtests_only_imports_run_summary_after_qc_sync():
         "imported = import_run_summaries"
     )
     assert "stage1_results" in source
+    discover = (
+        Path(__file__).resolve().parent.parent / "jobs" / "stage1_backtests.py"
+    ).read_text(encoding="utf-8")
+    discover_fn = discover.split("def discover_run_summary_paths", 1)[1].split(
+        "def load_run_summary_payload", 1
+    )[0]
+    assert "stage1_results" in discover_fn
+    assert "outputs/stage1_results" not in discover_fn
+
+
+OFFICIAL_STAGE1_RUN = "STAGE1_SPYTrend_c04553d8"
+OFFICIAL_STAGE1_SHA = "f04dbfb1a936c753a42a1389d9181f7c22f551a3"
+
+
+def _official_stage1_row(**overrides):
+    row = {
+        "research_run_id": OFFICIAL_STAGE1_RUN,
+        "strategy_id": "SPYTrend",
+        "git_commit": OFFICIAL_STAGE1_SHA,
+        "run_status": "COMPLETE",
+        "expected_experiment_count": 81,
+        "completed_count": 81,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "holdout_accessed": False,
+        "holdout_access_count": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_official_stage1_identity_blockers_are_run_scoped():
+    from qc_research.contracts.sealed_results import (
+        load_sealed_results,
+        official_stage1_identity_blockers,
+    )
+
+    pin = load_sealed_results()["stage1_pins"][OFFICIAL_STAGE1_RUN]
+    assert "holdout_accessed" not in pin
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id="STAGE1_SPYTrend_other",
+        row={"git_commit": "0" * 40},
+    ) == []
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(),
+    ) == []
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(
+            expected_experiment_count="81",
+            completed_count=81.0,
+            failed_count="0",
+            skipped_count=0,
+        ),
+    ) == []
+    drifted = official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(git_commit="0" * 40, completed_count=1),
+    )
+    assert "git_commit" in drifted
+    assert "completed_count" in drifted
+    assert official_stage1_identity_blockers(
+        strategy_id="Other",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(),
+    ) == ["strategy_id_mismatch"]
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        engine=None,
+    ) == ["identity_query_failed"]
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(holdout_accessed=True),
+    ) == ["holdout_accessed"]
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        row=_official_stage1_row(holdout_access_count=1),
+    ) == ["holdout_access_count"]
+
+    class _EmptyEngine:
+        def connect(self):
+            class _Conn:
+                def __enter__(self_inner):
+                    return self_inner
+
+                def __exit__(self_inner, *args):
+                    return False
+
+                def execute(self_inner, *args, **kwargs):
+                    class _Result:
+                        def mappings(self_map):
+                            class _Mappings:
+                                def first(self_first):
+                                    return None
+
+                            return _Mappings()
+
+                    return _Result()
+
+            return _Conn()
+
+    assert official_stage1_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        engine=_EmptyEngine(),
+    ) == ["official_run_missing"]
+
+
+def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras():
+    from jobs.stage1_backtests import (
+        listed_stage1_run_id,
+        needs_detail_read,
+        needs_equity_curve,
+        official_stage1_backtest_count,
+        official_stage1_backtest_upsert_blocked,
+        unlabeled_qc_needs_detail,
+    )
+
+    class _CountConn:
+        def __init__(self, n):
+            self.n = n
+
+        def execute(self, statement, params=None):
+            class _Result:
+                def mappings(self_inner):
+                    class _Mappings:
+                        def first(self_map):
+                            return {"n": self.n}
+
+                    return _Mappings()
+
+            return _Result()
+
+    class _NoneConn:
+        def execute(self, *args, **kwargs):
+            return None
+
+    official_name = "S1__SPYTrend__STAGE1_SPYTrend_c04553d8__PARAM_SENS__IS__001"
+    existing = {"backtest_id": "bt-1", "research_run_id": OFFICIAL_STAGE1_RUN}
+    assert listed_stage1_run_id(official_name, None) == OFFICIAL_STAGE1_RUN
+    csfml_name = (
+        "S2__CrossSectionalFactorML__STAGE2_CrossSectionalFactorML_54a5543f__ML_TRAIN__2015__001"
+    )
+    assert listed_stage1_run_id(csfml_name, None) == "STAGE2_CrossSectionalFactorML_54a5543f"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=listed_stage1_run_id(csfml_name, None) or None,
+        existing_row=None,
+    ) == "sealed_results_backtest_immutable"
+    assert listed_stage1_run_id("PLATFORM_TLTDurationMomentum_V0", None) == (
+        "PLATFORM_TLTDurationMomentum_V0"
+    )
+    assert listed_stage1_run_id("W2015 train", None) == ""
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=listed_stage1_run_id("W2015 train", None) or None,
+        existing_row=None,
+        backtest_id="42444d596c9116f1320203e896fbf0fe",
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=None,
+        existing_row=None,
+        backtest_id="7dc2afca65a22195d4845bc4ecb3d465",
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=None,
+        existing_row=None,
+        backtest_id="75d7feae6d9c09c1a0b914a0ce2fdbe5",
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=None,
+        existing_row=None,
+        backtest_id="not-an-official-tlt-id",
+    ) is None
+    synthetic = "S2__SyntheticStage2__run__ML_OOS_TEST__2015__002"
+    assert listed_stage1_run_id(synthetic, None) == "run"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=listed_stage1_run_id(synthetic, None) or None,
+        existing_row=None,
+    ) is None
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(81),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=existing,
+    ) == "official_stage1_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(40),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=None,
+    ) is None
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(81),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=None,
+    ) == "official_stage1_experiment_cap"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(99),
+        research_run_id="STAGE1_SPYTrend_other",
+        existing_row={"research_run_id": "STAGE1_SPYTrend_other"},
+    ) is None
+    assert official_stage1_backtest_count(_NoneConn(), OFFICIAL_STAGE1_RUN) is None
+    assert official_stage1_backtest_upsert_blocked(
+        _NoneConn(),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=None,
+    ) == "official_stage1_count_unknown"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=None,
+    ) is None
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id="STAGE2_CrossSectionalFactorML_54a5543f",
+        existing_row=None,
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id="STAGE2_CrossSectionalFactorML_e7b24642",
+        existing_row=None,
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id="PLATFORM_TLTDurationMomentum_V0",
+        existing_row={"research_run_id": "PLATFORM_TLTDurationMomentum_V0"},
+    ) == "official_stage1_backtest_immutable"
+    completed = {"name": official_name, "status": "Completed."}
+    assert needs_detail_read(existing, completed) is False
+    assert needs_equity_curve(existing, completed, 0) is False
+    assert needs_detail_read(None, completed) is True
+    assert needs_equity_curve(None, completed, 0) is True
+    renamed = {"name": "renamed-qc-backtest", "status": "Completed."}
+    assert unlabeled_qc_needs_detail(None, renamed) is True
+    assert needs_detail_read(None, renamed) is True
+    assert unlabeled_qc_needs_detail({"research_run_id": ""}, renamed) is True
+    assert unlabeled_qc_needs_detail(existing, renamed) is False
+    assert unlabeled_qc_needs_detail(None, completed) is False
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(81),
+        research_run_id=listed_stage1_run_id("renamed-qc-backtest", existing) or None,
+        existing_row=existing,
+    ) == "official_stage1_backtest_immutable"
+    from jobs.stage1_backtests import needs_legacy_date_hydration
+
+    assert needs_legacy_date_hydration(existing, renamed) is False
+
+
+def test_sync_quantconnect_skips_official_stage1_rewrite():
+    source = (
+        Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py"
+    ).read_text(encoding="utf-8")
+    sync_fn = source.split("def sync_backtests", 1)[1]
+    assert "official_stage1_backtest_upsert_blocked" in sync_fn
+    assert "listed_stage1_run_id" in sync_fn
+    assert "backtest_id=str(backtest_id" in sync_fn
+    assert "stage1_upsert_sql" in sync_fn
+    assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
+        "stage1_upsert_sql("
+    )
+    assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
+        "LEGACY_UPSERT_SQL"
+    )
+    assert "if is_stage1_name(name):\n                official_block" not in sync_fn
+    assert sync_fn.index("if official_block:") < sync_fn.index("STAGE1_LIGHTWEIGHT_UPSERT_SQL")
+    assert "and not official_block" in sync_fn
+    assert "unlabeled_qc_needs_detail" in sync_fn
+    assert "Skipping unlabeled QC insert" in sync_fn
+    assert "detail did not recover" in sync_fn
+    assert "backtest_upsert_sql" in sync_fn
+    assert sync_fn.index("unlabeled_qc_needs_detail") < sync_fn.index(
+        "backtest_upsert_sql(\n                                    LEGACY_UPSERT_SQL"
+    )
+    assert sync_fn.index("detail did not recover") < sync_fn.index(
+        "stage1_upsert_sql("
+    )
+
+
+def test_stage1_upsert_sql_insert_once_for_official_run():
+    from jobs.sync_quantconnect import (
+        LEGACY_UPSERT_SQL,
+        STAGE1_LIGHTWEIGHT_UPSERT_SQL,
+        STAGE1_UPSERT_SQL,
+        backtest_upsert_sql,
+        stage1_upsert_sql,
+    )
+    from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
+
+    official = stage1_upsert_sql(OFFICIAL_STAGE1_RUN)
+    assert "DO NOTHING" in official
+    assert "DO UPDATE" not in official
+    assert "DO UPDATE" in STAGE1_UPSERT_SQL
+    open_run = stage1_upsert_sql("STAGE1_SPYTrend_156c40e7")
+    assert open_run == STAGE1_UPSERT_SQL
+    assert stage1_upsert_sql(None) == STAGE1_UPSERT_SQL
+    lightweight = backtest_upsert_sql(
+        STAGE1_LIGHTWEIGHT_UPSERT_SQL,
+        research_run_id=OFFICIAL_STAGE1_RUN,
+    )
+    assert "DO NOTHING" in lightweight
+    assert "DO UPDATE" not in lightweight
+    qc_id = next(iter(official_tlt_qc_backtest_ids()))
+    legacy = backtest_upsert_sql(LEGACY_UPSERT_SQL, backtest_id=qc_id)
+    assert "DO NOTHING" in legacy
+    assert "DO UPDATE" not in legacy
+    assert backtest_upsert_sql(LEGACY_UPSERT_SQL, backtest_id="not-official") == LEGACY_UPSERT_SQL
+
+
+def test_audit_holdout_exposures_skips_official_stage1():
+    from jobs.stage1_backtests import audit_holdout_exposures
+
+    updates: list[dict] = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "UPDATE research_runs" in sql:
+                updates.append(dict(params or {}))
+
+            class _Result:
+                def mappings(self_inner):
+                    if "FROM research_runs" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": OFFICIAL_STAGE1_RUN,
+                                    "research_lineage_id": "SPYTrend",
+                                    "holdout_start": "2023-01-01",
+                                    "holdout_end": "2024-12-31",
+                                    "config_json": {},
+                                    "expected_experiment_count": 81,
+                                },
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_other",
+                                    "research_lineage_id": "SPYTrend",
+                                    "holdout_start": "2023-01-01",
+                                    "holdout_end": "2024-12-31",
+                                    "config_json": {},
+                                    "expected_experiment_count": 81,
+                                },
+                            ]
+                        )
+                    return iter([])
+
+            return _Result()
+
+    audit_holdout_exposures(_Conn(), "SPYTrend")
+    assert [row["research_run_id"] for row in updates] == ["STAGE1_SPYTrend_other"]
+
+
+def test_insert_equity_points_skips_existing_official_stage1():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "INSERT INTO backtest_equity_points" in sql:
+                raise AssertionError("official equity must not be rewritten")
+
+            class _Result:
+                def mappings(self_inner):
+                    class _Mappings:
+                        def first(self_map):
+                            if "FROM backtests" in sql:
+                                return {"research_run_id": OFFICIAL_STAGE1_RUN}
+                            return {"n": 4}
+
+                    return _Mappings()
+
+            return _Result()
+
+    assert (
+        insert_equity_points(
+            _Conn(),
+            "SPYTrend",
+            "bt-official",
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 0
+    )
+
+
+def test_insert_equity_points_skips_when_backtest_lookup_unknown():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            if "INSERT INTO backtest_equity_points" in str(statement):
+                raise AssertionError("equity must not be written when backtest lookup is unknown")
+            return None
+
+    assert (
+        insert_equity_points(
+            _Conn(),
+            "SPYTrend",
+            "bt-unknown",
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 0
+    )
+
+
+def test_insert_equity_points_writes_live_when_identity_known():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+
+    inserts = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "INSERT INTO backtest_equity_points" in sql:
+                inserts.append(params)
+                return None
+
+            class _Result:
+                def mappings(self_inner):
+                    class _Mappings:
+                        def first(self_map):
+                            if "FROM backtests" in sql:
+                                return {"research_run_id": "STAGE1_SPYTrend_live"}
+                            return {"n": 0}
+
+                    return _Mappings()
+
+            return _Result()
+
+    assert (
+        insert_equity_points(
+            _Conn(),
+            "SPYTrend",
+            "bt-live",
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 1
+    )
+    assert inserts and inserts[0]["backtest_id"] == "bt-live"
+
+
+def test_insert_equity_points_skips_official_when_count_unknown():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "INSERT INTO backtest_equity_points" in sql:
+                raise AssertionError("official equity must not be written when count is unknown")
+            if "FROM backtests" in sql:
+
+                class _Result:
+                    def mappings(self_inner):
+                        class _Mappings:
+                            def first(self_map):
+                                return {"research_run_id": OFFICIAL_STAGE1_RUN}
+
+                        return _Mappings()
+
+                return _Result()
+            return None
+
+    assert (
+        insert_equity_points(
+            _Conn(),
+            "SPYTrend",
+            "bt-official",
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 0
+    )
+
+
+def test_insert_equity_points_skips_published_sealed_qc_ids():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+    from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
+
+    qc_id = next(iter(official_tlt_qc_backtest_ids()))
+
+    class _Boom:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("published sealed QC equity must not be written")
+
+    assert (
+        insert_equity_points(
+            _Boom(),
+            "TLTDurationMomentum",
+            qc_id,
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 0
+    )
+
+
+def test_insert_equity_points_does_not_rewrite_on_conflict():
+    source = (
+        Path(__file__).resolve().parent.parent / "jobs" / "stage1_backtests.py"
+    ).read_text(encoding="utf-8")
+    fn = source.split("def insert_equity_points", 1)[1].split("\ndef ", 1)[0]
+    assert "ON CONFLICT (backtest_id, timestamp, series_name)" in fn
+    assert "DO NOTHING" in fn
+    assert "DO UPDATE SET" not in fn
+
+
+def test_monitor_ui_fail_closes_official_stage1_identity():
+    ui = (
+        Path(__file__).resolve().parent.parent / "qc_research" / "monitor_ui.py"
+    ).read_text(encoding="utf-8")
+    assert "official_stage1_identity_blockers" in ui
+    assert "This is not an economic PASS/WATCH/FAIL." in ui
+    assert "st.stop()" in ui.split("official_stage1_identity_blockers", 1)[1]
 
 
 

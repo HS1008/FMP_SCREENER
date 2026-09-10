@@ -1,6 +1,8 @@
 from datetime import date, datetime
 from pathlib import Path
 
+import pytest
+
 from qc_research.holdout import STATUS_EXPOSED_PRIOR_TO_STAGE1
 from scripts.verify_stage1_production import (
     EXPECTED_RESEARCH_PROJECT_ID,
@@ -9,6 +11,7 @@ from scripts.verify_stage1_production import (
     evaluate_legacy_and_holdout,
     evaluate_live_parser,
     evaluate_research_and_smoke,
+    evaluate_official_stage1_identity,
     evaluate_stage1_run,
     evaluate_working_tree,
     format_report,
@@ -159,6 +162,7 @@ def test_report_does_not_include_secret_names_as_values():
         overall="PASS",
     )
     assert "STAGE 1 PRODUCTION VERIFICATION" in report
+    assert "Official Stage 1 identity" in report
     assert "Overall:" in report
     assert "PASS" in report
     assert "DB_PASSWORD" not in report
@@ -201,17 +205,121 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     assert "--live-only" in workflow
     assert "--backtests-only" in workflow
     assert "python -m jobs.apply_migrations" in workflow
+    assert "Loading writer identity for immutable CODE_ROOT" in workflow
+    assert workflow.index("Loading writer identity for immutable CODE_ROOT") < workflow.index(
+        "python -m jobs.apply_migrations"
+    )
+    writer = workflow.split("Loading writer identity for immutable CODE_ROOT", 1)[1].split(
+        "Applying database migrations (idempotent)", 1
+    )[0]
+    assert ". /root/FMP_SCREENER/.env" in writer
+    assert ". /etc/fmp/fmp-writer.env" in writer
+    assert writer.index(". /root/FMP_SCREENER/.env") < writer.index(". /etc/fmp/fmp-writer.env")
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in writer
     assert "verify_stage1_production.py" in workflow
+    assert "CODE_ROOT=/opt/fmp/current" in workflow
+    assert "CODE_ROOT=/root/FMP_SCREENER" in workflow
+    assert workflow.index("CODE_ROOT=/opt/fmp/current") < workflow.index(
+        "CODE_ROOT=/root/FMP_SCREENER"
+    )
+    assert "live code root missing on droplet" in workflow
+    assert "flock -w 180 /root/FMP_SCREENER/outputs/backtest_sync.flock" in workflow
+    assert "cd ${CODE_ROOT}" in workflow
+    assert "/etc/fmp/fmp-dashboard.env" in workflow
+    assert "DASHBOARD_ALLOW_WRITER_FALLBACK" in workflow
     assert "lean cloud backtest" not in workflow
     assert "BEGIN OPENSSH" not in workflow
     assert "-----BEGIN" not in workflow
+    assert "jobs.record_stage1_verify" in workflow
+    assert "trap" in workflow
+    assert "/var/lib/fmp/deploy/stage1_verify.json" in workflow
+    assert workflow.index("trap") < workflow.index("verify_stage1_production.py --working-tree-only")
+    assert "source /root/FMP_SCREENER/.env" not in workflow
+    assert "qc_research.verify_stage1 --live" in workflow
+    assert "/var/lib/fmp/deploy/stage1_live.json" in workflow
+    assert "jobs.record_research_live_identity_db" in workflow
+    assert "--require-present" not in workflow
+    assert workflow.index("verify_stage1_production.py") < workflow.index(
+        "qc_research.verify_stage1 --live"
+    )
+    assert workflow.index("qc_research.verify_stage1 --live") < workflow.index(
+        "jobs.record_research_live_identity_db"
+    )
+    assert workflow.index("/var/lib/fmp/deploy/stage1_verify.json") < workflow.index(
+        "/var/lib/fmp/deploy/stage1_live.json"
+    )
+    live = workflow.split("Recording official Stage 1 live identity", 1)[1].split(
+        "Persisting sanitized Stage 1 live identity", 1
+    )[0]
+    assert "/etc/fmp/fmp-dashboard.env" in live
+    assert "unset DATABASE_URL" in live
+    assert ". /root/FMP_SCREENER/.env" not in live
+    persist = workflow.split("Persisting sanitized Stage 1 live identity", 1)[1]
+    assert "/etc/fmp/fmp-writer.env" in persist
+    assert "/root/FMP_SCREENER/.env" in persist
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in persist
+    assert persist.index("/root/FMP_SCREENER/.env") < persist.index(
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
+    )
+    assert persist.index("/etc/fmp/fmp-writer.env") < persist.index("/root/FMP_SCREENER/.env")
+    assert "/etc/fmp/fmp-dashboard.env" not in persist
+    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in persist
+
+
+def test_stage1_verify_outcome_is_recorded_without_secrets(tmp_path):
+    from jobs.record_stage1_verify import build_record, main
+
+    record = build_record(git_sha="abc123", code_root="/opt/fmp/current", verify_rc=0)
+    assert record["ok"] is True
+    assert record["stage1_verify_rc"] == 0
+    assert record["csfml_v1_label_integrity"] == "CANNOT_RULE_OUT"
+    assert record["csfml_v1_rerun_authorized"] is False
+    out = tmp_path / "stage1_verify.json"
+    assert main(["--git-sha", "abc123", "--code-root", "/opt/fmp/current", "--rc", "0", "--out", str(out)]) == 0
+    text = out.read_text(encoding="utf-8")
+    assert "postgresql://" not in text
+    assert "CANNOT_RULE_OUT" in text
+    with pytest.raises(RuntimeError, match="secret-bearing"):
+        main(
+            [
+                "--git-sha",
+                "abc123",
+                "--code-root",
+                "postgresql://writer:secret@127.0.0.1/fmp",
+                "--rc",
+                "1",
+                "--out",
+                str(tmp_path / "bad.json"),
+            ]
+        )
+
+
+def test_stage1_production_verify_uses_dashboard_readonly():
+    script = (
+        Path(__file__).resolve().parent.parent / "scripts" / "verify_stage1_production.py"
+    ).read_text(encoding="utf-8")
+    assert "dashboard_engine" in script
+    assert "load_streamlit_env" in script
+    assert "strip_writer_database_env" not in script
+    assert "from db.connection import engine" not in script
+    assert "DASHBOARD_ALLOW_WRITER_FALLBACK is not a Stage 1 production verify path" in script
+    workflow = _workflow_text("stage1_verify.yml")
+    query = workflow.split("python -m jobs.apply_migrations", 1)[1]
+    assert "source /etc/fmp/fmp-dashboard.env" in query
+    assert "unset DATABASE_URL" in query
+    assert "source /root/FMP_SCREENER/.env" not in query
+    assert query.index("source /etc/fmp/fmp-dashboard.env") < query.index(
+        "python scripts/verify_stage1_production.py"
+    )
 
 
 def test_deploy_installs_backtest_sync_cron_after_migrations():
-    deploy = _workflow_text("deploy.yml")
+    deploy = (
+        Path(__file__).resolve().parent.parent / "scripts" / "deploy_host.sh"
+    ).read_text(encoding="utf-8")
     verify = _workflow_text("stage1_verify.yml")
     assert "install_backtest_sync_cron.sh" in deploy
-    assert "python -m jobs.apply_migrations" in deploy
+    assert "-m jobs.apply_migrations" in deploy
     assert deploy.index("apply_migrations") < deploy.index("install_backtest_sync_cron")
     assert deploy.index("install_backtest_sync_cron") < deploy.index("systemctl restart")
     uncommented_verify = "\n".join(
@@ -523,3 +631,74 @@ def test_stage1_run_rejects_smoke_contamination():
     )
     assert result["status"] == "FAIL"
     assert any("SMOKE" in item for item in result["failures"])
+
+
+OFFICIAL_STAGE1_RUN = "STAGE1_SPYTrend_c04553d8"
+OFFICIAL_STAGE1_SHA = "f04dbfb1a936c753a42a1389d9181f7c22f551a3"
+
+
+def _official_stage1_verify_row(**overrides):
+    row = {
+        "research_run_id": OFFICIAL_STAGE1_RUN,
+        "strategy_id": "SPYTrend",
+        "git_commit": OFFICIAL_STAGE1_SHA,
+        "run_status": "COMPLETE",
+        "expected_experiment_count": 81,
+        "completed_count": 81,
+        "failed_count": 0,
+        "skipped_count": 0,
+        "holdout_accessed": False,
+        "holdout_access_count": 0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_official_stage1_identity_skipped_when_absent():
+    result = evaluate_official_stage1_identity(
+        [
+            {
+                "research_run_id": "STAGE1_SPYTrend_156c40e7",
+                "run_status": "COMPLETE",
+                "expected_experiment_count": 81,
+            }
+        ]
+    )
+    assert result["status"] == "SKIP"
+    assert result["present"] is False
+    assert result["failures"] == []
+
+
+def test_official_stage1_identity_passes_when_pinned():
+    result = evaluate_official_stage1_identity([_official_stage1_verify_row()])
+    assert result["status"] == "PASS"
+    assert result["present"] is True
+    assert result["research_run_id"] == OFFICIAL_STAGE1_RUN
+    assert result["failures"] == []
+
+
+def test_official_stage1_identity_refuses_pin_drift_and_holdout():
+    drifted = evaluate_official_stage1_identity(
+        [_official_stage1_verify_row(git_commit="0" * 40, completed_count=1)]
+    )
+    assert drifted["status"] == "FAIL"
+    assert any("git_commit" in item for item in drifted["failures"])
+    assert any("completed_count" in item for item in drifted["failures"])
+    assert any("This is not an economic PASS/WATCH/FAIL" in item for item in drifted["failures"])
+    holdout = evaluate_official_stage1_identity(
+        [_official_stage1_verify_row(holdout_accessed=True)]
+    )
+    assert holdout["status"] == "FAIL"
+    assert any("holdout_accessed" in item for item in holdout["failures"])
+
+
+def test_production_verify_queries_official_stage1_identity():
+    source = (
+        Path(__file__).resolve().parent.parent / "scripts" / "verify_stage1_production.py"
+    ).read_text(encoding="utf-8")
+    assert "evaluate_official_stage1_identity" in source
+    assert "holdout_accessed" in source.split("def load_spytrend_research_runs", 1)[1]
+    assert "holdout_access_count" in source.split("def load_spytrend_research_runs", 1)[1]
+    assert source.index("evaluate_official_stage1_identity(run_rows)") < source.index(
+        "stage1_run=stage1_run"
+    )

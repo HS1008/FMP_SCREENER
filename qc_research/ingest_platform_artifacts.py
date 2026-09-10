@@ -15,12 +15,14 @@ from pathlib import Path
 from qc_research.platform_ingest import (
     DEFAULT_ARTIFACT_ROOT,
     SKIP_NO_DATABASE,
+    StreamlitIngestRefused,
     discover_platform_files,
     ingest_platform_files,
     live_postgres_configured,
     monitor_view_from_artifacts,
     normalize_platform_file,
     postgres_engine,
+    refuse_streamlit_ingest,
     require_live_postgres_ingest,
     verify_monitor_view,
 )
@@ -55,7 +57,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ns = parser.parse_args(argv)
     root = Path(ns.root)
-    paths = discover_platform_files(root, canonical_only=bool(ns.canonical_only))
+    try:
+        paths = discover_platform_files(root, canonical_only=bool(ns.canonical_only))
+    except ValueError as exc:
+        print(exc)
+        return 1
     if not paths:
         print("No platform artifacts found under {0}".format(root))
         return 1
@@ -96,6 +102,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         return 0
+    try:
+        refuse_streamlit_ingest()
+    except StreamlitIngestRefused as exc:
+        print("FAIL: {0}".format(exc))
+        return 4
     require_live_postgres_ingest()
     engine = postgres_engine()
     with engine.begin() as conn:

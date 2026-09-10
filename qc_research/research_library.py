@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import bindparam, text
 
+from qc_research.contracts.label_integrity import csfml_v1_historical_impact_for_run
 from qc_research.lifecycle import COMPLETE, RESEARCH_COMPLETE
 from qc_research.platform_presentation import (
     ASSET_LABELS,
@@ -16,6 +17,73 @@ from qc_research.platform_presentation import (
 from qc_research.research_readout import plain_status_line
 
 UNAVAILABLE = "Unavailable / Not applicable"
+
+
+class OfficialResearchIdentityError(RuntimeError):
+    """Official library/run identity refused. Not an economic PASS/WATCH/FAIL."""
+
+
+def _row_mapping(row: Any) -> dict[str, Any]:
+    if hasattr(row, "to_dict"):
+        return {str(key): value for key, value in row.to_dict().items()}
+    return dict(row)
+
+
+def official_research_identity_blockers(
+    rows: pd.DataFrame | None,
+    *,
+    engine: Any = None,
+) -> list[str]:
+    """Blockers for official Stage 1 / CSFML / TLT rows in a library or run list."""
+    if rows is None or getattr(rows, "empty", True):
+        return []
+    from qc_research.contracts.sealed_results import official_stage1_identity_blockers
+    from qc_research.tlt_duration_momentum import official_tlt_v0_identity_blockers
+    from qc_research.verify_csfml_v1 import official_csfml_v1_identity_blockers
+
+    found: list[str] = []
+    for _, row in rows.iterrows():
+        record = _row_mapping(row)
+        strategy_id = str(record.get("strategy_id") or "")
+        run_id = str(record.get("research_run_id") or "")
+        if not run_id:
+            continue
+        checks = (
+            official_stage1_identity_blockers(
+                strategy_id=strategy_id,
+                research_run_id=run_id,
+                row=record,
+                engine=engine,
+            ),
+            official_csfml_v1_identity_blockers(
+                strategy_id=strategy_id,
+                research_run_id=run_id,
+                row=record,
+                engine=engine,
+            ),
+            official_tlt_v0_identity_blockers(
+                strategy_id=strategy_id,
+                research_run_id=run_id,
+                engine=engine,
+            ),
+        )
+        for blockers in checks:
+            found.extend("{0}:{1}".format(run_id, item) for item in blockers)
+    return found
+
+
+def refuse_official_research_identity(
+    rows: pd.DataFrame | None,
+    *,
+    engine: Any = None,
+) -> None:
+    blockers = official_research_identity_blockers(rows, engine=engine)
+    if blockers:
+        raise OfficialResearchIdentityError(
+            "Official research identity refused ({0}). "
+            "Stored metrics are not shown as official. "
+            "This is not an economic PASS/WATCH/FAIL.".format(", ".join(blockers))
+        )
 
 SMOKE_KIND = "smoke"
 HOLDOUT_ACCESSED = {"ACCESSED"}
@@ -33,16 +101,21 @@ SELECT DISTINCT ON (rr.strategy_id)
     rr.economic_gate,
     rr.promotion_gate,
     rr.holdout_status,
+    rr.holdout_accessed,
+    rr.holdout_access_count,
     rr.delivery_status,
     rr.last_seen_at,
+    rr.git_commit,
     rr.completed_count,
     rr.failed_count,
+    rr.skipped_count,
     rr.expected_experiment_count,
     rr.synced_experiment_count
 FROM research_runs rr
 WHERE rr.strategy_id IS NOT NULL
   AND rr.strategy_id <> ''
   AND COALESCE(rr.holdout_status, 'LOCKED') <> 'ACCESSED'
+  AND COALESCE(rr.holdout_accessed, FALSE) IS NOT TRUE
 ORDER BY rr.strategy_id,
     CASE
         WHEN COALESCE(rr.run_status, '') IN ('COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE')
@@ -64,10 +137,15 @@ SELECT
     economic_gate,
     promotion_gate,
     holdout_status,
+    holdout_accessed,
+    holdout_access_count,
     delivery_status,
     last_seen_at,
+    git_commit,
     completed_count,
-    failed_count
+    failed_count,
+    skipped_count,
+    expected_experiment_count
 FROM research_runs
 WHERE strategy_id = :strategy_id
 ORDER BY last_seen_at DESC NULLS LAST
@@ -107,13 +185,10 @@ ORDER BY research_run_id, synced_at DESC NULLS LAST
 def _read_sql(engine, sql: str, params: dict[str, Any] | None = None, *, expanding: tuple[str, ...] = ()) -> pd.DataFrame:
     if engine is None:
         return pd.DataFrame()
-    try:
-        stmt = text(sql)
-        for name in expanding:
-            stmt = stmt.bindparams(bindparam(name, expanding=True))
-        return pd.read_sql(stmt, engine, params=params or {})
-    except Exception:
-        return pd.DataFrame()
+    stmt = text(sql)
+    for name in expanding:
+        stmt = stmt.bindparams(bindparam(name, expanding=True))
+    return pd.read_sql(stmt, engine, params=params or {})
 
 
 def _first_sentence(text: Any) -> str | None:
@@ -162,6 +237,11 @@ def default_run_id(runs: pd.DataFrame) -> str | None:
     work["_holdout"] = work.get("holdout_status", pd.Series([""] * len(work))).fillna("").astype(str).str.upper()
     work["_status"] = work.get("run_status", pd.Series([""] * len(work))).fillna("").astype(str).str.upper()
     work["_kind"] = work.get("research_kind", pd.Series([""] * len(work))).fillna("").astype(str).str.lower()
+    if "holdout_accessed" in work.columns:
+        flagged = work["holdout_accessed"].map(
+            lambda value: value is True or value in {1, "1", "true", "True", "yes", "YES"}
+        )
+        work = work[~flagged.fillna(False)]
     eligible = work[~work["_holdout"].isin(HOLDOUT_ACCESSED)]
     if eligible.empty:
         eligible = work
@@ -181,11 +261,9 @@ def load_research_library(engine) -> pd.DataFrame:
     if runs is None or runs.empty:
         return pd.DataFrame()
     run_ids = [str(value) for value in runs["research_run_id"].dropna().astype(str).tolist()]
-    extras = (
-        _read_sql(engine, THESIS_SQL, {"run_ids": run_ids}, expanding=("run_ids",))
-        if run_ids
-        else pd.DataFrame()
-    )
+    extras = pd.DataFrame()
+    if run_ids:
+        extras = _read_sql(engine, THESIS_SQL, {"run_ids": run_ids}, expanding=("run_ids",))
     if extras is not None and not extras.empty:
         runs = runs.merge(extras, on="research_run_id", how="left")
     else:
@@ -216,6 +294,9 @@ def load_research_library(engine) -> pd.DataFrame:
                     promotion_gate=row.get("promotion_gate"),
                     holdout_status=row.get("holdout_status"),
                     delivery_status=row.get("delivery_status"),
+                    label_integrity=csfml_v1_historical_impact_for_run(
+                        strategy_id, row.get("research_run_id")
+                    ),
                 ),
                 "run_status": row.get("run_status"),
                 "economic_gate": row.get("economic_gate"),
@@ -227,11 +308,14 @@ def load_research_library(engine) -> pd.DataFrame:
                 or (row.get("failed_count") not in {None, 0, "0"} and str(row.get("run_status") or "").upper() not in COMPLETE_STATUSES),
             }
         )
+    refuse_official_research_identity(runs, engine=engine)
     return pd.DataFrame(rows)
 
 
 def load_strategy_runs(engine, strategy_id: str) -> pd.DataFrame:
-    return _read_sql(engine, ALL_RUNS_SQL, {"strategy_id": strategy_id})
+    rows = _read_sql(engine, ALL_RUNS_SQL, {"strategy_id": strategy_id})
+    refuse_official_research_identity(rows, engine=engine)
+    return rows
 
 
 def library_display_frame(library: pd.DataFrame, *, include_smoke: bool = False) -> pd.DataFrame:

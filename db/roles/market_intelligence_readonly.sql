@@ -79,6 +79,7 @@ GRANT SELECT ON mi_v_finra_aggregate_history TO mi_readonly;
 GRANT SELECT ON mi_v_trace_individual_trades TO mi_readonly;
 GRANT SELECT ON mi_v_order_flow_coverage TO mi_readonly;
 GRANT SELECT ON mi_v_finra_aggregate_quarantine TO mi_readonly;
+GRANT SELECT ON mi_v_ops_status TO mi_readonly;
 
 -- Defensive session defaults for the role (defaults, not privileges: a session can still
 -- SET them back, which is why the GRANT surface above is what enforces read-only).

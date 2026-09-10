@@ -280,7 +280,7 @@ def _as_json(value: Any) -> Any:
 
 
 def parse_name_fallback(name: str | None) -> dict[str, Any]:
-    """Fallback parser for S1__strategy__run__type__window__seq names."""
+    """Fallback parser for S1__/S2__ strategy__run__type__window__seq names."""
     parsed = {
         "research_suite_version": None,
         "research_run_id": None,
@@ -288,9 +288,10 @@ def parse_name_fallback(name: str | None) -> dict[str, Any]:
         "research_window_id": None,
         "research_strategy_id": None,
     }
-    if not name or not str(name).startswith("S1__"):
+    text = str(name or "")
+    if not (text.startswith("S1__") or text.startswith("S2__")):
         return parsed
-    parts = str(name).split("__")
+    parts = text.split("__")
     if len(parts) < 6:
         return parsed
     parsed["research_suite_version"] = parts[0]

@@ -1,7 +1,7 @@
-"""Stage 1 production verification against the deployed PostgreSQL database.
+"""Stage 1 production verification against dashboard_readonly PostgreSQL.
 
-Uses the application's SQLAlchemy engine (db.connection) so PostgreSQL
-credentials never enter the shell. Never prints secrets.
+Live query-back uses DASHBOARD_READONLY_URL only. Writer fallback is refused.
+Credentials never enter the shell. Never prints secrets.
 
 Exit 0 on overall PASS, 1 on FAIL.
 """
@@ -401,6 +401,7 @@ def format_report(
     research: dict[str, Any] | None = None,
     smoke: dict[str, Any] | None = None,
     stage1_run: dict[str, Any] | None = None,
+    official_stage1: dict[str, Any] | None = None,
 ) -> str:
     lines = [
         "STAGE 1 PRODUCTION VERIFICATION",
@@ -486,6 +487,16 @@ def format_report(
                 else "—",
             ),
             "  Check: {0}".format(stage1_run.get("status") or "SKIP"),
+            "",
+        ]
+    )
+    official_stage1 = official_stage1 or {}
+    lines.extend(
+        [
+            "Official Stage 1 identity",
+            "  Present: {0}".format("YES" if official_stage1.get("present") else "NO"),
+            "  Run ID: {0}".format(official_stage1.get("research_run_id") or "—"),
+            "  Check: {0}".format(official_stage1.get("status") or "SKIP"),
             "",
         ]
     )
@@ -580,6 +591,8 @@ def load_spytrend_research_runs(conn) -> list[dict[str, Any]]:
                 failed_count,
                 skipped_count,
                 run_status,
+                holdout_accessed,
+                holdout_access_count,
                 orchestrator_summary_json
             FROM research_runs
             WHERE strategy_id = :strategy_id
@@ -652,6 +665,57 @@ def evaluate_stage1_run(
     ]
     if smoke_mixed:
         failures.append("SMOKE backtests are mixed into the STAGE1 research run")
+    result["failures"] = failures
+    result["status"] = "PASS" if not failures else "FAIL"
+    return result
+
+
+def evaluate_official_stage1_identity(
+    runs: list[dict[str, Any]] | None,
+) -> dict[str, Any]:
+    """When official Stage 1 is stored, it must match the sealed pin.
+
+    Absence is SKIP. Query/pin drift fail closed. This is not an economic
+    PASS/WATCH/FAIL.
+    """
+    from qc_research.contracts.sealed_results import (
+        load_sealed_results,
+        official_stage1_identity_blockers,
+    )
+
+    result: dict[str, Any] = {
+        "status": "SKIP",
+        "present": False,
+        "research_run_id": None,
+        "blockers": [],
+        "failures": [],
+    }
+    pins = load_sealed_results().get("stage1_pins") or {}
+    official = [
+        row
+        for row in runs or []
+        if str(row.get("research_run_id") or "").strip() in pins
+    ]
+    if not official:
+        return result
+    result["present"] = True
+    failures: list[str] = []
+    blockers_all: list[str] = []
+    for row in official:
+        run_id = str(row.get("research_run_id") or "")
+        result["research_run_id"] = run_id
+        blockers = official_stage1_identity_blockers(
+            strategy_id=row.get("strategy_id") or STRATEGY_ID,
+            research_run_id=run_id,
+            row=row,
+        )
+        blockers_all.extend(blockers)
+        if blockers:
+            failures.append(
+                "Official Stage 1 identity refused ({0}). "
+                "This is not an economic PASS/WATCH/FAIL.".format(", ".join(blockers))
+            )
+    result["blockers"] = blockers_all
     result["failures"] = failures
     result["status"] = "PASS" if not failures else "FAIL"
     return result
@@ -902,6 +966,7 @@ def main(argv: list[str] | None = None) -> int:
     research: dict[str, Any] = {"status": "FAIL"}
     smoke: dict[str, Any] = {"status": "FAIL", "count": 0}
     stage1_run: dict[str, Any] = {"status": "SKIP", "present": False}
+    official_stage1: dict[str, Any] = {"status": "SKIP", "present": False}
     tree = inspect_git_working_tree()
     failures.extend(tree.get("failures") or [])
     working_tree_label = (
@@ -911,7 +976,18 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        from db.connection import engine
+        from db.dashboard_engine import (
+            dashboard_engine,
+            load_streamlit_env,
+            writer_fallback_allowed,
+        )
+
+        if writer_fallback_allowed():
+            raise RuntimeError(
+                "DASHBOARD_ALLOW_WRITER_FALLBACK is not a Stage 1 production verify path"
+            )
+        load_streamlit_env()
+        engine = dashboard_engine()
 
         with engine.connect() as conn:
             tables, columns, migrations = load_schema(conn)
@@ -946,6 +1022,8 @@ def main(argv: list[str] | None = None) -> int:
                 run_rows = []
             stage1_run = evaluate_stage1_run(run_rows, rows)
             failures.extend(stage1_run.get("failures") or [])
+            official_stage1 = evaluate_official_stage1_identity(run_rows)
+            failures.extend(official_stage1.get("failures") or [])
     except Exception as exc:
         failures.append("database verification error: {0}".format(redact(str(exc))))
 
@@ -970,6 +1048,7 @@ def main(argv: list[str] | None = None) -> int:
         research=research,
         smoke=smoke,
         stage1_run=stage1_run,
+        official_stage1=official_stage1,
     )
     print(report)
     if failures:

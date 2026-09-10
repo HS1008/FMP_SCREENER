@@ -3,34 +3,85 @@
 Default behavior:
   - create schema_migrations
   - skip filenames already recorded
+  - backfill NULL sha256 only from the committed trusted baseline
+  - fail if an already-applied file's sha256 drifted
+  - fail if a NULL-sha row is unknown or does not match the baseline
   - execute only unapplied migrations
-  - insert the filename only after successful execution
+  - insert the filename and sha256 only after successful execution
 
-``--recheck`` re-executes already-applied SQL and is not the default.
+``--recheck`` re-executes already-applied SQL and requires
+``MIGRATIONS_RECHECK_OK=1``. Changed SQL requires a new migration filename.
+
+There is no environment flag that blesses whatever SQL exists on disk.
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import os
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import text
 
 
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "db" / "migrations"
+BASELINE_PATH = Path(__file__).resolve().parent.parent / "db" / "migration_checksum_baseline.json"
+
+
+class MigrationDriftError(RuntimeError):
+    """An already-applied migration file changed contents."""
+
+
+def migration_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def load_checksum_baseline(path: Path | None = None) -> dict[str, Any]:
+    target = path or BASELINE_PATH
+    if not target.is_file():
+        raise MigrationDriftError(
+            "Trusted migration checksum baseline is missing at {0}".format(target)
+        )
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    rows = payload.get("migrations") or []
+    by_name = {str(row["filename"]): str(row["sha256"]) for row in rows if row.get("filename")}
+    return {
+        "baseline_git_sha": str(payload.get("baseline_git_sha") or ""),
+        "by_name": by_name,
+        "payload": payload,
+    }
 
 
 def ensure_migrations_table(conn) -> None:
+    dialect = str(getattr(getattr(conn, "dialect", None), "name", "") or "")
+    if dialect == "sqlite":
+        conn.execute(
+            text(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    filename TEXT PRIMARY KEY,
+                    applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    sha256 TEXT
+                )
+                """
+            )
+        )
+        return
     conn.execute(
         text(
             """
             CREATE TABLE IF NOT EXISTS schema_migrations (
                 filename TEXT PRIMARY KEY,
-                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                sha256 TEXT
             )
             """
         )
     )
+    conn.execute(text("ALTER TABLE schema_migrations ADD COLUMN IF NOT EXISTS sha256 TEXT"))
 
 
 def applied_filenames(conn) -> set[str]:
@@ -68,17 +119,41 @@ def pending_migration_files(
     return [path for path in files if path.name not in already]
 
 
+def _backfill_null_sha(conn, *, filename: str, digest: str, baseline: dict[str, Any]) -> None:
+    expected = baseline["by_name"].get(filename)
+    if expected is None:
+        raise MigrationDriftError(
+            "Migration {0} is applied with NULL sha256 and is not in the trusted "
+            "baseline ({1}). Refuse rather than blessing current files.".format(
+                filename, baseline["baseline_git_sha"]
+            )
+        )
+    if digest != expected:
+        raise MigrationDriftError(
+            "Migration {0} is applied with NULL sha256 but the current file "
+            "hash {1} does not match trusted baseline {2} (git {3}).".format(
+                filename, digest, expected, baseline["baseline_git_sha"]
+            )
+        )
+    conn.execute(
+        text("UPDATE schema_migrations SET sha256 = :sha256 WHERE filename = :filename"),
+        {"filename": filename, "sha256": digest},
+    )
+
+
 def apply_migrations(
     migrations_dir: Path | None = None,
     *,
     recheck: bool = False,
     engine=None,
+    baseline_path: Path | None = None,
 ) -> list[str]:
     directory = migrations_dir or MIGRATIONS_DIR
     if not directory.is_dir():
         raise SystemExit("No migrations directory at {0}".format(directory))
 
     files = sorted(path for path in directory.glob("*.sql") if path.is_file())
+    baseline = load_checksum_baseline(baseline_path)
     applied = []
     if engine is None:
         from db.connection import engine as default_engine
@@ -88,23 +163,42 @@ def apply_migrations(
         ensure_migrations_table(conn)
         already = applied_filenames(conn)
         pending = pending_migration_files(files, already, recheck=recheck)
-        skipped = [path.name for path in files if path not in pending]
-        for name in skipped:
-            applied.append("{0} (skipped)".format(name))
+        skipped = [path for path in files if path not in pending]
+        for path in skipped:
+            recorded = conn.execute(
+                text("SELECT sha256 FROM schema_migrations WHERE filename = :filename"),
+                {"filename": path.name},
+            ).scalar()
+            digest = migration_sha256(path)
+            if recorded and recorded != digest:
+                raise MigrationDriftError(
+                    "Migration drift: {0} changed after apply (recorded {1}, file {2}). "
+                    "Add a new migration filename instead of editing applied SQL.".format(
+                        path.name, recorded, digest
+                    )
+                )
+            if not recorded:
+                _backfill_null_sha(
+                    conn,
+                    filename=path.name,
+                    digest=digest,
+                    baseline=baseline,
+                )
+            applied.append("{0} (skipped)".format(path.name))
         for path in pending:
             sql = path.read_text(encoding="utf-8")
             for statement in split_sql_statements(sql):
                 conn.execute(text(statement))
+            digest = migration_sha256(path)
             if path.name not in already:
                 conn.execute(
                     text(
                         """
-                        INSERT INTO schema_migrations (filename)
-                        VALUES (:filename)
-                        ON CONFLICT (filename) DO NOTHING
+                        INSERT INTO schema_migrations (filename, sha256)
+                        VALUES (:filename, :sha256)
                         """
                     ),
-                    {"filename": path.name},
+                    {"filename": path.name, "sha256": digest},
                 )
             applied.append(path.name if not recheck else "{0} (rechecked)".format(path.name))
     return applied
@@ -118,6 +212,14 @@ def main(argv: list[str] | None = None) -> int:
         help="Re-execute already applied SQL files. Not the default.",
     )
     args = parser.parse_args(argv)
+    if args.recheck and (os.environ.get("MIGRATIONS_RECHECK_OK") or "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        print("FAIL: --recheck requires MIGRATIONS_RECHECK_OK=1")
+        return 3
     applied = apply_migrations(recheck=bool(args.recheck))
     print("Migrations:")
     for name in applied:

@@ -28,6 +28,10 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 import config
+from qc_research.ui_boundary import (
+    ensure_streamlit_cache_dir,
+    streamlit_filesystem_write_allowed,
+)
 
 try:
     from tqdm import tqdm
@@ -41,7 +45,15 @@ def _repo_root() -> Path:
 
 def load_api_key() -> str:
     """Load `FMP_API_KEY` from `.env` next to this project."""
-    load_dotenv(_repo_root() / ".env")
+    from db.connection import streamlit_readonly_active
+
+    env_path = _repo_root() / ".env"
+    if streamlit_readonly_active():
+        from db.dashboard_engine import load_streamlit_env
+
+        load_streamlit_env(env_path)
+    else:
+        load_dotenv(env_path)
     key = os.getenv("FMP_API_KEY")
     if key is None:
         print("Error: FMP_API_KEY is missing from environment/.env", file=sys.stderr)
@@ -187,13 +199,13 @@ def get_stock_universe(session: requests.Session, api_key: str, *, top_n: int | 
 
 
 def _cache_path(symbol: str) -> Path:
-    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_streamlit_cache_dir(config.CACHE_DIR)
     safe = symbol.upper().replace("/", "_")
     return config.CACHE_DIR / f"{safe}.csv"
 
 
 def _parquet_cache_path(symbol: str) -> Path:
-    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_streamlit_cache_dir(config.CACHE_DIR)
     safe = symbol.upper().replace("/", "_")
     return config.CACHE_DIR / f"{safe}.parquet"
 
@@ -315,7 +327,7 @@ def dispersion_bundle_cache_revision(sector: str, universe_symbols: list[str]) -
 
 
 def _fundamentals_cache_path(symbol: str) -> Path:
-    config.FUNDAMENTALS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_streamlit_cache_dir(config.FUNDAMENTALS_CACHE_DIR)
     safe = symbol.upper().replace("/", "_")
     return config.FUNDAMENTALS_CACHE_DIR / f"{safe}.json"
 
@@ -337,7 +349,8 @@ def get_profile_snapshot(
     if not isinstance(raw, list) or not raw:
         return {}
     row = raw[0]
-    path.write_text(json.dumps(row, default=str), encoding="utf-8")
+    if streamlit_filesystem_write_allowed():
+        path.write_text(json.dumps(row, default=str), encoding="utf-8")
     return row
 
 
@@ -509,7 +522,8 @@ def get_fundamentals(
                 to_disk[k] = None if math.isnan(fv) or math.isinf(fv) else fv
             except (TypeError, ValueError):
                 to_disk[k] = None
-    path.write_text(json.dumps(to_disk), encoding="utf-8")
+    if streamlit_filesystem_write_allowed():
+        path.write_text(json.dumps(to_disk), encoding="utf-8")
     return {k: v for k, v in to_disk.items() if k != "_schema"}
 
 
@@ -653,6 +667,8 @@ def _fmp_fetch_adj_history_range(
 
 
 def _write_price_history_cache(path: Path, merged: pd.DataFrame, trim_as_of: date) -> None:
+    if not streamlit_filesystem_write_allowed():
+        return
     trimmed = _trim_price_history_cache(merged, trim_as_of)
     if trimmed.empty:
         return
