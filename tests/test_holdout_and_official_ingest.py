@@ -571,6 +571,9 @@ def test_strategy_spec_seals_official_fingerprint_even_for_unsealed_run():
     )
     assert captured
     assert "DO UPDATE" in captured[0]
+
+
+def test_object_store_get_refused_before_account_read():
     from qc_research.object_store_sync import ObjectStoreClient
 
     def _fail(_endpoint, _payload):
