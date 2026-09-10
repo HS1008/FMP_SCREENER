@@ -1,6 +1,6 @@
 {
   "note": "Mirror of research.stage2.artifact_contract.REQUIRED_BY_KIND. Update when the producer list changes.",
-  "producer_ref": "394c0fdf04b06d5434a7f5e03faf9e7e628e1202",
+  "producer_ref": "004f5a979b7a76d86bd788a50062c7edbe5e6688",
   "producer_repo": "hs1008/quant-strategies",
   "required_by_kind": {
     "model_metadata": [

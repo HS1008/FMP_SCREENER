@@ -2,7 +2,7 @@
   "schema_version": "contract_digests_v1",
   "note": "SHA-256 of committed contract JSON bytes. Update this file in the same change as the source JSON.",
   "files": {
-    "producer_required_fields.json": "1685074fbb0fcc022b27c039399549a9c8d495800bc6f6de81bdc042ec478693",
+    "producer_required_fields.json": "9829b6d9960158fd7ca828fdae082da0167731a1c9860c06b2290cc6ba84694b",
     "csfml_v1_label_integrity.json": "c780de3bf9ad83dd434100cc23e1ec5773e00bd52d2ebe1c1098ec22d94cdc1e"
   }
 }

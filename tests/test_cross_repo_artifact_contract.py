@@ -119,6 +119,15 @@ def test_pinned_producer_required_fields_are_satisfied_by_official_fixtures():
         assert missing == [], "{0} missing pinned producer fields: {1}".format(kind, missing)
 
 
+def test_producer_ref_is_a_full_git_sha():
+    from qc_research.contracts.producer_fields import load_producer_required
+
+    payload = load_producer_required()
+    ref = str(payload.get("producer_ref") or "")
+    assert len(ref) == 40
+    assert all(ch in "0123456789abcdef" for ch in ref)
+
+
 @pytest.mark.skipif(QS_ROOT is None, reason="quant-strategies sibling repo not present")
 def test_official_fixtures_include_producer_required_fields():
     sys.path.insert(0, str(QS_ROOT))
@@ -136,10 +145,16 @@ def test_official_fixtures_include_producer_required_fields():
         "oos_aggregate": "oos_aggregate",
         "nonholdout_assessment": "nonholdout_assessment",
     }
+    producer_snapshot = json.loads(
+        (QS_ROOT / "research" / "contracts" / "producer_required_fields.json").read_text(
+            encoding="utf-8"
+        )
+    )
     for kind, producer_kind in mapping.items():
         consumer_required = set(KIND_REQUIRED_FIELDS[kind])
         producer_required = set(REQUIRED_BY_KIND[producer_kind])
         assert set(pinned_required()[kind]) == producer_required, kind
+        assert set(producer_snapshot["required_by_kind"][producer_kind]) == producer_required, kind
         assert consumer_required <= producer_required, kind
         payload = CONSUMER_FIXTURES[kind]()
         missing = [field for field in producer_required if field not in payload]
