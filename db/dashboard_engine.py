@@ -35,6 +35,11 @@ def writer_fallback_allowed() -> bool:
 
 STREAMLIT_READONLY_ENV = "FMP_STREAMLIT_READONLY"
 
+STREAMLIT_ESCAPE_KEYS = (
+    "DASHBOARD_ALLOW_WRITER_FALLBACK",
+    "STREAMLIT_ALLOW_PROVIDER_FETCH",
+)
+
 WRITER_ENV_KEYS = (
     "DATABASE_URL",
     "MARKET_INTELLIGENCE_DATABASE_URL",
@@ -65,14 +70,25 @@ def strip_writer_database_env() -> list[str]:
 
 
 def load_streamlit_env(path: str | os.PathLike[str] | None = None) -> list[str]:
-    """Load `.env` then strip writer DB keys. Safe to call from any Streamlit page."""
+    """Load `.env` then strip writer DB keys. Safe to call from any Streamlit page.
+
+    Checkout ``.env`` is writer-capable for ingest/CLI. It must not re-enable
+    Streamlit writer fallback or provider fetch after systemd already refused
+    those flags.
+    """
     from dotenv import load_dotenv
 
     if path:
         load_dotenv(path)
     else:
         load_dotenv()
-    return strip_writer_database_env()
+    removed: list[str] = []
+    for key in STREAMLIT_ESCAPE_KEYS:
+        if os.environ.get(key):
+            os.environ.pop(key, None)
+            removed.append(key)
+    removed.extend(strip_writer_database_env())
+    return removed
 
 
 def reset_dashboard_engine_for_tests() -> None:
