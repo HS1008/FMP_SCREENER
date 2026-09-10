@@ -852,6 +852,18 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
         progress["run_status"] = pin_terminal_run_status(
             meta.get("run_status"), progress["run_status"]
         )
+        from qc_research.contracts.sealed_results import load_sealed_results
+
+        if (load_sealed_results().get("stage1_pins") or {}).get(str(run_id)):
+            updated.append(
+                {
+                    "research_run_id": run_id,
+                    "sealed": True,
+                    "run_status": meta.get("run_status"),
+                    "expected_experiment_count": meta.get("expected_experiment_count"),
+                }
+            )
+            continue
         conn.execute(
             text(
                 """

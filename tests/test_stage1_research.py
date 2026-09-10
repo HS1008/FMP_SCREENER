@@ -1626,6 +1626,52 @@ def test_refresh_does_not_reopen_terminal_run_status():
     assert incomplete_conn.updates[0]["run_status"] == INCOMPLETE
 
 
+def test_refresh_does_not_rewrite_official_stage1_pin_counts():
+    class _Conn:
+        def __init__(self):
+            self.updates: list[dict] = []
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+
+            class _Result:
+                def mappings(self_inner):
+                    if "FROM research_runs" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_c04553d8",
+                                    "expected_experiment_count": 81,
+                                    "orchestrator_summary_json": {},
+                                    "run_status": COMPLETE,
+                                }
+                            ]
+                        )
+                    if "FROM backtests" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_c04553d8",
+                                    "status": "Completed.",
+                                    "research_test_type": "PARAM_SENS",
+                                }
+                                for _ in range(40)
+                            ]
+                        )
+                    return iter([])
+
+            if "UPDATE research_runs" in sql:
+                self.updates.append(params)
+            return _Result()
+
+    conn = _Conn()
+    updated = refresh_research_run_progress(conn, "SPYTrend")
+    assert conn.updates == []
+    assert updated[0]["research_run_id"] == "STAGE1_SPYTrend_c04553d8"
+    assert updated[0]["sealed"] is True
+    assert updated[0]["run_status"] == COMPLETE
+
+
 def test_case5_smoke_excluded_from_stage1_counts_and_equity():
     smoke_row = _monitor_backtest_row(
         backtest_id="smoke-1",

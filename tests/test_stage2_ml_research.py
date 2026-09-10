@@ -436,6 +436,7 @@ def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert "normalize_research_lifecycle" in STAGE2_SQL
     assert SYNC.find("sync_stage2_results") < SYNC.find("Skipping backtest sync (--live-only)")
     assert "object_get(" not in STORE[STORE.find("def sync_stage2_object_store") :]
+    assert "sealed_results_run_ids" in STORE[STORE.find("def audit_stage2_model_objects") :]
     live_001 = (ROOT / "db" / "migrations" / "001_stage1_research.sql").read_text(encoding="utf-8")
     assert "CREATE TABLE IF NOT EXISTS research_runs" in live_001
     assert "CREATE TABLE IF NOT EXISTS backtests" in live_001
@@ -981,4 +982,63 @@ def test_published_54a5543f_suite_json_ingests_without_object_store():
         "ABOVE_200",
     ]
     assert "2025" not in set(view["windows"]["window_id"].astype(str))
+
+
+def test_audit_stage2_model_objects_does_not_update_sealed_runs():
+    from qc_research.object_store_sync import audit_stage2_model_objects
+
+    class _Store:
+        def object_properties(self, key):
+            return {"success": True}
+
+    class _Conn:
+        def __init__(self):
+            self.updates = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "UPDATE ml_models" in sql:
+                self.updates.append(params)
+
+            class _Result:
+                def mappings(self_inner):
+                    class _Mappings:
+                        def all(self_map):
+                            return [
+                                {
+                                    "model_id": "sealed",
+                                    "object_store_key": "obj-sealed",
+                                    "research_run_id": "STAGE2_CrossSectionalFactorML_54a5543f",
+                                    "metadata_json": {},
+                                },
+                                {
+                                    "model_id": "open",
+                                    "object_store_key": "obj-open",
+                                    "research_run_id": "STAGE2_CrossSectionalFactorML_FIXTURE01",
+                                    "metadata_json": {},
+                                },
+                            ]
+
+                    return _Mappings()
+
+            return _Result()
+
+    shared = _Conn()
+
+    class _Engine:
+        def connect(self):
+            return shared
+
+        def begin(self):
+            return shared
+
+    summary = audit_stage2_model_objects(_Engine(), strategy_id="CrossSectionalFactorML", store=_Store())
+    assert summary["exists"] == 2
+    assert [row["model_id"] for row in shared.updates] == ["open"]
 

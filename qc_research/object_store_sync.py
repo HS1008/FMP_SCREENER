@@ -26,6 +26,7 @@ from qc_research.contracts.label_integrity import refuse_impersonated_official_c
 from qc_research.contracts.sealed_results import (
     refuse_sealed_artifact_overwrite,
     refuse_sealed_committed_mismatch,
+    sealed_results_run_ids,
 )
 
 REQUIRED_RUN_ARTIFACTS = ("run_manifest", "run_summary")
@@ -325,6 +326,9 @@ def audit_stage2_model_objects(
                     meta = {}
                 meta = dict(meta)
                 meta["model_object_exists"] = bool(exists)
+                run_id = str(row.get("research_run_id") or "")
+                if run_id in sealed_results_run_ids():
+                    continue
                 conn.execute(
                     text(
                         """
