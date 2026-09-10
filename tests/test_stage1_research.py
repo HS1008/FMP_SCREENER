@@ -1107,6 +1107,26 @@ def test_upsert_research_run_skips_smoke():
     )
 
 
+def test_upsert_research_run_skips_official_stage1_pin():
+    from jobs.stage1_backtests import upsert_research_run
+
+    class Boom:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("official Stage 1 must not be upserted from QC sync")
+
+    upsert_research_run(
+        Boom(),
+        "SPYTrend",
+        {
+            "research_run_id": "STAGE1_SPYTrend_c04553d8",
+            "research_test_type": "PARAM_SENS",
+            "research_git_commit": "0" * 40,
+            "expected_experiment_count": 1,
+            "research_is_holdout": True,
+        },
+    )
+
+
 def test_strategy_monitor_has_smoke_section_and_fragment_refresh():
     from pathlib import Path
 
@@ -1883,6 +1903,84 @@ def test_official_stage1_identity_blockers_are_run_scoped():
         research_run_id=OFFICIAL_STAGE1_RUN,
         engine=_EmptyEngine(),
     ) == ["official_run_missing"]
+
+
+def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras():
+    from jobs.stage1_backtests import (
+        listed_stage1_run_id,
+        needs_detail_read,
+        needs_equity_curve,
+        official_stage1_backtest_count,
+        official_stage1_backtest_upsert_blocked,
+    )
+
+    class _CountConn:
+        def __init__(self, n):
+            self.n = n
+
+        def execute(self, statement, params=None):
+            class _Result:
+                def mappings(self_inner):
+                    class _Mappings:
+                        def first(self_map):
+                            return {"n": self.n}
+
+                    return _Mappings()
+
+            return _Result()
+
+    class _NoneConn:
+        def execute(self, *args, **kwargs):
+            return None
+
+    official_name = "S1__SPYTrend__STAGE1_SPYTrend_c04553d8__PARAM_SENS__IS__001"
+    existing = {"backtest_id": "bt-1", "research_run_id": OFFICIAL_STAGE1_RUN}
+    assert listed_stage1_run_id(official_name, None) == OFFICIAL_STAGE1_RUN
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(81),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=existing,
+    ) == "official_stage1_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(40),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=None,
+    ) is None
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(81),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=None,
+    ) == "official_stage1_experiment_cap"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(99),
+        research_run_id="STAGE1_SPYTrend_other",
+        existing_row={"research_run_id": "STAGE1_SPYTrend_other"},
+    ) is None
+    assert official_stage1_backtest_count(_NoneConn(), OFFICIAL_STAGE1_RUN) == 0
+    assert official_stage1_backtest_upsert_blocked(
+        _NoneConn(),
+        research_run_id=OFFICIAL_STAGE1_RUN,
+        existing_row=None,
+    ) is None
+    completed = {"name": official_name, "status": "Completed."}
+    assert needs_detail_read(existing, completed) is False
+    assert needs_equity_curve(existing, completed, 0) is False
+    assert needs_detail_read(None, completed) is True
+    assert needs_equity_curve(None, completed, 0) is True
+
+
+def test_sync_quantconnect_skips_official_stage1_rewrite():
+    source = (
+        Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py"
+    ).read_text(encoding="utf-8")
+    sync_fn = source.split("def sync_backtests", 1)[1]
+    assert "official_stage1_backtest_upsert_blocked" in sync_fn
+    assert "listed_stage1_run_id" in sync_fn
+    assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
+        "conn.execute(text(STAGE1_UPSERT_SQL)"
+    )
+    assert sync_fn.index("if official_block:") < sync_fn.index("STAGE1_LIGHTWEIGHT_UPSERT_SQL")
+    assert "and not official_block" in sync_fn
 
 
 def test_monitor_ui_fail_closes_official_stage1_identity():

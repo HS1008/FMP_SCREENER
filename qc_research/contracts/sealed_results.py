@@ -58,6 +58,15 @@ def _pin_value_matches(incoming: Any, expected: Any) -> bool:
     return str(incoming or "") == str(expected or "")
 
 
+def official_stage1_pin(run_id: str | None) -> dict[str, Any] | None:
+    """Pinned official Stage 1 identity, or None when the run is not sealed."""
+    key = str(run_id or "").strip()
+    if not key:
+        return None
+    pin = (load_sealed_results().get("stage1_pins") or {}).get(key)
+    return dict(pin) if isinstance(pin, dict) else None
+
+
 def official_stage1_identity_blockers(
     *,
     strategy_id: str | None,
@@ -70,7 +79,7 @@ def official_stage1_identity_blockers(
     Query failures fail closed. This is not an economic PASS/WATCH/FAIL.
     """
     run_id = str(research_run_id or "").strip()
-    pin = (load_sealed_results().get("stage1_pins") or {}).get(run_id)
+    pin = official_stage1_pin(run_id)
     if not pin:
         return []
     if strategy_id and str(strategy_id) != str(pin.get("strategy_id") or ""):
@@ -105,7 +114,7 @@ def refuse_sealed_stage1_summary(payload: Mapping[str, Any] | None) -> None:
     """Refuse official Stage 1 summaries that do not match the pin."""
     record = dict(payload or {})
     run_id = _run_id(record)
-    pin = (load_sealed_results().get("stage1_pins") or {}).get(run_id)
+    pin = official_stage1_pin(run_id)
     if not pin:
         return
     for key, expected in pin.items():

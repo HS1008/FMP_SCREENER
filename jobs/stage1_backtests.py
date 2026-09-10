@@ -89,12 +89,87 @@ def equity_point_counts(conn, strategy_id: str) -> dict[str, int]:
     return {row["backtest_id"]: int(row["n"]) for row in rows}
 
 
+def listed_stage1_run_id(
+    name: str | None,
+    existing: dict[str, Any] | None = None,
+) -> str:
+    """Best-effort Stage 1 run id from a stored row or the QC backtest name."""
+    run_id = str((existing or {}).get("research_run_id") or "").strip()
+    if run_id:
+        return run_id
+    from qc_research.parsing import parse_name_fallback
+
+    return str(parse_name_fallback(name).get("research_run_id") or "").strip()
+
+
+def official_stage1_backtest_count(conn, research_run_id: str) -> int:
+    result = conn.execute(
+        text(
+            """
+            SELECT COUNT(*) AS n
+            FROM backtests
+            WHERE research_run_id = :research_run_id
+            """
+        ),
+        {"research_run_id": research_run_id},
+    )
+    if result is None:
+        return 0
+    mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return 0
+    row = mappings().first()
+    if not row:
+        return 0
+    if isinstance(row, dict):
+        return int(row.get("n") or 0)
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return int(mapping.get("n") or 0)
+    return 0
+
+
+def official_stage1_backtest_upsert_blocked(
+    conn,
+    *,
+    research_run_id: str | None,
+    existing_row: dict[str, Any] | None = None,
+) -> str | None:
+    """Skip QC backtest writes that would mutate official Stage 1 metrics.
+
+    First INSERT of official-run experiments is allowed until the pin
+    expected_experiment_count is stored. Existing official rows are never
+    rewritten. Official research_runs identity is not created here.
+    """
+    from qc_research.contracts.sealed_results import official_stage1_pin
+
+    existing_run = str((existing_row or {}).get("research_run_id") or "").strip()
+    incoming_run = str(research_run_id or "").strip()
+    existing_pin = official_stage1_pin(existing_run)
+    incoming_pin = official_stage1_pin(incoming_run)
+    if existing_row is not None and (existing_pin or incoming_pin):
+        return "official_stage1_backtest_immutable"
+    if incoming_pin is None:
+        return None
+    try:
+        expected_n = int(incoming_pin.get("expected_experiment_count"))
+    except (TypeError, ValueError):
+        return "official_stage1_pin_expected_count"
+    if official_stage1_backtest_count(conn, incoming_run) >= expected_n:
+        return "official_stage1_experiment_cap"
+    return None
+
+
 def needs_detail_read(existing: dict[str, Any] | None, backtest: dict[str, Any]) -> bool:
     name = backtest.get("name") or ""
     status = str(backtest.get("status") or "").lower()
     completed = "completed" in status
     failed = is_failed_status(status, backtest)
     if not is_stage1_name(name):
+        return False
+    from qc_research.contracts.sealed_results import official_stage1_pin
+
+    if existing is not None and official_stage1_pin(existing.get("research_run_id")):
         return False
     if not completed and not failed:
         return True
@@ -215,6 +290,10 @@ def needs_equity_curve(existing: dict[str, Any] | None, backtest: dict[str, Any]
     status = str(backtest.get("status") or "").lower()
     if not is_stage1_name(name):
         return False
+    from qc_research.contracts.sealed_results import official_stage1_pin
+
+    if existing is not None and official_stage1_pin(existing.get("research_run_id")):
+        return False
     if "completed" not in status:
         return False
     if is_failed_status(status, backtest):
@@ -307,6 +386,10 @@ def stage1_upsert_fields(detail: dict[str, Any], name: str | None) -> dict[str, 
 def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
     run_id = fields.get("research_run_id")
     if not run_id:
+        return
+    from qc_research.contracts.sealed_results import official_stage1_pin
+
+    if official_stage1_pin(run_id):
         return
     from qc_research.parsing import is_smoke_test
 
@@ -852,9 +935,9 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
         progress["run_status"] = pin_terminal_run_status(
             meta.get("run_status"), progress["run_status"]
         )
-        from qc_research.contracts.sealed_results import load_sealed_results
+        from qc_research.contracts.sealed_results import official_stage1_pin
 
-        if (load_sealed_results().get("stage1_pins") or {}).get(str(run_id)):
+        if official_stage1_pin(str(run_id)):
             updated.append(
                 {
                     "research_run_id": run_id,

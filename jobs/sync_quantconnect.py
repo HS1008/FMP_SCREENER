@@ -19,10 +19,12 @@ from jobs.stage1_backtests import (
     json_param,
     legacy_hydration_fields,
     list_metrics_from_summary,
+    listed_stage1_run_id,
     merge_stage1_lightweight_metrics,
     needs_detail_read,
     needs_equity_curve,
     needs_legacy_date_hydration,
+    official_stage1_backtest_upsert_blocked,
     refresh_research_run_progress,
     stage1_upsert_fields,
     upsert_research_run,
@@ -1516,6 +1518,21 @@ def sync_backtests(
             if fetch_chart and not has_dates and not fetch_detail and is_stage1_name(name):
                 fetch_detail = True
 
+            official_block = None
+            if is_stage1_name(name):
+                official_block = official_stage1_backtest_upsert_blocked(
+                    conn,
+                    research_run_id=listed_stage1_run_id(name, row_existing) or None,
+                    existing_row=row_existing,
+                )
+            if official_block:
+                action = "insert" if not row_existing else "rewrite"
+                print(
+                    f"Skipping official Stage 1 QC {action} for "
+                    f"{name} ({backtest_id}): {official_block}"
+                )
+                continue
+
             detail = None
             if fetch_detail:
                 try:
@@ -1566,8 +1583,19 @@ def sync_backtests(
                         "backtest_end": fields.get("backtest_end"),
                         "error_message": fields.get("error_message"),
                     }
-                    conn.execute(text(STAGE1_UPSERT_SQL), payload)
-                    upsert_research_run(conn, strategy_id, fields)
+                    detail_block = official_stage1_backtest_upsert_blocked(
+                        conn,
+                        research_run_id=fields.get("research_run_id"),
+                        existing_row=row_existing,
+                    )
+                    if detail_block:
+                        print(
+                            "Skipping official Stage 1 QC rewrite for "
+                            f"{name} ({backtest_id}): {detail_block}"
+                        )
+                    else:
+                        conn.execute(text(STAGE1_UPSERT_SQL), payload)
+                        upsert_research_run(conn, strategy_id, fields)
                 except Exception as exc:
                     print(
                         "Stage 1 detail read failed for "
@@ -1581,7 +1609,12 @@ def sync_backtests(
                         )
                     else:
                         conn.execute(text(LEGACY_UPSERT_SQL), base)
-            elif is_stage1_name(name) and row_existing and row_existing.get("research_run_id"):
+            elif (
+                is_stage1_name(name)
+                and row_existing
+                and row_existing.get("research_run_id")
+                and not official_block
+            ):
                 merged = merge_stage1_lightweight_metrics(row_existing, metrics)
                 conn.execute(text(STAGE1_LIGHTWEIGHT_UPSERT_SQL), {**base, **merged})
             elif needs_legacy_date_hydration(row_existing, backtest):
