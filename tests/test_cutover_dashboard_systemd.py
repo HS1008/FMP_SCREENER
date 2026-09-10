@@ -52,6 +52,18 @@ def test_scan_systemd_env_file_lists_writer_keys_not_values(tmp_path):
     assert scan["writer_keys_present"] == ["DATABASE_URL"]
 
 
+def test_scan_systemd_env_file_flags_provider_fetch(tmp_path):
+    path = tmp_path / "fmp-dashboard.env"
+    path.write_text(
+        "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:secret@127.0.0.1/fmp\n"
+        "STREAMLIT_ALLOW_PROVIDER_FETCH=1\n",
+        encoding="utf-8",
+    )
+    scan = scan_systemd_env_file(path)
+    assert scan["present"] is True
+    assert scan["writer_keys_present"] == ["STREAMLIT_ALLOW_PROVIDER_FETCH"]
+
+
 def test_dry_run_is_ready_while_systemd_still_uses_git_pull(tmp_path):
     tree = _ready_tree(tmp_path)
     report = evaluate_cutover(

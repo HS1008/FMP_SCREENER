@@ -57,7 +57,7 @@ Migrations are additive. `jobs/apply_migrations.py` records `filename` + `sha256
 
 ## Secrets
 
-Secrets stay in `/etc/fmp` and `/root/FMP_SCREENER/.secrets`. Live ingest and deploy identity DB writes prefer `/etc/fmp/fmp-writer.env` when present and fall back to `/root/FMP_SCREENER/.env`. Streamlit identity paths never source checkout `.env`. Release trees must not contain host-modified tracked env files.
+Secrets stay in `/etc/fmp` and `/root/FMP_SCREENER/.secrets`. Live ingest and deploy identity DB writes prefer `/etc/fmp/fmp-writer.env` when present and fall back to `/root/FMP_SCREENER/.env`. Backtest-sync cron sources checkout `.env` then `/etc/fmp/fmp-writer.env` before Python (and unsets Streamlit identity flags) so `/opt/fmp/current` — which has no `.env` — still has writer DB and QC credentials. Streamlit identity paths never source checkout `.env`. Release trees must not contain host-modified tracked env files.
 
 ## Local / pre-cutover checks
 

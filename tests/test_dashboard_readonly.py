@@ -482,6 +482,7 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
                 "DB_NAME",
                 "DB_PORT",
                 "DASHBOARD_ALLOW_WRITER_FALLBACK",
+                "STREAMLIT_ALLOW_PROVIDER_FETCH",
             }
         url = None
         for line in materialized.splitlines():

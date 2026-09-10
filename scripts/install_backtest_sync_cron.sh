@@ -32,8 +32,13 @@ else
 fi
 LOG="${LOCK_ROOT}/outputs/backtest_sync.log"
 LOCK="${LOCK_ROOT}/outputs/backtest_sync.flock"
+CHECKOUT_ENV="${LOCK_ROOT}/.env"
+WRITER_ENV="/etc/fmp/fmp-writer.env"
 MARKER="jobs.sync_quantconnect --backtests-only"
-LINE="* * * * * flock -n ${LOCK} -c 'cd ${CODE_ROOT} && ${PYTHON} -m jobs.sync_quantconnect --backtests-only >> ${LOG} 2>&1'"
+# Checkout .env first (QC keys + DB fallback). Writer env overwrites DB keys.
+# flock -c uses sh; set -a exports sourced assignments into Python.
+# Do not source /etc/fmp/fmp-dashboard.env (read-only Streamlit identity).
+LINE="* * * * * flock -n ${LOCK} -c 'set -a; [ -f ${CHECKOUT_ENV} ] && . ${CHECKOUT_ENV}; [ -f ${WRITER_ENV} ] && . ${WRITER_ENV}; set +a; unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK; cd ${CODE_ROOT} && ${PYTHON} -m jobs.sync_quantconnect --backtests-only >> ${LOG} 2>&1'"
 
 mkdir -p "$(dirname "$LOG")"
 mkdir -p "$(dirname "$LOCK")"
@@ -64,6 +69,6 @@ echo
 echo "A second one-minute invocation exits immediately if a sync is still running."
 echo
 echo "Manual equivalent:"
-echo "  flock -n ${LOCK} -c 'cd ${CODE_ROOT} && ${PYTHON} -m jobs.sync_quantconnect --backtests-only'"
+echo "  flock -n ${LOCK} -c 'set -a; [ -f ${CHECKOUT_ENV} ] && . ${CHECKOUT_ENV}; [ -f ${WRITER_ENV} ] && . ${WRITER_ENV}; set +a; unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK; cd ${CODE_ROOT} && ${PYTHON} -m jobs.sync_quantconnect --backtests-only'"
 echo
 echo "The existing live QuantConnect sync cadence was not modified."

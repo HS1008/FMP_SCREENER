@@ -91,6 +91,10 @@ def test_backtests_only_cron_remains_operational():
     assert "jobs.sync_quantconnect --backtests-only" in CRON
     assert "flock -n" in CRON
     assert "* * * * *" in CRON
+    assert "/etc/fmp/fmp-writer.env" in CRON
+    assert "fmp-dashboard.env" not in [
+        row for row in CRON.splitlines() if row.startswith("LINE=")
+    ][0]
     assert "--backtests-only" in SYNC
     assert "folderWatchBlacklist" in CONFIG
     assert '"outputs"' in CONFIG or "'outputs'" in CONFIG

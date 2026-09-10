@@ -25,6 +25,7 @@ STREAMLIT_WRITER_KEYS = (
     "DB_NAME",
     "DB_PORT",
     "DASHBOARD_ALLOW_WRITER_FALLBACK",
+    "STREAMLIT_ALLOW_PROVIDER_FETCH",
 )
 
 
@@ -86,7 +87,7 @@ def main(argv: list[str] | None = None) -> int:
         "--scrub-streamlit-writer",
         action="store_true",
         default=False,
-        help="Remove writer DB keys from a Streamlit-facing env file.",
+        help="Remove writer DB keys and STREAMLIT_ALLOW_PROVIDER_FETCH from a Streamlit-facing env file.",
     )
     args = parser.parse_args(argv)
     delete_keys = list(args.delete_key)

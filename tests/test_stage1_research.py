@@ -975,6 +975,9 @@ def test_backtest_cron_installer_uses_nonblocking_flock():
     assert 'CODE_ROOT="/opt/fmp/current"' in text
     assert "LOCK_ROOT" in text
     assert "cd ${CODE_ROOT}" in text
+    assert "/etc/fmp/fmp-writer.env" in text
+    assert 'CHECKOUT_ENV="${LOCK_ROOT}/.env"' in text
+    assert "unset FMP_STREAMLIT_READONLY" in text
     assert "live" in text.lower()
     assert "Does NOT run unless you execute this script yourself." not in text
     assert "Deploy" in text or "deploy" in text
@@ -1206,6 +1209,8 @@ def test_backtest_cron_installer_is_idempotent_and_preserves_live_cron(tmp_path)
     text = crontab_file.read_text()
     assert text.count("jobs.sync_quantconnect --backtests-only") == 1
     assert "flock -n" in text
+    assert "/etc/fmp/fmp-writer.env" in text
+    assert "unset FMP_STREAMLIT_READONLY" in text
     assert live_line in text
     assert text.count(live_line) == 1
     assert "* * * * *" in text

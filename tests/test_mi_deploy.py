@@ -403,6 +403,7 @@ def test_update_protected_env_scrubs_streamlit_writer_keys_without_printing(tmp_
         "FMP_API_KEY=keep-me\n"
         "DATABASE_URL=postgresql://writer:secret@127.0.0.1/fmp\n"
         "DB_USER=writer\n"
+        "STREAMLIT_ALLOW_PROVIDER_FETCH=1\n"
         "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:x@127.0.0.1/fmp\n",
         encoding="utf-8",
     )
@@ -419,10 +420,12 @@ def test_update_protected_env_scrubs_streamlit_writer_keys_without_printing(tmp_
     assert "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:x@127.0.0.1/fmp" in text
     assert "DATABASE_URL=" not in text
     assert "DB_USER=" not in text
+    assert "STREAMLIT_ALLOW_PROVIDER_FETCH=" not in text
     assert "FMP_STREAMLIT_READONLY=1" in text
     assert "secret" not in out.stdout
     assert "writer_keys_removed=" in out.stdout
     assert "DATABASE_URL" in out.stdout
+    assert "STREAMLIT_ALLOW_PROVIDER_FETCH" in out.stdout
 
 
 def test_update_protected_env_preserves_other_keys_and_does_not_print_the_value(tmp_path):

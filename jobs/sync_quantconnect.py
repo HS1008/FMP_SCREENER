@@ -5,10 +5,9 @@ from hashlib import sha256
 from time import time
 
 import requests
-from dotenv import load_dotenv
 from sqlalchemy import text
 
-from db.connection import engine
+from db.connection import engine, load_writer_dotenv, streamlit_readonly_active
 from jobs.stage1_backtests import (
     audit_holdout_exposures,
     discover_run_summary_paths,
@@ -43,7 +42,8 @@ BACKTEST_SYNC_LOCK_WAIT_SECONDS = 180
 # CONFIG
 # =========================================================
 
-load_dotenv()
+if not streamlit_readonly_active():
+    load_writer_dotenv()
 
 QC_USER_ID = os.getenv("QC_USER_ID")
 QC_API_TOKEN = os.getenv("QC_API_TOKEN")

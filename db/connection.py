@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine
 
 STREAMLIT_READONLY_ENV = "FMP_STREAMLIT_READONLY"
+WRITER_ENV_FILE = "/etc/fmp/fmp-writer.env"
+CHECKOUT_WRITER_ENV = "/root/FMP_SCREENER/.env"
 
 _engine = None
 _database_url = None
@@ -36,6 +38,35 @@ def reset_writer_engine_for_tests() -> None:
     _database_url = None
 
 
+def load_writer_dotenv(
+    *,
+    writer_env: str | None = None,
+    checkout_env: str | None = None,
+) -> list[str]:
+    """Load writer credentials without overriding already-set variables.
+
+    Prefers ``/etc/fmp/fmp-writer.env``, then the git-pull checkout ``.env``,
+    then the process cwd. Never loads ``/etc/fmp/fmp-dashboard.env``.
+    Refused when Streamlit read-only identity is already active.
+    """
+    if streamlit_readonly_active():
+        raise WriterEngineRefused(
+            "writer dotenv is refused in the Streamlit read-only process"
+        )
+    loaded: list[str] = []
+    for path in (
+        writer_env if writer_env is not None else WRITER_ENV_FILE,
+        checkout_env if checkout_env is not None else CHECKOUT_WRITER_ENV,
+    ):
+        if path and os.path.isfile(path):
+            load_dotenv(path)
+            loaded.append(path)
+    load_dotenv()
+    # Writer jobs must not inherit Streamlit identity from checkout .env.
+    os.environ.pop(STREAMLIT_READONLY_ENV, None)
+    return loaded
+
+
 def _build_url() -> str:
     host = os.getenv("DB_HOST")
     port = os.getenv("DB_PORT", "5432")
@@ -56,7 +87,7 @@ def get_engine():
         )
     if _engine is not None:
         return _engine
-    load_dotenv()
+    load_writer_dotenv()
     if streamlit_readonly_active():
         raise WriterEngineRefused(
             "db.connection writer engine is refused in the Streamlit read-only process"
