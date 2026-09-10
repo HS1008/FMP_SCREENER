@@ -41,6 +41,9 @@ def test_dashboard_readonly_grants_cover_monitor_tables():
     sources = [
         (ROOT / "pages" / "strategy_monitor.py").read_text(encoding="utf-8"),
         (ROOT / "qc_research" / "read_models" / "monitor_queries.py").read_text(encoding="utf-8"),
+        (ROOT / "qc_research" / "research_library.py").read_text(encoding="utf-8"),
+        (ROOT / "qc_research" / "tlt_duration_momentum.py").read_text(encoding="utf-8"),
+        (ROOT / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8"),
     ]
     tables = set()
     for source in sources:

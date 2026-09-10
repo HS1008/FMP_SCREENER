@@ -1,0 +1,15 @@
+{
+  "schema_version": "csfml_v1_label_integrity_v1",
+  "strategy_id": "CrossSectionalFactorML",
+  "authoritative_milestone": "csfml-v1-nonholdout-complete",
+  "full_suite_run_id": "STAGE2_CrossSectionalFactorML_54a5543f",
+  "authoritative_csfml_v1_sha": "ef270841621933f5039680cb070559f43bd1e3c8",
+  "authoritative_csfml_v1_qc_sha": "54a5543f5796073cdf9192b04daa5dc08e8d1747",
+  "historical_v1_impact": "CANNOT_RULE_OUT",
+  "rerun_authorized": false,
+  "economic_gate": "NOT_DEFINED",
+  "holdout_accessed": false,
+  "issue": "lifetime_delisting_map_without_event_date",
+  "safe_when_t21_present": true,
+  "monitor_caption": "Official CSFML V1 label integrity is CANNOT_RULE_OUT for missing t+21 plus a later lifetime delisting. Complete 21-session exits are unaffected. economic_gate stays NOT_DEFINED. No QuantConnect rerun is authorized."
+}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
@@ -106,3 +107,49 @@ def test_official_fixtures_include_producer_required_fields():
         payload = CONSUMER_FIXTURES[kind]()
         missing = [field for field in producer_required if field not in payload]
         assert missing == [], "{0} missing producer fields: {1}".format(kind, missing)
+
+
+def test_csfml_v1_label_integrity_pin_does_not_change_economics():
+    from qc_research.contracts.label_integrity import (
+        csfml_v1_integrity_caption,
+        load_csfml_v1_label_integrity,
+    )
+
+    pin = load_csfml_v1_label_integrity()
+    assert pin["historical_v1_impact"] == "CANNOT_RULE_OUT"
+    assert pin["rerun_authorized"] is False
+    assert pin["economic_gate"] == "NOT_DEFINED"
+    assert pin["holdout_accessed"] is False
+    caption = csfml_v1_integrity_caption("CrossSectionalFactorML")
+    assert caption and "CANNOT_RULE_OUT" in caption
+    assert "NOT_DEFINED" in caption
+    assert csfml_v1_integrity_caption("SPYTrend") is None
+    assert csfml_v1_integrity_caption("TLTDurationMomentum") is None
+    assert "PASS" not in caption
+    ui = (
+        Path(__file__).resolve().parents[1] / "qc_research" / "ml_monitor_ui.py"
+    ).read_text(encoding="utf-8")
+    assert "csfml_v1_integrity_caption" in ui
+
+
+@pytest.mark.skipif(QS_ROOT is None, reason="quant-strategies sibling repo not present")
+def test_csfml_v1_label_integrity_pin_matches_producer_forensic():
+    from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
+
+    pin = load_csfml_v1_label_integrity()
+    forensic = json.loads(
+        (QS_ROOT / "research" / "stage2" / "forensic_csfml_v1_official.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    state = json.loads((QS_ROOT / "research" / "integration_state.json").read_text(encoding="utf-8"))
+    assert forensic["historical_v1_impact"] == pin["historical_v1_impact"]
+    assert forensic["rerun_authorized"] is pin["rerun_authorized"]
+    assert forensic["safe_when_t21_present"] is pin["safe_when_t21_present"]
+    assert state["authoritative_csfml_v1_sha"] == pin["authoritative_csfml_v1_sha"]
+    assert state["authoritative_csfml_v1_qc_sha"] == pin["authoritative_csfml_v1_qc_sha"]
+    assert state["cross_sectional_factor_ml"]["economic_gate"] == pin["economic_gate"]
+    assert state["cross_sectional_factor_ml"]["holdout_accessed"] is pin["holdout_accessed"]
+    assert state["cross_sectional_factor_ml"]["label_integrity"]["historical_impact"] == pin[
+        "historical_v1_impact"
+    ]

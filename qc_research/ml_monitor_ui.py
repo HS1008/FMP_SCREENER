@@ -40,6 +40,7 @@ from qc_research.ml_aggregation import (
     stage2_holdout_rows,
     stage2_research_rows,
 )
+from qc_research.contracts.label_integrity import csfml_v1_integrity_caption
 from qc_research.read_models.monitor_queries import (
     PLATFORM_RUN_IDS_SQL,
     as_payload as _as_payload,
@@ -1156,6 +1157,9 @@ def render_stage2_section(
         "Holdout rows are displayed separately and never change PASS/WATCH/FAIL. "
         "Economic PASS/WATCH/FAIL is applied only when Stage 2 thresholds are defined."
     )
+    integrity_caption = csfml_v1_integrity_caption(strategy_id, selected_run)
+    if integrity_caption:
+        st.caption(integrity_caption)
     accounting = view.get("create_accounting") or {}
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Original suite QC creates", accounting.get("original_suite_qc_creates") if accounting.get("original_suite_qc_creates") is not None else "—")

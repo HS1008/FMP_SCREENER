@@ -9,6 +9,10 @@ from qc_research.contracts.kinds import (
     reject_holdout_access,
     reject_synthetic_official,
 )
+from qc_research.contracts.label_integrity import (
+    csfml_v1_integrity_caption,
+    load_csfml_v1_label_integrity,
+)
 
 __all__ = [
     "KIND_REQUIRED_FIELDS",
@@ -16,6 +20,8 @@ __all__ = [
     "PRICE_TECH_V1_FEATURE_ORDER",
     "SCHEMA_VERSION",
     "canonical_dumps",
+    "csfml_v1_integrity_caption",
+    "load_csfml_v1_label_integrity",
     "payload_for_hash",
     "reject_holdout_access",
     "reject_synthetic_official",

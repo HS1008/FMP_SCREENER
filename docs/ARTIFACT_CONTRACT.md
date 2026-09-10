@@ -48,3 +48,12 @@ Sanitized fixtures: producer `research/artifact_fixtures.py`, consumer `qc_resea
 When both repos are present, `tests/test_cross_repo_artifact_contract.py` requires identical SHA-256 for each sanitized kind.
 `SANITIZED_CONTRACT_FIXTURE` is for tests. `SYNTHETIC_TEST_ONLY` is refused as official evidence.
 `model.pkl` stays on QuantConnect Object Store and is never downloaded by FMP.
+
+## CSFML V1 label integrity
+
+Producer forensic bound: `research/stage2/forensic_csfml_v1_official.json`.
+Consumer pin: `qc_research/contracts/csfml_v1_label_integrity.json`.
+
+`historical_v1_impact=CANNOT_RULE_OUT` and `rerun_authorized=false`. Strategy Monitor
+shows that caption for CrossSectionalFactorML. It does not change `economic_gate`,
+open holdout, or authorize a QuantConnect rerun.
