@@ -34,6 +34,7 @@ SELECT DISTINCT ON (rr.strategy_id)
     rr.economic_gate,
     rr.promotion_gate,
     rr.holdout_status,
+    rr.holdout_accessed,
     rr.delivery_status,
     rr.last_seen_at,
     rr.completed_count,
@@ -44,6 +45,7 @@ FROM research_runs rr
 WHERE rr.strategy_id IS NOT NULL
   AND rr.strategy_id <> ''
   AND COALESCE(rr.holdout_status, 'LOCKED') <> 'ACCESSED'
+  AND COALESCE(rr.holdout_accessed, FALSE) IS NOT TRUE
 ORDER BY rr.strategy_id,
     CASE
         WHEN COALESCE(rr.run_status, '') IN ('COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE')
@@ -163,6 +165,11 @@ def default_run_id(runs: pd.DataFrame) -> str | None:
     work["_holdout"] = work.get("holdout_status", pd.Series([""] * len(work))).fillna("").astype(str).str.upper()
     work["_status"] = work.get("run_status", pd.Series([""] * len(work))).fillna("").astype(str).str.upper()
     work["_kind"] = work.get("research_kind", pd.Series([""] * len(work))).fillna("").astype(str).str.lower()
+    if "holdout_accessed" in work.columns:
+        flagged = work["holdout_accessed"].map(
+            lambda value: value is True or value in {1, "1", "true", "True", "yes", "YES"}
+        )
+        work = work[~flagged.fillna(False)]
     eligible = work[~work["_holdout"].isin(HOLDOUT_ACCESSED)]
     if eligible.empty:
         eligible = work

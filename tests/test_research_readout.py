@@ -104,6 +104,7 @@ def test_default_run_is_latest_completed_not_highest_performing():
             {"research_run_id": "old_complete", "run_status": "COMPLETE", "holdout_status": "LOCKED", "last_seen_at": "2024-01-01", "research_kind": "platform_research"},
             {"research_run_id": "new_complete", "run_status": "COMPLETE", "holdout_status": "LOCKED", "last_seen_at": "2026-01-01", "research_kind": "platform_research"},
             {"research_run_id": "holdout", "run_status": "COMPLETE", "holdout_status": "ACCESSED", "last_seen_at": "2026-06-01", "research_kind": "platform_research"},
+            {"research_run_id": "holdout_flag", "run_status": "COMPLETE", "holdout_status": "LOCKED", "holdout_accessed": True, "last_seen_at": "2026-07-01", "research_kind": "platform_research"},
             {"research_run_id": "failed_new", "run_status": "FAILED", "holdout_status": "LOCKED", "last_seen_at": "2026-08-01", "research_kind": "platform_research"},
         ]
     )

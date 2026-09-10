@@ -1242,7 +1242,8 @@ STAGE1_UPSERT_SQL = """
         research_phase = COALESCE(EXCLUDED.research_phase, backtests.research_phase),
         research_window_id = COALESCE(EXCLUDED.research_window_id, backtests.research_window_id),
         research_git_commit = COALESCE(EXCLUDED.research_git_commit, backtests.research_git_commit),
-        research_is_holdout = COALESCE(EXCLUDED.research_is_holdout, backtests.research_is_holdout),
+        research_is_holdout = COALESCE(backtests.research_is_holdout, FALSE)
+            OR COALESCE(EXCLUDED.research_is_holdout, FALSE),
         research_dirty = COALESCE(EXCLUDED.research_dirty, backtests.research_dirty),
         train_start = COALESCE(EXCLUDED.train_start, backtests.train_start),
         train_end = COALESCE(EXCLUDED.train_end, backtests.train_end),

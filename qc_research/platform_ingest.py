@@ -13,6 +13,7 @@ from typing import Any, Iterable, Mapping
 from sqlalchemy import text
 
 from qc_research.contracts.kinds import reject_holdout_access, reject_synthetic_official
+from qc_research.contracts.label_integrity import refuse_impersonated_official_csfml_v1
 from qc_research.object_store_sync import (
     PLATFORM_SCHEMA_VERSIONS,
     canonical_dumps,
@@ -35,10 +36,12 @@ def refuse_tainted_source(record: Mapping[str, Any] | None) -> None:
     payload = dict(record or {})
     reject_synthetic_official(payload)
     reject_holdout_access(payload)
+    refuse_impersonated_official_csfml_v1(payload)
     nested = payload.get("payload")
     if isinstance(nested, dict):
         reject_synthetic_official(nested)
         reject_holdout_access(nested)
+        refuse_impersonated_official_csfml_v1(nested)
 
 
 def live_postgres_configured() -> bool:
@@ -355,7 +358,15 @@ ON CONFLICT (research_run_id) DO UPDATE SET
     research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, research_runs.research_lineage_id),
     run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status),
     promotion_gate = COALESCE(EXCLUDED.promotion_gate, research_runs.promotion_gate),
-    holdout_status = COALESCE(EXCLUDED.holdout_status, research_runs.holdout_status),
+    holdout_status = CASE
+        WHEN UPPER(COALESCE(research_runs.holdout_status, '')) = 'ACCESSED'
+            THEN research_runs.holdout_status
+        WHEN UPPER(COALESCE(EXCLUDED.holdout_status, '')) = 'ACCESSED'
+            THEN EXCLUDED.holdout_status
+        ELSE COALESCE(EXCLUDED.holdout_status, research_runs.holdout_status)
+    END,
+    holdout_accessed = COALESCE(research_runs.holdout_accessed, FALSE)
+        OR COALESCE(EXCLUDED.holdout_accessed, FALSE),
     economic_gate = COALESCE(EXCLUDED.economic_gate, research_runs.economic_gate),
     delivery_status = COALESCE(EXCLUDED.delivery_status, research_runs.delivery_status)
 """

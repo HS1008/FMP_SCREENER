@@ -372,7 +372,15 @@ def update_run_metadata(conn, payload: dict[str, Any]) -> None:
                 git_commit = COALESCE(EXCLUDED.git_commit, research_runs.git_commit),
                 dirty = COALESCE(EXCLUDED.dirty, research_runs.dirty),
                 promotion_gate = COALESCE(EXCLUDED.promotion_gate, research_runs.promotion_gate),
-                holdout_status = COALESCE(EXCLUDED.holdout_status, research_runs.holdout_status),
+                holdout_status = CASE
+                    WHEN UPPER(COALESCE(research_runs.holdout_status, '')) = 'ACCESSED'
+                        THEN research_runs.holdout_status
+                    WHEN UPPER(COALESCE(EXCLUDED.holdout_status, '')) = 'ACCESSED'
+                        THEN EXCLUDED.holdout_status
+                    ELSE COALESCE(EXCLUDED.holdout_status, research_runs.holdout_status)
+                END,
+                holdout_accessed = COALESCE(research_runs.holdout_accessed, FALSE)
+                    OR COALESCE(EXCLUDED.holdout_accessed, FALSE),
                 economic_gate = COALESCE(EXCLUDED.economic_gate, research_runs.economic_gate),
                 delivery_status = COALESCE(EXCLUDED.delivery_status, research_runs.delivery_status)
             """

@@ -12,6 +12,7 @@ from qc_research.contracts.kinds import (
 from qc_research.contracts.label_integrity import (
     csfml_v1_integrity_caption,
     load_csfml_v1_label_integrity,
+    refuse_impersonated_official_csfml_v1,
 )
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "csfml_v1_integrity_caption",
     "load_csfml_v1_label_integrity",
     "payload_for_hash",
+    "refuse_impersonated_official_csfml_v1",
     "reject_holdout_access",
     "reject_synthetic_official",
     "sha256_payload",

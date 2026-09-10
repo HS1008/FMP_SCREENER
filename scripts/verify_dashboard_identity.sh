@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Load host Streamlit identity and verify it. Never prints URLs or passwords.
-# Exit 0 ok or explicit writer fallback, 2 mutations succeeded, 3 identity missing.
+# Exit 0 ok, 2 mutations succeeded, 3 identity missing, 4 writer fallback refused.
 set -euo pipefail
 
 load_dashboard_env() {
@@ -24,6 +24,12 @@ load_dashboard_env() {
 }
 
 load_dashboard_env
+fallback=$(printf '%s' "${DASHBOARD_ALLOW_WRITER_FALLBACK:-}" | tr '[:upper:]' '[:lower:]')
+if [ "$fallback" = "1" ] || [ "$fallback" = "true" ] || [ "$fallback" = "yes" ] || [ "$fallback" = "on" ]; then
+  echo "dashboard_readonly_verify=writer_fallback_refused"
+  echo "DASHBOARD_ALLOW_WRITER_FALLBACK is not a production deploy path"
+  exit 4
+fi
 if command -v python >/dev/null 2>&1; then
   PYTHON_BIN=python
 else
@@ -41,10 +47,5 @@ if [ "$rc" = "2" ]; then
   echo "dashboard_readonly_verify=failed"
   exit 2
 fi
-fallback=$(printf '%s' "${DASHBOARD_ALLOW_WRITER_FALLBACK:-}" | tr '[:upper:]' '[:lower:]')
-if [ "$fallback" = "1" ] || [ "$fallback" = "true" ] || [ "$fallback" = "yes" ] || [ "$fallback" = "on" ]; then
-  echo "dashboard_readonly_verify=skipped_explicit_writer_fallback"
-  exit 0
-fi
-echo "DASHBOARD_READONLY_URL required (or DASHBOARD_ALLOW_WRITER_FALLBACK=1)"
+echo "DASHBOARD_READONLY_URL required"
 exit 3

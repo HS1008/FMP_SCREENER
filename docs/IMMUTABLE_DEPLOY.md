@@ -33,11 +33,11 @@ The Streamlit unit must mount `ReadWritePaths=/var/lib/fmp /var/log/fmp`. See `d
 
 ## Streamlit identity
 
-`DASHBOARD_READONLY_URL` is required for Strategy Monitor. It is **not** `mi_readonly` (that role cannot SELECT `strategies` / `backtests`). If the URL is unset, the page fails closed unless `DASHBOARD_ALLOW_WRITER_FALLBACK=1` is set as a temporary host escape.
+`DASHBOARD_READONLY_URL` is required for Strategy Monitor. It is **not** `mi_readonly` (that role cannot SELECT `strategies` / `backtests`). If the URL is unset, the page fails closed unless `DASHBOARD_ALLOW_WRITER_FALLBACK=1` is set as a temporary local escape. Deploy treats that escape as failure (exit 4).
 
-Everyday deploy and `deploy_release.sh` run `scripts/provision_dashboard_readonly.sh` after migrations, then `scripts/verify_dashboard_identity.sh`. If `/root/FMP_SCREENER/.secrets/dashboard_readonly.pw` exists, the provision script applies `db/roles/dashboard_readonly.sql` via admin URL or local postgres peer (never the dashboard writer) and writes `DASHBOARD_READONLY_URL` into `/etc/fmp/fmp-dashboard.env` and `/root/FMP_SCREENER/.env` without printing values. If the password file is absent, provision skips and verify fails closed unless the writer escape is explicit.
+Everyday deploy and `deploy_release.sh` run `scripts/provision_dashboard_readonly.sh` after migrations, then `scripts/verify_dashboard_identity.sh`. If `/root/FMP_SCREENER/.secrets/dashboard_readonly.pw` exists, the provision script applies `db/roles/dashboard_readonly.sql` via admin URL or local postgres peer (never the dashboard writer) and writes `DASHBOARD_READONLY_URL` into `/etc/fmp/fmp-dashboard.env` and `/root/FMP_SCREENER/.env` without printing values. If the password file is absent, provision skips and verify fails closed (exit 3). `DASHBOARD_ALLOW_WRITER_FALLBACK=1` fails deploy (exit 4) and is not a production path.
 
-Verify sources `/etc/fmp/fmp-dashboard.env` and `/root/FMP_SCREENER/.env` without printing values. Exit 2 fails deploy; exit 3 also fails unless the writer escape is explicit.
+Verify sources `/etc/fmp/fmp-dashboard.env` and `/root/FMP_SCREENER/.env` without printing values. Exit 2, 3, or 4 fails deploy.
 
 If `/opt/fmp/releases` exists, everyday deploy also populates an immutable release tree for that SHA (`--skip-restart --skip-preflight`). A failure is recorded and is non-blocking unless `FMP_IMMUTABLE_RELEASE_STRICT=1`. Systemd still runs from `/root/FMP_SCREENER` until cutover is validated on the host. Deploy writes `/var/lib/fmp/deploy/current.json` (override with `FMP_DEPLOY_STATE`) with SHA, checkout path, and immutable populate status. The file must not contain URLs or passwords.
 

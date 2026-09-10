@@ -583,7 +583,10 @@ def render_platform_view(view: dict[str, Any]) -> None:
             delivery_status=view.get("delivery_status"),
             label_integrity=(
                 load_csfml_v1_label_integrity()["historical_v1_impact"]
-                if csfml_v1_integrity_caption(str(view.get("strategy_id") or ""))
+                if csfml_v1_integrity_caption(
+                    str(view.get("strategy_id") or ""),
+                    view.get("research_run_id"),
+                )
                 else None
             ),
         )

@@ -22,6 +22,7 @@ from qc_research.contracts.kinds import (
     reject_holdout_access,
     reject_synthetic_official,
 )
+from qc_research.contracts.label_integrity import refuse_impersonated_official_csfml_v1
 
 REQUIRED_RUN_ARTIFACTS = ("run_manifest", "run_summary")
 
@@ -234,6 +235,7 @@ def ingest_artifact(
     try:
         reject_synthetic_official(payload)
         reject_holdout_access(payload)
+        refuse_impersonated_official_csfml_v1(payload)
     except ValueError as exc:
         raise ArtifactSyncError(str(exc)) from exc
     sha = verify_hash(payload, expected_hash)

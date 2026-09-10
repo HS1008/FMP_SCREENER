@@ -99,7 +99,7 @@ def test_identity_script_fails_closed_without_url_or_fallback():
     assert "PYTHON_BIN" in script
 
 
-def test_identity_script_allows_explicit_writer_fallback():
+def test_identity_script_refuses_writer_fallback_on_deploy():
     result = subprocess.run(
         ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],
         capture_output=True,
@@ -113,8 +113,9 @@ def test_identity_script_allows_explicit_writer_fallback():
         },
         check=False,
     )
-    assert result.returncode == 0
-    assert "skipped_explicit_writer_fallback" in result.stdout
+    assert result.returncode == 4
+    assert "writer_fallback_refused" in result.stdout
+    assert "skipped_explicit_writer_fallback" not in result.stdout
 
 
 def _provision_dashboard_role(admin_url: str, role: str, password: str | None, tmp_dir: Path) -> subprocess.CompletedProcess:

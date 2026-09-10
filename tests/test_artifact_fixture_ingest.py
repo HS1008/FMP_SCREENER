@@ -59,6 +59,16 @@ def test_holdout_access_is_rejected_at_ingest():
 
     with pytest.raises(ArtifactSyncError, match="holdout"):
         ingest_artifact(_Conn(), key="bad", kind="run_summary", payload=payload)
+    with pytest.raises((ArtifactSyncError, ValueError), match="holdout_status"):
+        reject_holdout_access(
+            {
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_X",
+                "run_status": "COMPLETE",
+                "holdout_accessed": False,
+                "holdout_status": "ACCESSED",
+            }
+        )
 
 
 def test_fixtures_ingest_against_disposable_postgres(pg_engine):

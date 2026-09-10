@@ -62,12 +62,18 @@ def reject_synthetic_official(payload: dict[str, Any]) -> None:
         raise ArtifactContractError("SYNTHETIC_TEST_ONLY artifacts cannot be ingested as research evidence")
 
 
+def _flag_true(value: Any) -> bool:
+    return value is True or value in {1, "1", "true", "True", "yes", "YES", "on", "ON"}
+
+
 def reject_holdout_access(payload: dict[str, Any]) -> None:
-    if payload.get("holdout_accessed") is True:
+    if _flag_true(payload.get("holdout_accessed")):
         raise ArtifactContractError("Official non-holdout ingest refuses holdout_accessed=true")
     spec = payload.get("holdout_spec")
-    if isinstance(spec, dict) and spec.get("accessed") is True:
+    if isinstance(spec, dict) and _flag_true(spec.get("accessed")):
         raise ArtifactContractError("Official non-holdout ingest refuses holdout_spec.accessed=true")
+    if str(payload.get("holdout_status") or "").strip().upper() == "ACCESSED":
+        raise ArtifactContractError("Official non-holdout ingest refuses holdout_status=ACCESSED")
     if str(payload.get("economic_gate") or "NOT_DEFINED") not in {"NOT_DEFINED", None, ""}:
         if payload.get("economic_gate") in {"PASS", "WATCH", "FAIL"}:
             raise ArtifactContractError("economic_gate PASS/WATCH/FAIL is not a producer-defined threshold")

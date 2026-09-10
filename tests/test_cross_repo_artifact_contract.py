@@ -125,6 +125,8 @@ def test_csfml_v1_label_integrity_pin_does_not_change_economics():
     assert "NOT_DEFINED" in caption
     assert csfml_v1_integrity_caption("SPYTrend") is None
     assert csfml_v1_integrity_caption("TLTDurationMomentum") is None
+    assert csfml_v1_integrity_caption("CrossSectionalFactorML", pin["full_suite_run_id"]) == caption
+    assert csfml_v1_integrity_caption("CrossSectionalFactorML", "STAGE2_CrossSectionalFactorML_FIXTURE01") is None
     assert "PASS" not in caption
     ui = (
         Path(__file__).resolve().parents[1] / "qc_research" / "ml_monitor_ui.py"
