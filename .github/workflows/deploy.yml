@@ -321,21 +321,7 @@ jobs:
               fi
               set +a
               python -m jobs.record_deploy_identity_db \
-                --from /var/lib/fmp/deploy/current.json
-            )
-
-            echo "Persisting sanitized research live identity to PostgreSQL..."
-            (
-              set -a
-              if [ -f /etc/fmp/fmp-writer.env ]; then
-                # shellcheck disable=SC1091
-                . /etc/fmp/fmp-writer.env
-              elif [ -f /root/FMP_SCREENER/.env ]; then
-                # shellcheck disable=SC1091
-                . /root/FMP_SCREENER/.env
-              fi
-              set +a
-              python -m jobs.record_research_live_identity_db \
+                --from /var/lib/fmp/deploy/current.json \
                 --csfml /var/lib/fmp/deploy/csfml_v1_live.json \
                 --tlt /var/lib/fmp/deploy/tlt_v0_live.json \
                 --stage1 /var/lib/fmp/deploy/stage1_live.json

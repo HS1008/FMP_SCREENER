@@ -163,14 +163,18 @@ def test_missing_sidecar_does_not_null_sibling_live_columns(pg_engine, monkeypat
 
 def test_deploy_persists_live_identity_after_query_back_in_writer_subshell():
     deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
-    assert "jobs.record_research_live_identity_db" in deploy
+    assert "jobs.record_research_live_identity_db" not in deploy
+    assert "jobs.record_deploy_identity_db" in deploy
+    assert "--csfml /var/lib/fmp/deploy/csfml_v1_live.json" in deploy
+    assert "--tlt /var/lib/fmp/deploy/tlt_v0_live.json" in deploy
+    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in deploy
     assert "--allow-missing" in deploy
     assert "--require-present" not in deploy
     assert deploy.index("qc_research.verify_csfml_v1 --live") < deploy.index(
-        "jobs.record_research_live_identity_db"
+        "jobs.record_deploy_identity_db"
     )
     assert deploy.index("qc_research.verify_tlt_monitor --live") < deploy.index(
-        "jobs.record_research_live_identity_db"
+        "jobs.record_deploy_identity_db"
     )
     monitor = (ROOT / "pages" / "strategy_monitor.py").read_text(encoding="utf-8")
     assert "/var/lib/fmp/deploy" not in monitor
@@ -183,12 +187,16 @@ def test_deploy_persists_live_identity_after_query_back_in_writer_subshell():
     assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
         "jobs.record_deploy_identity_db"
     )
-    assert deploy.index("jobs.record_deploy_identity_db") < deploy.index(
-        "jobs.record_research_live_identity_db"
-    )
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index(
         "jobs.record_deploy_identity_db"
     )
+    persist = deploy.split("Persisting sanitized deploy identity", 1)[1].split(
+        "Restarting Streamlit", 1
+    )[0]
+    assert "--csfml /var/lib/fmp/deploy/csfml_v1_live.json" in persist
+    assert "--tlt /var/lib/fmp/deploy/tlt_v0_live.json" in persist
+    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in persist
+    assert "jobs.record_research_live_identity_db" not in persist
     verify = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(encoding="utf-8")
     assert "jobs.record_research_live_identity_db" in verify
     assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in verify

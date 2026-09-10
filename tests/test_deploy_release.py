@@ -86,9 +86,10 @@ def test_release_script_is_additive_and_supports_rollback():
     assert deploy.index("jobs.report_deploy_identity") < deploy.index("jobs.record_deploy_identity_db")
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("jobs.record_deploy_identity_db")
     assert deploy.index("qc_research.verify_stage1 --live") < deploy.index("jobs.record_deploy_identity_db")
-    assert deploy.index("jobs.record_deploy_identity_db") < deploy.index(
-        "jobs.record_research_live_identity_db"
-    )
+    assert "jobs.record_research_live_identity_db" not in deploy
+    assert "--csfml /var/lib/fmp/deploy/csfml_v1_live.json" in deploy
+    assert "--tlt /var/lib/fmp/deploy/tlt_v0_live.json" in deploy
+    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in deploy
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
     assert deploy.index("/etc/fmp/fmp-dashboard.env") < deploy.index("jobs.audit_host_dashboard")
     record_prefix = deploy.split("jobs.record_deploy_identity_db", 1)[0]
@@ -124,13 +125,13 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "qc_research.verify_tlt_monitor --live" in deploy
     assert "--allow-missing" in deploy
     assert "/var/lib/fmp/deploy/tlt_v0_live.json" in deploy
-    assert "jobs.record_research_live_identity_db" in deploy
+    assert "jobs.record_research_live_identity_db" not in deploy
     assert "official TLT V0 identity refused" in deploy
     assert deploy.index("qc_research.verify_csfml_v1 --live") < deploy.index(
         "qc_research.verify_tlt_monitor --live"
     )
     assert deploy.index("qc_research.verify_tlt_monitor --live") < deploy.index(
-        "jobs.record_research_live_identity_db"
+        "jobs.record_deploy_identity_db"
     )
     assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
         "jobs.cutover_dashboard_systemd"
@@ -153,7 +154,7 @@ def test_release_script_is_additive_and_supports_rollback():
         "qc_research.verify_stage1 --live"
     )
     assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
-        "jobs.record_research_live_identity_db"
+        "jobs.record_deploy_identity_db"
     )
     stage1 = deploy.split("Verifying official Stage 1 identity", 1)[1].split(
         "Persisting sanitized deploy identity", 1
@@ -163,23 +164,26 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "--require-present" not in stage1
     assert ". /root/FMP_SCREENER/.env" not in stage1
     assert "source /root/FMP_SCREENER/.env" not in stage1
-    live_db = deploy.split("Persisting sanitized research live identity", 1)[1].split(
+    persist = deploy.split("Persisting sanitized deploy identity", 1)[1].split(
         "Restarting Streamlit", 1
     )[0]
-    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in live_db
-    live_db = deploy.split("Persisting sanitized research live identity", 1)[1].split(
-        "Restarting Streamlit", 1
-    )[0]
-    assert "/etc/fmp/fmp-writer.env" in live_db
-    assert "/root/FMP_SCREENER/.env" in live_db
-    assert live_db.index("/etc/fmp/fmp-writer.env") < live_db.index("/root/FMP_SCREENER/.env")
-    assert "/etc/fmp/fmp-dashboard.env" not in live_db
+    assert "jobs.record_deploy_identity_db" in persist
+    assert "jobs.record_research_live_identity_db" not in persist
+    assert "--csfml /var/lib/fmp/deploy/csfml_v1_live.json" in persist
+    assert "--tlt /var/lib/fmp/deploy/tlt_v0_live.json" in persist
+    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in persist
+    assert "/etc/fmp/fmp-writer.env" in persist
+    assert "/root/FMP_SCREENER/.env" in persist
+    assert persist.index("/etc/fmp/fmp-writer.env") < persist.index("/root/FMP_SCREENER/.env")
+    assert "/etc/fmp/fmp-dashboard.env" not in persist
     assert "--apply" not in deploy
     assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
     assert "systemctl restart fmp-dashboard" in deploy
     assert (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").is_file()
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
+    assert "one INSERT" in docs
+    assert "partial UPDATE" in docs
     assert "/var/lib/fmp/streamlit" in docs
     assert "DASHBOARD_READONLY_URL" in docs
     assert "FMP_IDENTITY_ENV_ONLY=1" in docs

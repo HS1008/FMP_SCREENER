@@ -1,7 +1,9 @@
 """Persist sanitized deploy identity to PostgreSQL. Never prints URLs or passwords.
 
-Uses the writer identity in a deploy subshell. Streamlit reads the latest row
-only through mi_v_ops_status. Does not call QuantConnect or change systemd.
+Uses the writer identity in a deploy subshell. Everyday deploy INSERTs host
+identity and CSFML / TLT / Stage 1 live query-back in one row so a failed live
+attach cannot leave a new SHA without live columns. Streamlit reads the latest
+row only through mi_v_ops_status. Does not call QuantConnect or change systemd.
 """
 
 from __future__ import annotations
@@ -47,7 +49,16 @@ INSERT INTO mi_deploy_host_identity (
     provider_fetch,
     streamlit_readonly,
     csfml_v1_label_integrity,
-    csfml_v1_rerun_authorized
+    csfml_v1_rerun_authorized,
+    csfml_v1_live_present,
+    csfml_v1_live_identity_ok,
+    csfml_v1_live_blockers,
+    tlt_v0_live_present,
+    tlt_v0_live_identity_ok,
+    tlt_v0_live_blockers,
+    stage1_live_present,
+    stage1_live_identity_ok,
+    stage1_live_blockers
 ) VALUES (
     COALESCE(CAST(:recorded_at AS TIMESTAMPTZ), NOW()),
     :git_sha,
@@ -66,7 +77,16 @@ INSERT INTO mi_deploy_host_identity (
     :provider_fetch,
     :streamlit_readonly,
     :csfml_v1_label_integrity,
-    :csfml_v1_rerun_authorized
+    :csfml_v1_rerun_authorized,
+    :csfml_v1_live_present,
+    :csfml_v1_live_identity_ok,
+    :csfml_v1_live_blockers,
+    :tlt_v0_live_present,
+    :tlt_v0_live_identity_ok,
+    :tlt_v0_live_blockers,
+    :stage1_live_present,
+    :stage1_live_identity_ok,
+    :stage1_live_blockers
 )
 """
 
@@ -115,6 +135,19 @@ def _reject_secrets(value: Any) -> None:
             raise SecretBearingIdentity("deploy identity refused a secret-bearing field")
 
 
+LIVE_TABLE_COLUMNS = (
+    "csfml_v1_live_present",
+    "csfml_v1_live_identity_ok",
+    "csfml_v1_live_blockers",
+    "tlt_v0_live_present",
+    "tlt_v0_live_identity_ok",
+    "tlt_v0_live_blockers",
+    "stage1_live_present",
+    "stage1_live_identity_ok",
+    "stage1_live_blockers",
+)
+
+
 def sanitize_record(raw: Mapping[str, Any]) -> dict[str, Any]:
     sha = str(raw.get("git_sha") or "").strip()
     if not GIT_SHA.fullmatch(sha):
@@ -141,9 +174,31 @@ def sanitize_record(raw: Mapping[str, Any]) -> dict[str, Any]:
         "csfml_v1_label_integrity": str(raw.get("csfml_v1_label_integrity") or "") or None,
         "csfml_v1_rerun_authorized": _as_bool(raw.get("csfml_v1_rerun_authorized")),
     }
+    for key in LIVE_TABLE_COLUMNS:
+        value = raw.get(key)
+        if key.endswith("_blockers"):
+            record[key] = None if value in (None, "") else str(value)
+        else:
+            record[key] = _as_bool(value)
     for value in record.values():
         _reject_secrets(value)
     return record
+
+
+def attach_live_identity(
+    record: Mapping[str, Any],
+    *,
+    csfml: Mapping[str, Any] | None,
+    tlt: Mapping[str, Any] | None,
+    stage1: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    from jobs.record_research_live_identity_db import build_record as build_live_record
+
+    attached = dict(record)
+    live = build_live_record(csfml=csfml, tlt=tlt, stage1=stage1)
+    for key in LIVE_TABLE_COLUMNS:
+        attached[key] = live.get(key)
+    return sanitize_record(attached)
 
 
 def load_record(path: Path) -> dict[str, Any]:
@@ -171,6 +226,9 @@ def print_record(record: Mapping[str, Any]) -> None:
         "immutable_current_present",
         "csfml_v1_label_integrity",
         "csfml_v1_rerun_authorized",
+        "csfml_v1_live_present",
+        "tlt_v0_live_present",
+        "stage1_live_present",
     ):
         print("{0}={1}".format(key, record.get(key)))
 
@@ -178,6 +236,9 @@ def print_record(record: Mapping[str, Any]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Persist sanitized deploy identity to PostgreSQL")
     parser.add_argument("--from", dest="source", default="")
+    parser.add_argument("--csfml", default="")
+    parser.add_argument("--tlt", default="")
+    parser.add_argument("--stage1", default="")
     args = parser.parse_args(argv)
     if streamlit_readonly_active() or (os.environ.get(STREAMLIT_READONLY_ENV) or "").strip():
         print("FAIL: record_deploy_identity_db is not a Streamlit path")
@@ -188,6 +249,24 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         record = load_record(path)
+        if args.csfml or args.tlt or args.stage1:
+            from jobs.record_research_live_identity_db import load_live_report
+
+            def _required_live(path_value: str) -> dict[str, Any] | None:
+                if not path_value:
+                    return None
+                live_path = Path(path_value)
+                report = load_live_report(live_path)
+                if report is None:
+                    raise ValueError("live identity JSON missing at {0}".format(live_path))
+                return report
+
+            record = attach_live_identity(
+                record,
+                csfml=_required_live(args.csfml),
+                tlt=_required_live(args.tlt),
+                stage1=_required_live(args.stage1),
+            )
     except SecretBearingIdentity as exc:
         print("FAIL: {0}".format(exc))
         return 4

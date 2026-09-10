@@ -138,8 +138,10 @@ def test_verify_module_is_readonly_and_wired_without_require_present():
         "qc_research.verify_stage1 --live"
     )
     assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
-        "jobs.record_research_live_identity_db"
+        "jobs.record_deploy_identity_db"
     )
+    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in deploy
+    assert "jobs.record_research_live_identity_db" not in deploy
     stage1_verify = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(
         encoding="utf-8"
     )
