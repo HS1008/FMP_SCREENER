@@ -7,8 +7,9 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
-from db.dashboard_engine import DashboardIdentityError, dashboard_engine
+from db.dashboard_engine import DashboardIdentityError, dashboard_engine, strip_writer_database_env
 
+strip_writer_database_env()
 try:
     engine = dashboard_engine()
     _DASHBOARD_IDENTITY_ERROR = None

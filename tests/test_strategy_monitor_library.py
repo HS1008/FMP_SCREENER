@@ -24,7 +24,8 @@ def test_monitor_has_library_filters_and_stable_selection():
     assert "strategy_monitor_last_strategy" in MONITOR
     assert "This page does not launch backtests" in MONITOR
     assert "dashboard_engine" in MONITOR
-    assert "from db.dashboard_engine import DashboardIdentityError, dashboard_engine" in MONITOR
+    assert "from db.dashboard_engine import DashboardIdentityError, dashboard_engine, strip_writer_database_env" in MONITOR
+    assert "strip_writer_database_env()" in MONITOR
     assert "DASHBOARD_ALLOW_WRITER_FALLBACK" in MONITOR
     assert "st.stop()" in MONITOR
     assert "arrow_safe_frame" in MONITOR

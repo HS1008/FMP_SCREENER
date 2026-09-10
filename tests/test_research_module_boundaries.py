@@ -54,7 +54,10 @@ def test_streamlit_pages_do_not_import_ingest_sql():
     dashboard = (ROOT / "dashboard.py").read_text(encoding="utf-8")
     assert "qc_research.ingest" not in monitor
     assert "object_store_sync" not in monitor
+    assert "writer_db" not in monitor
     assert "qc_research.ingest" not in dashboard
+    assert "writer_db" not in dashboard
+    assert "strip_writer_database_env" in dashboard
     ui = (ROOT / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
     assert "from qc_research.read_models.monitor_queries import" in ui
     assert "INSERT INTO" not in ui

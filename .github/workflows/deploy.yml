@@ -79,11 +79,20 @@ jobs:
             echo "Applying database migrations..."
             python -m jobs.apply_migrations
 
+            echo "Provisioning dashboard_readonly if password file exists..."
+            bash scripts/provision_dashboard_readonly.sh
+
             echo "Verifying Streamlit database identity..."
             bash scripts/verify_dashboard_identity.sh
 
             echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
             bash scripts/install_backtest_sync_cron.sh /root/FMP_SCREENER
+
+            if [ -d /opt/fmp/releases ]; then
+              echo "Populating immutable release tree (systemd still uses /root/FMP_SCREENER)"
+              bash scripts/deploy_release.sh --sha "$(git rev-parse HEAD)" --skip-restart --skip-preflight \
+                || echo "immutable_release_layout=failed_nonblocking"
+            fi
 
             echo "Restarting Streamlit..."
             systemctl restart fmp-dashboard

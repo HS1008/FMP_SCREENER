@@ -77,6 +77,7 @@ if [ "$SKIP_PREFLIGHT" != 1 ]; then
     cd "$target"
     python -m jobs.apply_migrations
     python -m pytest -q tests/test_deploy_release.py tests/test_ui_boundary.py tests/test_surface_status.py
+    bash scripts/provision_dashboard_readonly.sh
     bash scripts/verify_dashboard_identity.sh
   )
 fi

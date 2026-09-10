@@ -20,6 +20,20 @@ from sqlalchemy.engine import make_url
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_provision_script_applies_sql_via_admin_or_peer_not_writer():
+    script = (ROOT / "scripts" / "provision_dashboard_readonly.sh").read_text(encoding="utf-8")
+    assert "MI_ADMIN_DATABASE_URL" in script
+    assert "ADMIN_DATABASE_URL" in script
+    assert "postgres_peer" in script
+    assert "sudo -n -u postgres" in script
+    assert "-f -" in script
+    assert "The dashboard writer cannot CREATE ROLE" in script
+    for line in script.splitlines():
+        if "dashboard_readonly.sql" in line:
+            assert "DATABASE_URL" not in line
+            assert "DB_USER" not in line
+
+
 def test_dashboard_readonly_sql_sets_read_only_defaults():
     sql = (ROOT / "db" / "roles" / "dashboard_readonly.sql").read_text(encoding="utf-8")
     assert "default_transaction_read_only = on" in sql
@@ -166,3 +180,141 @@ def test_verify_job_against_provisioned_dashboard_role(dashboard_ro_engine, monk
     from jobs.verify_dashboard_readonly import run
 
     assert run() == 0
+
+
+def test_provision_script_skips_without_password_file(tmp_path):
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / "provision_dashboard_readonly.sh"),
+            "--root",
+            str(ROOT),
+            "--pw-file",
+            str(tmp_path / "missing.pw"),
+            "--dashboard-env",
+            str(tmp_path / "dash.env"),
+            "--systemd-env",
+            str(tmp_path / "systemd.env"),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "dashboard_readonly=skipped" in result.stdout
+    assert "postgresql" not in result.stdout.lower()
+    assert "postgresql" not in result.stderr.lower()
+
+
+def test_provision_script_require_fails_without_password_file(tmp_path):
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / "provision_dashboard_readonly.sh"),
+            "--root",
+            str(ROOT),
+            "--pw-file",
+            str(tmp_path / "missing.pw"),
+            "--require",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path)},
+        check=False,
+    )
+    assert result.returncode == 3
+    assert "password file absent" in result.stdout
+
+
+def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_database, pg_admin_url, tmp_path):
+    """Run the real host script against disposable PostgreSQL. Never print the URL."""
+    _ = pg_engine
+    if shutil.which("psql") is None:
+        pytest.fail("psql client is required for dashboard_readonly provision tests")
+    password = "dash_{0}".format(uuid.uuid4().hex)
+    pw_file = tmp_path / "dashboard_readonly.pw"
+    pw_file.write_text(password + "\n", encoding="utf-8")
+    os.chmod(pw_file, 0o600)
+    dashboard_env = tmp_path / "dash.env"
+    dashboard_env.write_text("# test env\nFMP_API_KEY=not-a-db-secret\n", encoding="utf-8")
+    systemd_env = tmp_path / "etc" / "fmp-dashboard.env"
+    admin_on_test_db = make_url(pg_admin_url).set(
+        database=make_url(pg_database).database,
+        drivername="postgresql",
+    ).render_as_string(hide_password=False)
+    env = {
+        "PATH": os.environ.get("PATH", ""),
+        "HOME": str(tmp_path),
+        "ADMIN_DATABASE_URL": admin_on_test_db,
+        "DATABASE_URL": admin_on_test_db,
+    }
+    result = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / "provision_dashboard_readonly.sh"),
+            "--root",
+            str(ROOT),
+            "--pw-file",
+            str(pw_file),
+            "--dashboard-env",
+            str(dashboard_env),
+            "--systemd-env",
+            str(systemd_env),
+        ],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env=env,
+        check=False,
+        timeout=120,
+    )
+    combined = result.stdout + result.stderr
+    try:
+        assert result.returncode == 0, result.stderr
+        assert "dashboard_readonly=provisioned" in result.stdout
+        assert "dashboard_readonly_sql_via=admin_url" in result.stdout
+        assert password not in combined
+        assert "postgresql://" not in combined
+        materialized = dashboard_env.read_text(encoding="utf-8")
+        assert "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:" in materialized
+        assert "FMP_API_KEY=not-a-db-secret" in materialized
+        systemd_text = systemd_env.read_text(encoding="utf-8")
+        assert "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:" in systemd_text
+        url = None
+        for line in materialized.splitlines():
+            if line.startswith("DASHBOARD_READONLY_URL="):
+                url = line.split("=", 1)[1]
+                break
+        assert url
+        verify = subprocess.run(
+            ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env={
+                "PATH": os.environ.get("PATH", ""),
+                "PYTHONPATH": str(ROOT),
+                "FMP_IDENTITY_ENV_ONLY": "1",
+                "DASHBOARD_READONLY_URL": url,
+            },
+            check=False,
+            timeout=60,
+        )
+        assert verify.returncode == 0, verify.stderr
+        assert "dashboard_readonly_verify=ok" in verify.stdout
+        assert password not in verify.stdout + verify.stderr
+    finally:
+        test_admin = create_engine(admin_on_test_db, isolation_level="AUTOCOMMIT", future=True)
+        with test_admin.connect() as conn:
+            exists = conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = 'dashboard_readonly'")).scalar()
+            if exists:
+                conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = 'dashboard_readonly'"))
+                conn.execute(text("DROP OWNED BY dashboard_readonly"))
+        test_admin.dispose()
+        admin = create_engine(pg_admin_url, isolation_level="AUTOCOMMIT", future=True)
+        with admin.connect() as conn:
+            conn.execute(text("DROP ROLE IF EXISTS dashboard_readonly"))
+        admin.dispose()

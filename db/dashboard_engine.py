@@ -33,6 +33,28 @@ def writer_fallback_allowed() -> bool:
     }
 
 
+WRITER_ENV_KEYS = (
+    "DATABASE_URL",
+    "MARKET_INTELLIGENCE_DATABASE_URL",
+    "DB_PASSWORD",
+)
+
+
+def strip_writer_database_env() -> list[str]:
+    """Remove writer DB credentials from the Streamlit process unless fallback is on.
+
+    Leaves DASHBOARD_READONLY_URL, DATABASE_READONLY_URL, and FMP_API_KEY in place.
+    """
+    if writer_fallback_allowed():
+        return []
+    removed: list[str] = []
+    for key in WRITER_ENV_KEYS:
+        if os.environ.get(key):
+            os.environ.pop(key, None)
+            removed.append(key)
+    return removed
+
+
 def reset_dashboard_engine_for_tests() -> None:
     global _ENGINE
     _ENGINE = None

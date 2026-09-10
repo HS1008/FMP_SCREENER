@@ -297,6 +297,8 @@ def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     assert "materialize_ai_context_env.py" in text
     assert "materialize_mi_writer_url.py" in text
     assert "writer_url_source" in text
+    assert "scripts/provision_dashboard_readonly.sh" in text
+    assert "dashboard_readonly_pw_file=" in text
     assert "wait_for_local_api" in text
     assert "127.0.0.1:8765/health" in text
     assert '-f -' in text

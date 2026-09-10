@@ -40,6 +40,7 @@ import sector_dashboard_ui
 import spy_sector_rotation_engine
 import tech_rotation_engine
 import utilities_rotation_engine
+from db.dashboard_engine import strip_writer_database_env
 from qc_research.ui_boundary import provider_fetch_allowed, refuse_provider_fetch
 
 ROOT = Path(__file__).resolve().parent
@@ -472,6 +473,7 @@ def render_legacy_fmp_dashboard() -> None:
             st.rerun()
 
     load_dotenv(ROOT / ".env")
+    strip_writer_database_env()
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
 
     sector_options = (SPY_OVERVIEW_PAGE_LABEL,) + tuple(s.page_radio_label for s in SECTOR_SPECS)
@@ -514,6 +516,7 @@ def render_legacy_fmp_dashboard() -> None:
 
 
 def main() -> None:
+    strip_writer_database_env()
     st.set_page_config(page_title="Market Intelligence", page_icon="📊", layout="wide")
     from market_intelligence import pages_ui
     from market_intelligence.page_registry import (
