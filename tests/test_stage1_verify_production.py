@@ -224,6 +224,31 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     assert "/var/lib/fmp/deploy/stage1_verify.json" in workflow
     assert workflow.index("trap") < workflow.index("verify_stage1_production.py --working-tree-only")
     assert "source /root/FMP_SCREENER/.env" not in workflow
+    assert "qc_research.verify_stage1 --live" in workflow
+    assert "/var/lib/fmp/deploy/stage1_live.json" in workflow
+    assert "jobs.record_research_live_identity_db" in workflow
+    assert "--require-present" not in workflow
+    assert workflow.index("verify_stage1_production.py") < workflow.index(
+        "qc_research.verify_stage1 --live"
+    )
+    assert workflow.index("qc_research.verify_stage1 --live") < workflow.index(
+        "jobs.record_research_live_identity_db"
+    )
+    assert workflow.index("/var/lib/fmp/deploy/stage1_verify.json") < workflow.index(
+        "/var/lib/fmp/deploy/stage1_live.json"
+    )
+    live = workflow.split("Recording official Stage 1 live identity", 1)[1].split(
+        "Persisting sanitized Stage 1 live identity", 1
+    )[0]
+    assert "/etc/fmp/fmp-dashboard.env" in live
+    assert "unset DATABASE_URL" in live
+    assert ". /root/FMP_SCREENER/.env" not in live
+    persist = workflow.split("Persisting sanitized Stage 1 live identity", 1)[1]
+    assert "/etc/fmp/fmp-writer.env" in persist
+    assert "/root/FMP_SCREENER/.env" in persist
+    assert persist.index("/etc/fmp/fmp-writer.env") < persist.index("/root/FMP_SCREENER/.env")
+    assert "/etc/fmp/fmp-dashboard.env" not in persist
+    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in persist
 
 
 def test_stage1_verify_outcome_is_recorded_without_secrets(tmp_path):

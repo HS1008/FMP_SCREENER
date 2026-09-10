@@ -140,3 +140,11 @@ def test_verify_module_is_readonly_and_wired_without_require_present():
     assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
         "jobs.record_research_live_identity_db"
     )
+    stage1_verify = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "qc_research.verify_stage1 --live" in stage1_verify
+    assert "/var/lib/fmp/deploy/stage1_live.json" in stage1_verify
+    assert "/var/lib/fmp/deploy/stage1_verify.json" in stage1_verify
+    assert "jobs.record_research_live_identity_db" in stage1_verify
+    assert "--require-present" not in stage1_verify

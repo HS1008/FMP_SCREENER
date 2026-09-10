@@ -55,9 +55,12 @@ def _live(*, present: bool, identity_ok: bool, blockers=None):
 def test_build_record_keeps_missing_files_null_and_refuses_secrets():
     record = build_record(csfml=None, tlt=_live(present=True, identity_ok=True))
     assert record["csfml_v1_live_present"] is None
+    assert record["csfml_v1_provided"] is False
+    assert record["tlt_v0_provided"] is True
     assert record["tlt_v0_live_present"] is True
     assert record["tlt_v0_live_identity_ok"] is True
     assert record["stage1_live_present"] is None
+    assert record["stage1_provided"] is False
     missing = build_record(
         csfml=_live(present=False, identity_ok=False, blockers=["official_run_missing"]),
         tlt=None,
@@ -122,6 +125,42 @@ def test_update_latest_is_visible_on_ops_view(pg_engine, monkeypatch):
     assert "postgresql://" not in json.dumps(ops)
 
 
+def test_missing_sidecar_does_not_null_sibling_live_columns(pg_engine, monkeypatch):
+    from datetime import datetime, timezone
+    from market_intelligence.read_models import ops_status
+
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
+    insert_record(
+        sanitize_record(_identity(recorded_at=datetime.now(timezone.utc).isoformat())),
+        engine=pg_engine,
+    )
+    assert update_latest(
+        build_record(
+            csfml=_live(present=True, identity_ok=True),
+            tlt=_live(present=True, identity_ok=True),
+            stage1=_live(present=False, identity_ok=False, blockers=["official_run_missing"]),
+        ),
+        engine=pg_engine,
+    ) == 1
+    assert update_latest(
+        build_record(
+            csfml=None,
+            tlt=None,
+            stage1=_live(present=True, identity_ok=True),
+        ),
+        engine=pg_engine,
+    ) == 1
+    with pg_engine.connect() as conn:
+        ops = ops_status(conn)
+    assert ops["csfml_v1_live_present"] is True
+    assert ops["csfml_v1_live_identity_ok"] is True
+    assert ops["tlt_v0_live_present"] is True
+    assert ops["tlt_v0_live_identity_ok"] is True
+    assert ops["stage1_live_present"] is True
+    assert ops["stage1_live_identity_ok"] is True
+    assert ops["stage1_live_blockers"] is None
+
+
 def test_deploy_persists_live_identity_after_query_back_in_writer_subshell():
     deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     assert "jobs.record_research_live_identity_db" in deploy
@@ -140,3 +179,10 @@ def test_deploy_persists_live_identity_after_query_back_in_writer_subshell():
     )[0]
     assert "st.stop()" not in ops_block
     assert "st.error(" not in ops_block
+    verify = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(encoding="utf-8")
+    assert "jobs.record_research_live_identity_db" in verify
+    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in verify
+    assert "--require-present" not in verify
+    assert verify.index("qc_research.verify_stage1 --live") < verify.index(
+        "jobs.record_research_live_identity_db"
+    )

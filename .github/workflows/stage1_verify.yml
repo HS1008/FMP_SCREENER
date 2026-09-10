@@ -148,5 +148,47 @@ jobs:
                 --streamlit ACTIVE \
                 --migration PASS
             )
+
+            echo "Recording official Stage 1 live identity (read-only, missing run is not a verify failure)..."
+            STAGE1_LIVE_RC=0
+            (
+              set -a
+              # shellcheck disable=SC1091
+              source /etc/fmp/fmp-dashboard.env
+              set +a
+              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+              python -m qc_research.verify_stage1 --live --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/stage1_live.json
+            ) || STAGE1_LIVE_RC=$?
+            if [ "$STAGE1_LIVE_RC" = "2" ] || [ "$STAGE1_LIVE_RC" = "4" ]; then
+              echo "official Stage 1 identity refused rc=${STAGE1_LIVE_RC}"
+              STAGE1_RC="$STAGE1_LIVE_RC"
+              exit "$STAGE1_LIVE_RC"
+            fi
+            if [ "$STAGE1_LIVE_RC" != "0" ]; then
+              echo "official Stage 1 live query-back failed rc=${STAGE1_LIVE_RC}"
+              STAGE1_RC="$STAGE1_LIVE_RC"
+              exit "$STAGE1_LIVE_RC"
+            fi
+
+            echo "Persisting sanitized Stage 1 live identity to PostgreSQL..."
+            LIVE_DB_RC=0
+            (
+              set -a
+              if [ -f /etc/fmp/fmp-writer.env ]; then
+                # shellcheck disable=SC1091
+                . /etc/fmp/fmp-writer.env
+              elif [ -f /root/FMP_SCREENER/.env ]; then
+                # shellcheck disable=SC1091
+                . /root/FMP_SCREENER/.env
+              fi
+              set +a
+              python -m jobs.record_research_live_identity_db \
+                --stage1 /var/lib/fmp/deploy/stage1_live.json
+            ) || LIVE_DB_RC=$?
+            if [ "$LIVE_DB_RC" != "0" ]; then
+              echo "Stage 1 live identity persist failed rc=${LIVE_DB_RC}"
+              STAGE1_RC="$LIVE_DB_RC"
+              exit "$LIVE_DB_RC"
+            fi
             STAGE1_RC=0
           EOF

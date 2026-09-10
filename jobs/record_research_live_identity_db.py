@@ -1,8 +1,9 @@
 """Attach sanitized CSFML / TLT / Stage 1 live query-back to the latest deploy identity row.
 
-Uses the writer identity in a deploy subshell. Streamlit reads the latest row
-only through mi_v_ops_status. Host JSON is an operator sidecar, not a UI source.
-Does not call QuantConnect or change systemd. Missing live files stay NULL.
+Uses the writer identity in a deploy or verify subshell. Streamlit reads the
+latest row only through mi_v_ops_status. Host JSON is an operator sidecar, not
+a UI source. Does not call QuantConnect or change systemd. Missing live files
+leave previously recorded columns unchanged; they do not NULL siblings.
 """
 
 from __future__ import annotations
@@ -25,15 +26,24 @@ DEFAULT_STAGE1 = "/var/lib/fmp/deploy/stage1_live.json"
 UPDATE_SQL = """
 UPDATE mi_deploy_host_identity AS d
 SET
-    csfml_v1_live_present = :csfml_v1_live_present,
-    csfml_v1_live_identity_ok = :csfml_v1_live_identity_ok,
-    csfml_v1_live_blockers = :csfml_v1_live_blockers,
-    tlt_v0_live_present = :tlt_v0_live_present,
-    tlt_v0_live_identity_ok = :tlt_v0_live_identity_ok,
-    tlt_v0_live_blockers = :tlt_v0_live_blockers,
-    stage1_live_present = :stage1_live_present,
-    stage1_live_identity_ok = :stage1_live_identity_ok,
-    stage1_live_blockers = :stage1_live_blockers
+    csfml_v1_live_present = CASE WHEN CAST(:csfml_v1_provided AS BOOLEAN)
+        THEN CAST(:csfml_v1_live_present AS BOOLEAN) ELSE d.csfml_v1_live_present END,
+    csfml_v1_live_identity_ok = CASE WHEN CAST(:csfml_v1_provided AS BOOLEAN)
+        THEN CAST(:csfml_v1_live_identity_ok AS BOOLEAN) ELSE d.csfml_v1_live_identity_ok END,
+    csfml_v1_live_blockers = CASE WHEN CAST(:csfml_v1_provided AS BOOLEAN)
+        THEN CAST(:csfml_v1_live_blockers AS TEXT) ELSE d.csfml_v1_live_blockers END,
+    tlt_v0_live_present = CASE WHEN CAST(:tlt_v0_provided AS BOOLEAN)
+        THEN CAST(:tlt_v0_live_present AS BOOLEAN) ELSE d.tlt_v0_live_present END,
+    tlt_v0_live_identity_ok = CASE WHEN CAST(:tlt_v0_provided AS BOOLEAN)
+        THEN CAST(:tlt_v0_live_identity_ok AS BOOLEAN) ELSE d.tlt_v0_live_identity_ok END,
+    tlt_v0_live_blockers = CASE WHEN CAST(:tlt_v0_provided AS BOOLEAN)
+        THEN CAST(:tlt_v0_live_blockers AS TEXT) ELSE d.tlt_v0_live_blockers END,
+    stage1_live_present = CASE WHEN CAST(:stage1_provided AS BOOLEAN)
+        THEN CAST(:stage1_live_present AS BOOLEAN) ELSE d.stage1_live_present END,
+    stage1_live_identity_ok = CASE WHEN CAST(:stage1_provided AS BOOLEAN)
+        THEN CAST(:stage1_live_identity_ok AS BOOLEAN) ELSE d.stage1_live_identity_ok END,
+    stage1_live_blockers = CASE WHEN CAST(:stage1_provided AS BOOLEAN)
+        THEN CAST(:stage1_live_blockers AS TEXT) ELSE d.stage1_live_blockers END
 FROM (
     SELECT recorded_at
     FROM mi_deploy_host_identity
@@ -67,17 +77,21 @@ def load_live_report(path: Path) -> dict[str, Any] | None:
 
 
 def live_fields(prefix: str, report: Mapping[str, Any] | None) -> dict[str, Any]:
+    provided = report is not None
     if report is None:
-        return {
+        fields = {
             "{0}_live_present".format(prefix): None,
             "{0}_live_identity_ok".format(prefix): None,
             "{0}_live_blockers".format(prefix): None,
         }
-    return {
-        "{0}_live_present".format(prefix): _as_bool(report.get("present")),
-        "{0}_live_identity_ok".format(prefix): _as_bool(report.get("identity_ok")),
-        "{0}_live_blockers".format(prefix): _blockers_text(report.get("blockers")),
-    }
+    else:
+        fields = {
+            "{0}_live_present".format(prefix): _as_bool(report.get("present")),
+            "{0}_live_identity_ok".format(prefix): _as_bool(report.get("identity_ok")),
+            "{0}_live_blockers".format(prefix): _blockers_text(report.get("blockers")),
+        }
+    fields["{0}_provided".format(prefix)] = provided
+    return fields
 
 
 def build_record(
@@ -114,6 +128,9 @@ def print_record(record: Mapping[str, Any]) -> None:
         "stage1_live_present",
         "stage1_live_identity_ok",
         "stage1_live_blockers",
+        "csfml_v1_provided",
+        "tlt_v0_provided",
+        "stage1_provided",
     ):
         print("{0}={1}".format(key, record.get(key)))
 
