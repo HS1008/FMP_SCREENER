@@ -270,10 +270,7 @@ def has_execution_deployment(strategy, snapshot=None, history=None, positions=No
 
 
 def strategy_has_platform_research(strategy_id):
-    try:
-        return bool(load_platform_run_ids(engine, strategy_id))
-    except Exception:
-        return False
+    return bool(load_platform_run_ids(engine, strategy_id))
 
 
 def _query_live_monitor_data(strategy_id, fallback_strategy):
@@ -636,7 +633,18 @@ def _render_live_monitor_body(
         orders=orders,
         trades=trades,
     )
-    show_platform = strategy_has_platform_research(strategy_id)
+    try:
+        show_platform = strategy_has_platform_research(strategy_id)
+    except Exception:
+        logger.exception(
+            "Strategy Monitor failed to read platform research ids for strategy_id=%s",
+            strategy_id,
+        )
+        st.error(
+            "Unable to read platform research identifiers from PostgreSQL. "
+            "A query failure is not treated as an empty research library."
+        )
+        show_platform = False
     stage1_rows = stage1_backtests(backtests)
     smoke_rows = smoke_backtests(backtests)
     has_stage1 = stage1_rows is not None and not getattr(stage1_rows, "empty", True)
@@ -678,21 +686,41 @@ def _render_live_monitor_body(
     # =========================================================
 
     if show_platform:
-        render_platform_section(
-            strategy_id,
-            engine=engine,
-        )
+        try:
+            render_platform_section(
+                strategy_id,
+                engine=engine,
+            )
+        except Exception:
+            logger.exception(
+                "Strategy Monitor failed to render platform research for strategy_id=%s",
+                strategy_id,
+            )
+            st.error(
+                "Unable to read platform research from PostgreSQL. "
+                "A query failure is not treated as missing research."
+            )
 
 
     # =========================================================
     # STAGE 2 ML RESEARCH (read-only PostgreSQL)
     # =========================================================
 
-    render_stage2_section(
-        strategy_id,
-        backtests,
-        engine=engine,
-    )
+    try:
+        render_stage2_section(
+            strategy_id,
+            backtests,
+            engine=engine,
+        )
+    except Exception:
+        logger.exception(
+            "Strategy Monitor failed to render Stage 2 research for strategy_id=%s",
+            strategy_id,
+        )
+        st.error(
+            "Unable to read Stage 2 research from PostgreSQL. "
+            "A query failure is not treated as missing research."
+        )
 
 
     # =========================================================
@@ -700,13 +728,23 @@ def _render_live_monitor_body(
     # =========================================================
 
     if has_stage1:
-        render_stage1_section(
-            strategy_id,
-            backtests,
-            load_equity=load_backtest_equity,
-            load_run_row=load_research_run,
-            strategy_row=strategy,
-        )
+        try:
+            render_stage1_section(
+                strategy_id,
+                backtests,
+                load_equity=load_backtest_equity,
+                load_run_row=load_research_run,
+                strategy_row=strategy,
+            )
+        except Exception:
+            logger.exception(
+                "Strategy Monitor failed to render Stage 1 research for strategy_id=%s",
+                strategy_id,
+            )
+            st.error(
+                "Unable to read Stage 1 research from PostgreSQL. "
+                "A query failure is not treated as missing research."
+            )
 
 
     # =========================================================
@@ -826,13 +864,29 @@ def _render_live_monitor_body(
 # STRATEGY SELECTOR (outside the auto-refresh fragment)
 # =========================================================
 
-strategies = load_strategies()
+try:
+    strategies = load_strategies()
+except Exception:
+    logger.exception("Strategy Monitor failed to load strategies")
+    st.error(
+        "Unable to read strategies from PostgreSQL. "
+        "The dashboard will not treat a query failure as an empty research library."
+    )
+    st.stop()
 
 if strategies.empty:
     st.warning("No strategies are registered.")
     st.stop()
 
-library = load_research_library(engine)
+try:
+    library = load_research_library(engine)
+except Exception:
+    logger.exception("Strategy Monitor failed to load the research library")
+    st.error(
+        "Unable to read the research library from PostgreSQL. "
+        "A query failure is not treated as an empty library."
+    )
+    library = pd.DataFrame()
 filter_col, asset_col, status_col, smoke_col, auto_col = st.columns([2, 2, 2, 2, 1])
 with filter_col:
     scope = st.radio(
@@ -925,7 +979,18 @@ if previous is not None and str(previous) != str(selected_id):
     ):
         st.session_state.pop(stale_key, None)
 st.session_state["strategy_monitor_last_strategy"] = selected_id
-runs = load_strategy_runs(engine, selected_id)
+try:
+    runs = load_strategy_runs(engine, selected_id)
+except Exception:
+    logger.exception(
+        "Strategy Monitor failed to load research runs for strategy_id=%s",
+        selected_id,
+    )
+    st.error(
+        "Unable to read research runs from PostgreSQL. "
+        "A query failure is not treated as an empty run list."
+    )
+    runs = pd.DataFrame()
 if runs is not None and not runs.empty and len(runs) > 1:
     run_labels = []
     for _, run in runs.iterrows():

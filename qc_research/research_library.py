@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 from sqlalchemy import bindparam, text
+from sqlalchemy.exc import ProgrammingError
 
 from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
 from qc_research.lifecycle import COMPLETE, RESEARCH_COMPLETE
@@ -110,13 +111,10 @@ ORDER BY research_run_id, synced_at DESC NULLS LAST
 def _read_sql(engine, sql: str, params: dict[str, Any] | None = None, *, expanding: tuple[str, ...] = ()) -> pd.DataFrame:
     if engine is None:
         return pd.DataFrame()
-    try:
-        stmt = text(sql)
-        for name in expanding:
-            stmt = stmt.bindparams(bindparam(name, expanding=True))
-        return pd.read_sql(stmt, engine, params=params or {})
-    except Exception:
-        return pd.DataFrame()
+    stmt = text(sql)
+    for name in expanding:
+        stmt = stmt.bindparams(bindparam(name, expanding=True))
+    return pd.read_sql(stmt, engine, params=params or {})
 
 
 def _first_sentence(text: Any) -> str | None:
@@ -189,11 +187,12 @@ def load_research_library(engine) -> pd.DataFrame:
     if runs is None or runs.empty:
         return pd.DataFrame()
     run_ids = [str(value) for value in runs["research_run_id"].dropna().astype(str).tolist()]
-    extras = (
-        _read_sql(engine, THESIS_SQL, {"run_ids": run_ids}, expanding=("run_ids",))
-        if run_ids
-        else pd.DataFrame()
-    )
+    extras = pd.DataFrame()
+    if run_ids:
+        try:
+            extras = _read_sql(engine, THESIS_SQL, {"run_ids": run_ids}, expanding=("run_ids",))
+        except ProgrammingError:
+            extras = pd.DataFrame()
     if extras is not None and not extras.empty:
         runs = runs.merge(extras, on="research_run_id", how="left")
     else:

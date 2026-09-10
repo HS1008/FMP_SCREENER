@@ -30,6 +30,7 @@ def test_monitor_has_library_filters_and_stable_selection():
     assert "st.stop()" in MONITOR
     assert "arrow_safe_frame" in MONITOR
     assert "UNAVAILABLE" in MONITOR
+    assert "will not treat a query failure as an empty research library" in MONITOR
 
 
 def test_monitor_does_not_open_or_launch_holdout():

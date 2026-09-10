@@ -1,6 +1,8 @@
 """PostgreSQL SELECT loaders used by Strategy Monitor.
 
-Read-only. Empty frame on missing engine or query errors.
+Read-only. Missing engine stays empty. Research query failures raise so a
+down or permission-denied database cannot look like an empty library.
+Paper/live tables stay optional and do not fail the research page.
 """
 
 from __future__ import annotations
@@ -10,14 +12,32 @@ from typing import Any
 
 import pandas as pd
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError, SQLAlchemyError
 
 
 def read_sql(engine, sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
     if engine is None:
         return pd.DataFrame()
+    return pd.read_sql(text(sql), engine, params=params or {})
+
+
+def read_sql_allow_missing_relation(
+    engine, sql: str, params: dict[str, Any] | None = None
+) -> pd.DataFrame:
+    """Empty only when the relation or column is absent. Other DB errors raise."""
+    try:
+        return read_sql(engine, sql, params)
+    except ProgrammingError:
+        return pd.DataFrame()
+
+
+def read_sql_optional(engine, sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
+    """Paper/live tables. Query errors stay empty and do not fail research."""
+    if engine is None:
+        return pd.DataFrame()
     try:
         return pd.read_sql(text(sql), engine, params=params or {})
-    except Exception:
+    except SQLAlchemyError:
         return pd.DataFrame()
 
 
@@ -189,10 +209,18 @@ def load_stage2_artifact_payload(engine, research_run_id: str, artifact_type: st
 def _execute_one(engine, sql: str, params: dict[str, Any] | None = None):
     if engine is None:
         return None
+    with engine.connect() as conn:
+        return conn.execute(text(sql), params or {}).mappings().first()
+
+
+def _execute_one_optional(engine, sql: str, params: dict[str, Any] | None = None):
+    """Paper/live row. Query errors stay empty and do not fail research."""
+    if engine is None:
+        return None
     try:
         with engine.connect() as conn:
             return conn.execute(text(sql), params or {}).mappings().first()
-    except Exception:
+    except SQLAlchemyError:
         return None
 
 
@@ -484,9 +512,9 @@ def enrich_strategy_research_labels(engine, strategies: pd.DataFrame) -> pd.Data
     for column in ("research_mode", "research_kind", "asset_class", "delivery_status"):
         if column not in work.columns:
             work[column] = None
-    meta = read_sql(engine, STRATEGY_LABELS_SQL)
+    meta = read_sql_allow_missing_relation(engine, STRATEGY_LABELS_SQL)
     if meta is None or meta.empty:
-        meta = read_sql(engine, STRATEGY_LABELS_FALLBACK_SQL)
+        meta = read_sql_allow_missing_relation(engine, STRATEGY_LABELS_FALLBACK_SQL)
     if meta is None or meta.empty:
         return work
     work = work.drop(
@@ -502,7 +530,7 @@ def enrich_strategy_research_labels(engine, strategies: pd.DataFrame) -> pd.Data
 
 def load_strategies_frame(engine) -> pd.DataFrame:
     registered = read_sql(engine, STRATEGIES_SQL)
-    extra = read_sql(engine, PLATFORM_STRATEGY_ROWS_SQL)
+    extra = read_sql_allow_missing_relation(engine, PLATFORM_STRATEGY_ROWS_SQL)
     if extra is None or extra.empty:
         combined = registered
     elif registered is None or registered.empty:
@@ -522,27 +550,27 @@ def load_strategy_row(engine, strategy_id: str):
 
 
 def load_latest_snapshot_row(engine, strategy_id: str):
-    return _execute_one(engine, LATEST_SNAPSHOT_SQL, {"strategy_id": strategy_id})
+    return _execute_one_optional(engine, LATEST_SNAPSHOT_SQL, {"strategy_id": strategy_id})
 
 
 def load_equity_history_frame(engine, strategy_id: str) -> pd.DataFrame:
-    return read_sql(engine, EQUITY_HISTORY_SQL, {"strategy_id": strategy_id})
+    return read_sql_optional(engine, EQUITY_HISTORY_SQL, {"strategy_id": strategy_id})
 
 
 def load_latest_positions_frame(engine, strategy_id: str) -> pd.DataFrame:
-    return read_sql(engine, LATEST_POSITIONS_SQL, {"strategy_id": strategy_id})
+    return read_sql_optional(engine, LATEST_POSITIONS_SQL, {"strategy_id": strategy_id})
 
 
 def load_orders_frame(engine, strategy_id: str) -> pd.DataFrame:
-    return read_sql(engine, ORDERS_SQL, {"strategy_id": strategy_id})
+    return read_sql_optional(engine, ORDERS_SQL, {"strategy_id": strategy_id})
 
 
 def load_trades_frame(engine, strategy_id: str) -> pd.DataFrame:
-    return read_sql(engine, TRADES_SQL, {"strategy_id": strategy_id})
+    return read_sql_optional(engine, TRADES_SQL, {"strategy_id": strategy_id})
 
 
 def load_backtests_frame(engine, strategy_id: str) -> pd.DataFrame:
-    rows = read_sql(engine, BACKTESTS_SQL, {"strategy_id": strategy_id})
+    rows = read_sql_allow_missing_relation(engine, BACKTESTS_SQL, {"strategy_id": strategy_id})
     if rows is None or rows.empty:
         return read_sql(engine, BACKTESTS_FALLBACK_SQL, {"strategy_id": strategy_id})
     return rows
