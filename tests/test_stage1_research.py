@@ -1996,6 +1996,88 @@ def test_sync_quantconnect_skips_official_stage1_rewrite():
     assert "and not official_block" in sync_fn
 
 
+def test_audit_holdout_exposures_skips_official_stage1():
+    from jobs.stage1_backtests import audit_holdout_exposures
+
+    updates: list[dict] = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "UPDATE research_runs" in sql:
+                updates.append(dict(params or {}))
+
+            class _Result:
+                def mappings(self_inner):
+                    if "FROM research_runs" in sql:
+                        return iter(
+                            [
+                                {
+                                    "research_run_id": OFFICIAL_STAGE1_RUN,
+                                    "research_lineage_id": "SPYTrend",
+                                    "holdout_start": "2023-01-01",
+                                    "holdout_end": "2024-12-31",
+                                    "config_json": {},
+                                    "expected_experiment_count": 81,
+                                },
+                                {
+                                    "research_run_id": "STAGE1_SPYTrend_other",
+                                    "research_lineage_id": "SPYTrend",
+                                    "holdout_start": "2023-01-01",
+                                    "holdout_end": "2024-12-31",
+                                    "config_json": {},
+                                    "expected_experiment_count": 81,
+                                },
+                            ]
+                        )
+                    return iter([])
+
+            return _Result()
+
+    audit_holdout_exposures(_Conn(), "SPYTrend")
+    assert [row["research_run_id"] for row in updates] == ["STAGE1_SPYTrend_other"]
+
+
+def test_insert_equity_points_skips_existing_official_stage1():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "INSERT INTO backtest_equity_points" in sql:
+                raise AssertionError("official equity must not be rewritten")
+
+            class _Result:
+                def mappings(self_inner):
+                    class _Mappings:
+                        def first(self_map):
+                            if "FROM backtests" in sql:
+                                return {"research_run_id": OFFICIAL_STAGE1_RUN}
+                            return {"n": 4}
+
+                    return _Mappings()
+
+            return _Result()
+
+    assert (
+        insert_equity_points(
+            _Conn(),
+            "SPYTrend",
+            "bt-official",
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 0
+    )
+
+
 def test_monitor_ui_fail_closes_official_stage1_identity():
     ui = (
         Path(__file__).resolve().parent.parent / "qc_research" / "monitor_ui.py"

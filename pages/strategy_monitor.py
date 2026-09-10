@@ -6,9 +6,9 @@ from datetime import datetime, timezone
 import pandas as pd
 import streamlit as st
 
-from db.dashboard_engine import DashboardIdentityError, dashboard_engine, strip_writer_database_env
+from db.dashboard_engine import DashboardIdentityError, dashboard_engine, load_streamlit_env
 
-strip_writer_database_env()
+load_streamlit_env()
 try:
     engine = dashboard_engine()
     _DASHBOARD_IDENTITY_ERROR = None

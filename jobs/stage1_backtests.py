@@ -488,7 +488,55 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
     )
 
 
+def _official_stage1_equity_immutable(conn, backtest_id: str) -> bool:
+    """True when official Stage 1 equity already exists and must not be rewritten."""
+    from qc_research.contracts.sealed_results import official_stage1_pin
+
+    result = conn.execute(
+        text("SELECT research_run_id FROM backtests WHERE backtest_id = :backtest_id"),
+        {"backtest_id": backtest_id},
+    )
+    if result is None:
+        return False
+    mappings = getattr(result, "mappings", None)
+    run_id = ""
+    if mappings is not None:
+        row = mappings().first()
+        if isinstance(row, dict):
+            run_id = str(row.get("research_run_id") or "")
+        elif row is not None:
+            mapping = getattr(row, "_mapping", None)
+            if mapping is not None:
+                run_id = str(mapping.get("research_run_id") or "")
+    if not official_stage1_pin(run_id):
+        return False
+    count_result = conn.execute(
+        text(
+            """
+            SELECT COUNT(*) AS n
+            FROM backtest_equity_points
+            WHERE backtest_id = :backtest_id
+            """
+        ),
+        {"backtest_id": backtest_id},
+    )
+    if count_result is None:
+        return False
+    count_mappings = getattr(count_result, "mappings", None)
+    if count_mappings is None:
+        return False
+    count_row = count_mappings().first()
+    if isinstance(count_row, dict):
+        return int(count_row.get("n") or 0) > 0
+    mapping = getattr(count_row, "_mapping", None) if count_row is not None else None
+    if mapping is not None:
+        return int(mapping.get("n") or 0) > 0
+    return False
+
+
 def insert_equity_points(conn, strategy_id: str, backtest_id: str, points: list[dict[str, Any]]) -> int:
+    if _official_stage1_equity_immutable(conn, backtest_id):
+        return 0
     inserted = 0
     for point in points:
         timestamp = point.get("timestamp")
@@ -653,17 +701,26 @@ def audit_holdout_exposures(conn, strategy_id: str) -> dict[str, Any] | None:
                 ),
             },
         )
-    conn.execute(
-        text(
-            """
-            UPDATE research_runs
-            SET holdout_exposure_status = :status
-            WHERE strategy_id = :strategy_id
-              AND COALESCE(research_lineage_id, strategy_id) = :lineage
-            """
-        ),
-        {"status": classified["status"], "strategy_id": strategy_id, "lineage": lineage},
-    )
+    from qc_research.contracts.sealed_results import sealed_results_run_ids
+
+    frozen = sealed_results_run_ids()
+    for run in runs:
+        run_id = str(run.get("research_run_id") or "").strip()
+        if not run_id or run_id in frozen:
+            continue
+        run_lineage = str(run.get("research_lineage_id") or strategy_id)
+        if run_lineage != str(lineage):
+            continue
+        conn.execute(
+            text(
+                """
+                UPDATE research_runs
+                SET holdout_exposure_status = :status
+                WHERE research_run_id = :research_run_id
+                """
+            ),
+            {"status": classified["status"], "research_run_id": run_id},
+        )
     return classified
 
 

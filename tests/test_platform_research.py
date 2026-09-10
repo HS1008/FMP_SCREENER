@@ -167,6 +167,26 @@ def test_experiment_manifest_ingests_without_object_store():
     assert "QuantConnect Max Drawdown" in reconstructed["source_label"]
 
 
+def test_ingest_platform_payload_refuses_sealed_mismatch():
+    from qc_research.contracts.sealed_results import SealedResultsError
+    from qc_research.platform_ingest import ingest_platform_payload
+
+    class Boom:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("sealed mismatch must not reach SQL")
+
+    with pytest.raises(SealedResultsError, match="sealed"):
+        ingest_platform_payload(
+            Boom(),
+            kind="run_summary",
+            payload={
+                "research_run_id": "STAGE1_SPYTrend_c04553d8",
+                "strategy_id": "SPYTrend",
+                "run_status": "COMPLETE",
+            },
+        )
+
+
 def test_canonical_wrap_refuses_holdout_instead_of_overwriting():
     from qc_research.contracts.kinds import ArtifactContractError
     from qc_research.platform_ingest import wrap_canonical_platform_record

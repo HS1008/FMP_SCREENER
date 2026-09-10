@@ -91,7 +91,9 @@ def test_streamlit_pages_do_not_import_ingest_sql():
         text = path.read_text(encoding="utf-8")
         for token in forbidden:
             assert token not in text, "{0} imports {1}".format(path.name, token)
-        assert "strip_writer_database_env" in text, "{0} must strip writer env".format(path.name)
+        assert "load_streamlit_env" in text, "{0} must load_streamlit_env to clear writer fallback".format(
+            path.name
+        )
     ui = (ROOT / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
     assert "from qc_research.read_models.monitor_queries import" in ui
     assert "INSERT INTO" not in ui

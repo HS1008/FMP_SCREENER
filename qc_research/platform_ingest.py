@@ -176,6 +176,9 @@ def platform_run_identity(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None:
+    from qc_research.contracts.sealed_results import refuse_sealed_committed_mismatch
+
+    refuse_sealed_committed_mismatch(payload)
     inner = _inner(payload)
     run_id = str(payload.get("research_run_id") or inner.get("research_run_id") or "")
     if kind == "trials":

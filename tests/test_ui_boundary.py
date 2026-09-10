@@ -73,6 +73,8 @@ def test_streamlit_entrypoints_strip_writer_and_never_call_load_dotenv():
         assert (
             "strip_writer_database_env" in text or "load_streamlit_env" in text
         ), f"{path.name} must strip writer credentials"
+        if path.parent.name == "pages":
+            assert "load_streamlit_env" in text, f"{path.name} must clear writer-fallback flags"
     engine = (ROOT / "db" / "dashboard_engine.py").read_text(encoding="utf-8")
     assert "def load_streamlit_env" in engine
     assert "load_dotenv" in engine
