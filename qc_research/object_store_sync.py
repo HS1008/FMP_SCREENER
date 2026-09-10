@@ -214,9 +214,8 @@ class ObjectStoreClient:
         )
 
     def object_get(self, key: str) -> dict[str, Any]:
-        return self.qc_post(
-            "/object/get",
-            {"organizationId": self.organization_id(), "key": key},
+        raise RuntimeError(
+            "Object Store get is refused; ingest uses object_properties hashes only"
         )
 
 

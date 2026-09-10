@@ -423,8 +423,11 @@ def register_platform_monitor_strategy(
         return
     project_id = row.get("project_id") or row.get("qc_research_project_id")
     project_name = row.get("project_name") or row.get("qc_research_project_name")
+    from qc_research.contracts.sealed_results import official_monitor_strategy_ids
+
+    freeze = sealed or strategy_id in official_monitor_strategy_ids()
     conn.execute(
-        text(_conflict_sql(REGISTER_STRATEGY_SQL, sealed=sealed)),
+        text(_conflict_sql(REGISTER_STRATEGY_SQL, sealed=freeze)),
         {
             "strategy_id": strategy_id,
             "name": row.get("name") or strategy_id,

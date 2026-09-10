@@ -35,6 +35,18 @@ def _run_is_sealed(run_id: str | None) -> bool:
     return bool(key) and key in sealed_results_run_ids()
 
 
+def _payload_is_sealed(payload: dict[str, Any] | None) -> bool:
+    record = dict(payload or {})
+    if _run_is_sealed(record.get("research_run_id") or record.get("run_id")):
+        return True
+    qc_id = str(record.get("backtest_id") or "")
+    if not qc_id:
+        return False
+    from qc_research.contracts.sealed_results import official_sealed_qc_backtest_ids
+
+    return qc_id in official_sealed_qc_backtest_ids()
+
+
 UPSERT_ARTIFACT_SQL = """
 INSERT INTO research_artifacts (
     artifact_key, research_run_id, research_experiment_id, artifact_type,
@@ -261,10 +273,7 @@ def upsert_features_from_training_summary(conn, payload: dict[str, Any]) -> int:
 def upsert_signals_from_oos(conn, payload: dict[str, Any]) -> int:
     points = payload.get("monthly_signal_diagnostics") or []
     count = 0
-    sql = conflict_sql(
-        UPSERT_SIGNAL_SQL,
-        sealed=_run_is_sealed(payload.get("research_run_id") or payload.get("run_id")),
-    )
+    sql = conflict_sql(UPSERT_SIGNAL_SQL, sealed=_payload_is_sealed(payload))
     for point in points:
         conn.execute(
             text(sql),

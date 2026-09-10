@@ -448,6 +448,80 @@ def test_conflict_sql_sealed_is_insert_once():
     assert conflict_sql(UPSERT_TRIAL_SQL, sealed=False) == UPSERT_TRIAL_SQL
 
 
+def test_upsert_signals_seals_official_qc_backtest_id_even_for_unsealed_run():
+    from qc_research.ingest.stage2_sql import upsert_signals_from_oos
+
+    captured: list[str] = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            captured.append(str(statement))
+
+    upsert_signals_from_oos(
+        _Conn(),
+        {
+            "research_run_id": "UNSEALED_COPY",
+            "backtest_id": "047ffb600b710df277e81e5cdb3355e1",
+            "monthly_signal_diagnostics": [{"timestamp": "2015-01-31", "rank_ic": 0.1}],
+        },
+    )
+    assert captured
+    assert "DO NOTHING" in captured[0]
+    assert "DO UPDATE" not in captured[0]
+
+
+def test_official_monitor_strategy_register_is_insert_once():
+    from qc_research.platform_ingest import register_platform_monitor_strategy
+
+    captured: list[str] = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            captured.append(str(statement))
+
+    register_platform_monitor_strategy(
+        _Conn(),
+        {"strategy_id": "SPYTrend", "name": "rewrite-me"},
+        sealed=False,
+    )
+    assert captured
+    assert "DO NOTHING" in captured[0]
+    captured.clear()
+    register_platform_monitor_strategy(
+        _Conn(),
+        {"strategy_id": "FutureBondTrend", "name": "live"},
+        sealed=False,
+    )
+    assert captured
+    assert "DO UPDATE" in captured[0]
+
+
+def test_object_store_get_refused_before_account_read():
+    from qc_research.object_store_sync import ObjectStoreClient
+
+    def _fail(_endpoint, _payload):
+        raise AssertionError("object_get must not call qc_post")
+
+    with pytest.raises(RuntimeError, match="Object Store get is refused"):
+        ObjectStoreClient(_fail).object_get("stage2/model.pkl")
+
+
+def test_qc_ingest_post_refuses_create_and_object_get():
+    from jobs.sync_quantconnect import qc_post
+
+    for endpoint in (
+        "/backtests/create",
+        "/compile/create",
+        "/files/create",
+        "/object/set",
+        "/object/get",
+        "/live/create",
+        "/projects/create",
+    ):
+        with pytest.raises(RuntimeError, match="refused from FMP ingest"):
+            qc_post(endpoint, {})
+
+
 def test_sealed_tlt_children_insert_once_on_conflict():
     from qc_research.platform_ingest import ingest_platform_payload
     from qc_research.tlt_duration_momentum import wrap_tlt_duration_momentum_record

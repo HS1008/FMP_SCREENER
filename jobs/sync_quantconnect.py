@@ -220,7 +220,30 @@ def update_strategy_status(
 # API HELPERS
 # =========================================================
 
+QC_INGEST_ALLOWED_ENDPOINTS = frozenset(
+    {
+        "/live/read",
+        "/live/portfolio/read",
+        "/live/orders/read",
+        "/live/trades/read",
+        "/projects/read",
+        "/backtests/list",
+        "/backtests/read",
+        "/backtests/chart/read",
+        "/account/read",
+        "/object/properties",
+    }
+)
+
+
 def qc_post(endpoint, payload):
+    path = str(endpoint or "")
+    if path not in QC_INGEST_ALLOWED_ENDPOINTS:
+        raise RuntimeError(
+            "QuantConnect {0} is refused from FMP ingest; read-only endpoints only".format(
+                path
+            )
+        )
     response = requests.post(
         f"{BASE_URL}{endpoint}",
         headers=get_headers(),

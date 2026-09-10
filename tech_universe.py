@@ -27,6 +27,10 @@ from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
 
 import config
 import data_loader
+from qc_research.ui_boundary import (
+    ensure_streamlit_cache_dir,
+    streamlit_filesystem_write_allowed,
+)
 
 TECH_SECTOR = "Technology"
 OUTPUT_PATH = config.OUTPUT_DIR / "tech_universe.xlsx"
@@ -253,9 +257,13 @@ def fetch_profile_bulk_all(
     df = df.drop_duplicates(subset=["symbol"], keep="last")
     out = df.reset_index(drop=True)
 
-    if cache_path is not None and not out.empty:
+    if (
+        cache_path is not None
+        and not out.empty
+        and streamlit_filesystem_write_allowed()
+    ):
         try:
-            cache_path.parent.mkdir(parents=True, exist_ok=True)
+            ensure_streamlit_cache_dir(cache_path.parent)
             tmp = cache_path.with_suffix(cache_path.suffix + ".tmp")
             out.to_pickle(tmp)
             tmp.replace(cache_path)

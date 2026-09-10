@@ -25,6 +25,10 @@ import streamlit as st
 import config
 import data_loader
 from db.dashboard_engine import load_streamlit_env
+from qc_research.ui_boundary import (
+    ensure_streamlit_cache_dir,
+    streamlit_filesystem_write_allowed,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -306,7 +310,7 @@ def validate_weights(
 # Price fetch & cache
 # ---------------------------------------------------------------------------
 def _yahoo_cache_path(ticker: str) -> Any:
-    YAHOO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_streamlit_cache_dir(YAHOO_CACHE_DIR)
     return YAHOO_CACHE_DIR / f"{clean_ticker(ticker)}.parquet"
 
 
@@ -322,7 +326,7 @@ def _read_yahoo_cache(ticker: str) -> pd.DataFrame:
 
 
 def _write_yahoo_cache(ticker: str, series: pd.Series) -> None:
-    if series.empty:
+    if series.empty or not streamlit_filesystem_write_allowed():
         return
     df = pd.DataFrame({"date": series.index, "close": _as_1d_array(series.values)})
     df.to_parquet(_yahoo_cache_path(ticker), index=False)
@@ -896,7 +900,7 @@ def load_all_holdings(
 
 
 def _underlying_cache_path(ticker: str) -> Path:
-    UNDERLYING_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_streamlit_cache_dir(UNDERLYING_CACHE_DIR)
     return UNDERLYING_CACHE_DIR / f"{clean_ticker(ticker)}.parquet"
 
 
@@ -911,7 +915,7 @@ def _read_underlying_cache(ticker: str) -> pd.DataFrame:
 
 
 def _write_underlying_cache(ticker: str, df: pd.DataFrame) -> None:
-    if df.empty:
+    if df.empty or not streamlit_filesystem_write_allowed():
         return
     df.to_parquet(_underlying_cache_path(ticker), index=False)
 

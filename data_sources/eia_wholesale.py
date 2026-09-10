@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 import config
+from qc_research.ui_boundary import streamlit_filesystem_write_allowed
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -157,6 +158,8 @@ def _read_cache() -> tuple[pd.DataFrame, pd.DataFrame] | None:
 
 
 def _write_cache(power: pd.DataFrame, gas: pd.DataFrame) -> None:
+    if not streamlit_filesystem_write_allowed():
+        return
     EIA_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     try:
         power.to_parquet(EIA_CACHE_DIR / "power_prices.parquet", index=False)

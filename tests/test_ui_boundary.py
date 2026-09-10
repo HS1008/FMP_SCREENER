@@ -8,7 +8,12 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from qc_research.ui_boundary import provider_fetch_allowed, refuse_provider_fetch
+from qc_research.ui_boundary import (
+    ensure_streamlit_cache_dir,
+    provider_fetch_allowed,
+    refuse_provider_fetch,
+    streamlit_filesystem_write_allowed,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -97,6 +102,8 @@ def test_scratch_uses_yahoo_cache_when_fetch_denied(monkeypatch, tmp_path):
     monkeypatch.delenv("STREAMLIT_ALLOW_PROVIDER_FETCH", raising=False)
     import scratch_dashboard as scratch
 
+    # Streamlit import calls load_streamlit_env, which sets FMP_STREAMLIT_READONLY.
+    monkeypatch.setattr(scratch, "streamlit_filesystem_write_allowed", lambda: True)
     monkeypatch.setattr(scratch, "YAHOO_CACHE_DIR", tmp_path)
     dates = pd.bdate_range("2020-01-02", periods=10)
     scratch._write_yahoo_cache(
@@ -154,3 +161,122 @@ def test_scratch_uses_fmp_price_cache_when_fetch_denied(monkeypatch):
     holdings, hold_err = scratch.fetch_fmp_underlying_holdings("SPY")
     assert holdings.empty
     assert "provider fetch disabled" in hold_err
+
+
+def test_streamlit_filesystem_write_refused_when_readonly(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    assert streamlit_filesystem_write_allowed() is False
+    ensure_streamlit_cache_dir(tmp_path / "missing")
+    assert not (tmp_path / "missing").exists()
+
+
+def test_cli_filesystem_write_allowed_without_readonly(monkeypatch, tmp_path):
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
+    assert streamlit_filesystem_write_allowed() is True
+    ensure_streamlit_cache_dir(tmp_path / "cache")
+    assert (tmp_path / "cache").is_dir()
+
+
+def test_streamlit_readonly_skips_price_cache_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    import data_loader
+
+    cache = tmp_path / "prices"
+    monkeypatch.setattr(data_loader.config, "CACHE_DIR", cache)
+    merged = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2024-01-02", periods=5),
+            "adjClose": [100.0 + i for i in range(5)],
+            "symbol": ["SPY"] * 5,
+        }
+    )
+    data_loader._write_price_history_cache(cache / "SPY.csv", merged, date(2024, 1, 8))
+    data_loader._cache_path("SPY")
+    assert not cache.exists()
+
+
+def test_cli_still_writes_price_cache(monkeypatch, tmp_path):
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
+    import data_loader
+
+    cache = tmp_path / "prices"
+    monkeypatch.setattr(data_loader.config, "CACHE_DIR", cache)
+    merged = pd.DataFrame(
+        {
+            "date": pd.bdate_range("2024-01-02", periods=5),
+            "adjClose": [100.0 + i for i in range(5)],
+            "symbol": ["SPY"] * 5,
+        }
+    )
+    data_loader._write_price_history_cache(cache / "SPY.csv", merged, date(2024, 1, 8))
+    assert (cache / "SPY.parquet").is_file() or (cache / "SPY.csv").is_file()
+
+
+def test_streamlit_readonly_skips_profile_cache_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    import data_loader
+
+    fund = tmp_path / "fundamentals"
+    monkeypatch.setattr(data_loader.config, "FUNDAMENTALS_CACHE_DIR", fund)
+    monkeypatch.setattr(
+        data_loader,
+        "_fmp_get",
+        lambda *_args, **_kwargs: [{"symbol": "AAPL", "averageVolume": 1}],
+    )
+    row = data_loader.get_profile_snapshot(None, "k", "AAPL")
+    assert row["averageVolume"] == 1
+    assert not fund.exists()
+
+
+def test_streamlit_readonly_skips_yahoo_and_underlying_cache_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    import scratch_dashboard as scratch
+
+    yahoo = tmp_path / "yahoo"
+    underlying = tmp_path / "underlying"
+    monkeypatch.setattr(scratch, "YAHOO_CACHE_DIR", yahoo)
+    monkeypatch.setattr(scratch, "UNDERLYING_CACHE_DIR", underlying)
+    dates = pd.bdate_range("2020-01-02", periods=10)
+    scratch._write_yahoo_cache(
+        "SPY", pd.Series([float(100 + i) for i in range(10)], index=dates)
+    )
+    scratch._write_underlying_cache(
+        "SPY",
+        pd.DataFrame(
+            {"underlying": ["AAPL"], "name": ["Apple"], "weight_pct": [10.0], "source": ["FMP"]}
+        ),
+    )
+    assert not yahoo.exists()
+    assert not underlying.exists()
+
+
+def test_streamlit_readonly_skips_eia_cache_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    from data_sources import eia_wholesale
+
+    monkeypatch.setattr(eia_wholesale, "EIA_CACHE_DIR", tmp_path / "eia")
+    power = pd.DataFrame({"date": ["2020-01-02"], "hub": ["Mass Hub"], "price": [1.0]})
+    gas = pd.DataFrame({"date": ["2020-01-02"], "hub": ["Henry Hub"], "price": [2.0]})
+    eia_wholesale._write_cache(power, gas)
+    assert not (tmp_path / "eia").exists()
+
+
+def test_streamlit_readonly_skips_profile_bulk_cache_write(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    import tech_universe
+
+    cache = tmp_path / "profile_bulk_all.pkl"
+    monkeypatch.setattr(tech_universe.config, "PROFILE_BULK_CACHE_PATH", cache)
+    monkeypatch.setattr(tech_universe, "_PROFILE_BULK_PART_SLEEP_S", 0)
+    monkeypatch.setattr(tech_universe, "_PROFILE_BULK_MAX_EMPTY_STREAK", 1)
+    monkeypatch.setattr(tech_universe.time, "sleep", lambda *_a, **_k: None)
+
+    def _part(_session, _key, part):
+        if part == 0:
+            return [{"symbol": "AAPL", "sector": "Technology"}]
+        return []
+
+    monkeypatch.setattr(tech_universe, "_fetch_profile_bulk_part", _part)
+    out = tech_universe.fetch_profile_bulk_all(None, "k")
+    assert not out.empty
+    assert not cache.exists()

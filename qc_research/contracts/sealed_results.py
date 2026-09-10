@@ -42,6 +42,17 @@ def is_sealed_results_run(run_id: str | None) -> bool:
     return bool(key) and key in sealed_results_run_ids()
 
 
+def official_monitor_strategy_ids() -> frozenset[str]:
+    """Library strategy_id values that must not be rewritten by a later unsealed ingest."""
+    return frozenset(
+        {
+            "SPYTrend",
+            "CrossSectionalFactorML",
+            "TLTDurationMomentum",
+        }
+    )
+
+
 _QC_BACKTEST_ID_KEYS = frozenset(
     {
         "backtest_id",
