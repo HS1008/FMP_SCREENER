@@ -1,5 +1,6 @@
-# Read-only AI context API. Binds to localhost only; fails closed without AI_CONTEXT_API_TOKEN and
-# DATABASE_READONLY_URL (the mi_readonly role). Front with a private/TLS reverse proxy if remote
+# Read-only AI context API + Market Intelligence gateway (REST /api/v1 and MCP /mcp).
+# Binds to localhost only; fails closed without AI_CONTEXT_API_TOKEN and
+# DATABASE_READONLY_URL (the mi_readonly role). Front with a private/TLS reverse proxy if remote.
 # Placeholders: __ROOT__ __USER__ __API_ENV_FILE__
 [Unit]
 Description=FMP Market Intelligence read-only AI context API

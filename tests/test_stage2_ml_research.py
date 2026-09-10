@@ -80,6 +80,7 @@ def test_migration_is_idempotent_and_additive():
         "017_finra_order_flow.sql",
         "018_ibkr_callback_freshness.sql",
         "019_finra_identity_quarantine.sql",
+        "020_ai_gateway_strategy_views.sql",
     ]
     assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})

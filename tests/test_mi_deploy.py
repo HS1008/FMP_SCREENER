@@ -79,9 +79,9 @@ def test_env_example_has_only_placeholders_and_documents_every_consumed_variable
     assert assigned
     for name, value in assigned:
         cleaned = value.split("#")[0].strip().strip('"')
-        assert cleaned in {"", "0", "127.0.0.1", "8765", "5432", "fmp", "fmp_writer", "FMP Research ops@example.com", "/root/FMP_SCREENER/outputs/precomputed"} or "CHANGE_ME" in cleaned, (name, value)
+        assert cleaned in {"", "0", "1", "60", "owner", "127.0.0.1", "8765", "5432", "fmp", "fmp_writer", "FMP Research ops@example.com", "/root/FMP_SCREENER/outputs/precomputed"} or "CHANGE_ME" in cleaned, (name, value)
     names = {n for n, _ in assigned}
-    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL"):
+    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "AI_GATEWAY_EXPORT_MODE", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE"):
         assert required in names
 
 

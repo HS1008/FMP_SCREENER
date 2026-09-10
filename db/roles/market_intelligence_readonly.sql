@@ -1,4 +1,6 @@
--- Human-provisioned read-only role for Market Intelligence pages and the AI context API.
+-- Human-provisioned read-only role for Market Intelligence pages and the AI gateway.
+-- This is the production AI reader identity (the requested ``ai_reader`` capability).
+-- A second login named ai_reader is not created here so operators do not manage two passwords.
 -- NOT applied by jobs/apply_migrations.py (this directory is outside db/migrations).
 --
 -- Repeatable. Re-running only refreshes grants/defaults; it never resets an existing
@@ -79,6 +81,14 @@ GRANT SELECT ON mi_v_finra_aggregate_history TO mi_readonly;
 GRANT SELECT ON mi_v_trace_individual_trades TO mi_readonly;
 GRANT SELECT ON mi_v_order_flow_coverage TO mi_readonly;
 GRANT SELECT ON mi_v_finra_aggregate_quarantine TO mi_readonly;
+
+-- Gateway research views (migration 020). Skip cleanly if the migration is not yet applied.
+SELECT EXISTS (SELECT 1 FROM information_schema.views WHERE table_name = 'mi_v_strategy_experiments') AS has_ai_strategy_views \gset
+\if :has_ai_strategy_views
+GRANT SELECT ON mi_v_strategy_experiments TO mi_readonly;
+GRANT SELECT ON mi_v_strategy_oos_windows TO mi_readonly;
+GRANT SELECT ON mi_v_strategy_artifact_status TO mi_readonly;
+\endif
 
 -- Defensive session defaults for the role (defaults, not privileges: a session can still
 -- SET them back, which is why the GRANT surface above is what enforces read-only).
