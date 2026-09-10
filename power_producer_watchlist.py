@@ -249,6 +249,13 @@ def load_hub_map() -> pd.DataFrame:
 def load_market_data(
     force_refresh: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
+    from qc_research.ui_boundary import provider_fetch_allowed
+
+    if not provider_fetch_allowed():
+        cached = eia_wholesale.load_cached_only()
+        if cached is None:
+            return pd.DataFrame(), pd.DataFrame(), False
+        return cached
     return eia_wholesale.load_cached_or_fetch_eia_data(force_refresh=force_refresh)
 
 

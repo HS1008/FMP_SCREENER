@@ -17,6 +17,7 @@ from market_intelligence.nulls import strict_dumps
 from market_intelligence.overview import build_session_changes, build_what_changed
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
+from market_intelligence.surface_status import worst_surface_status
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.ui import (
     age_text,
@@ -83,14 +84,7 @@ def _transform_text(entry: dict[str, Any] | None) -> str:
 
 
 def _worst_freshness(health: list[dict[str, Any]]) -> str | None:
-    statuses = [str(row.get("freshness_status") or "").upper() for row in health]
-    if "STALE" in statuses:
-        return "STALE"
-    if "UNKNOWN" in statuses or not statuses:
-        return "UNKNOWN"
-    if "FRESH" in statuses:
-        return "FRESH"
-    return statuses[0] if statuses else None
+    return worst_surface_status(health)
 
 
 def _material_warning(health: list[dict[str, Any]], extra: list[str] | None = None) -> str | None:
@@ -717,7 +711,12 @@ def render_data_health() -> None:
                     "failed_transport": ops.get("failed_transport_count"),
                     "last_successful_refresh": ops.get("last_successful_refresh"),
                     "research_runs": ops.get("research_run_count"),
+                    "latest_research_update": ops.get("latest_research_update"),
+                    "holdout_accessed_runs": ops.get("holdout_accessed_runs"),
                     "migrations": ops.get("migration_count"),
+                    "migrations_missing_checksum": ops.get("migrations_missing_checksum"),
+                    "ibkr_oldest_heartbeat_age_seconds": ops.get("ibkr_oldest_heartbeat_age_seconds"),
+                    "ibkr_quote_count": ops.get("ibkr_quote_count"),
                 }
             )
 

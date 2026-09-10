@@ -42,6 +42,42 @@ def test_synthetic_official_is_rejected():
         reject_synthetic_official(payload)
 
 
+def test_fixtures_ingest_against_disposable_postgres(pg_engine):
+    from sqlalchemy import text
+
+    from qc_research.object_store_sync import ingest_artifact
+
+    kind_map = {
+        "baseline_oos_diagnostics": "oos_diagnostics",
+        "stage1_run_summary": None,
+        "strategy_spec": "strategy_spec",
+    }
+    with pg_engine.begin() as conn:
+        for name, builder in CONSUMER_FIXTURES.items():
+            kind = kind_map.get(name, name)
+            if kind is None:
+                continue
+            payload = builder()
+            ingest_artifact(
+                conn,
+                key="fixture/{0}".format(name),
+                kind=kind,
+                payload=payload,
+                expected_hash=payload["artifact_sha256"],
+            )
+        rows = conn.execute(text("SELECT artifact_key, sha256, artifact_type FROM research_artifacts")).mappings().all()
+        assert rows
+        assert all(row["sha256"] for row in rows)
+        models = conn.execute(text("SELECT metadata_json FROM ml_models")).mappings().all()
+        for row in models:
+            meta = row["metadata_json"] or {}
+            if isinstance(meta, str):
+                import json
+
+                meta = json.loads(meta)
+            assert meta.get("binary_published") is not True
+
+
 def test_stage1_fixture_keeps_81_and_no_holdout():
     summary = stage1_run_summary()
     assert summary["expected_experiment_count"] == 81

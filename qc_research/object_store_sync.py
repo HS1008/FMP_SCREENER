@@ -350,8 +350,12 @@ def upsert_model_from_metadata(conn, payload: dict[str, Any]) -> None:
 
 def upsert_features_from_training_summary(conn, payload: dict[str, Any]) -> int:
     rows = payload.get("feature_diagnostics") or []
+    if isinstance(rows, dict):
+        rows = rows.get("features") or rows.get("rows") or []
     count = 0
     for row in rows:
+        if not isinstance(row, dict):
+            continue
         conn.execute(
             text(UPSERT_FEATURE_SQL),
             {

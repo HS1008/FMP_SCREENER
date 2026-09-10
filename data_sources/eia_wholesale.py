@@ -200,6 +200,14 @@ def merge_power_gas_hubs(
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
+def load_cached_only() -> tuple[pd.DataFrame, pd.DataFrame, bool] | None:
+    """Return file-cache EIA frames only. Never hits the network."""
+    cached = _read_cache()
+    if cached is None:
+        return None
+    return cached[0], cached[1], False
+
+
 def load_cached_or_fetch_eia_data(
     force_refresh: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
