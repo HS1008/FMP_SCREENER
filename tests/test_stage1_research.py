@@ -1967,6 +1967,15 @@ def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras(
     assert needs_equity_curve(existing, completed, 0) is False
     assert needs_detail_read(None, completed) is True
     assert needs_equity_curve(None, completed, 0) is True
+    renamed = {"name": "renamed-qc-backtest", "status": "Completed."}
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(81),
+        research_run_id=listed_stage1_run_id("renamed-qc-backtest", existing) or None,
+        existing_row=existing,
+    ) == "official_stage1_backtest_immutable"
+    from jobs.stage1_backtests import needs_legacy_date_hydration
+
+    assert needs_legacy_date_hydration(existing, renamed) is False
 
 
 def test_sync_quantconnect_skips_official_stage1_rewrite():
@@ -1979,6 +1988,10 @@ def test_sync_quantconnect_skips_official_stage1_rewrite():
     assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
         "conn.execute(text(STAGE1_UPSERT_SQL)"
     )
+    assert sync_fn.index("official_stage1_backtest_upsert_blocked") < sync_fn.index(
+        "LEGACY_UPSERT_SQL"
+    )
+    assert "if is_stage1_name(name):\n                official_block" not in sync_fn
     assert sync_fn.index("if official_block:") < sync_fn.index("STAGE1_LIGHTWEIGHT_UPSERT_SQL")
     assert "and not official_block" in sync_fn
 

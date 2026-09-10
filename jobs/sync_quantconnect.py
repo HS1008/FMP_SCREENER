@@ -1518,13 +1518,11 @@ def sync_backtests(
             if fetch_chart and not has_dates and not fetch_detail and is_stage1_name(name):
                 fetch_detail = True
 
-            official_block = None
-            if is_stage1_name(name):
-                official_block = official_stage1_backtest_upsert_blocked(
-                    conn,
-                    research_run_id=listed_stage1_run_id(name, row_existing) or None,
-                    existing_row=row_existing,
-                )
+            official_block = official_stage1_backtest_upsert_blocked(
+                conn,
+                research_run_id=listed_stage1_run_id(name, row_existing) or None,
+                existing_row=row_existing,
+            )
             if official_block:
                 action = "insert" if not row_existing else "rewrite"
                 print(

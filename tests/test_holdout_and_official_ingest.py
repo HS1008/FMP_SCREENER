@@ -92,6 +92,36 @@ def test_sealed_official_stage1_and_csfml_payloads_cannot_mutate():
     }
     with pytest.raises(RunSummaryImportError, match="sealed"):
         apply_run_summary(_RefuseConn(), mutated_stage1)
+    official_stage1 = json.loads(
+        (
+            ROOT
+            / "stage1_results"
+            / "SPYTrend"
+            / "STAGE1_SPYTrend_c04553d8"
+            / "run_summary.json"
+        ).read_text(encoding="utf-8")
+    )
+
+    class _RecordingConn:
+        def __init__(self):
+            self.params = []
+
+        def execute(self, statement, params=None):
+            self.params.append(params)
+
+            class _Result:
+                def fetchone(self_inner):
+                    return None
+
+            return _Result()
+
+    recorded = _RecordingConn()
+    apply_run_summary(recorded, official_stage1)
+    assert recorded.params[-1]["research_run_id"] == "STAGE1_SPYTrend_c04553d8"
+    pin_ok_mutated = dict(official_stage1)
+    pin_ok_mutated["config_fingerprint"] = "deadbeefdeadbeef"
+    with pytest.raises(RunSummaryImportError, match="sealed"):
+        apply_run_summary(_RefuseConn(), pin_ok_mutated)
     official = json.loads(
         (
             ROOT

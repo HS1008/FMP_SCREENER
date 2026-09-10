@@ -192,6 +192,10 @@ def needs_legacy_date_hydration(
         name = str(existing.get("name") or "")
     if is_stage1_name(name):
         return False
+    from qc_research.contracts.sealed_results import official_stage1_pin
+
+    if existing and official_stage1_pin(existing.get("research_run_id")):
+        return False
     if existing and existing.get("backtest_start") and existing.get("backtest_end"):
         return False
     return True
@@ -790,10 +794,15 @@ def apply_run_summary(conn, payload: dict[str, Any]) -> None:
                 run_id, incoming or "unknown"
             )
         )
-    from qc_research.contracts.sealed_results import SealedResultsError, refuse_sealed_stage1_summary
+    from qc_research.contracts.sealed_results import (
+        SealedResultsError,
+        refuse_sealed_committed_mismatch,
+        refuse_sealed_stage1_summary,
+    )
 
     try:
         refuse_sealed_stage1_summary(payload)
+        refuse_sealed_committed_mismatch(payload)
     except SealedResultsError as exc:
         raise RunSummaryImportError(str(exc)) from exc
     existing = existing_run_status(conn, run_id)
