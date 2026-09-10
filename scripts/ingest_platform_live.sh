@@ -41,15 +41,21 @@ if [ -f /root/FMP_SCREENER/venv/bin/activate ]; then
   source /root/FMP_SCREENER/venv/bin/activate
 fi
 
-cd "$ROOT"
-export PYTHONPATH="$ROOT"
+# Live PostgreSQL ingest uses the deployed checkout, not a copied Actions tree.
+# Artifact files may still live under ROOT (typically /tmp/fmp-platform-ingest).
+DEPLOYED_ROOT="/root/FMP_SCREENER"
+if [ -d "$DEPLOYED_ROOT" ] && [ -f "$DEPLOYED_ROOT/qc_research/ingest_platform_artifacts.py" ]; then
+  CODE_ROOT="$DEPLOYED_ROOT"
+else
+  CODE_ROOT="$ROOT"
+fi
+
+cd "$CODE_ROOT"
+export PYTHONPATH="$CODE_ROOT"
 export PYTHONUNBUFFERED=1
 
 echo "Verifying contract digests..."
 python -m qc_research.contracts.digests
-
-echo "Applying additive migrations..."
-python -m jobs.apply_migrations
 
 INGEST_ARGS=(--root "$TARGET" --verify-monitor)
 if [ -d "$TARGET" ] && [ "$CANONICAL_ONLY" = "1" ]; then

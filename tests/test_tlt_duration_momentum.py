@@ -386,9 +386,15 @@ def test_generic_ingest_workflow_is_event_driven():
     assert "platform-research-ingest" in workflow
     assert "repository_dispatch" in workflow
     assert "ingest_platform_live.sh" in workflow
+    assert "bash /root/FMP_SCREENER/scripts/ingest_platform_live.sh" in workflow
+    assert "bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh" not in workflow
+    assert "live PostgreSQL ingest is allowed only from refs/heads/main" in workflow
     assert "DO_SSH_KEY" in workflow
     assert "push:" not in tlt
     assert "superseded" in tlt.lower()
+    assert "bash /root/FMP_SCREENER/scripts/ingest_platform_live.sh" in tlt
+    assert "bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh" not in tlt
+    assert "live PostgreSQL ingest is allowed only from refs/heads/main" in tlt
     verify = (
         DEFAULT_ARTIFACT_ROOT.parent.parent / ".github" / "workflows" / "platform_research_verify.yml"
     ).read_text(encoding="utf-8")

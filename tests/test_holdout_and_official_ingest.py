@@ -231,6 +231,21 @@ def test_sealed_without_tree_is_explicit_and_covers_e7b24642():
     assert not overlap, overlap
 
 
+def test_official_seal_survives_empty_sealed_results_json(tmp_path, monkeypatch):
+    import qc_research.contracts.sealed_results as sealed
+
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(sealed, "SNAPSHOT", empty)
+    ids = sealed.sealed_results_run_ids()
+    assert "STAGE1_SPYTrend_c04553d8" in ids
+    assert "STAGE2_CrossSectionalFactorML_54a5543f" in ids
+    assert "STAGE2_CrossSectionalFactorML_437cdbdc" in ids
+    assert "STAGE2_CrossSectionalFactorML_e7b24642" in ids
+    assert "STAGE2_CrossSectionalFactorML_ebe7d1a4" in ids
+    assert "PLATFORM_TLTDurationMomentum_V0" in ids
+
+
 def test_official_sealed_qc_backtest_ids_come_from_committed_trees():
     from qc_research.contracts.sealed_results import official_sealed_qc_backtest_ids
     from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids

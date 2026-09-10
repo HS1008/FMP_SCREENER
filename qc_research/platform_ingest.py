@@ -634,12 +634,12 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
     refuse_tainted_source(record)
     lineage = str(record.get("research_lineage_id") or strategy_id)
     run_id = str(record.get("research_run_id") or record.get("run_id") or "").strip()
-    if not run_id:
-        from qc_research.contracts.sealed_results import (
-            official_monitor_strategy_ids,
-            sealed_results_run_ids,
-        )
+    from qc_research.contracts.sealed_results import (
+        official_monitor_strategy_ids,
+        sealed_results_run_ids,
+    )
 
+    if not run_id:
         invented = "PLATFORM_{0}_V0".format(strategy_id)
         if strategy_id in official_monitor_strategy_ids() or invented in sealed_results_run_ids():
             raise ValueError(
@@ -647,6 +647,14 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
                 "refusing to invent official identity {1}".format(strategy_id, invented)
             )
         run_id = invented
+    elif (
+        strategy_id in official_monitor_strategy_ids()
+        and run_id not in sealed_results_run_ids()
+    ):
+        raise ValueError(
+            "canonical platform artifact {0} research_run_id {1} is not an "
+            "official sealed identity".format(strategy_id, run_id)
+        )
     lifecycle = normalize_research_lifecycle(record)
     provenance = str(record.get("provenance") or "REAL_QC")
     aggregate = record.get("aggregate") if isinstance(record.get("aggregate"), dict) else {}

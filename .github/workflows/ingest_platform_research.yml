@@ -164,8 +164,14 @@ jobs:
           fi
           python -m qc_research.ingest_platform_artifacts "${ARGS[@]}"
 
+      - name: Refuse live ingest from a non-main ref
+        if: env.DRY_RUN != 'true' && github.ref != 'refs/heads/main'
+        run: |
+          echo "FAIL: live PostgreSQL ingest is allowed only from refs/heads/main (got ${{ github.ref }})"
+          exit 1
+
       - name: Configure SSH
-        if: env.DRY_RUN != 'true'
+        if: env.DRY_RUN != 'true' && github.ref == 'refs/heads/main'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
           DO_HOST: ${{ secrets.DO_HOST }}
@@ -177,7 +183,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Copy ingest tree to droplet
-        if: env.DRY_RUN != 'true'
+        if: env.DRY_RUN != 'true' && github.ref == 'refs/heads/main'
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -187,11 +193,11 @@ jobs:
             | ssh "$DO_USER@$DO_HOST" 'tar xzf - -C /tmp/fmp-platform-ingest'
 
       - name: Ingest and verify on authorized DB host
-        if: env.DRY_RUN != 'true'
+        if: env.DRY_RUN != 'true' && github.ref == 'refs/heads/main'
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
           TARGET: ${{ steps.fetch.outputs.target }}
         run: |
           ssh "$DO_USER@$DO_HOST" \
-            "STRATEGY_ID='${STRATEGY_ID:-}' bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/${TARGET}"
+            "STRATEGY_ID='${STRATEGY_ID:-}' bash /root/FMP_SCREENER/scripts/ingest_platform_live.sh /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/${TARGET}"

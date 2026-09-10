@@ -23,7 +23,14 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Refuse live ingest from a non-main ref
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "FAIL: live PostgreSQL ingest is allowed only from refs/heads/main (got ${{ github.ref }})"
+          exit 1
+
       - name: Configure SSH
+        if: github.ref == 'refs/heads/main'
         env:
           SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
           DO_HOST: ${{ secrets.DO_HOST }}
@@ -35,6 +42,7 @@ jobs:
           chmod 600 ~/.ssh/known_hosts
 
       - name: Copy ingest tree to droplet
+        if: github.ref == 'refs/heads/main'
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
@@ -44,9 +52,10 @@ jobs:
             | ssh "$DO_USER@$DO_HOST" 'tar xzf - -C /tmp/fmp-platform-ingest'
 
       - name: Ingest official TLT V0 through the generic path
+        if: github.ref == 'refs/heads/main'
         env:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
           ssh "$DO_USER@$DO_HOST" \
-            'STRATEGY_ID=TLTDurationMomentum bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/qc_research/platform_artifacts/tlt_duration_momentum.json'
+            'STRATEGY_ID=TLTDurationMomentum bash /root/FMP_SCREENER/scripts/ingest_platform_live.sh /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/qc_research/platform_artifacts/tlt_duration_momentum.json'

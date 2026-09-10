@@ -1821,6 +1821,17 @@ def test_discover_and_attach_run_summary(tmp_path):
     path.write_text(json.dumps(payload), encoding="utf-8")
     found = discover_run_summary_paths(tmp_path)
     assert found == [path]
+    ignored = (
+        tmp_path
+        / "outputs"
+        / "stage1_results"
+        / "SPYTrend"
+        / payload["research_run_id"]
+        / "run_summary.json"
+    )
+    ignored.parent.mkdir(parents=True)
+    ignored.write_text(json.dumps(payload), encoding="utf-8")
+    assert discover_run_summary_paths(tmp_path) == [path]
     parsed = parse_orchestrator_summary({"orchestrator_summary_json": payload})
     assert parsed["skipped_count"] == 1
     start, end = research_date_range(
@@ -1848,6 +1859,14 @@ def test_backtests_only_imports_run_summary_after_qc_sync():
         "imported = import_run_summaries"
     )
     assert "stage1_results" in source
+    discover = (
+        Path(__file__).resolve().parent.parent / "jobs" / "stage1_backtests.py"
+    ).read_text(encoding="utf-8")
+    discover_fn = discover.split("def discover_run_summary_paths", 1)[1].split(
+        "def load_run_summary_payload", 1
+    )[0]
+    assert "stage1_results" in discover_fn
+    assert "outputs/stage1_results" not in discover_fn
 
 
 OFFICIAL_STAGE1_RUN = "STAGE1_SPYTrend_c04553d8"

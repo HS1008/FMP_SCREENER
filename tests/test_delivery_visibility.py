@@ -160,6 +160,14 @@ def test_workflow_and_live_script_wire_explicit_ref_and_report():
     assert "FMP_IDENTITY_ENV_ONLY=1" in query
     assert query.rfind("source /etc/fmp/fmp-dashboard.env") > query.rfind("source \"$DROPLET_ENV\"")
     assert "source /root/FMP_SCREENER/.env" not in LIVE_SCRIPT.split("verify_tlt_monitor --live", 1)[1]
+    assert "CODE_ROOT=" in LIVE_SCRIPT
+    assert 'CODE_ROOT="$DEPLOYED_ROOT"' in LIVE_SCRIPT
+    assert 'export PYTHONPATH="$CODE_ROOT"' in LIVE_SCRIPT
+    assert "python -m jobs.apply_migrations" not in LIVE_SCRIPT
+    assert "bash /root/FMP_SCREENER/scripts/ingest_platform_live.sh" in WORKFLOW
+    assert "bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh" not in WORKFLOW
+    assert "live PostgreSQL ingest is allowed only from refs/heads/main" in WORKFLOW
+    assert "github.ref == 'refs/heads/main'" in WORKFLOW
 
 
 # ---- PostgreSQL-backed: idempotent ingestion, invalid hash, preservation, recorded facts -----------------

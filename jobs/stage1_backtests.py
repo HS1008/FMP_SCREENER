@@ -1105,7 +1105,6 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
 
 
 STAGE1_RESULTS_RELATIVE = "stage1_results"
-STAGE1_RESULTS_OUTPUTS_RELATIVE = "outputs/stage1_results"
 
 
 def repo_root() -> Path:
@@ -1124,18 +1123,17 @@ def discover_run_summary_paths(root: Path | None = None) -> list[Path]:
     base = Path(root) if root is not None else repo_root()
     found: list[Path] = []
     seen: set[Path] = set()
-    for relative in (STAGE1_RESULTS_RELATIVE, STAGE1_RESULTS_OUTPUTS_RELATIVE):
-        directory = base / relative
-        if not directory.is_dir():
+    directory = base / STAGE1_RESULTS_RELATIVE
+    if not directory.is_dir():
+        return found
+    for path in sorted(directory.rglob("run_summary.json")):
+        if not path.is_file():
             continue
-        for path in sorted(directory.rglob("run_summary.json")):
-            if not path.is_file():
-                continue
-            resolved = path.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            found.append(path)
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        found.append(path)
     return found
 
 

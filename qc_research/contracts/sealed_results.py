@@ -18,6 +18,19 @@ from qc_research.contracts.kinds import ArtifactContractError
 SNAPSHOT = Path(__file__).resolve().parent / "sealed_results.json"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
+# JSON cannot unseal these. Live ingest must not reopen official rows if
+# sealed_results.json on a copied Actions tree is emptied.
+MINIMUM_SEALED_RESULTS_RUN_IDS = frozenset(
+    {
+        "STAGE1_SPYTrend_c04553d8",
+        "STAGE2_CrossSectionalFactorML_54a5543f",
+        "STAGE2_CrossSectionalFactorML_437cdbdc",
+        "STAGE2_CrossSectionalFactorML_e7b24642",
+        "STAGE2_CrossSectionalFactorML_ebe7d1a4",
+        "PLATFORM_TLTDurationMomentum_V0",
+    }
+)
+
 
 class SealedResultsError(ArtifactContractError):
     """Sealed official results would be mutated."""
@@ -29,7 +42,8 @@ def load_sealed_results() -> dict[str, Any]:
 
 def sealed_results_run_ids() -> frozenset[str]:
     data = load_sealed_results()
-    return frozenset(str(item) for item in (data.get("run_ids") or []) if item)
+    found = {str(item) for item in (data.get("run_ids") or []) if item}
+    return frozenset(found | set(MINIMUM_SEALED_RESULTS_RUN_IDS))
 
 
 def sealed_without_tree_run_ids() -> frozenset[str]:

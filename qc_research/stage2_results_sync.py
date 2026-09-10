@@ -17,7 +17,6 @@ from qc_research.object_store_sync import ingest_artifact
 logger = logging.getLogger(__name__)
 
 STAGE2_RESULTS_RELATIVE = "stage2_results"
-STAGE2_RESULTS_OUTPUTS_RELATIVE = "outputs/stage2_results"
 TRANSPORT = "github_stage2_results"
 
 KIND_BY_FILENAME = {
@@ -54,21 +53,21 @@ def repo_root() -> Path:
 
 
 def discover_stage2_result_paths(root: Path | None = None) -> list[Path]:
+    """Find Stage 2 JSON committed under stage2_results/. Does not walk outputs/."""
     base = Path(root) if root is not None else repo_root()
     found: list[Path] = []
     seen: set[Path] = set()
-    for relative in (STAGE2_RESULTS_RELATIVE, STAGE2_RESULTS_OUTPUTS_RELATIVE):
-        directory = base / relative
-        if not directory.is_dir():
+    directory = base / STAGE2_RESULTS_RELATIVE
+    if not directory.is_dir():
+        return found
+    for path in sorted(directory.rglob("*.json")):
+        if not path.is_file() or path.name not in KIND_BY_FILENAME:
             continue
-        for path in sorted(directory.rglob("*.json")):
-            if not path.is_file() or path.name not in KIND_BY_FILENAME:
-                continue
-            resolved = path.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            found.append(path)
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        found.append(path)
     return found
 
 

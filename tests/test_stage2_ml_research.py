@@ -408,6 +408,38 @@ def test_baseline_and_ml_oos_files_ingest_as_distinct_artifacts(tmp_path):
     assert backtests == {"ml-bt", "base-bt"}
 
 
+def test_stage2_discovery_ignores_gitignored_outputs_tree(tmp_path):
+    from qc_research.stage2_results_sync import discover_stage2_result_paths
+
+    committed = (
+        tmp_path
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_abc"
+    )
+    committed.mkdir(parents=True)
+    payload = {
+        "schema_version": "stage2_ml_v1",
+        "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+        "strategy_id": "CrossSectionalFactorML",
+        "run_status": "COMPLETE",
+    }
+    (committed / "run_summary.json").write_text(json.dumps(payload), encoding="utf-8")
+    ignored = (
+        tmp_path
+        / "outputs"
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_extra"
+    )
+    ignored.mkdir(parents=True)
+    extra = dict(payload)
+    extra["research_run_id"] = "STAGE2_CrossSectionalFactorML_extra"
+    (ignored / "run_summary.json").write_text(json.dumps(extra), encoding="utf-8")
+    paths = discover_stage2_result_paths(tmp_path)
+    assert paths == [committed / "run_summary.json"]
+
+
 def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert "render_stage2_section" in MONITOR
     assert "render_platform_section" in MONITOR

@@ -233,6 +233,15 @@ def test_canonical_wrap_refuses_inventing_official_run_id():
         official["strategy_id"] = strategy_id
         with pytest.raises(ValueError, match="missing research_run_id"):
             wrap_canonical_platform_record(official)
+        invented = dict(official)
+        invented["research_run_id"] = "PLATFORM_{0}_V1".format(strategy_id)
+        with pytest.raises(ValueError, match="not an official sealed identity"):
+            wrap_canonical_platform_record(invented)
+    sealed = dict(future)
+    sealed["strategy_id"] = "TLTDurationMomentum"
+    sealed["research_run_id"] = "PLATFORM_TLTDurationMomentum_V0"
+    wrapped_official = wrap_canonical_platform_record(sealed)
+    assert wrapped_official[0][1]["research_run_id"] == "PLATFORM_TLTDurationMomentum_V0"
 
 
 def test_synthetic_artifacts_are_rejected_from_ingest():
