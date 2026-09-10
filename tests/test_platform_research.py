@@ -552,6 +552,7 @@ def test_licensed_ml_discovery_real_qc_artifacts_ingest_without_live_postgres(mo
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     with pytest.raises(IngestEnvironmentError, match="DATABASE_URL"):
         require_live_postgres_ingest()
 
@@ -584,6 +585,26 @@ def test_live_ingest_refuses_streamlit_readonly_even_with_database_url(monkeypat
     )
     assert ingest_main(["--root", str(tlt), "--dry-run"]) == 0
     assert ingest_main(["--root", str(tlt)]) == 4
+
+
+def test_missing_writer_url_skips_even_if_streamlit_readonly_leaked(monkeypatch):
+    from qc_research.ingest_platform_artifacts import main as ingest_main
+    from qc_research.platform_ingest import IngestEnvironmentError, require_live_postgres_ingest
+
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("DB_NAME", raising=False)
+    monkeypatch.delenv("DB_USER", raising=False)
+    with pytest.raises(IngestEnvironmentError, match="DATABASE_URL"):
+        require_live_postgres_ingest()
+    tlt = (
+        Path(__file__).resolve().parents[1]
+        / "qc_research"
+        / "platform_artifacts"
+        / "tlt_duration_momentum.json"
+    )
+    assert ingest_main(["--root", str(tlt)]) == 0
 
 
 def test_vendored_licensed_smoke_wraps_and_ingests_idempotently(tmp_path, monkeypatch):
@@ -629,6 +650,7 @@ def test_vendored_licensed_smoke_wraps_and_ingests_idempotently(tmp_path, monkey
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
     assert ingest_main(["--root", str(smoke), "--verify-monitor"]) == 0
 
@@ -689,6 +711,7 @@ def test_vendored_ml_cloud_train_smoke_ingests_without_object_store(tmp_path, mo
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
 
 
@@ -777,6 +800,7 @@ def test_vendored_ridge_transport_smoke_wraps_without_object_store(tmp_path, mon
     monkeypatch.delenv("DB_HOST", raising=False)
     monkeypatch.delenv("DB_NAME", raising=False)
     monkeypatch.delenv("DB_USER", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     assert ingest_main(["--root", str(smoke), "--dry-run", "--verify-monitor"]) == 0
 
 

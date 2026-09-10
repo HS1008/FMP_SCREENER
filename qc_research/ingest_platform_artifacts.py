@@ -91,11 +91,6 @@ def main(argv: list[str] | None = None) -> int:
             )
         print("Dry-run complete. PostgreSQL was not contacted.")
         return 0
-    try:
-        refuse_streamlit_ingest()
-    except StreamlitIngestRefused as exc:
-        print("FAIL: {0}".format(exc))
-        return 4
     if not live_postgres_configured():
         print(SKIP_NO_DATABASE)
         if ns.verify_monitor:
@@ -107,6 +102,11 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
         return 0
+    try:
+        refuse_streamlit_ingest()
+    except StreamlitIngestRefused as exc:
+        print("FAIL: {0}".format(exc))
+        return 4
     require_live_postgres_ingest()
     engine = postgres_engine()
     with engine.begin() as conn:

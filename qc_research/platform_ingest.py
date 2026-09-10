@@ -143,12 +143,12 @@ def live_postgres_configured() -> bool:
 
 def require_live_postgres_ingest() -> None:
     """Human environment gate. Unit tests may use FakeConn without this."""
-    refuse_streamlit_ingest()
     if not live_postgres_configured():
         raise IngestEnvironmentError(
             "DATABASE_URL / DB_* unset. Live Strategy Monitor ingest is a human environment gate. "
             "Do not invent a database. Unit tests may ingest through FakeConn."
         )
+    refuse_streamlit_ingest()
 
 
 UPSERT_TRIAL = """
@@ -572,7 +572,6 @@ def postgres_url_from_env() -> str | None:
 
 def postgres_engine():
     """Live engine only after the environment gate. Never invents a URL."""
-    refuse_streamlit_ingest()
     require_live_postgres_ingest()
     url = postgres_url_from_env()
     if not url:

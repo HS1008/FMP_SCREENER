@@ -282,6 +282,7 @@ def test_delivery_facts_recorded_in_market_intelligence_tables(mi_db, tmp_path):
 def test_record_require_postgres_fails_closed_without_writer(monkeypatch, tmp_path):
     monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     missing = tmp_path / "missing.json"
     assert dv.main(["record", "--report", str(missing), "--require-postgres"]) == 2
     report = tmp_path / "report.json"
@@ -302,3 +303,12 @@ def test_delivery_record_refuses_streamlit_readonly_even_with_database_url(monke
     report.write_text(json.dumps({"event": "schedule"}), encoding="utf-8")
     assert dv.main(["record", "--report", str(report), "--require-postgres"]) == 4
     assert dv.main(["record", "--report", str(report)]) == 4
+
+
+def test_delivery_record_missing_writer_is_not_streamlit_refuse(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"event": "schedule"}), encoding="utf-8")
+    assert dv.main(["record", "--report", str(report), "--require-postgres"]) == 2
