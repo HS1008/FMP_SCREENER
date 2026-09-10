@@ -78,15 +78,29 @@ jobs:
           ssh "$DO_USER@$DO_HOST" << 'EOF'
             set -euo pipefail
 
-            cd /root/FMP_SCREENER
-
-            if [ ! -f scripts/verify_stage1_production.py ]; then
-              echo "FAIL: scripts/verify_stage1_production.py is not on the droplet."
-              echo "Merge this workflow to main and wait for the deploy job first."
+            if [ -d /opt/fmp/current ]; then
+              if [ ! -f /opt/fmp/current/scripts/verify_stage1_production.py ]; then
+                echo "FAIL: scripts/verify_stage1_production.py missing at /opt/fmp/current"
+                echo "Merge this workflow to main and wait for the deploy job first."
+                exit 1
+              fi
+              CODE_ROOT=/opt/fmp/current
+            elif [ -d /root/FMP_SCREENER ] && [ -f /root/FMP_SCREENER/scripts/verify_stage1_production.py ]; then
+              CODE_ROOT=/root/FMP_SCREENER
+            else
+              echo "FAIL: live code root missing on droplet"
               exit 1
             fi
+            cd "$CODE_ROOT"
+            echo "CODE_ROOT=$CODE_ROOT"
 
-            source /root/FMP_SCREENER/venv/bin/activate
+            if [ -f "$CODE_ROOT/venv/bin/activate" ]; then
+              # shellcheck disable=SC1091
+              source "$CODE_ROOT/venv/bin/activate"
+            elif [ -f /root/FMP_SCREENER/venv/bin/activate ]; then
+              # shellcheck disable=SC1091
+              source /root/FMP_SCREENER/venv/bin/activate
+            fi
 
             python scripts/verify_stage1_production.py --working-tree-only
 
@@ -112,7 +126,7 @@ jobs:
             echo "Syncing existing QuantConnect backtests (--backtests-only)..."
             echo "This does not create new QuantConnect backtests."
             echo "Waiting up to 180s for outputs/backtest_sync.flock if the one-minute cron is running..."
-            flock -w 180 /root/FMP_SCREENER/outputs/backtest_sync.flock -c 'cd /root/FMP_SCREENER && python -m jobs.sync_quantconnect --backtests-only'
+            flock -w 180 /root/FMP_SCREENER/outputs/backtest_sync.flock -c "cd ${CODE_ROOT} && python -m jobs.sync_quantconnect --backtests-only"
 
             if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
               echo "FAIL: /etc/fmp/fmp-dashboard.env is required for Stage 1 query-back"

@@ -204,6 +204,14 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     assert "--backtests-only" in workflow
     assert "python -m jobs.apply_migrations" in workflow
     assert "verify_stage1_production.py" in workflow
+    assert "CODE_ROOT=/opt/fmp/current" in workflow
+    assert "CODE_ROOT=/root/FMP_SCREENER" in workflow
+    assert workflow.index("CODE_ROOT=/opt/fmp/current") < workflow.index(
+        "CODE_ROOT=/root/FMP_SCREENER"
+    )
+    assert "live code root missing on droplet" in workflow
+    assert "flock -w 180 /root/FMP_SCREENER/outputs/backtest_sync.flock" in workflow
+    assert "cd ${CODE_ROOT}" in workflow
     assert "/etc/fmp/fmp-dashboard.env" in workflow
     assert "DASHBOARD_ALLOW_WRITER_FALLBACK" in workflow
     assert "lean cloud backtest" not in workflow

@@ -963,6 +963,9 @@ def test_backtest_cron_installer_uses_nonblocking_flock():
     assert "flock -n" in text
     assert "--backtests-only" in text
     assert BACKTEST_SYNC_LOCK_RELATIVE in text
+    assert 'CODE_ROOT="/opt/fmp/current"' in text
+    assert "LOCK_ROOT" in text
+    assert "cd ${CODE_ROOT}" in text
     assert "live" in text.lower()
     assert "Does NOT run unless you execute this script yourself." not in text
     assert "Deploy" in text or "deploy" in text

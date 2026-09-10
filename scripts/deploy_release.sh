@@ -100,12 +100,33 @@ if [ "$actual" != "$SHA" ]; then
   exit 3
 fi
 
-if [ "$SKIP_PREFLIGHT" != 1 ]; then
-  if [ -f "$target/requirements.txt" ]; then
-    python3 -m pip install -r "$target/requirements.txt"
+# Proposed systemd ExecStart is /opt/fmp/current/venv/bin/streamlit.
+# --skip-preflight skips migrations/pytest, not a bootable release venv.
+# --skip-identity (break-glass layout-only) may omit the venv.
+if [ ! -x "$target/venv/bin/streamlit" ]; then
+  if [ ! -f "$target/requirements.txt" ]; then
+    if [ "$SKIP_IDENTITY" = 1 ]; then
+      echo "layout_only_skip_venv=1"
+    else
+      echo "FAIL: release tree is missing requirements.txt"
+      exit 3
+    fi
+  else
+    echo "Creating release venv at $target/venv"
+    python3 -m venv "$target/venv"
+    "$target/venv/bin/pip" install -r "$target/requirements.txt"
   fi
+fi
+if [ "$SKIP_IDENTITY" != 1 ] && [ ! -x "$target/venv/bin/streamlit" ]; then
+  echo "FAIL: release venv is missing streamlit at $target/venv/bin/streamlit"
+  exit 3
+fi
+
+if [ "$SKIP_PREFLIGHT" != 1 ]; then
   (
     cd "$target"
+    # shellcheck disable=SC1091
+    source "$target/venv/bin/activate"
     python -m jobs.apply_migrations
     python -m pytest -q tests/test_deploy_release.py tests/test_ui_boundary.py tests/test_surface_status.py
   )

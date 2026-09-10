@@ -49,6 +49,10 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "qc_research.contracts.digests" in script
     assert "scripts/provision_dashboard_readonly.sh --require" in script
     assert "scripts/verify_dashboard_identity.sh" in script
+    assert 'python3 -m venv "$target/venv"' in script
+    assert "release venv is missing streamlit" in script
+    assert "layout_only_skip_venv=1" in script
+    assert script.index('python3 -m venv "$target/venv"') < script.index('if [ "$SKIP_PREFLIGHT" != 1 ]')
     identity_block = script[script.index('if [ "$SKIP_IDENTITY" != 1 ]'):]
     assert "qc_research.contracts.digests" in identity_block
     assert "provision_dashboard_readonly.sh --require" in identity_block
@@ -104,6 +108,7 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "does not source `/root/FMP_SCREENER/.env`" in docs
     assert "Inherited writer keys" in docs
     assert "activate_market_intelligence_host.sh" in docs
+    assert "creating `$target/venv`" in docs or "bootable" in docs.lower()
     example = (ROOT / "deploy" / "fmp-dashboard.service.example").read_text(encoding="utf-8")
     assert "DASHBOARD_READONLY_URL" in example
     assert "Environment=FMP_STREAMLIT_READONLY=1" in example
