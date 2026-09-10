@@ -140,6 +140,15 @@ if [ "$SKIP_PREFLIGHT" != 1 ]; then
     cd "$target"
     # shellcheck disable=SC1091
     source "$target/venv/bin/activate"
+    # Release trees have no local dotenv. Prefer the host writer env;
+    # Python load_writer_dotenv() still fills the git-pull checkout dotenv.
+    if [ -f /etc/fmp/fmp-writer.env ]; then
+      set -a
+      # shellcheck disable=SC1091
+      . /etc/fmp/fmp-writer.env
+      set +a
+    fi
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
     python -m jobs.apply_migrations
     python -m pytest -q tests/test_deploy_release.py tests/test_ui_boundary.py tests/test_surface_status.py
   )

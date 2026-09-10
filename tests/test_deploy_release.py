@@ -69,9 +69,16 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "FMP_IDENTITY_ENV_ONLY=1" in identity_block
     assert "/etc/fmp/fmp-dashboard.env" in identity_block
     assert "/root/FMP_SCREENER/.env" not in identity_block
-    preflight_block = script[script.index('if [ "$SKIP_PREFLIGHT" != 1 ]'):script.index('if [ "$SKIP_IDENTITY" != 1 ]')]
+    preflight_block = script.split('if [ "$SKIP_PREFLIGHT" != 1 ]; then', 1)[1].split(
+        'if [ "$SKIP_IDENTITY" != 1 ]; then', 1
+    )[0]
     assert "provision_dashboard_readonly.sh" not in preflight_block
     assert "verify_dashboard_identity.sh" not in preflight_block
+    assert "/etc/fmp/fmp-writer.env" in preflight_block
+    assert preflight_block.index("/etc/fmp/fmp-writer.env") < preflight_block.index(
+        "python -m jobs.apply_migrations"
+    )
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in preflight_block
     assert "--verify-rc" in deploy
     assert "dashboard identity verify failed" in deploy
     assert deploy.index("jobs.report_deploy_identity") < deploy.index("systemctl restart fmp-dashboard")

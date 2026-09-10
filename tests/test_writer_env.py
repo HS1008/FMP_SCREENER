@@ -12,6 +12,10 @@ ROOT = Path(__file__).resolve().parents[1]
 CRON = (ROOT / "scripts" / "install_backtest_sync_cron.sh").read_text(encoding="utf-8")
 SYNC = (ROOT / "jobs" / "sync_quantconnect.py").read_text(encoding="utf-8")
 CONNECTION = (ROOT / "db" / "connection.py").read_text(encoding="utf-8")
+RELEASE = (ROOT / "scripts" / "deploy_release.sh").read_text(encoding="utf-8")
+STAGE1_VERIFY = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(
+    encoding="utf-8"
+)
 
 
 def test_cron_sources_writer_env_before_python_and_skips_dashboard_env():
@@ -26,6 +30,34 @@ def test_cron_sources_writer_env_before_python_and_skips_dashboard_env():
     assert "fmp-dashboard.env" not in line
     assert "cd ${CODE_ROOT}" in line
     assert "jobs.sync_quantconnect --backtests-only" in line
+
+
+def test_stage1_verify_sources_writer_env_before_immutable_migrate_and_sync():
+    writer = STAGE1_VERIFY.split("Loading writer identity for immutable CODE_ROOT", 1)[1]
+    writer = writer.split("Applying database migrations (idempotent)", 1)[0]
+    assert ". /root/FMP_SCREENER/.env" in writer
+    assert ". /etc/fmp/fmp-writer.env" in writer
+    assert writer.index(". /root/FMP_SCREENER/.env") < writer.index(". /etc/fmp/fmp-writer.env")
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in writer
+    assert "fmp-dashboard.env" not in writer
+    assert STAGE1_VERIFY.index("Loading writer identity for immutable CODE_ROOT") < STAGE1_VERIFY.index(
+        "python -m jobs.apply_migrations"
+    )
+    assert STAGE1_VERIFY.index("python -m jobs.apply_migrations") < STAGE1_VERIFY.index(
+        "python -m jobs.sync_quantconnect --live-only"
+    )
+
+
+def test_deploy_release_sources_writer_env_before_preflight_migrate():
+    preflight = RELEASE.split('if [ "$SKIP_PREFLIGHT" != 1 ]; then', 1)[1]
+    preflight = preflight.split('if [ "$SKIP_IDENTITY" != 1 ]; then', 1)[0]
+    assert "/etc/fmp/fmp-writer.env" in preflight
+    assert preflight.index("/etc/fmp/fmp-writer.env") < preflight.index(
+        "python -m jobs.apply_migrations"
+    )
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in preflight
+    assert "fmp-dashboard.env" not in preflight
+    assert "/root/FMP_SCREENER/.env" not in preflight
 
 
 def test_sync_quantconnect_uses_writer_dotenv_helper():

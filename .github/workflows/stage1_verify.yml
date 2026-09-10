@@ -120,6 +120,19 @@ jobs:
 
             python -c "import sqlalchemy, psycopg2; print('DB dependencies OK')"
 
+            echo "Loading writer identity for immutable CODE_ROOT..."
+            set -a
+            if [ -f /root/FMP_SCREENER/.env ]; then
+              # shellcheck disable=SC1091
+              . /root/FMP_SCREENER/.env
+            fi
+            if [ -f /etc/fmp/fmp-writer.env ]; then
+              # shellcheck disable=SC1091
+              . /etc/fmp/fmp-writer.env
+            fi
+            set +a
+            unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+
             echo "Applying database migrations (idempotent)..."
             python -m jobs.apply_migrations
 

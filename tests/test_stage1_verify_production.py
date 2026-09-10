@@ -205,6 +205,17 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     assert "--live-only" in workflow
     assert "--backtests-only" in workflow
     assert "python -m jobs.apply_migrations" in workflow
+    assert "Loading writer identity for immutable CODE_ROOT" in workflow
+    assert workflow.index("Loading writer identity for immutable CODE_ROOT") < workflow.index(
+        "python -m jobs.apply_migrations"
+    )
+    writer = workflow.split("Loading writer identity for immutable CODE_ROOT", 1)[1].split(
+        "Applying database migrations (idempotent)", 1
+    )[0]
+    assert ". /root/FMP_SCREENER/.env" in writer
+    assert ". /etc/fmp/fmp-writer.env" in writer
+    assert writer.index(". /root/FMP_SCREENER/.env") < writer.index(". /etc/fmp/fmp-writer.env")
+    assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in writer
     assert "verify_stage1_production.py" in workflow
     assert "CODE_ROOT=/opt/fmp/current" in workflow
     assert "CODE_ROOT=/root/FMP_SCREENER" in workflow
