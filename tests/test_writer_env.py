@@ -67,13 +67,102 @@ def test_load_writer_dotenv_prefers_writer_file_and_fills_checkout(tmp_path, mon
         os.environ.pop("FMP_STREAMLIT_READONLY", None)
 
 
+def test_get_engine_prefers_database_url_from_writer_env(tmp_path, monkeypatch):
+    from db import connection as writer
+
+    writer.reset_writer_engine_for_tests()
+    writer_env = tmp_path / "fmp-writer.env"
+    checkout = tmp_path / ".env"
+    writer_env.write_text(
+        "DATABASE_URL=postgresql://writer:secret@writer-host:5432/fmp\n",
+        encoding="utf-8",
+    )
+    checkout.write_text(
+        "DB_HOST=checkout-host\nDB_USER=checkout\nDB_NAME=checkout-db\nDB_PASSWORD=pw\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
+    for key in ("DATABASE_URL", "DB_HOST", "DB_USER", "DB_NAME", "DB_PASSWORD", "DB_PORT"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(writer, "WRITER_ENV_FILE", str(writer_env))
+    monkeypatch.setattr(writer, "CHECKOUT_WRITER_ENV", str(checkout))
+    created: list[str] = []
+
+    class FakeEngine:
+        pass
+
+    def fake_create(url, **kwargs):
+        created.append(url)
+        return FakeEngine()
+
+    monkeypatch.setattr(writer, "create_engine", fake_create)
+    try:
+        engine = writer.get_engine()
+        assert isinstance(engine, FakeEngine)
+        assert created == ["postgresql+psycopg2://writer:secret@writer-host:5432/fmp"]
+    finally:
+        writer.reset_writer_engine_for_tests()
+        for key in ("DATABASE_URL", "DB_HOST", "DB_USER", "DB_NAME", "DB_PASSWORD"):
+            os.environ.pop(key, None)
+
+
+def test_get_engine_falls_back_to_db_vars_when_url_missing(tmp_path, monkeypatch):
+    from db import connection as writer
+
+    writer.reset_writer_engine_for_tests()
+    writer_env = tmp_path / "fmp-writer.env"
+    checkout = tmp_path / ".env"
+    writer_env.write_text("", encoding="utf-8")
+    checkout.write_text(
+        "DB_HOST=checkout-host\nDB_USER=checkout\nDB_NAME=checkout-db\nDB_PASSWORD=pw\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
+    for key in ("DATABASE_URL", "DB_HOST", "DB_USER", "DB_NAME", "DB_PASSWORD", "DB_PORT"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(writer, "WRITER_ENV_FILE", str(writer_env))
+    monkeypatch.setattr(writer, "CHECKOUT_WRITER_ENV", str(checkout))
+    created: list[str] = []
+
+    def fake_create(url, **kwargs):
+        created.append(url)
+        return object()
+
+    monkeypatch.setattr(writer, "create_engine", fake_create)
+    try:
+        writer.get_engine()
+        assert created == ["postgresql+psycopg2://checkout:pw@checkout-host:5432/checkout-db"]
+    finally:
+        writer.reset_writer_engine_for_tests()
+        for key in ("DATABASE_URL", "DB_HOST", "DB_USER", "DB_NAME", "DB_PASSWORD"):
+            os.environ.pop(key, None)
+
+
+def test_get_engine_refuses_when_neither_url_nor_db_vars(monkeypatch):
+    from db import connection as writer
+
+    writer.reset_writer_engine_for_tests()
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
+    for key in ("DATABASE_URL", "DB_HOST", "DB_USER", "DB_NAME", "DB_PASSWORD"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setattr(writer, "load_writer_dotenv", lambda **kwargs: [])
+    monkeypatch.setattr(
+        writer,
+        "create_engine",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not connect")),
+    )
+    with pytest.raises(RuntimeError, match="DATABASE_URL or DB_HOST"):
+        writer.get_engine()
+    writer.reset_writer_engine_for_tests()
+
+
 def test_load_writer_dotenv_refused_when_streamlit_readonly(monkeypatch, tmp_path):
     from db.connection import WriterEngineRefused, load_writer_dotenv
 
     monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
-    writer = tmp_path / "fmp-writer.env"
-    writer.write_text("DB_HOST=should-not-load\n", encoding="utf-8")
+    env_file = tmp_path / "fmp-writer.env"
+    env_file.write_text("DB_HOST=should-not-load\n", encoding="utf-8")
     monkeypatch.delenv("DB_HOST", raising=False)
     with pytest.raises(WriterEngineRefused, match="writer dotenv"):
-        load_writer_dotenv(writer_env=str(writer), checkout_env=str(tmp_path / "missing.env"))
+        load_writer_dotenv(writer_env=str(env_file), checkout_env=str(tmp_path / "missing.env"))
     assert os.environ.get("DB_HOST") in {None, ""}

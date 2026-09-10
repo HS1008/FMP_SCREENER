@@ -67,11 +67,27 @@ def load_writer_dotenv(
     return loaded
 
 
+def _normalize_writer_url(url: str) -> str:
+    text = url.strip()
+    if text.startswith("postgres://"):
+        return "postgresql+psycopg2://" + text[len("postgres://") :]
+    if text.startswith("postgresql://") and "+psycopg2" not in text:
+        return "postgresql+psycopg2://" + text[len("postgresql://") :]
+    return text
+
+
 def _build_url() -> str:
+    url = (os.getenv("DATABASE_URL") or "").strip()
+    if url:
+        return _normalize_writer_url(url)
     host = os.getenv("DB_HOST")
-    port = os.getenv("DB_PORT", "5432")
     name = os.getenv("DB_NAME")
     user = os.getenv("DB_USER")
+    if not (host and name and user):
+        raise RuntimeError(
+            "writer engine needs DATABASE_URL or DB_HOST/DB_NAME/DB_USER"
+        )
+    port = os.getenv("DB_PORT", "5432")
     password = os.getenv("DB_PASSWORD")
     return (
         f"postgresql+psycopg2://{user}:{password}"
