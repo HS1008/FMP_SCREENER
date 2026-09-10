@@ -558,17 +558,18 @@ def _official_stage1_equity_immutable(conn, backtest_id: str) -> bool:
         {"backtest_id": backtest_id},
     )
     if result is None:
-        return False
+        return True
     mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return True
     run_id = ""
-    if mappings is not None:
-        row = mappings().first()
-        if isinstance(row, dict):
-            run_id = str(row.get("research_run_id") or "")
-        elif row is not None:
-            mapping = getattr(row, "_mapping", None)
-            if mapping is not None:
-                run_id = str(mapping.get("research_run_id") or "")
+    row = mappings().first()
+    if isinstance(row, dict):
+        run_id = str(row.get("research_run_id") or "")
+    elif row is not None:
+        mapping = getattr(row, "_mapping", None)
+        if mapping is not None:
+            run_id = str(mapping.get("research_run_id") or "")
     if not official_stage1_pin(run_id) and not is_sealed_results_run(run_id):
         return False
     count_result = conn.execute(

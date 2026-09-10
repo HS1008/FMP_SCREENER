@@ -2241,6 +2241,78 @@ def test_insert_equity_points_skips_existing_official_stage1():
     )
 
 
+def test_insert_equity_points_skips_when_backtest_lookup_unknown():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            if "INSERT INTO backtest_equity_points" in str(statement):
+                raise AssertionError("equity must not be written when backtest lookup is unknown")
+            return None
+
+    assert (
+        insert_equity_points(
+            _Conn(),
+            "SPYTrend",
+            "bt-unknown",
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 0
+    )
+
+
+def test_insert_equity_points_writes_live_when_identity_known():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+
+    inserts = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "INSERT INTO backtest_equity_points" in sql:
+                inserts.append(params)
+                return None
+
+            class _Result:
+                def mappings(self_inner):
+                    class _Mappings:
+                        def first(self_map):
+                            if "FROM backtests" in sql:
+                                return {"research_run_id": "STAGE1_SPYTrend_live"}
+                            return {"n": 0}
+
+                    return _Mappings()
+
+            return _Result()
+
+    assert (
+        insert_equity_points(
+            _Conn(),
+            "SPYTrend",
+            "bt-live",
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 1
+    )
+    assert inserts and inserts[0]["backtest_id"] == "bt-live"
+
+
 def test_insert_equity_points_skips_official_when_count_unknown():
     from datetime import datetime, timezone
 
