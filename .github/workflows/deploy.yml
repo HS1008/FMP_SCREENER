@@ -85,8 +85,9 @@ jobs:
             echo "Provisioning dashboard_readonly (password file required)..."
             bash scripts/provision_dashboard_readonly.sh --require
 
+            VERIFY_RC=0
             echo "Verifying Streamlit database identity..."
-            bash scripts/verify_dashboard_identity.sh
+            bash scripts/verify_dashboard_identity.sh || VERIFY_RC=$?
 
             echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
             bash scripts/install_backtest_sync_cron.sh /root/FMP_SCREENER
@@ -114,7 +115,11 @@ jobs:
                   exit 6
                 fi
                 echo "Verifying Streamlit identity from immutable release checkout..."
-                ( cd /opt/fmp/current && bash scripts/verify_dashboard_identity.sh )
+                IMMUTABLE_VERIFY_RC=0
+                ( cd /opt/fmp/current && bash scripts/verify_dashboard_identity.sh ) || IMMUTABLE_VERIFY_RC=$?
+                if [ "$IMMUTABLE_VERIFY_RC" != "0" ]; then
+                  VERIFY_RC="$IMMUTABLE_VERIFY_RC"
+                fi
               fi
             fi
 
@@ -123,7 +128,13 @@ jobs:
               --sha "$(git rev-parse HEAD)" \
               --checkout /root/FMP_SCREENER \
               --mode git_pull \
-              --immutable-rc "$IMMUTABLE_RC"
+              --immutable-rc "$IMMUTABLE_RC" \
+              --verify-rc "$VERIFY_RC"
+
+            if [ "$VERIFY_RC" != "0" ]; then
+              echo "dashboard identity verify failed rc=${VERIFY_RC}"
+              exit "$VERIFY_RC"
+            fi
 
             echo "Restarting Streamlit..."
             systemctl restart fmp-dashboard

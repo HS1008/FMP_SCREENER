@@ -38,7 +38,39 @@ def test_eia_watchlist_uses_cache_only_when_fetch_denied(monkeypatch):
 
 def test_power_producer_strips_writer_after_dotenv():
     watchlist = (ROOT / "power_producer_watchlist.py").read_text(encoding="utf-8")
-    assert "strip_writer_database_env" in watchlist
+    assert "load_streamlit_env" in watchlist
+    assert watchlist.count("load_dotenv(") == 0
+    sector = (ROOT / "sector_dashboard_ui.py").read_text(encoding="utf-8")
+    assert "load_streamlit_env" in sector
+    assert sector.count("load_dotenv(") == 0
+    scratch = (ROOT / "scratch_dashboard.py").read_text(encoding="utf-8")
+    assert "load_streamlit_env" in scratch
+    assert scratch.count("load_dotenv(") == 0
+    launcher = (ROOT / "run_scratch_dashboard.py").read_text(encoding="utf-8")
+    assert "load_streamlit_env" in launcher
+    assert launcher.count("load_dotenv(") == 0
+
+
+def test_streamlit_entrypoints_strip_writer_and_never_call_load_dotenv():
+    allowed_dotenv = {ROOT / "db" / "dashboard_engine.py"}
+    streamlit_roots = (
+        ROOT / "dashboard.py",
+        ROOT / "power_producer_watchlist.py",
+        ROOT / "sector_dashboard_ui.py",
+        ROOT / "scratch_dashboard.py",
+        ROOT / "run_scratch_dashboard.py",
+        *(ROOT / "pages").glob("*.py"),
+    )
+    for path in streamlit_roots:
+        text = path.read_text(encoding="utf-8")
+        assert "load_dotenv(" not in text, f"{path.name} must not call load_dotenv"
+        assert (
+            "strip_writer_database_env" in text or "load_streamlit_env" in text
+        ), f"{path.name} must strip writer credentials"
+    engine = (ROOT / "db" / "dashboard_engine.py").read_text(encoding="utf-8")
+    assert "def load_streamlit_env" in engine
+    assert "load_dotenv" in engine
+    assert allowed_dotenv == {ROOT / "db" / "dashboard_engine.py"}  # only helper may reload .env
 
 
 def test_provider_fetch_opt_in(monkeypatch):

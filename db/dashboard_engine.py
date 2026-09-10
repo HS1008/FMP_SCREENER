@@ -33,10 +33,16 @@ def writer_fallback_allowed() -> bool:
     }
 
 
+STREAMLIT_READONLY_ENV = "FMP_STREAMLIT_READONLY"
+
 WRITER_ENV_KEYS = (
     "DATABASE_URL",
     "MARKET_INTELLIGENCE_DATABASE_URL",
     "DB_PASSWORD",
+    "DB_HOST",
+    "DB_USER",
+    "DB_NAME",
+    "DB_PORT",
 )
 
 
@@ -44,15 +50,29 @@ def strip_writer_database_env() -> list[str]:
     """Remove writer DB credentials from the Streamlit process unless fallback is on.
 
     Leaves DASHBOARD_READONLY_URL, DATABASE_READONLY_URL, and FMP_API_KEY in place.
+    Sets FMP_STREAMLIT_READONLY so ``db.connection`` cannot reload ``.env``.
     """
     if writer_fallback_allowed():
+        os.environ.pop(STREAMLIT_READONLY_ENV, None)
         return []
     removed: list[str] = []
     for key in WRITER_ENV_KEYS:
         if os.environ.get(key):
             os.environ.pop(key, None)
             removed.append(key)
+    os.environ[STREAMLIT_READONLY_ENV] = "1"
     return removed
+
+
+def load_streamlit_env(path: str | os.PathLike[str] | None = None) -> list[str]:
+    """Load `.env` then strip writer DB keys. Safe to call from any Streamlit page."""
+    from dotenv import load_dotenv
+
+    if path:
+        load_dotenv(path)
+    else:
+        load_dotenv()
+    return strip_writer_database_env()
 
 
 def reset_dashboard_engine_for_tests() -> None:

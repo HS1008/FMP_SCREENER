@@ -35,7 +35,10 @@ def test_release_script_is_additive_and_supports_rollback():
     preflight_block = script[script.index('if [ "$SKIP_PREFLIGHT" != 1 ]'):script.index('if [ "$SKIP_IDENTITY" != 1 ]')]
     assert "provision_dashboard_readonly.sh" not in preflight_block
     assert "verify_dashboard_identity.sh" not in preflight_block
-    assert "dashboard_readonly_verify_rc" not in deploy
+    assert "--verify-rc" in deploy
+    assert "dashboard identity verify failed" in deploy
+    assert deploy.index("jobs.report_deploy_identity") < deploy.index("systemctl restart fmp-dashboard")
+    assert deploy.index("--verify-rc") < deploy.index("systemctl restart fmp-dashboard")
     assert "/opt/fmp/releases" in deploy
     assert "--skip-restart" in deploy
     assert "--skip-identity" not in deploy
@@ -103,7 +106,13 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
     monkeypatch.setenv("FMP_CURRENT_LINK", str(tmp_path / "missing-current"))
     monkeypatch.setenv("FMP_SYSTEMD_EXEC_START", "/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py")
     path = tmp_path / "current.json"
-    record = build_record(sha="abc123", checkout="/root/FMP_SCREENER", mode="git_pull", immutable_rc=0)
+    record = build_record(
+        sha="abc123",
+        checkout="/root/FMP_SCREENER",
+        mode="git_pull",
+        immutable_rc=0,
+        verify_rc=3,
+    )
     write_record(record, path)
     text = path.read_text(encoding="utf-8")
     assert "secret" not in text
@@ -114,6 +123,8 @@ def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
     assert record["provider_fetch"] is False
     assert record["systemd_still_git_pull"] is True
     assert record["systemd_cutover_proven"] is False
+    assert record["readonly_verify_rc"] == 3
+    assert record["readonly_proven"] is False
     assert record["csfml_v1_label_integrity"] == "CANNOT_RULE_OUT"
     assert record["csfml_v1_rerun_authorized"] is False
 

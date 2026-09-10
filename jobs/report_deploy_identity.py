@@ -16,10 +16,17 @@ def state_path() -> Path:
     return Path(os.environ.get("FMP_DEPLOY_STATE") or DEFAULT_STATE)
 
 
-def build_record(*, sha: str, checkout: str, mode: str, immutable_rc: int) -> dict[str, object]:
+def build_record(
+    *,
+    sha: str,
+    checkout: str,
+    mode: str,
+    immutable_rc: int,
+    verify_rc: int | None = None,
+) -> dict[str, object]:
     from jobs.audit_host_dashboard import collect_facts
 
-    facts = collect_facts()
+    facts = collect_facts(verify_rc=verify_rc)
     return {
         "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
         "git_sha": sha,
@@ -33,6 +40,8 @@ def build_record(*, sha: str, checkout: str, mode: str, immutable_rc: int) -> di
         "provider_fetch": facts["provider_fetch"],
         "immutable_current_present": facts["immutable_current_present"],
         "systemd_cutover_proven": facts["systemd_cutover_proven"],
+        "readonly_verify_rc": facts["readonly_verify_rc"],
+        "readonly_proven": facts["readonly_proven"],
         "csfml_v1_label_integrity": facts["csfml_v1_label_integrity"],
         "csfml_v1_rerun_authorized": facts["csfml_v1_rerun_authorized"],
     }
@@ -52,19 +61,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--checkout", default="/root/FMP_SCREENER")
     parser.add_argument("--mode", default="git_pull")
     parser.add_argument("--immutable-rc", type=int, default=0)
+    parser.add_argument("--verify-rc", type=int, default=None)
     args = parser.parse_args(argv)
-    path = write_record(
-        build_record(
-            sha=args.sha,
-            checkout=args.checkout,
-            mode=args.mode,
-            immutable_rc=args.immutable_rc,
-        )
+    record = build_record(
+        sha=args.sha,
+        checkout=args.checkout,
+        mode=args.mode,
+        immutable_rc=args.immutable_rc,
+        verify_rc=args.verify_rc,
     )
+    path = write_record(record)
     print("deploy_identity_written={0}".format(path))
     print("git_sha={0}".format(args.sha))
     print("deploy_mode={0}".format(args.mode))
     print("immutable_release_rc={0}".format(args.immutable_rc))
+    print("readonly_verify_rc={0}".format(args.verify_rc))
+    print("readonly_proven={0}".format(record["readonly_proven"]))
     return 0
 
 

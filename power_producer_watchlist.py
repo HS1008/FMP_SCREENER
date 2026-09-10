@@ -19,7 +19,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
 import config
 import data_loader
@@ -84,10 +83,9 @@ def load_watchlist() -> pd.DataFrame:
 
 
 def _load_api_key() -> str:
-    load_dotenv(config.PROJECT_ROOT / ".env")
-    from db.dashboard_engine import strip_writer_database_env
+    from db.dashboard_engine import load_streamlit_env
 
-    strip_writer_database_env()
+    load_streamlit_env(config.PROJECT_ROOT / ".env")
     key = (os.getenv("FMP_API_KEY") or "").strip()
     if not key:
         st.warning(
@@ -99,10 +97,9 @@ def _load_api_key() -> str:
 
 @st.cache_data(ttl=900, show_spinner="Fetching FMP prices…")
 def fetch_price_history(ticker: str, date_from: date, date_to: date) -> pd.Series:
-    load_dotenv(config.PROJECT_ROOT / ".env")
-    from db.dashboard_engine import strip_writer_database_env
+    from db.dashboard_engine import load_streamlit_env
 
-    strip_writer_database_env()
+    load_streamlit_env(config.PROJECT_ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
     if not api_key:
         return pd.Series(dtype=float, name=ticker)

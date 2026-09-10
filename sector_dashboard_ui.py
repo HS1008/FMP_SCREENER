@@ -14,7 +14,6 @@ from typing import Callable
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
 import config
 import data_loader
@@ -142,7 +141,9 @@ def render_sector_tab(
 
     st.subheader(f"{label} Sector Analysis")
 
-    load_dotenv(ROOT / ".env")
+    from db.dashboard_engine import load_streamlit_env
+
+    load_streamlit_env(ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
     if not api_key:
         st.warning(
@@ -477,7 +478,9 @@ def render_spy_benchmark_tab(
 
     st.subheader(f"{label} ({etf}) overview")
 
-    load_dotenv(ROOT / ".env")
+    from db.dashboard_engine import load_streamlit_env
+
+    load_streamlit_env(ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
     if not api_key:
         st.warning(

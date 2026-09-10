@@ -18,8 +18,6 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
-
 import ai_rotation_engine
 import comm_rotation_engine
 import config
@@ -40,7 +38,7 @@ import sector_dashboard_ui
 import spy_sector_rotation_engine
 import tech_rotation_engine
 import utilities_rotation_engine
-from db.dashboard_engine import strip_writer_database_env
+from db.dashboard_engine import load_streamlit_env, strip_writer_database_env
 from qc_research.ui_boundary import provider_fetch_allowed, refuse_provider_fetch
 
 ROOT = Path(__file__).resolve().parent
@@ -472,8 +470,7 @@ def render_legacy_fmp_dashboard() -> None:
             st.cache_data.clear()
             st.rerun()
 
-    load_dotenv(ROOT / ".env")
-    strip_writer_database_env()
+    load_streamlit_env(ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
 
     sector_options = (SPY_OVERVIEW_PAGE_LABEL,) + tuple(s.page_radio_label for s in SECTOR_SPECS)

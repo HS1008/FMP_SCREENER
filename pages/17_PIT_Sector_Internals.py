@@ -5,6 +5,10 @@ producer built locally and the backend consumer ingested. Reads curated `mi_v_*`
 read-only role only. No QuantConnect, FMP, FRED or IBKR calls; no ingestion; no writer credentials.
 """
 
+from db.dashboard_engine import strip_writer_database_env
+
+strip_writer_database_env()
+
 from market_intelligence.pages_ui import render_pit_sector_internals
 
 render_pit_sector_internals()

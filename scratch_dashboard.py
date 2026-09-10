@@ -21,10 +21,10 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
 import config
 import data_loader
+from db.dashboard_engine import load_streamlit_env
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -117,7 +117,7 @@ class HoldingRecord:
 # Config / session
 # ---------------------------------------------------------------------------
 def fmp_api_key() -> str:
-    load_dotenv(config.PROJECT_ROOT / ".env")
+    load_streamlit_env(config.PROJECT_ROOT / ".env")
     return (os.getenv("FMP_API_KEY") or "").strip()
 
 
