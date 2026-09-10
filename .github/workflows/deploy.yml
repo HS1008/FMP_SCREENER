@@ -103,10 +103,7 @@ jobs:
                   || IMMUTABLE_RC=$?
               fi
               if [ "$IMMUTABLE_RC" != "0" ]; then
-                echo "immutable_release_layout=failed rc=${IMMUTABLE_RC}"
-              fi
-              if [ "${FMP_IMMUTABLE_RELEASE_STRICT:-}" = "1" ] && [ "$IMMUTABLE_RC" != "0" ]; then
-                echo "immutable release populate failed and FMP_IMMUTABLE_RELEASE_STRICT=1"
+                echo "immutable release populate failed rc=${IMMUTABLE_RC}"
                 exit "$IMMUTABLE_RC"
               fi
               if [ "$IMMUTABLE_RC" = "0" ]; then

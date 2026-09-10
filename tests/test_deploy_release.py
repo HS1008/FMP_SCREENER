@@ -43,6 +43,8 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "--skip-restart" in deploy
     assert "--skip-identity" not in deploy
     assert "FMP_IMMUTABLE_RELEASE_STRICT" in deploy
+    assert "immutable release populate failed" in deploy
+    assert "FMP_IMMUTABLE_RELEASE_STRICT=1" not in deploy.split("immutable release populate failed", 1)[1][:80]
     assert "jobs.report_deploy_identity" in deploy
     assert "jobs.audit_host_dashboard" in deploy
     assert "--require-readonly" in deploy
