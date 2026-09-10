@@ -583,6 +583,10 @@ def _official_stage1_equity_immutable(conn, backtest_id: str) -> bool:
 
 
 def insert_equity_points(conn, strategy_id: str, backtest_id: str, points: list[dict[str, Any]]) -> int:
+    from qc_research.contracts.sealed_results import official_sealed_qc_backtest_ids
+
+    if str(backtest_id or "") in official_sealed_qc_backtest_ids():
+        return 0
     if _official_stage1_equity_immutable(conn, backtest_id):
         return 0
     inserted = 0

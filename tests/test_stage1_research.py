@@ -2204,6 +2204,35 @@ def test_insert_equity_points_skips_existing_official_stage1():
     )
 
 
+def test_insert_equity_points_skips_published_sealed_qc_ids():
+    from datetime import datetime, timezone
+
+    from jobs.stage1_backtests import insert_equity_points
+    from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
+
+    qc_id = next(iter(official_tlt_qc_backtest_ids()))
+
+    class _Boom:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("published sealed QC equity must not be written")
+
+    assert (
+        insert_equity_points(
+            _Boom(),
+            "TLTDurationMomentum",
+            qc_id,
+            [
+                {
+                    "timestamp": datetime(2020, 1, 2, tzinfo=timezone.utc),
+                    "equity": 1.0,
+                    "period_return": 0.0,
+                }
+            ],
+        )
+        == 0
+    )
+
+
 def test_monitor_ui_fail_closes_official_stage1_identity():
     ui = (
         Path(__file__).resolve().parent.parent / "qc_research" / "monitor_ui.py"
