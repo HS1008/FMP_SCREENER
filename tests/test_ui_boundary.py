@@ -42,6 +42,8 @@ def test_power_producer_strips_writer_after_dotenv():
     assert watchlist.count("load_dotenv(") == 0
     sector = (ROOT / "sector_dashboard_ui.py").read_text(encoding="utf-8")
     assert "load_streamlit_env" in sector
+    assert "provider_fetch_allowed" in sector
+    assert "def _streamlit_http_session" in sector
     assert sector.count("load_dotenv(") == 0
     scratch = (ROOT / "scratch_dashboard.py").read_text(encoding="utf-8")
     assert "load_streamlit_env" in scratch

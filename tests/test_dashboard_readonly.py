@@ -72,11 +72,14 @@ def test_dashboard_readonly_sql_sets_read_only_defaults():
     assert "backtests" in sql
 
 
-def test_verify_job_exits_3_when_url_unset(monkeypatch):
+def test_verify_job_exits_3_when_url_unset(monkeypatch, capsys):
     monkeypatch.delenv("DASHBOARD_READONLY_URL", raising=False)
     from jobs.verify_dashboard_readonly import run
 
     assert run() == 3
+    captured = capsys.readouterr()
+    assert "dashboard readonly verify failed (config)" in captured.out
+    assert "skipped" not in captured.out
 
 
 def test_identity_script_fails_closed_without_url_or_fallback():

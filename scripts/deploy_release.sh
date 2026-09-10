@@ -43,6 +43,22 @@ if [ "$ROLLBACK" = 1 ]; then
     exit 2
   fi
   prev="$(readlink -f "$PREVIOUS_LINK")"
+  if [ "$SKIP_IDENTITY" = 1 ]; then
+    echo "rollback_identity=skipped"
+  else
+    if [ ! -f "$prev/scripts/verify_dashboard_identity.sh" ]; then
+      echo "rollback target is missing scripts/verify_dashboard_identity.sh"
+      exit 3
+    fi
+    (
+      cd "$prev"
+      python3 -m qc_research.contracts.digests
+      bash scripts/provision_dashboard_readonly.sh --require
+      export FMP_IDENTITY_ENV_ONLY=1
+      export FMP_DASHBOARD_ENV="${FMP_DASHBOARD_ENV:-/etc/fmp/fmp-dashboard.env}"
+      bash scripts/verify_dashboard_identity.sh
+    )
+  fi
   if [ -L "$CURRENT_LINK" ]; then
     ln -sfn "$(readlink -f "$CURRENT_LINK")" "${PREVIOUS_LINK}.swap"
     ln -sfn "$prev" "$CURRENT_LINK"

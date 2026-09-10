@@ -13,6 +13,14 @@ def test_release_script_is_additive_and_supports_rollback():
     script = (ROOT / "scripts" / "deploy_release.sh").read_text(encoding="utf-8")
     assert "/opt/fmp/releases" in script
     assert "--rollback" in script
+    rollback_block = script.split('if [ "$ROLLBACK" = 1 ]; then', 1)[1].split('if [ -z "$SHA" ]; then', 1)[0]
+    assert "qc_research.contracts.digests" in rollback_block
+    assert "scripts/provision_dashboard_readonly.sh --require" in rollback_block
+    assert "scripts/verify_dashboard_identity.sh" in rollback_block
+    assert rollback_block.index("verify_dashboard_identity.sh") < rollback_block.index(
+        "systemctl restart fmp-dashboard"
+    )
+    assert "rollback_identity=skipped" in rollback_block
     assert "--skip-restart" in script
     assert "git reset --hard" not in script
     assert 'git -C "$target" fetch --depth 1 origin "$SHA"' in script

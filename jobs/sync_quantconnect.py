@@ -1775,8 +1775,10 @@ def stage1_chart_failure_is_blocking(name, backtest) -> bool:
     return "completed" in status
 
 
-def migration_failure_exit_code(migration_error, sync_backtests_requested: bool):
-    if migration_error and sync_backtests_requested:
+def migration_failure_exit_code(migration_error, sync_backtests_requested: bool = True):
+    """Any QuantConnect sync, including --live-only, requires applied migrations."""
+    del sync_backtests_requested
+    if migration_error:
         return 1
     return None
 
@@ -1807,12 +1809,19 @@ def main(argv=None):
     blocked = migration_failure_exit_code(migration_error, sync_bts)
     if blocked is not None:
         print(
-            "ERROR: Stage 1 backtest sync requires a successful migration. "
-            "Refusing to continue and downgrade Stage 1 rows to legacy upserts."
+            "ERROR: QuantConnect sync requires a successful migration. "
+            "Refusing to continue --live-only or backtest ingest on a drifted schema."
         )
         return blocked
-    if migration_error and not sync_bts:
-        print("WARNING: continuing --live-only without Stage 1 schema updates.")
+
+    if sync_bts:
+        try:
+            from qc_research.contracts.digests import verify_contract_digests
+
+            verify_contract_digests()
+        except Exception as exc:
+            print("ERROR: contract digest verify failed before Stage 2 ingest: {0}".format(exc))
+            return 1
 
     stage2_failures: list[str] = []
     research_state_failures: list[str] = []
@@ -1853,11 +1862,13 @@ def main(argv=None):
                 research_id = resolve_research_project_id(strategy)
                 execution_id = execution_project_id(strategy)
                 if research_id and execution_id and str(research_id) == str(execution_id):
-                    print(
+                    collision = (
                         "Research and execution QuantConnect projects must be "
-                        "separate. Skipping research backtest sync rather than "
-                        "falling back to the execution project."
+                        "separate for {0}. Skipping research backtest sync rather than "
+                        "falling back to the execution project.".format(strategy_id)
                     )
+                    print(collision)
+                    research_state_failures.append(collision)
                 elif research_id:
                     backtests_result = get_backtests(research_id)
                     backtest_count = sync_backtests(
@@ -1891,6 +1902,13 @@ def main(argv=None):
                     except Exception as store_exc:
                         print("Stage 2 results ingest error: {0}".format(store_exc))
                         stage2_failures.append("{0}: {1}".format(strategy_id, store_exc))
+                elif strategy.get("qc_research_project_name"):
+                    missing = (
+                        "Skipping research backtest sync; dedicated research "
+                        "project is not initialized for {0}.".format(strategy_id)
+                    )
+                    print(missing)
+                    research_state_failures.append(missing)
                 else:
                     print(
                         "Skipping research backtest sync; dedicated research "

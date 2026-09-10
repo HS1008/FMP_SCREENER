@@ -860,15 +860,17 @@ def test_skipped_oos_finalizes_incomplete_via_run_summary():
     assert finalized["label"] == INCOMPLETE
 
 
-def test_migration_failure_exits_nonzero_when_backtests_requested():
+def test_migration_failure_exits_nonzero_for_live_only_and_backtests():
     from jobs.sync_quantconnect import migration_failure_exit_code
     from pathlib import Path
 
     source = Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py"
     text = source.read_text(encoding="utf-8")
     assert "raise SystemExit(main())" in text
+    assert "continuing --live-only without Stage 1 schema updates" not in text
+    assert "verify_contract_digests" in text
     assert migration_failure_exit_code(RuntimeError("boom"), True) == 1
-    assert migration_failure_exit_code(RuntimeError("boom"), False) is None
+    assert migration_failure_exit_code(RuntimeError("boom"), False) == 1
     assert migration_failure_exit_code(None, True) is None
 
 
@@ -1568,6 +1570,8 @@ def test_case6_research_execution_separation_hard_fails_stage1_fallback():
     ).read_text(encoding="utf-8")
     assert "str(research_id) == str(execution_id)" in source
     assert "Skipping research backtest sync rather than" in source
+    assert "research_state_failures.append(collision)" in source
+    assert "research_state_failures.append(missing)" in source
     assert resolve_research_project_id(same, persist=False) == "111"
 
 

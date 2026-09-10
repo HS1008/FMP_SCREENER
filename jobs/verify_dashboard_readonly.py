@@ -19,7 +19,7 @@ def _url() -> str:
 def run() -> int:
     url = _url()
     if not url:
-        print("DASHBOARD_READONLY_URL unset; dashboard readonly verify skipped")
+        print("DASHBOARD_READONLY_URL unset; dashboard readonly verify failed (config)")
         return 3
     engine = create_engine(
         url.replace("postgresql://", "postgresql+psycopg2://", 1)
