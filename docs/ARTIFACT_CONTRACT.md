@@ -63,6 +63,7 @@ open holdout, or authorize a QuantConnect rerun.
 Consumer pin: `qc_research/contracts/sealed_results.json`.
 
 Official Stage 1 / CSFML / TLT V0 run ids cannot be overwritten with a
-different payload. Identical re-ingest is allowed. A sealed Stage 2 window
-file that does not match the committed official tree is refused even on
-first insert. This does not change `economic_gate` or authorize a rerun.
+different payload. Identical re-ingest is allowed. A sealed run id without a
+committed official tree or file is refused on first insert. A sealed Stage 2
+window file that does not match the committed official tree is refused even
+on first insert. This does not change `economic_gate` or authorize a rerun.

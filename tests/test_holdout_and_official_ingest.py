@@ -134,6 +134,80 @@ def test_sealed_official_stage1_and_csfml_payloads_cannot_mutate():
         )
 
 
+def test_sealed_run_without_committed_tree_refuses_first_ingest():
+    from qc_research.contracts.sealed_results import (
+        SealedResultsError,
+        refuse_sealed_committed_mismatch,
+        sealed_results_run_ids,
+    )
+
+    assert "STAGE2_CrossSectionalFactorML_e7b24642" in sealed_results_run_ids()
+    with pytest.raises(SealedResultsError, match="no committed official tree"):
+        refuse_sealed_committed_mismatch(
+            {
+                "research_run_id": "STAGE2_CrossSectionalFactorML_e7b24642",
+                "strategy_id": "CrossSectionalFactorML",
+                "holdout_accessed": False,
+            }
+        )
+    with pytest.raises(ArtifactSyncError, match="no committed official tree"):
+        ingest_artifact(
+            _RefuseConn(),
+            key="fake-e7b24642",
+            kind="run_summary",
+            payload={
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_CrossSectionalFactorML_e7b24642",
+                "strategy_id": "CrossSectionalFactorML",
+                "run_status": "COMPLETE",
+                "holdout_accessed": False,
+                "git_commit": "e7b246421f24c6e904db4e45878365536e32cdca",
+                "economic_gate": "NOT_DEFINED",
+            },
+        )
+
+
+def test_official_tlt_wrapped_payloads_match_committed_file():
+    from qc_research.contracts.sealed_results import (
+        SealedResultsError,
+        refuse_sealed_committed_mismatch,
+    )
+    from qc_research.tlt_duration_momentum import wrap_tlt_duration_momentum_record
+
+    path = ROOT / "qc_research" / "platform_artifacts" / "tlt_duration_momentum.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    wrapped = wrap_tlt_duration_momentum_record(record)
+    assert wrapped
+
+    class _OkConn:
+        def execute(self, statement, params=None):
+            return None
+
+    for kind, artifact in wrapped:
+        refuse_sealed_committed_mismatch(artifact, logical_path=str(path))
+        ingest_artifact(
+            _OkConn(),
+            key="ok-tlt-{0}".format(kind),
+            kind=kind,
+            payload=artifact,
+            logical_path=str(path),
+        )
+    mutated = dict(wrapped[0][1])
+    inner = dict(mutated.get("payload") or {})
+    inner["economic_gate"] = "PASS"
+    mutated["payload"] = inner
+    with pytest.raises(SealedResultsError, match="committed official file"):
+        refuse_sealed_committed_mismatch(mutated, logical_path=str(path))
+    with pytest.raises(ArtifactSyncError, match="committed official file"):
+        ingest_artifact(
+            _RefuseConn(),
+            key="mutated-tlt",
+            kind="run_summary",
+            payload=mutated,
+            logical_path=str(path),
+        )
+
+
 def test_official_csfml_v1_mutated_pin_fields_are_refused():
     base = {
         "research_run_id": PIN["full_suite_run_id"],

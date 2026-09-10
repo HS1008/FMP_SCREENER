@@ -12,7 +12,8 @@
     "STAGE1_SPYTrend_c04553d8": "stage1_results/SPYTrend/STAGE1_SPYTrend_c04553d8",
     "STAGE2_CrossSectionalFactorML_54a5543f": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_54a5543f",
     "STAGE2_CrossSectionalFactorML_437cdbdc": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_437cdbdc",
-    "STAGE2_CrossSectionalFactorML_ebe7d1a4": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_ebe7d1a4"
+    "STAGE2_CrossSectionalFactorML_ebe7d1a4": "stage2_results/CrossSectionalFactorML/STAGE2_CrossSectionalFactorML_ebe7d1a4",
+    "PLATFORM_TLTDurationMomentum_V0": "qc_research/platform_artifacts/tlt_duration_momentum.json"
   },
   "stage1_pins": {
     "STAGE1_SPYTrend_c04553d8": {

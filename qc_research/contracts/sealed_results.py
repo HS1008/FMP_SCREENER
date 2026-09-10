@@ -145,12 +145,38 @@ def _committed_tree(run_id: str) -> Path | None:
     return tree if tree.is_dir() else None
 
 
+def _committed_official_path(run_id: str) -> Path | None:
+    rel = (load_sealed_results().get("committed_trees") or {}).get(run_id)
+    if not rel:
+        return None
+    path = REPO_ROOT / rel
+    return path if path.exists() else None
+
+
+def _hashes_from_official_file(path: Path) -> set[str]:
+    official = json.loads(path.read_text(encoding="utf-8"))
+    hashes = {sha256_payload(payload_for_hash(official))}
+    from qc_research.tlt_duration_momentum import (
+        is_tlt_duration_momentum_record,
+        wrap_tlt_duration_momentum_record,
+    )
+
+    if is_tlt_duration_momentum_record(official):
+        for _kind, artifact in wrap_tlt_duration_momentum_record(official):
+            hashes.add(sha256_payload(payload_for_hash(artifact)))
+    return hashes
+
+
 def refuse_sealed_committed_mismatch(
     payload: Mapping[str, Any] | None,
     *,
     logical_path: str | None = None,
 ) -> None:
-    """Refuse sealed payloads that do not match the committed official tree."""
+    """Refuse sealed payloads that do not match the committed official tree.
+
+    Sealed run ids without a committed tree or file are refused on first
+    insert. Identical official re-ingest is allowed.
+    """
     record = dict(payload or {})
     run_id = _run_id(record)
     if run_id not in sealed_results_run_ids():
@@ -164,16 +190,31 @@ def refuse_sealed_committed_mismatch(
                 "refusing sealed {0} mutation of {1}".format(run_id, committed.name)
             )
         return
-    tree = _committed_tree(run_id)
+    path = _committed_official_path(run_id)
+    if path is None:
+        raise SealedResultsError(
+            "refusing sealed {0} ingest; no committed official tree".format(run_id)
+        )
+    if path.is_file():
+        if incoming in _hashes_from_official_file(path):
+            return
+        raise SealedResultsError(
+            "refusing sealed {0} payload that is not in the committed official file".format(
+                run_id
+            )
+        )
+    tree = path if path.is_dir() else None
     if tree is None:
-        return
+        raise SealedResultsError(
+            "refusing sealed {0} ingest; no committed official tree".format(run_id)
+        )
     window = str(record.get("window_id") or "")
     roots = [tree / window] if window and (tree / window).is_dir() else [tree]
     for folder in roots:
-        for path in folder.rglob("*.json"):
-            if not path.is_file():
+        for candidate in folder.rglob("*.json"):
+            if not candidate.is_file():
                 continue
-            official = json.loads(path.read_text(encoding="utf-8"))
+            official = json.loads(candidate.read_text(encoding="utf-8"))
             if incoming == sha256_payload(payload_for_hash(official)):
                 return
     raise SealedResultsError(
