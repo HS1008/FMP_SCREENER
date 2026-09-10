@@ -30,10 +30,24 @@ def official_csfml_v1_shas(pin: Mapping[str, Any] | None = None) -> frozenset[st
     )
 
 
+def _first_present(record: Mapping[str, Any], nested: Mapping[str, Any], key: str) -> Any:
+    if key in record:
+        return record[key]
+    if key in nested:
+        return nested[key]
+    return None
+
+
 def refuse_impersonated_official_csfml_v1(payload: Mapping[str, Any] | None) -> None:
-    """Refuse official V1 run-id with a non-pin SHA. Does not authorize a rerun."""
+    """Refuse official V1 run-id with a non-pin SHA or mutated pin fields.
+
+    Does not authorize a rerun. Window artifacts without identity fields still
+    pass when they do not contradict the pin.
+    """
     record = dict(payload or {})
     nested = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    if not isinstance(nested, dict):
+        nested = {}
     pin = load_csfml_v1_label_integrity()
     run_id = str(
         record.get("research_run_id")
@@ -45,6 +59,18 @@ def refuse_impersonated_official_csfml_v1(payload: Mapping[str, Any] | None) -> 
     official_run = str(pin.get("full_suite_run_id") or "")
     if not official_run or run_id != official_run:
         return
+    strategy_id = _first_present(record, nested, "strategy_id")
+    if strategy_id and str(strategy_id) != str(pin.get("strategy_id") or ""):
+        raise ArtifactContractError("Official CSFML V1 strategy_id cannot be changed")
+    if record.get("holdout_accessed") is True or nested.get("holdout_accessed") is True:
+        raise ArtifactContractError("Official CSFML V1 pin has holdout_accessed=false")
+    holdout_count = _first_present(record, nested, "holdout_access_count")
+    if holdout_count not in (None, 0, "0"):
+        raise ArtifactContractError("Official CSFML V1 pin has holdout_accessed=false")
+    if "economic_gate" in record or "economic_gate" in nested:
+        gate = _first_present(record, nested, "economic_gate")
+        if str(gate) != str(pin.get("economic_gate") or "NOT_DEFINED"):
+            raise ArtifactContractError("Official CSFML V1 economic_gate cannot be changed")
     commit = str(
         record.get("git_commit")
         or record.get("source_git_sha")

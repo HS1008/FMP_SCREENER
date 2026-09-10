@@ -73,6 +73,33 @@ def test_official_csfml_v1_window_artifact_without_sha_is_allowed():
     )
 
 
+def test_official_csfml_v1_mutated_pin_fields_are_refused():
+    base = {
+        "research_run_id": PIN["full_suite_run_id"],
+        "strategy_id": "CrossSectionalFactorML",
+        "git_commit": PIN["authoritative_csfml_v1_qc_sha"],
+        "holdout_accessed": False,
+        "economic_gate": "NOT_DEFINED",
+    }
+    with pytest.raises(ArtifactContractError, match="economic_gate"):
+        refuse_impersonated_official_csfml_v1({**base, "economic_gate": "PASS"})
+    with pytest.raises(ArtifactContractError, match="holdout_accessed"):
+        refuse_impersonated_official_csfml_v1({**base, "holdout_accessed": True})
+    with pytest.raises(ArtifactContractError, match="holdout_accessed"):
+        refuse_impersonated_official_csfml_v1({**base, "holdout_access_count": 1})
+    with pytest.raises(ArtifactContractError, match="strategy_id"):
+        refuse_impersonated_official_csfml_v1({**base, "strategy_id": "SPYTrend"})
+    with pytest.raises(ArtifactContractError, match="holdout_accessed"):
+        refuse_impersonated_official_csfml_v1(
+            {
+                "research_run_id": PIN["full_suite_run_id"],
+                "strategy_id": "CrossSectionalFactorML",
+                "window_id": "2015",
+                "holdout_accessed": True,
+            }
+        )
+
+
 def test_official_csfml_v1_pin_shas_are_accepted():
     for sha in (PIN["authoritative_csfml_v1_sha"], PIN["authoritative_csfml_v1_qc_sha"]):
         refuse_impersonated_official_csfml_v1(
