@@ -218,7 +218,7 @@ def test_tlt_labels_and_cli_dry_run(monkeypatch):
     assert verify_main(["--live", "--root", str(_tlt_path())]) == 1
     monkeypatch.setenv("DASHBOARD_ALLOW_WRITER_FALLBACK", "1")
     reset_dashboard_engine_for_tests()
-    assert verify_main(["--live", "--root", str(_tlt_path())]) == 1
+    assert verify_main(["--live", "--root", str(_tlt_path())]) == 4
     from qc_research.verify_tlt_monitor import find_selectbox
 
     class _Box:
@@ -422,6 +422,9 @@ def test_generic_ingest_workflow_is_event_driven():
         DEFAULT_ARTIFACT_ROOT.parent.parent / ".github" / "workflows" / "platform_research_verify.yml"
     ).read_text(encoding="utf-8")
     assert "verify_tlt_monitor --live" in verify
+    assert "--allow-missing" not in verify
+    assert "/var/lib/fmp/deploy/tlt_v0_live.json" in verify
+    assert "/var/lib/fmp/deploy/csfml_v1_live.json" in verify
     assert "postgres_engine" not in Path(
         DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
     ).read_text(encoding="utf-8")
@@ -451,3 +454,38 @@ def test_generic_ingest_workflow_is_event_driven():
     assert github_raw_url("hs1008/quant-strategies", sha, "research/platform_smokes/x.json").endswith(
         "research/platform_smokes/x.json"
     )
+
+
+def test_tlt_live_evaluate_records_missing_without_changing_economics(tmp_path):
+    from qc_research.tlt_duration_momentum import ECONOMIC_GATE, RUN_ID, evaluate_tlt_v0
+    from qc_research.verify_tlt_monitor import verify_exit_code, write_live_report
+
+    class _Missing:
+        def execute(self, *args, **kwargs):
+            class _Result:
+                def mappings(self):
+                    class _Mappings:
+                        def first(self):
+                            return None
+
+                    return _Mappings()
+
+            return _Result()
+
+    report = evaluate_tlt_v0(_Missing())
+    assert report["present"] is False
+    assert report["identity_ok"] is False
+    assert report["blockers"] == ["official_run_missing"]
+    assert report["research_run_id"] == RUN_ID
+    assert report["economic_gate"] == ECONOMIC_GATE
+    assert verify_exit_code(report, require_present=False) == 0
+    assert verify_exit_code(report, require_present=True) == 3
+    out = tmp_path / "tlt_v0_live.json"
+    write_live_report(report, str(out), code_root="/opt/fmp/current")
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["present"] is False
+    assert payload["identity_ok"] is False
+    assert payload["blockers"] == ["official_run_missing"]
+    assert payload["code_root"] == "/opt/fmp/current"
+    assert payload["economic_gate"] == ECONOMIC_GATE
+    assert "postgresql://" not in out.read_text(encoding="utf-8")

@@ -160,6 +160,8 @@ def test_workflow_and_live_script_wire_explicit_ref_and_report():
     assert "FMP_IDENTITY_ENV_ONLY=1" in query
     assert query.rfind("source /etc/fmp/fmp-dashboard.env") > query.rfind("source \"$DROPLET_ENV\"")
     assert "source /root/FMP_SCREENER/.env" not in LIVE_SCRIPT.split("verify_tlt_monitor --live", 1)[1]
+    assert "--allow-missing" not in LIVE_SCRIPT
+    assert "/var/lib/fmp/deploy/tlt_v0_live.json" in LIVE_SCRIPT
     assert "DROPLET_ENV=/etc/fmp/fmp-writer.env" in LIVE_SCRIPT
     assert LIVE_SCRIPT.index("DROPLET_ENV=/etc/fmp/fmp-writer.env") < LIVE_SCRIPT.index(
         "DROPLET_ENV=/root/FMP_SCREENER/.env"

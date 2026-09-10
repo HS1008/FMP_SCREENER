@@ -554,6 +554,47 @@ def verify_tlt_postgres(conn) -> dict[str, Any]:
     }
 
 
+def evaluate_tlt_v0(conn) -> dict[str, Any]:
+    """Record missing vs identity-refused without changing the frozen TLT contract."""
+    report: dict[str, Any] = {
+        "present": False,
+        "identity_ok": False,
+        "blockers": [],
+        "research_run_id": RUN_ID,
+        "strategy_id": STRATEGY_ID,
+        "economic_gate": ECONOMIC_GATE,
+        "holdout_accessed": False,
+        "window_count": None,
+    }
+    try:
+        identity = query_tlt_identity(conn)
+    except ValueError as exc:
+        message = str(exc).strip() or "identity_refused"
+        if "research_runs row is missing" in message:
+            report["blockers"] = ["official_run_missing"]
+            return report
+        report["blockers"] = [message]
+        return report
+    try:
+        live = verify_tlt_postgres(conn)
+    except ValueError as exc:
+        report["present"] = True
+        report["blockers"] = [str(exc).strip() or "identity_refused"]
+        report["holdout_accessed"] = bool(identity.get("holdout_accessed"))
+        return report
+    report.update(
+        {
+            "present": True,
+            "identity_ok": True,
+            "blockers": [],
+            "economic_gate": live.get("economic_gate") or ECONOMIC_GATE,
+            "holdout_accessed": False,
+            "window_count": live.get("window_count"),
+        }
+    )
+    return report
+
+
 def official_tlt_v0_identity_blockers(
     *,
     strategy_id: str | None,

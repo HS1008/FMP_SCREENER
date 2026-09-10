@@ -97,9 +97,9 @@ jobs:
               unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
               export FMP_IDENTITY_ENV_ONLY=1
               export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
-              python -m qc_research.verify_tlt_monitor --live
-              python -m qc_research.verify_tlt_monitor --live --apptest
-              python -m qc_research.verify_csfml_v1 --live
+              python -m qc_research.verify_tlt_monitor --live --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/tlt_v0_live.json
+              python -m qc_research.verify_tlt_monitor --live --apptest --code-root "$CODE_ROOT"
+              python -m qc_research.verify_csfml_v1 --live --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/csfml_v1_live.json
             )
           EOF
 

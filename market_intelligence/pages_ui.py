@@ -725,6 +725,10 @@ def render_data_health() -> None:
                     "immutable_current_present": ops.get("immutable_current_present"),
                     "csfml_v1_label_integrity": ops.get("csfml_v1_label_integrity"),
                     "csfml_v1_rerun_authorized": ops.get("csfml_v1_rerun_authorized"),
+                    "csfml_v1_live_present": ops.get("csfml_v1_live_present"),
+                    "csfml_v1_live_identity_ok": ops.get("csfml_v1_live_identity_ok"),
+                    "tlt_v0_live_present": ops.get("tlt_v0_live_present"),
+                    "tlt_v0_live_identity_ok": ops.get("tlt_v0_live_identity_ok"),
                     "deploy_identity_recorded_at": ops.get("deploy_identity_recorded_at"),
                 }
             )

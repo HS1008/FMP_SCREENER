@@ -108,9 +108,9 @@ if echo "${TARGET}${STRATEGY_ID}" | grep -Eq 'TLTDurationMomentum|tlt_duration_m
     export FMP_IDENTITY_ENV_ONLY=1
     export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
     echo "Query-back TLTDurationMomentum identity..."
-    python -m qc_research.verify_tlt_monitor --live --root "$TARGET"
+    python -m qc_research.verify_tlt_monitor --live --root "$TARGET" --code-root "$CODE_ROOT" --out /var/lib/fmp/deploy/tlt_v0_live.json
     echo "Strategy Monitor AppTest against live PostgreSQL..."
-    python -m qc_research.verify_tlt_monitor --live --apptest --root "$TARGET"
+    python -m qc_research.verify_tlt_monitor --live --apptest --root "$TARGET" --code-root "$CODE_ROOT"
   )
 fi
 

@@ -117,6 +117,35 @@ def test_release_script_is_additive_and_supports_rollback():
         "Verifying Streamlit identity from immutable release checkout"
     )
     assert "official CSFML V1 identity refused" in deploy
+    assert "qc_research.verify_tlt_monitor --live" in deploy
+    assert "--allow-missing" in deploy
+    assert "/var/lib/fmp/deploy/tlt_v0_live.json" in deploy
+    assert "jobs.record_research_live_identity_db" in deploy
+    assert "official TLT V0 identity refused" in deploy
+    assert deploy.index("qc_research.verify_csfml_v1 --live") < deploy.index(
+        "qc_research.verify_tlt_monitor --live"
+    )
+    assert deploy.index("qc_research.verify_tlt_monitor --live") < deploy.index(
+        "jobs.record_research_live_identity_db"
+    )
+    assert deploy.index("jobs.record_research_live_identity_db") < deploy.index(
+        "jobs.cutover_dashboard_systemd"
+    )
+    tlt = deploy.split("Verifying official TLT V0 identity", 1)[1].split(
+        "Persisting sanitized research live identity", 1
+    )[0]
+    assert "/etc/fmp/fmp-dashboard.env" in tlt
+    assert "unset DATABASE_URL" in tlt
+    assert "--allow-missing" in tlt
+    assert ". /root/FMP_SCREENER/.env" not in tlt
+    assert "source /root/FMP_SCREENER/.env" not in tlt
+    live_db = deploy.split("Persisting sanitized research live identity", 1)[1].split(
+        "Recording systemd cutover readiness", 1
+    )[0]
+    assert "/etc/fmp/fmp-writer.env" in live_db
+    assert "/root/FMP_SCREENER/.env" in live_db
+    assert live_db.index("/etc/fmp/fmp-writer.env") < live_db.index("/root/FMP_SCREENER/.env")
+    assert "/etc/fmp/fmp-dashboard.env" not in live_db
     assert "--apply" not in deploy
     assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")

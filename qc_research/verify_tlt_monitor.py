@@ -26,6 +26,48 @@ def find_selectbox(at, label: str):
     raise RuntimeError("Strategy Monitor missing {0} selectbox: {1}".format(label, names))
 
 
+def verify_exit_code(report: dict, *, require_present: bool) -> int:
+    if report.get("present") and not report.get("identity_ok"):
+        print("tlt_v0=identity_refused")
+        return 2
+    if require_present and not report.get("present"):
+        print("tlt_v0=official_run_missing")
+        return 3
+    if report.get("identity_ok"):
+        print("tlt_v0=identity_ok")
+        return 0
+    print("tlt_v0=not_ingested")
+    return 0
+
+
+def write_live_report(
+    report: dict,
+    path: str,
+    *,
+    code_root: str = "",
+) -> None:
+    from datetime import datetime, timezone
+    from pathlib import Path
+
+    from jobs.audit_host_dashboard import write_facts
+
+    write_facts(
+        {
+            "recorded_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+            "code_root": str(code_root or "").strip(),
+            "present": bool(report.get("present")),
+            "identity_ok": bool(report.get("identity_ok")),
+            "blockers": [str(item) for item in (report.get("blockers") or [])],
+            "research_run_id": report.get("research_run_id"),
+            "strategy_id": report.get("strategy_id"),
+            "economic_gate": report.get("economic_gate"),
+            "holdout_accessed": bool(report.get("holdout_accessed")),
+            "window_count": report.get("window_count"),
+        },
+        Path(path),
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Verify TLT V0 Postgres → Monitor identity")
     parser.add_argument("--dry-run", action="store_true", help="Verify wrapped artifact only")
@@ -41,6 +83,14 @@ def main(argv: list[str] | None = None) -> int:
         default=str(ROOT / "qc_research" / "platform_artifacts" / "tlt_duration_momentum.json"),
         help="Official TLT V0 JSON",
     )
+    parser.add_argument("--out", default="")
+    parser.add_argument("--code-root", default="")
+    parser.add_argument(
+        "--allow-missing",
+        action="store_true",
+        default=False,
+        help="Missing official row is recorded, not a failure (everyday deploy)",
+    )
     ns = parser.parse_args(argv)
 
     from qc_research.platform_ingest import (
@@ -49,8 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     from qc_research.tlt_duration_momentum import (
         STRATEGY_ID,
+        evaluate_tlt_v0,
         verify_tlt_monitor_view,
-        verify_tlt_postgres,
     )
 
     artifacts = normalize_platform_file(Path(ns.root))
@@ -78,7 +128,7 @@ def main(argv: list[str] | None = None) -> int:
     want_live = ns.live or (bool(dashboard_database_url()) and not ns.dry_run)
     if want_live and writer_fallback_allowed():
         print("DASHBOARD_ALLOW_WRITER_FALLBACK is not a live TLT verify path")
-        return 1
+        return 4
     if ns.live and not dashboard_database_url():
         print("DASHBOARD_READONLY_URL unset. Live TLT query-back requires dashboard_readonly.")
         return 1
@@ -90,8 +140,19 @@ def main(argv: list[str] | None = None) -> int:
             print(str(exc))
             return 1
         with engine.connect() as conn:
-            report["live"] = verify_tlt_postgres(conn)
+            live_report = evaluate_tlt_v0(conn)
+        report["live"] = live_report
+        report["present"] = live_report.get("present")
+        report["identity_ok"] = live_report.get("identity_ok")
+        report["blockers"] = live_report.get("blockers")
         report["live_identity"] = "dashboard_readonly"
+        if ns.out:
+            write_live_report(live_report, ns.out, code_root=ns.code_root)
+            print("tlt_v0_live_written={0}".format(ns.out))
+        live_rc = verify_exit_code(live_report, require_present=not ns.allow_missing)
+        if live_rc != 0:
+            print(json.dumps(report, indent=2, default=str))
+            return live_rc
     elif not ns.dry_run:
         report["live_skipped"] = "DASHBOARD_READONLY_URL unset"
     if ns.apptest:

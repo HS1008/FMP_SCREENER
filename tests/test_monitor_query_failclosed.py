@@ -216,3 +216,20 @@ def test_ops_identity_stays_empty_when_view_missing(monkeypatch):
     assert "systemd cutover=no" in caption
     assert "still git-pull unit=yes" in caption
     assert "abcdef123456" in caption
+    assert "CSFML V1 live" not in caption
+    live_caption = mq.format_ops_identity_caption(
+        {
+            "dashboard_streamlit_readonly": True,
+            "dashboard_readonly_proven": False,
+            "systemd_cutover_proven": False,
+            "systemd_still_git_pull": True,
+            "deploy_git_sha": "abcdef1234567890",
+            "csfml_v1_live_present": False,
+            "csfml_v1_live_identity_ok": False,
+            "tlt_v0_live_present": True,
+            "tlt_v0_live_identity_ok": True,
+        }
+    )
+    assert live_caption is not None
+    assert "CSFML V1 live=not_ingested" in live_caption
+    assert "TLT V0 live=identity_ok" in live_caption

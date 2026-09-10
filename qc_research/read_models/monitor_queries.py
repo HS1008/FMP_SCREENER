@@ -590,7 +590,11 @@ OPS_IDENTITY_SQL = """
             dashboard_readonly_proven,
             systemd_cutover_proven,
             systemd_still_git_pull,
-            deploy_git_sha
+            deploy_git_sha,
+            csfml_v1_live_present,
+            csfml_v1_live_identity_ok,
+            tlt_v0_live_present,
+            tlt_v0_live_identity_ok
         FROM mi_v_ops_status
         LIMIT 1
         """
@@ -624,6 +628,20 @@ def _tri_state(value: Any) -> str:
     return "unknown"
 
 
+def _live_state(present: Any, identity_ok: Any) -> str:
+    present_state = _tri_state(present)
+    ok_state = _tri_state(identity_ok)
+    if present_state == "unknown" and ok_state == "unknown":
+        return "unrecorded"
+    if present_state == "no":
+        return "not_ingested"
+    if ok_state == "yes":
+        return "identity_ok"
+    if present_state == "yes":
+        return "identity_refused"
+    return "unrecorded"
+
+
 def format_ops_identity_caption(row: dict[str, Any] | None) -> str | None:
     """Human caption for Strategy Monitor. None when the ops view is absent."""
     if not row:
@@ -632,7 +650,7 @@ def format_ops_identity_caption(row: dict[str, Any] | None) -> str | None:
     if sha.lower() in {"none", "nan"}:
         sha = ""
     sha_text = sha[:12] if sha else "unrecorded"
-    return (
+    caption = (
         "Host identity: Streamlit read-only={0}; dashboard read-only proven={1}; "
         "systemd cutover={2}; still git-pull unit={3}; deploy SHA={4}."
     ).format(
@@ -642,3 +660,8 @@ def format_ops_identity_caption(row: dict[str, Any] | None) -> str | None:
         _tri_state(row.get("systemd_still_git_pull")),
         sha_text,
     )
+    csfml_live = _live_state(row.get("csfml_v1_live_present"), row.get("csfml_v1_live_identity_ok"))
+    tlt_live = _live_state(row.get("tlt_v0_live_present"), row.get("tlt_v0_live_identity_ok"))
+    if csfml_live != "unrecorded" or tlt_live != "unrecorded":
+        caption += " CSFML V1 live={0}; TLT V0 live={1}.".format(csfml_live, tlt_live)
+    return caption
