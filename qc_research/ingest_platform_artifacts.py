@@ -55,7 +55,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     ns = parser.parse_args(argv)
     root = Path(ns.root)
-    paths = discover_platform_files(root, canonical_only=bool(ns.canonical_only))
+    try:
+        paths = discover_platform_files(root, canonical_only=bool(ns.canonical_only))
+    except ValueError as exc:
+        print(exc)
+        return 1
     if not paths:
         print("No platform artifacts found under {0}".format(root))
         return 1

@@ -82,7 +82,11 @@ def test_release_script_is_additive_and_supports_rollback():
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
     assert deploy.index("/etc/fmp/fmp-dashboard.env") < deploy.index("jobs.audit_host_dashboard")
     record_prefix = deploy.split("jobs.record_deploy_identity_db", 1)[0]
+    assert "/etc/fmp/fmp-writer.env" in record_prefix[-500:]
     assert "/root/FMP_SCREENER/.env" in record_prefix[-500:]
+    assert record_prefix.rfind("/etc/fmp/fmp-writer.env") > record_prefix.rfind(
+        "Persisting sanitized deploy identity"
+    )
     assert "/etc/fmp/fmp-dashboard.env" not in record_prefix.split("Persisting sanitized deploy identity", 1)[-1]
     report_block = deploy.split("Recording deploy identity", 1)[1].split(
         "Persisting sanitized deploy identity", 1

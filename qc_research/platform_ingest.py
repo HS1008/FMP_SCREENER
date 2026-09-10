@@ -29,6 +29,17 @@ class IngestEnvironmentError(RuntimeError):
     """Live PostgreSQL ingest is blocked until DATABASE_URL / DB_* are set."""
 
 
+def refuse_outputs_tree(path: Path) -> None:
+    """Gitignored outputs/ is not a live ingest root."""
+    resolved = Path(path).resolve()
+    if "outputs" in resolved.parts:
+        raise ValueError(
+            "refusing to discover or ingest platform artifacts under outputs/: {0}".format(
+                resolved
+            )
+        )
+
+
 def refuse_tainted_source(record: Mapping[str, Any] | None) -> None:
     """Refuse holdout-tainted or synthetic-official source JSON before wrapping.
 
@@ -884,6 +895,7 @@ def is_live_canonical_file(path: Path) -> bool:
 
 def discover_platform_files(root: Path | None = None, *, canonical_only: bool = False) -> list[Path]:
     base = Path(root) if root is not None else DEFAULT_ARTIFACT_ROOT
+    refuse_outputs_tree(base)
     if base.is_file() and base.suffix == ".json":
         if canonical_only and not is_live_canonical_file(base):
             return []
@@ -939,6 +951,7 @@ def ingest_platform_files(conn, paths: Iterable[Path], *, root: Path | None = No
     for raw in paths:
         path = Path(raw)
         try:
+            refuse_outputs_tree(path)
             items = normalize_platform_file(path)
         except Exception as exc:
             summary["errors"].append("{0}: {1}".format(path, exc))

@@ -284,6 +284,41 @@ def test_discover_platform_files_applies_canonical_only_to_file_roots(tmp_path):
     assert discover_platform_files(tlt, canonical_only=True) == [tlt]
 
 
+def test_discover_platform_files_refuses_outputs_tree(tmp_path):
+    from qc_research.ingest_platform_artifacts import main as ingest_main
+    from qc_research.platform_ingest import discover_platform_files, ingest_platform_files
+
+    planted = tmp_path / "outputs" / "stale.json"
+    planted.parent.mkdir()
+    planted.write_text(
+        json.dumps(
+            {
+                "schema_version": "platform_artifact_v1",
+                "kind": "run_summary",
+                "provenance": "REAL_QC",
+                "research_run_id": "PLANTED",
+                "strategy_id": "FutureBondTrend",
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="outputs"):
+        discover_platform_files(planted.parent)
+    with pytest.raises(ValueError, match="outputs"):
+        discover_platform_files(planted)
+
+    class FakeConn:
+        def execute(self, statement, params=None):
+            raise AssertionError("outputs/ must not reach SQL")
+
+    summary = ingest_platform_files(FakeConn(), [planted], root=planted.parent)
+    assert summary["ingested"] == 0
+    assert not summary.get("artifacts")
+    assert summary["errors"]
+    assert "outputs" in summary["errors"][0]
+    assert ingest_main(["--root", str(planted.parent), "--dry-run"]) == 1
+
+
 def test_platform_payload_refuses_real_qc_shadow_official_identity():
     from qc_research.platform_ingest import ingest_platform_payload
 

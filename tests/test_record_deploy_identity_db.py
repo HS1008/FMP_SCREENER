@@ -78,7 +78,9 @@ def test_deploy_persists_identity_in_writer_subshell_before_dashboard_env():
     assert "/var/lib/fmp/deploy/current.json" in deploy
     block = deploy.split("Persisting sanitized deploy identity", 1)[1]
     block = block.split("Auditing host Streamlit identity", 1)[0]
+    assert "/etc/fmp/fmp-writer.env" in block
     assert "/root/FMP_SCREENER/.env" in block
+    assert block.index("/etc/fmp/fmp-writer.env") < block.index("/root/FMP_SCREENER/.env")
     assert "/etc/fmp/fmp-dashboard.env" not in block
     assert "(" in block and ")" in block
 

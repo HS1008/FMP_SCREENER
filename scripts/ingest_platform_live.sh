@@ -5,7 +5,13 @@
 set -euo pipefail
 
 ROOT="${1:-/tmp/fmp-platform-ingest}"
-DROPLET_ENV="${FMP_LIVE_ENV:-/root/FMP_SCREENER/.env}"
+if [ -n "${FMP_LIVE_ENV:-}" ]; then
+  DROPLET_ENV="$FMP_LIVE_ENV"
+elif [ -f /etc/fmp/fmp-writer.env ]; then
+  DROPLET_ENV=/etc/fmp/fmp-writer.env
+else
+  DROPLET_ENV=/root/FMP_SCREENER/.env
+fi
 TARGET="${PLATFORM_INGEST_TARGET:-${2:-}}"
 STRATEGY_ID="${STRATEGY_ID:-}"
 CANONICAL_ONLY="${CANONICAL_ONLY:-1}"
