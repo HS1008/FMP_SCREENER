@@ -108,6 +108,16 @@ def test_production_verify_workflow_runs_host_audit():
     assert "--require-present" not in text
     assert "--require-readonly" in text
     assert "jobs or change systemd" in text
+    assert "source /root/FMP_SCREENER/.env" not in text
+    assert ". /root/FMP_SCREENER/.env" not in text
+    assert text.count("/etc/fmp/fmp-dashboard.env") >= 2
+    assert "--dry-run" in text
+    ingest = text.split("ingest_platform_artifacts", 1)[1].split("verify_tlt_monitor", 1)[0]
+    assert "--dry-run" in ingest
+    assert "--verify-monitor" in ingest
+    assert "does not ingest or write PostgreSQL" in text
+    assert "FMP_IDENTITY_ENV_ONLY=1" in text
+    assert "FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env" in text
 
 
 def test_everyday_deploy_runs_host_audit_before_restart():

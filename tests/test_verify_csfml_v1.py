@@ -80,3 +80,6 @@ def test_verify_module_is_readonly_and_wired_without_require_present():
     assert "qc_research.verify_csfml_v1 --live" in verify
     assert "--require-present" not in verify
     assert verify.index("verify_tlt_monitor --live") < verify.index("verify_csfml_v1 --live")
+    assert "source /root/FMP_SCREENER/.env" not in verify
+    assert ". /root/FMP_SCREENER/.env" not in verify
+    assert "/etc/fmp/fmp-dashboard.env" in verify

@@ -3,6 +3,8 @@
 # Triggers after Deploy FMP Dashboard succeeds on main, or via workflow_dispatch.
 # Uses the same authorized DigitalOcean SSH secrets as deploy.yml.
 # Secrets are never printed. Does not create QuantConnect jobs.
+# Does not ingest or write PostgreSQL. Query-back and audit use
+# /etc/fmp/fmp-dashboard.env only — never /root/FMP_SCREENER/.env.
 #
 # The official already-ingested TLTDurationMomentum V0 record is the
 # production fixture. This is not a per-strategy workflow.
@@ -47,15 +49,20 @@ jobs:
             set -euo pipefail
             cd /root/FMP_SCREENER
             source /root/FMP_SCREENER/venv/bin/activate
+            if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
+              echo "FAIL: /etc/fmp/fmp-dashboard.env is required for production verify"
+              exit 1
+            fi
             set -a
             # shellcheck disable=SC1091
-            source /root/FMP_SCREENER/.env
+            source /etc/fmp/fmp-dashboard.env
             set +a
 
             echo "PLATFORM RESEARCH PRODUCTION VERIFICATION"
             echo "Git SHA: $(git rev-parse HEAD)"
             git log -1 --oneline
             echo "This does not create QuantConnect jobs."
+            echo "This does not ingest or write PostgreSQL."
 
             if ! systemctl is-active --quiet fmp-dashboard; then
               echo "FAIL: fmp-dashboard is not active"
@@ -65,6 +72,7 @@ jobs:
 
             python -m qc_research.ingest_platform_artifacts \
               --root qc_research/platform_artifacts/tlt_duration_momentum.json \
+              --dry-run \
               --verify-monitor
             python -m qc_research.verify_tlt_monitor --live
             python -m qc_research.verify_tlt_monitor --live --apptest
@@ -80,12 +88,18 @@ jobs:
             set -euo pipefail
             cd /root/FMP_SCREENER
             source /root/FMP_SCREENER/venv/bin/activate
+            if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
+              echo "FAIL: /etc/fmp/fmp-dashboard.env is required for production verify"
+              exit 1
+            fi
             set -a
             # shellcheck disable=SC1091
-            source /root/FMP_SCREENER/.env
+            source /etc/fmp/fmp-dashboard.env
             set +a
             echo "HOST DASHBOARD IDENTITY AUDIT"
             echo "This does not create QuantConnect jobs or change systemd."
+            export FMP_IDENTITY_ENV_ONLY=1
+            export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
             verify_rc=0
             bash scripts/verify_dashboard_identity.sh || verify_rc=$?
             python -m jobs.audit_host_dashboard \

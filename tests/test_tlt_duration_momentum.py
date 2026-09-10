@@ -365,6 +365,10 @@ def test_generic_ingest_workflow_is_event_driven():
     assert "verify_dashboard_identity.sh" in verify
     assert "--require-readonly" in verify
     assert "DO_SSH_KEY" in verify
+    assert "source /root/FMP_SCREENER/.env" not in verify
+    assert ". /root/FMP_SCREENER/.env" not in verify
+    assert "--dry-run" in verify
+    assert "/etc/fmp/fmp-dashboard.env" in verify
     from qc_research.fetch_remote_artifact import github_raw_url
 
     sha = "ef270841621933f5039680cb070559f43bd1e3c8"
