@@ -7,9 +7,14 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import text
 
-from db.dashboard_engine import dashboard_engine
+from db.dashboard_engine import DashboardIdentityError, dashboard_engine
 
-engine = dashboard_engine()
+try:
+    engine = dashboard_engine()
+    _DASHBOARD_IDENTITY_ERROR = None
+except DashboardIdentityError as exc:
+    engine = None
+    _DASHBOARD_IDENTITY_ERROR = str(exc)
 from qc_research.aggregation import smoke_backtests, stage1_backtests
 from qc_research.monitor_ui import (
     render_backtest_vs_paper,
@@ -52,6 +57,16 @@ st.caption(
     "This page does not launch backtests, train models, approve strategies, or place orders. "
     "Live monitor data updates automatically as new synchronized results become available."
 )
+if engine is None:
+    st.error(
+        _DASHBOARD_IDENTITY_ERROR
+        or "Strategy Monitor requires DASHBOARD_READONLY_URL (dashboard_readonly)."
+    )
+    st.caption(
+        "Writer fallback is off unless DASHBOARD_ALLOW_WRITER_FALLBACK=1. "
+        "mi_readonly cannot serve this page."
+    )
+    st.stop()
 
 
 # =========================================================

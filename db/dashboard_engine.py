@@ -1,9 +1,8 @@
 """Streamlit / Strategy Monitor database engine.
 
-Prefers DASHBOARD_READONLY_URL. Does not fall back to mi_readonly
-(that role lacks Strategy Monitor tables). If the dedicated URL is
-unset, uses the existing DB_* engine so current hosts keep rendering
-until the role is provisioned.
+Requires DASHBOARD_READONLY_URL. Does not fall back to mi_readonly
+(that role lacks Strategy Monitor tables). Writer fallback is opt-in
+only via DASHBOARD_ALLOW_WRITER_FALLBACK=1.
 """
 
 from __future__ import annotations
@@ -17,8 +16,26 @@ from sqlalchemy.engine import Engine
 _ENGINE: Engine | None = None
 
 
+class DashboardIdentityError(RuntimeError):
+    """Strategy Monitor has no read-only identity and writer fallback is off."""
+
+
 def dashboard_database_url() -> str | None:
     return (os.environ.get("DASHBOARD_READONLY_URL") or "").strip() or None
+
+
+def writer_fallback_allowed() -> bool:
+    return (os.environ.get("DASHBOARD_ALLOW_WRITER_FALLBACK") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def reset_dashboard_engine_for_tests() -> None:
+    global _ENGINE
+    _ENGINE = None
 
 
 def dashboard_engine() -> Engine:
@@ -35,7 +52,13 @@ def dashboard_engine() -> Engine:
             execution_options={"isolation_level": "AUTOCOMMIT"},
         )
         return _ENGINE
-    from db.connection import engine as writer_engine
+    if writer_fallback_allowed():
+        from db.connection import engine as writer_engine
 
-    _ENGINE = writer_engine
-    return _ENGINE
+        _ENGINE = writer_engine
+        return _ENGINE
+    raise DashboardIdentityError(
+        "DASHBOARD_READONLY_URL is required for Strategy Monitor. "
+        "Provision dashboard_readonly, or set DASHBOARD_ALLOW_WRITER_FALLBACK=1 "
+        "only as a temporary host escape. Do not use mi_readonly."
+    )
