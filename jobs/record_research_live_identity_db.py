@@ -1,4 +1,4 @@
-"""Attach sanitized CSFML / TLT live query-back to the latest deploy identity row.
+"""Attach sanitized CSFML / TLT / Stage 1 live query-back to the latest deploy identity row.
 
 Uses the writer identity in a deploy subshell. Streamlit reads the latest row
 only through mi_v_ops_status. Host JSON is an operator sidecar, not a UI source.
@@ -21,6 +21,7 @@ from jobs.record_deploy_identity_db import SecretBearingIdentity, _as_bool, _rej
 
 DEFAULT_CSFML = "/var/lib/fmp/deploy/csfml_v1_live.json"
 DEFAULT_TLT = "/var/lib/fmp/deploy/tlt_v0_live.json"
+DEFAULT_STAGE1 = "/var/lib/fmp/deploy/stage1_live.json"
 UPDATE_SQL = """
 UPDATE mi_deploy_host_identity AS d
 SET
@@ -29,7 +30,10 @@ SET
     csfml_v1_live_blockers = :csfml_v1_live_blockers,
     tlt_v0_live_present = :tlt_v0_live_present,
     tlt_v0_live_identity_ok = :tlt_v0_live_identity_ok,
-    tlt_v0_live_blockers = :tlt_v0_live_blockers
+    tlt_v0_live_blockers = :tlt_v0_live_blockers,
+    stage1_live_present = :stage1_live_present,
+    stage1_live_identity_ok = :stage1_live_identity_ok,
+    stage1_live_blockers = :stage1_live_blockers
 FROM (
     SELECT recorded_at
     FROM mi_deploy_host_identity
@@ -80,10 +84,12 @@ def build_record(
     *,
     csfml: Mapping[str, Any] | None,
     tlt: Mapping[str, Any] | None,
+    stage1: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     record = {}
     record.update(live_fields("csfml_v1", csfml))
     record.update(live_fields("tlt_v0", tlt))
+    record.update(live_fields("stage1", stage1))
     for value in record.values():
         _reject_secrets(value)
     return record
@@ -105,6 +111,9 @@ def print_record(record: Mapping[str, Any]) -> None:
         "tlt_v0_live_present",
         "tlt_v0_live_identity_ok",
         "tlt_v0_live_blockers",
+        "stage1_live_present",
+        "stage1_live_identity_ok",
+        "stage1_live_blockers",
     ):
         print("{0}={1}".format(key, record.get(key)))
 
@@ -113,6 +122,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Persist sanitized research live identity")
     parser.add_argument("--csfml", default=DEFAULT_CSFML)
     parser.add_argument("--tlt", default=DEFAULT_TLT)
+    parser.add_argument("--stage1", default=DEFAULT_STAGE1)
     args = parser.parse_args(argv)
     if streamlit_readonly_active() or (os.environ.get(STREAMLIT_READONLY_ENV) or "").strip():
         print("FAIL: record_research_live_identity_db is not a Streamlit path")
@@ -120,7 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         csfml = load_live_report(Path(args.csfml))
         tlt = load_live_report(Path(args.tlt))
-        record = build_record(csfml=csfml, tlt=tlt)
+        stage1 = load_live_report(Path(args.stage1))
+        record = build_record(csfml=csfml, tlt=tlt, stage1=stage1)
     except SecretBearingIdentity as exc:
         print("FAIL: {0}".format(exc))
         return 4

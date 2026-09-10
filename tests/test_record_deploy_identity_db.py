@@ -109,6 +109,11 @@ def test_streamlit_reads_identity_from_ops_view_not_host_json():
     assert "tlt_v0_live_present" in ui
     assert "postgresql://" not in live
     assert "/var/lib/fmp/deploy" not in live
+    live_stage1 = (ROOT / "db" / "migrations" / "025_stage1_live_identity.sql").read_text(encoding="utf-8")
+    assert "stage1_live_present" in live_stage1
+    assert "stage1_live_present" in ui
+    assert "postgresql://" not in live_stage1
+    assert "/var/lib/fmp/deploy" not in live_stage1
 
 
 def test_insert_record_is_visible_on_ops_view(pg_engine, monkeypatch):

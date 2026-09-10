@@ -277,6 +277,31 @@ jobs:
               exit "$TLT_RC"
             fi
 
+            echo "Verifying official Stage 1 identity (read-only, missing run is not a deploy failure)..."
+            STAGE1_RC=0
+            (
+              cd "$CSFML_CODE_ROOT"
+              if [ -f "$CSFML_CODE_ROOT/venv/bin/activate" ]; then
+                # shellcheck disable=SC1091
+                source "$CSFML_CODE_ROOT/venv/bin/activate"
+              fi
+              export PYTHONPATH="$CSFML_CODE_ROOT"
+              set -a
+              # shellcheck disable=SC1091
+              . /etc/fmp/fmp-dashboard.env
+              set +a
+              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+              python -m qc_research.verify_stage1 --live --code-root "$CSFML_CODE_ROOT" --out /var/lib/fmp/deploy/stage1_live.json
+            ) || STAGE1_RC=$?
+            if [ "$STAGE1_RC" = "2" ] || [ "$STAGE1_RC" = "4" ]; then
+              echo "official Stage 1 identity refused rc=${STAGE1_RC}"
+              exit "$STAGE1_RC"
+            fi
+            if [ "$STAGE1_RC" != "0" ]; then
+              echo "official Stage 1 query-back failed rc=${STAGE1_RC}"
+              exit "$STAGE1_RC"
+            fi
+
             echo "Persisting sanitized research live identity to PostgreSQL..."
             (
               set -a
@@ -290,7 +315,8 @@ jobs:
               set +a
               python -m jobs.record_research_live_identity_db \
                 --csfml /var/lib/fmp/deploy/csfml_v1_live.json \
-                --tlt /var/lib/fmp/deploy/tlt_v0_live.json
+                --tlt /var/lib/fmp/deploy/tlt_v0_live.json \
+                --stage1 /var/lib/fmp/deploy/stage1_live.json
             )
 
             echo "Recording systemd cutover readiness (dry-run, no unit change)..."

@@ -57,6 +57,7 @@ def test_build_record_keeps_missing_files_null_and_refuses_secrets():
     assert record["csfml_v1_live_present"] is None
     assert record["tlt_v0_live_present"] is True
     assert record["tlt_v0_live_identity_ok"] is True
+    assert record["stage1_live_present"] is None
     missing = build_record(
         csfml=_live(present=False, identity_ok=False, blockers=["official_run_missing"]),
         tlt=None,
@@ -103,6 +104,7 @@ def test_update_latest_is_visible_on_ops_view(pg_engine, monkeypatch):
     record = build_record(
         csfml=_live(present=False, identity_ok=False, blockers=["official_run_missing"]),
         tlt=_live(present=True, identity_ok=True),
+        stage1=_live(present=False, identity_ok=False, blockers=["official_run_missing"]),
     )
     assert update_latest(record, engine=pg_engine) == 1
     with pg_engine.connect() as conn:
@@ -114,6 +116,9 @@ def test_update_latest_is_visible_on_ops_view(pg_engine, monkeypatch):
     assert ops["tlt_v0_live_present"] is True
     assert ops["tlt_v0_live_identity_ok"] is True
     assert ops["tlt_v0_live_blockers"] is None
+    assert ops["stage1_live_present"] is False
+    assert ops["stage1_live_identity_ok"] is False
+    assert ops["stage1_live_blockers"] == "official_run_missing"
     assert "postgresql://" not in json.dumps(ops)
 
 

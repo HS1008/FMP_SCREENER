@@ -594,7 +594,9 @@ OPS_IDENTITY_SQL = """
             csfml_v1_live_present,
             csfml_v1_live_identity_ok,
             tlt_v0_live_present,
-            tlt_v0_live_identity_ok
+            tlt_v0_live_identity_ok,
+            stage1_live_present,
+            stage1_live_identity_ok
         FROM mi_v_ops_status
         LIMIT 1
         """
@@ -662,6 +664,14 @@ def format_ops_identity_caption(row: dict[str, Any] | None) -> str | None:
     )
     csfml_live = _live_state(row.get("csfml_v1_live_present"), row.get("csfml_v1_live_identity_ok"))
     tlt_live = _live_state(row.get("tlt_v0_live_present"), row.get("tlt_v0_live_identity_ok"))
-    if csfml_live != "unrecorded" or tlt_live != "unrecorded":
-        caption += " CSFML V1 live={0}; TLT V0 live={1}.".format(csfml_live, tlt_live)
+    stage1_live = _live_state(row.get("stage1_live_present"), row.get("stage1_live_identity_ok"))
+    live_parts = []
+    if csfml_live != "unrecorded":
+        live_parts.append("CSFML V1 live={0}".format(csfml_live))
+    if tlt_live != "unrecorded":
+        live_parts.append("TLT V0 live={0}".format(tlt_live))
+    if stage1_live != "unrecorded":
+        live_parts.append("Stage 1 live={0}".format(stage1_live))
+    if live_parts:
+        caption += " {0}.".format("; ".join(live_parts))
     return caption

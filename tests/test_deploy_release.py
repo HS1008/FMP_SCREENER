@@ -132,13 +132,34 @@ def test_release_script_is_additive_and_supports_rollback():
         "jobs.cutover_dashboard_systemd"
     )
     tlt = deploy.split("Verifying official TLT V0 identity", 1)[1].split(
-        "Persisting sanitized research live identity", 1
+        "Verifying official Stage 1 identity", 1
     )[0]
     assert "/etc/fmp/fmp-dashboard.env" in tlt
     assert "unset DATABASE_URL" in tlt
     assert "--allow-missing" in tlt
     assert ". /root/FMP_SCREENER/.env" not in tlt
     assert "source /root/FMP_SCREENER/.env" not in tlt
+    assert "qc_research.verify_stage1 --live" in deploy
+    assert "/var/lib/fmp/deploy/stage1_live.json" in deploy
+    assert "official Stage 1 identity refused" in deploy
+    assert deploy.index("qc_research.verify_tlt_monitor --live") < deploy.index(
+        "qc_research.verify_stage1 --live"
+    )
+    assert deploy.index("qc_research.verify_stage1 --live") < deploy.index(
+        "jobs.record_research_live_identity_db"
+    )
+    stage1 = deploy.split("Verifying official Stage 1 identity", 1)[1].split(
+        "Persisting sanitized research live identity", 1
+    )[0]
+    assert "/etc/fmp/fmp-dashboard.env" in stage1
+    assert "unset DATABASE_URL" in stage1
+    assert "--require-present" not in stage1
+    assert ". /root/FMP_SCREENER/.env" not in stage1
+    assert "source /root/FMP_SCREENER/.env" not in stage1
+    live_db = deploy.split("Persisting sanitized research live identity", 1)[1].split(
+        "Recording systemd cutover readiness", 1
+    )[0]
+    assert "--stage1 /var/lib/fmp/deploy/stage1_live.json" in live_db
     live_db = deploy.split("Persisting sanitized research live identity", 1)[1].split(
         "Recording systemd cutover readiness", 1
     )[0]
