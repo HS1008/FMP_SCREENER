@@ -7,6 +7,7 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import bindparam, text
 
+from qc_research.contracts.label_integrity import load_csfml_v1_label_integrity
 from qc_research.lifecycle import COMPLETE, RESEARCH_COMPLETE
 from qc_research.platform_presentation import (
     ASSET_LABELS,
@@ -216,6 +217,11 @@ def load_research_library(engine) -> pd.DataFrame:
                     promotion_gate=row.get("promotion_gate"),
                     holdout_status=row.get("holdout_status"),
                     delivery_status=row.get("delivery_status"),
+                    label_integrity=(
+                        load_csfml_v1_label_integrity()["historical_v1_impact"]
+                        if strategy_id == "CrossSectionalFactorML"
+                        else None
+                    ),
                 ),
                 "run_status": row.get("run_status"),
                 "economic_gate": row.get("economic_gate"),

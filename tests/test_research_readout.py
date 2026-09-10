@@ -24,6 +24,16 @@ def test_plain_status_does_not_treat_review_or_undefined_as_fail():
     assert "FAIL" not in line
     assert "approved" not in line.lower()
     assert "passed validation" not in line.lower()
+    bounded = plain_status_line(
+        research_status="COMPLETE",
+        economic_gate="NOT_DEFINED",
+        promotion_gate="HUMAN_REVIEW_REQUIRED",
+        holdout_status="LOCKED",
+        label_integrity="CANNOT_RULE_OUT",
+    )
+    assert bounded.endswith("Label integrity CANNOT_RULE_OUT")
+    assert "Economic criteria not defined" in bounded
+    assert "FAIL" not in bounded
 
 
 def test_readout_counts_comparable_windows_and_does_not_zero_fill_missing():

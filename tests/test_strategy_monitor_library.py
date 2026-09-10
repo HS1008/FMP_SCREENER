@@ -45,6 +45,9 @@ def test_platform_view_uses_investment_tabs_and_readout():
     assert "comparison_table" in PLATFORM
     assert "Completed research is not labeled approved" in PLATFORM
     assert "percentage points, not alpha" in PLATFORM
+    library = (ROOT / "qc_research" / "research_library.py").read_text(encoding="utf-8")
+    assert "load_csfml_v1_label_integrity" in library
+    assert "label_integrity" in PLATFORM
 
 
 def test_filter_library_keeps_failed_and_hides_smoke_by_default():

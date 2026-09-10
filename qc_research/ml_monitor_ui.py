@@ -40,7 +40,10 @@ from qc_research.ml_aggregation import (
     stage2_holdout_rows,
     stage2_research_rows,
 )
-from qc_research.contracts.label_integrity import csfml_v1_integrity_caption
+from qc_research.contracts.label_integrity import (
+    csfml_v1_integrity_caption,
+    load_csfml_v1_label_integrity,
+)
 from qc_research.read_models.monitor_queries import (
     PLATFORM_RUN_IDS_SQL,
     as_payload as _as_payload,
@@ -578,6 +581,11 @@ def render_platform_view(view: dict[str, Any]) -> None:
             promotion_gate=view.get("promotion_gate"),
             holdout_status=view.get("holdout_status"),
             delivery_status=view.get("delivery_status"),
+            label_integrity=(
+                load_csfml_v1_label_integrity()["historical_v1_impact"]
+                if csfml_v1_integrity_caption(str(view.get("strategy_id") or ""))
+                else None
+            ),
         )
     )
     _chip_row(

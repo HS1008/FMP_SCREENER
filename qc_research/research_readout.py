@@ -67,6 +67,7 @@ def plain_status_line(
     holdout_status: Any = None,
     delivery_status: Any = None,
     run_complete: bool | None = None,
+    label_integrity: Any = None,
 ) -> str:
     """Separate execution, economic acceptance, and human review."""
     status = str(research_status or "").upper()
@@ -107,6 +108,9 @@ def plain_status_line(
         parts.append("Holdout locked")
     elif holdout == "ACCESSED":
         parts.append("Holdout accessed")
+    integrity = str(label_integrity or "").strip()
+    if integrity:
+        parts.append("Label integrity {0}".format(integrity))
     if run_complete is False:
         parts.append("Latest run is not complete")
     return " · ".join(parts)
