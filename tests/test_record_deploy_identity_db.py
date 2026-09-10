@@ -98,9 +98,10 @@ def test_streamlit_reads_identity_from_ops_view_not_host_json():
     assert "postgresql://" not in sql
 
 
-def test_insert_record_is_visible_on_ops_view(pg_engine):
+def test_insert_record_is_visible_on_ops_view(pg_engine, monkeypatch):
     from market_intelligence.read_models import ops_status
 
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
     record = sanitize_record(_record(readonly_proven=False, systemd_still_git_pull=True))
     insert_record(record, engine=pg_engine)
     with pg_engine.connect() as conn:
