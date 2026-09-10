@@ -157,9 +157,32 @@ def committed_tree_digest(rel: str) -> str:
     return digest.hexdigest()
 
 
+def json_declared_run_ids(payload: Mapping[str, Any] | None = None) -> set[str]:
+    """Run ids sealed_results.json claims. Empty JSON yields an empty set."""
+    data = dict(payload) if payload is not None else load_sealed_results()
+    found = {str(item) for item in (data.get("run_ids") or []) if item}
+    found.update(str(key) for key in (data.get("committed_trees") or {}) if key)
+    found.update(str(item) for item in (data.get("sealed_without_tree") or []) if item)
+    found.update(str(key) for key in (data.get("stage1_pins") or {}) if key)
+    found.update(str(key) for key in (data.get("committed_tree_digests") or {}) if key)
+    return found
+
+
+def refuse_json_run_ids_outside_minimum(payload: Mapping[str, Any] | None = None) -> None:
+    """JSON cannot declare an official run that is not hardcoded in this module."""
+    extra = sorted(json_declared_run_ids(payload) - set(MINIMUM_SEALED_RESULTS_RUN_IDS))
+    if extra:
+        raise SealedResultsError(
+            "sealed_results.json run ids not in MINIMUM_SEALED_RESULTS_RUN_IDS: {0}".format(
+                ", ".join(extra)
+            )
+        )
+
+
 def verify_committed_tree_digests(payload: Mapping[str, Any] | None = None) -> dict[str, str]:
     """Refuse sealed tree edits that are not pinned in sealed_results.json."""
     data = dict(payload) if payload is not None else load_sealed_results()
+    refuse_json_run_ids_outside_minimum(data)
     pinned = dict(data.get("committed_tree_digests") or {})
     trees = dict(data.get("committed_trees") or {})
     if not trees:

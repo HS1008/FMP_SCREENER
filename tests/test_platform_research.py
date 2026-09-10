@@ -319,6 +319,26 @@ def test_discover_platform_files_refuses_outputs_tree(tmp_path):
     assert ingest_main(["--root", str(planted.parent), "--dry-run"]) == 1
 
 
+def test_discover_platform_files_refuses_repository_root_and_venv(tmp_path):
+    from qc_research.platform_ingest import discover_platform_files
+
+    checkout = tmp_path / "checkout"
+    (checkout / "qc_research").mkdir(parents=True)
+    (checkout / "qc_research" / "ingest_platform_artifacts.py").write_text("# stub\n", encoding="utf-8")
+    planted = checkout / "extra.json"
+    planted.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="repository root"):
+        discover_platform_files(checkout)
+
+    venv_json = tmp_path / "venv" / "planted.json"
+    venv_json.parent.mkdir()
+    venv_json.write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="venv"):
+        discover_platform_files(venv_json.parent)
+    with pytest.raises(ValueError, match="venv"):
+        discover_platform_files(venv_json)
+
+
 def test_platform_payload_refuses_real_qc_shadow_official_identity():
     from qc_research.platform_ingest import ingest_platform_payload
 

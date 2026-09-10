@@ -319,6 +319,10 @@ def test_committed_tree_digests_match_and_refuse_drift():
     drifted["committed_tree_digests"]["STAGE1_SPYTrend_c04553d8"] = "0" * 64
     with pytest.raises(SealedResultsError, match="digest mismatch"):
         verify_committed_tree_digests(drifted)
+    extra = dict(data)
+    extra["run_ids"] = list(data["run_ids"]) + ["STAGE2_CrossSectionalFactorML_UNSEALED"]
+    with pytest.raises(SealedResultsError, match="MINIMUM_SEALED_RESULTS_RUN_IDS"):
+        verify_committed_tree_digests(extra)
 
 
 def test_official_tlt_wrapped_payloads_match_committed_file():

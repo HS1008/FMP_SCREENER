@@ -29,12 +29,31 @@ class IngestEnvironmentError(RuntimeError):
     """Live PostgreSQL ingest is blocked until DATABASE_URL / DB_* are set."""
 
 
+_UNSAFE_INGEST_PARTS = frozenset({"outputs", ".git", "venv", "node_modules", "__pycache__"})
+
+
 def refuse_outputs_tree(path: Path) -> None:
-    """Gitignored outputs/ is not a live ingest root."""
+    """Gitignored outputs/ and interpreter trees are not live ingest roots."""
     resolved = Path(path).resolve()
-    if "outputs" in resolved.parts:
+    hit = next((part for part in resolved.parts if part in _UNSAFE_INGEST_PARTS), None)
+    if hit is not None:
         raise ValueError(
-            "refusing to discover or ingest platform artifacts under outputs/: {0}".format(
+            "refusing to discover or ingest platform artifacts under {0}/: {1}".format(
+                hit, resolved
+            )
+        )
+
+
+def refuse_repository_root_scan(path: Path) -> None:
+    """Directory discover must not rglob a git checkout or copied Actions tree."""
+    resolved = Path(path).resolve()
+    if not resolved.is_dir():
+        return
+    if (resolved / ".git").exists() or (
+        resolved / "qc_research" / "ingest_platform_artifacts.py"
+    ).is_file():
+        raise ValueError(
+            "refusing to discover platform artifacts from a repository root: {0}".format(
                 resolved
             )
         )
@@ -896,13 +915,20 @@ def is_live_canonical_file(path: Path) -> bool:
 def discover_platform_files(root: Path | None = None, *, canonical_only: bool = False) -> list[Path]:
     base = Path(root) if root is not None else DEFAULT_ARTIFACT_ROOT
     refuse_outputs_tree(base)
+    refuse_repository_root_scan(base)
     if base.is_file() and base.suffix == ".json":
         if canonical_only and not is_live_canonical_file(base):
             return []
         return [base]
     if not base.is_dir():
         return []
-    paths = sorted(path for path in base.rglob("*.json") if path.is_file() and path.name != "README.md")
+    paths = sorted(
+        path
+        for path in base.rglob("*.json")
+        if path.is_file()
+        and path.name != "README.md"
+        and not (_UNSAFE_INGEST_PARTS & set(path.parts))
+    )
     if not canonical_only:
         return paths
     return [path for path in paths if is_live_canonical_file(path)]
