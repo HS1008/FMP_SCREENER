@@ -67,8 +67,13 @@ target="$RELEASE_ROOT/$SHA"
 install -d -m 0755 "$RELEASE_ROOT"
 if [ ! -d "$target/.git" ]; then
   git clone --depth 1 "$REPO_URL" "$target"
-  git -C "$target" fetch --depth 1 origin "$SHA"
-  git -C "$target" checkout --detach "$SHA"
+fi
+git -C "$target" fetch --depth 1 origin "$SHA"
+git -C "$target" checkout --detach "$SHA"
+actual="$(git -C "$target" rev-parse HEAD)"
+if [ "$actual" != "$SHA" ]; then
+  echo "immutable release HEAD ${actual} does not match requested ${SHA}"
+  exit 3
 fi
 
 if [ "$SKIP_PREFLIGHT" != 1 ]; then

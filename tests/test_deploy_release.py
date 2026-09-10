@@ -15,6 +15,11 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "--rollback" in script
     assert "--skip-restart" in script
     assert "git reset --hard" not in script
+    assert 'git -C "$target" fetch --depth 1 origin "$SHA"' in script
+    assert 'git -C "$target" checkout --detach "$SHA"' in script
+    assert "does not match requested" in script
+    fetch_block = script.split("if [ ! -d \"$target/.git\" ]; then", 1)[1]
+    assert 'git -C "$target" fetch --depth 1 origin "$SHA"' not in fetch_block.split("fi", 1)[0]
     deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     assert "git pull --ff-only origin main" in deploy
     assert "qc_research.contracts.digests" in deploy
@@ -113,6 +118,79 @@ def test_release_script_symlink_layout_without_host_restart(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (release_root / sha / "README").is_file()
     assert current.resolve() == (release_root / sha).resolve()
+    assert (
+        subprocess.check_output(["git", "-C", str(release_root / sha), "rev-parse", "HEAD"], text=True).strip()
+        == sha
+    )
+
+
+def test_release_script_rebinds_an_existing_tree_to_the_requested_sha(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=repo, check=True)
+    (repo / "README").write_text("first\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "first"], cwd=repo, check=True, capture_output=True)
+    first = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    (repo / "README").write_text("second\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "commit", "-m", "second"], cwd=repo, check=True, capture_output=True)
+    second = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    release_root = tmp_path / "releases"
+    env = os.environ.copy()
+    env["FMP_CURRENT_LINK"] = str(tmp_path / "current")
+    env["FMP_PREVIOUS_LINK"] = str(tmp_path / "previous")
+    first_run = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / "deploy_release.sh"),
+            "--sha",
+            first,
+            "--repo",
+            str(repo),
+            "--release-root",
+            str(release_root),
+            "--skip-restart",
+            "--skip-preflight",
+            "--skip-identity",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert first_run.returncode == 0, first_run.stderr
+    poisoned = release_root / second
+    poisoned.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["cp", "-a", str(release_root / first), str(poisoned)], check=True)
+    assert (poisoned / "README").read_text(encoding="utf-8") == "first\n"
+    rebound = subprocess.run(
+        [
+            "bash",
+            str(ROOT / "scripts" / "deploy_release.sh"),
+            "--sha",
+            second,
+            "--repo",
+            str(repo),
+            "--release-root",
+            str(release_root),
+            "--skip-restart",
+            "--skip-preflight",
+            "--skip-identity",
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert rebound.returncode == 0, rebound.stderr
+    assert (poisoned / "README").read_text(encoding="utf-8") == "second\n"
+    assert (
+        subprocess.check_output(["git", "-C", str(poisoned), "rev-parse", "HEAD"], text=True).strip()
+        == second
+    )
 
 
 def test_report_deploy_identity_writes_no_secrets(tmp_path, monkeypatch):
