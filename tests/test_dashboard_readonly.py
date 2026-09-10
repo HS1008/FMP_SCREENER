@@ -148,6 +148,30 @@ def test_identity_script_refuses_provider_fetch_on_deploy():
     assert "provider_fetch_refused" in result.stdout
 
 
+def test_identity_script_refuses_missing_streamlit_readonly(tmp_path):
+    dashboard = tmp_path / "fmp-dashboard.env"
+    dashboard.write_text(
+        "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:x@127.0.0.1/fmp\n",
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],
+        capture_output=True,
+        text=True,
+        cwd=ROOT,
+        env={
+            "PATH": os.environ.get("PATH", ""),
+            "PYTHONPATH": str(ROOT),
+            "FMP_IDENTITY_ENV_ONLY": "1",
+            "FMP_DASHBOARD_ENV": str(dashboard),
+        },
+        check=False,
+    )
+    assert result.returncode == 4
+    assert "streamlit_readonly_missing" in result.stdout
+    assert "postgresql" not in result.stdout.lower()
+
+
 def test_identity_script_clears_inherited_writer_keys(tmp_path):
     dashboard = tmp_path / "fmp-dashboard.env"
     dashboard.write_text("DASHBOARD_READONLY_URL=\n", encoding="utf-8")
@@ -433,6 +457,7 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
             "FMP_IDENTITY_ENV_ONLY": "1",
             "DASHBOARD_READONLY_URL": url,
             "DASHBOARD_ALLOW_WRITER_FALLBACK": "",
+            "FMP_STREAMLIT_READONLY": "1",
         }
         verify = subprocess.run(
             ["bash", str(ROOT / "scripts" / "verify_dashboard_identity.sh")],

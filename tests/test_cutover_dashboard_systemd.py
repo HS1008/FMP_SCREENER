@@ -123,6 +123,7 @@ def test_apply_with_allow_flag_still_does_not_mutate_systemd(tmp_path):
     assert "/opt/fmp/current/venv/bin/streamlit" in exec_start
     assert "FMP_SCREENER" not in exec_start
     assert "WorkingDirectory=/opt/fmp/current" in PROPOSED_UNIT
+    assert "Environment=FMP_STREAMLIT_READONLY=1" in PROPOSED_UNIT
 
 
 def test_missing_immutable_current_is_recorded_not_a_deploy_failure(tmp_path):

@@ -106,8 +106,10 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "activate_market_intelligence_host.sh" in docs
     example = (ROOT / "deploy" / "fmp-dashboard.service.example").read_text(encoding="utf-8")
     assert "DASHBOARD_READONLY_URL" in example
+    assert "Environment=FMP_STREAMLIT_READONLY=1" in example
     env = (ROOT / "deploy" / "fmp-dashboard.env.example").read_text(encoding="utf-8")
     assert "DASHBOARD_READONLY_URL=" in env
+    assert "FMP_STREAMLIT_READONLY=1" in env
     assert "mi_readonly" not in env.split("DASHBOARD_READONLY_URL=", 1)[1].splitlines()[0]
 
 

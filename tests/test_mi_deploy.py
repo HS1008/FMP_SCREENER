@@ -419,6 +419,7 @@ def test_update_protected_env_scrubs_streamlit_writer_keys_without_printing(tmp_
     assert "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:x@127.0.0.1/fmp" in text
     assert "DATABASE_URL=" not in text
     assert "DB_USER=" not in text
+    assert "FMP_STREAMLIT_READONLY=1" in text
     assert "secret" not in out.stdout
     assert "writer_keys_removed=" in out.stdout
     assert "DATABASE_URL" in out.stdout

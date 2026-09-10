@@ -38,6 +38,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/fmp/current
 EnvironmentFile=-/etc/fmp/fmp-dashboard.env
+Environment=FMP_STREAMLIT_READONLY=1
 ExecStart=/opt/fmp/current/venv/bin/streamlit run dashboard.py --server.address 127.0.0.1 --server.headless true
 Restart=on-failure
 RestartSec=5

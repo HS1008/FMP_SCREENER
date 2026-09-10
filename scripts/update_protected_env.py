@@ -32,6 +32,18 @@ def _valid_key(key: str) -> bool:
     return bool(re.fullmatch(r"[A-Z][A-Z0-9_]*", key))
 
 
+def upsert_env_assignment(text: str, key: str, value: str) -> str:
+    if not _valid_key(key):
+        raise ValueError("invalid env key")
+    pattern = re.compile(r"^#?\s*{0}=.*$".format(re.escape(key)), re.M)
+    replacement = "{0}={1}".format(key, value)
+    if pattern.search(text):
+        return pattern.sub(replacement, text, count=1)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + replacement + "\n"
+
+
 def delete_env_keys(text: str, keys: list[str]) -> tuple[str, list[str]]:
     removed: list[str] = []
     for key in keys:
@@ -105,14 +117,11 @@ def main(argv: list[str] | None = None) -> int:
     else:
         text = env_path.read_text(encoding="utf-8")
     if args.key:
-        pattern = re.compile(r"^#?\s*{0}=.*$".format(re.escape(args.key)), re.M)
-        replacement = "{0}={1}".format(args.key, value)
-        if pattern.search(text):
-            text = pattern.sub(replacement, text, count=1)
-        else:
-            if text and not text.endswith("\n"):
-                text += "\n"
-            text += replacement + "\n"
+        try:
+            text = upsert_env_assignment(text, args.key, value)
+        except ValueError:
+            print("refusing invalid env key", file=sys.stderr)
+            return 3
     if delete_keys:
         try:
             text, removed = delete_env_keys(text, delete_keys)
@@ -121,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
             return 3
     else:
         removed = []
+    if args.scrub_streamlit_writer:
+        text = upsert_env_assignment(text, "FMP_STREAMLIT_READONLY", "1")
     _write_env(env_path, text)
     if args.key:
         print("{0} written to env file (value not printed)".format(args.key))

@@ -18,6 +18,7 @@ Type=simple
 User=__USER__
 WorkingDirectory=__ROOT__
 EnvironmentFile=-__ENV_FILE__
+Environment=FMP_STREAMLIT_READONLY=1
 # Streamlit must use DASHBOARD_READONLY_URL. Writer credentials stay out of this unit.
 ExecStart=__ROOT__/venv/bin/streamlit run dashboard.py --server.address 127.0.0.1 --server.headless true
 Restart=on-failure

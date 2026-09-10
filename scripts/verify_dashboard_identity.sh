@@ -54,6 +54,14 @@ if [ "$provider" = "1" ] || [ "$provider" = "true" ] || [ "$provider" = "yes" ] 
   echo "STREAMLIT_ALLOW_PROVIDER_FETCH is not a production deploy path"
   exit 5
 fi
+if [ -n "${DASHBOARD_READONLY_URL:-}" ]; then
+  streamlit_ro=$(printf '%s' "${FMP_STREAMLIT_READONLY:-}" | tr '[:upper:]' '[:lower:]')
+  if [ "$streamlit_ro" != "1" ] && [ "$streamlit_ro" != "true" ] && [ "$streamlit_ro" != "yes" ] && [ "$streamlit_ro" != "on" ]; then
+    echo "dashboard_readonly_verify=streamlit_readonly_missing"
+    echo "FMP_STREAMLIT_READONLY must be enabled in the dashboard env"
+    exit 4
+  fi
+fi
 if command -v python >/dev/null 2>&1; then
   PYTHON_BIN=python
 else
