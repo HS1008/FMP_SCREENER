@@ -284,6 +284,29 @@ def test_discover_platform_files_applies_canonical_only_to_file_roots(tmp_path):
     assert discover_platform_files(tlt, canonical_only=True) == [tlt]
 
 
+def test_platform_payload_refuses_real_qc_shadow_official_identity():
+    from qc_research.platform_ingest import ingest_platform_payload
+
+    class _Boom:
+        def execute(self, *args, **kwargs):
+            raise AssertionError("unofficial official-strategy payload must not reach SQL")
+
+    with pytest.raises(ValueError, match="unofficial identity"):
+        ingest_platform_payload(
+            _Boom(),
+            kind="run_summary",
+            payload={
+                "schema_version": "platform_artifact_v1",
+                "kind": "run_summary",
+                "provenance": "REAL_QC",
+                "research_run_id": "PLATFORM_TLT_FIXTURE01",
+                "strategy_id": "TLTDurationMomentum",
+                "economic_gate": "NOT_DEFINED",
+                "holdout_accessed": False,
+            },
+        )
+
+
 def test_synthetic_artifacts_are_rejected_from_ingest():
     from qc_research.object_store_sync import ArtifactSyncError, ingest_artifact
 
