@@ -56,10 +56,10 @@ def test_stage1_verify_sources_writer_env_before_immutable_migrate_and_sync():
 
 def test_deploy_release_sources_writer_env_before_preflight_migrate():
     preflight = RELEASE.split('if [ "$SKIP_PREFLIGHT" != 1 ]; then', 1)[1]
-    preflight = preflight.split('if [ "$SKIP_IDENTITY" != 1 ]; then', 1)[0]
+    preflight = preflight.split('if [ "$STAGE_ONLY" = 1 ]; then', 1)[0]
     assert "/etc/fmp/fmp-writer.env" in preflight
     assert preflight.index("/etc/fmp/fmp-writer.env") < preflight.index(
-        "python -m jobs.apply_migrations"
+        "-m jobs.apply_migrations"
     )
     assert "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK" in preflight
     assert "fmp-dashboard.env" not in preflight
@@ -71,7 +71,7 @@ def test_writer_jobs_unset_streamlit_identity_after_sourcing_checkout_env():
     immutable = immutable.split("Verifying Streamlit database identity", 1)[0]
     assert UNSET_STREAMLIT in immutable
     assert immutable.index("/root/FMP_SCREENER/.env") < immutable.index(UNSET_STREAMLIT)
-    assert immutable.index(UNSET_STREAMLIT) < immutable.index("python -m jobs.apply_migrations")
+    assert immutable.index(UNSET_STREAMLIT) < immutable.index("-m jobs.apply_migrations")
 
     persist = DEPLOY.split("Persisting sanitized deploy identity", 1)[1]
     persist = persist.split("Restarting Streamlit", 1)[0]

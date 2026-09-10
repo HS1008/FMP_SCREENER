@@ -319,7 +319,7 @@ def test_deploy_installs_backtest_sync_cron_after_migrations():
     ).read_text(encoding="utf-8")
     verify = _workflow_text("stage1_verify.yml")
     assert "install_backtest_sync_cron.sh" in deploy
-    assert "python -m jobs.apply_migrations" in deploy
+    assert "-m jobs.apply_migrations" in deploy
     assert deploy.index("apply_migrations") < deploy.index("install_backtest_sync_cron")
     assert deploy.index("install_backtest_sync_cron") < deploy.index("systemctl restart")
     uncommented_verify = "\n".join(
