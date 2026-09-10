@@ -585,6 +585,34 @@ COMPLETE = "COMPLETE"
 INCOMPLETE = "INCOMPLETE"
 
 
+class RunSummaryImportError(ValueError):
+    """Orchestrator summary would downgrade authoritative COMPLETE state."""
+
+
+def existing_run_status(conn, research_run_id: str) -> str | None:
+    result = conn.execute(
+        text("SELECT run_status FROM research_runs WHERE research_run_id = :rid"),
+        {"rid": research_run_id},
+    )
+    if result is None:
+        return None
+    fetchone = getattr(result, "fetchone", None)
+    if fetchone is None:
+        return None
+    row = fetchone()
+    if row is None:
+        return None
+    if isinstance(row, (list, tuple)):
+        return str(row[0] or "") or None
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return str(mapping.get("run_status") or "") or None
+    try:
+        return str(row[0] or "") or None
+    except Exception:
+        return None
+
+
 def compute_research_run_progress(
     *,
     expected: int | None,
@@ -641,6 +669,12 @@ def apply_run_summary(conn, payload: dict[str, Any]) -> None:
     if not payload or not payload.get("research_run_id"):
         raise ValueError("run summary is missing research_run_id")
     run_id = payload["research_run_id"]
+    incoming = str(payload.get("run_status") or "")
+    existing = existing_run_status(conn, run_id)
+    if existing == COMPLETE and incoming != COMPLETE:
+        raise RunSummaryImportError(
+            "refusing to downgrade {0} from COMPLETE to {1}".format(run_id, incoming or "unknown")
+        )
     conn.execute(
         text(
             """
@@ -689,7 +723,10 @@ def apply_run_summary(conn, payload: dict[str, Any]) -> None:
                 completed_count = EXCLUDED.completed_count,
                 failed_count = EXCLUDED.failed_count,
                 skipped_count = EXCLUDED.skipped_count,
-                run_status = EXCLUDED.run_status,
+                run_status = CASE
+                    WHEN research_runs.run_status = 'COMPLETE' THEN research_runs.run_status
+                    ELSE EXCLUDED.run_status
+                END,
                 parent_research_run_id = COALESCE(
                     EXCLUDED.parent_research_run_id,
                     research_runs.parent_research_run_id

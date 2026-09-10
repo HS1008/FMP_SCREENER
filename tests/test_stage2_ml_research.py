@@ -374,12 +374,31 @@ def test_baseline_and_ml_oos_files_ingest_as_distinct_artifacts(tmp_path):
     }
     (window / "oos_diagnostics.json").write_text(json.dumps(ml), encoding="utf-8")
     (window / "baseline_oos_diagnostics.json").write_text(json.dumps(baseline), encoding="utf-8")
+    (window.parent / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_CrossSectionalFactorML_abc",
+                "strategy_id": "CrossSectionalFactorML",
+                "run_status": "COMPLETE",
+                "expected_qc_experiments": 2,
+                "completed_qc_experiments": 2,
+                "failed_qc_experiments": 0,
+                "skipped_qc_experiments": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
     paths = discover_stage2_result_paths(tmp_path)
-    assert {path.name for path in paths} == {"oos_diagnostics.json", "baseline_oos_diagnostics.json"}
+    assert {path.name for path in paths} == {
+        "run_summary.json",
+        "oos_diagnostics.json",
+        "baseline_oos_diagnostics.json",
+    }
     conn = FakeConn()
     result = ingest_stage2_result_files(conn, paths, root=tmp_path)
     assert result["errors"] == []
-    assert result["ingested"] == 2
+    assert result["ingested"] == 3
     keys = {row.get("artifact_key") for row in conn.calls if row and row.get("artifact_key")}
     assert any(key and key.endswith("oos_diagnostics.json") for key in keys)
     assert any(key and key.endswith("baseline_oos_diagnostics.json") for key in keys)
@@ -505,13 +524,28 @@ def test_stage2_results_tree_ingest_is_idempotent_and_keeps_null_rank_ic(tmp_pat
     (smoke / "training_summary.json").write_text(json.dumps(training), encoding="utf-8")
     (smoke / "model_metadata.json").write_text(json.dumps(model), encoding="utf-8")
     (smoke / "oos_diagnostics.json").write_text(json.dumps(oos), encoding="utf-8")
+    (root / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_CrossSectionalFactorML_abc123de",
+                "strategy_id": "CrossSectionalFactorML",
+                "run_status": "COMPLETE",
+                "expected_qc_experiments": 1,
+                "completed_qc_experiments": 1,
+                "failed_qc_experiments": 0,
+                "skipped_qc_experiments": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
     paths = discover_stage2_result_paths(tmp_path)
-    assert len(paths) == 3
+    assert len(paths) == 4
     conn = FakeConn()
     first = ingest_stage2_result_files(conn, paths, root=tmp_path)
     second = ingest_stage2_result_files(conn, paths, root=tmp_path)
-    assert first["ingested"] == 3
-    assert second["ingested"] == 3
+    assert first["ingested"] == 4
+    assert second["ingested"] == 4
     trial_ids = {row["trial_id"] for row in conn.calls if row and row.get("trial_id")}
     assert trial_ids == {"a=0.1", "a=1.0", "a=10.0", "a=100.0", "a=1000.0"}
     features = {row["feature_name"] for row in conn.calls if row and row.get("feature_name")}
@@ -523,6 +557,63 @@ def test_stage2_results_tree_ingest_is_idempotent_and_keeps_null_rank_ic(tmp_pat
     assert model_rows[0]["object_store_key"].endswith("/SMOKE/model.pkl")
     transports = {row.get("transport") for row in conn.calls if row and row.get("transport")}
     assert transports == {"github_stage2_results"}
+
+
+def test_stage2_ingest_refuses_incomplete_or_orphan_trees(tmp_path):
+    from qc_research.stage2_results_sync import (
+        discover_stage2_result_paths,
+        ingest_stage2_result_files,
+    )
+
+    class FakeConn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(params)
+
+    orphan = (
+        tmp_path
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_orphan"
+        / "2015"
+    )
+    orphan.mkdir(parents=True)
+    (orphan / "oos_diagnostics.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_CrossSectionalFactorML_orphan",
+                "window_id": "2015",
+                "monthly_signal_diagnostics": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    incomplete_root = (
+        tmp_path
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / "STAGE2_CrossSectionalFactorML_incomplete"
+    )
+    incomplete_root.mkdir(parents=True)
+    (incomplete_root / "run_summary.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "stage2_ml_v1",
+                "research_run_id": "STAGE2_CrossSectionalFactorML_incomplete",
+                "strategy_id": "CrossSectionalFactorML",
+                "run_status": "INCOMPLETE",
+            }
+        ),
+        encoding="utf-8",
+    )
+    paths = discover_stage2_result_paths(tmp_path)
+    result = ingest_stage2_result_files(FakeConn(), paths, root=tmp_path)
+    assert result["ingested"] == 0
+    assert any("without a COMPLETE run_summary" in item for item in result["errors"])
+    assert any("INCOMPLETE" in item for item in result["errors"])
 
 
 def test_published_437cdbdc_smoke_json_ingests_without_object_store():

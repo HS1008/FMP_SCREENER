@@ -33,6 +33,7 @@ from qc_research.parsing import (
 )
 from jobs.apply_migrations import pending_migration_files
 from jobs.stage1_backtests import (
+    RunSummaryImportError,
     apply_run_summary,
     compute_research_run_progress,
     discover_run_summary_paths,
@@ -1331,6 +1332,9 @@ class _RecordingConn:
             def mappings(self_inner):
                 return iter([])
 
+            def fetchone(self_inner):
+                return None
+
         return _Result()
 
 
@@ -1515,6 +1519,26 @@ def test_case4_summary_retry_is_idempotent(tmp_path):
         Path(__file__).resolve().parent.parent / "jobs" / "stage1_backtests.py"
     ).read_text(encoding="utf-8")
     assert "ON CONFLICT (research_run_id)" in source
+    assert "WHEN research_runs.run_status = 'COMPLETE'" in source
+
+
+def test_apply_run_summary_refuses_complete_downgrade():
+    class _CompleteConn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "SELECT run_status" in sql:
+                class _Result:
+                    def fetchone(self_inner):
+                        return ("COMPLETE",)
+
+                return _Result()
+            raise AssertionError("downgrade must not upsert")
+
+    with pytest.raises(RunSummaryImportError, match="downgrade"):
+        apply_run_summary(
+            _CompleteConn(),
+            _orchestrator_summary(run_status="INCOMPLETE", skipped_count=1),
+        )
 
 
 def test_case5_smoke_excluded_from_stage1_counts_and_equity():

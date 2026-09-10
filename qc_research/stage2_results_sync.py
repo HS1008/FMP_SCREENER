@@ -89,6 +89,34 @@ def load_stage2_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def publishable_stage2_run_ids(
+    items: list[tuple[Path, dict[str, Any]]],
+) -> tuple[set[str], list[str]]:
+    """Allow only COMPLETE run trees. Orphan or INCOMPLETE runs become errors."""
+    by_run: dict[str, list[tuple[Path, dict[str, Any]]]] = {}
+    for path, payload in items:
+        run_id = str(payload.get("research_run_id") or payload.get("run_id") or "").strip()
+        by_run.setdefault(run_id, []).append((path, payload))
+    allowed: set[str] = set()
+    errors: list[str] = []
+    for run_id, rows in by_run.items():
+        summaries = [payload for path, payload in rows if path.name == "run_summary.json"]
+        label = run_id or "unknown run"
+        if not summaries:
+            errors.append("refusing {0} without a COMPLETE run_summary.json".format(label))
+            continue
+        statuses = {str(payload.get("run_status") or "").strip() for payload in summaries}
+        if statuses != {"COMPLETE"}:
+            errors.append(
+                "refusing {0} with run_status={1}; stage2 ingest requires COMPLETE".format(
+                    label, sorted(statuses)
+                )
+            )
+            continue
+        allowed.add(run_id)
+    return allowed, errors
+
+
 def ingest_stage2_result_files(
     conn,
     paths: Iterable[Path],
@@ -97,6 +125,7 @@ def ingest_stage2_result_files(
 ) -> dict[str, Any]:
     summary = {"ingested": 0, "skipped": 0, "errors": []}
     seen: set[Path] = set()
+    loaded: list[tuple[Path, dict[str, Any]]] = []
     for raw in paths:
         path = Path(raw)
         resolved = path.resolve() if path.exists() else path
@@ -109,6 +138,21 @@ def ingest_stage2_result_files(
             continue
         try:
             payload = load_stage2_json(path)
+        except Exception as exc:
+            logger.exception("Stage 2 result %s failed", path)
+            summary["errors"].append("{0}: {1}".format(path, exc))
+            continue
+        loaded.append((path, payload))
+    allowed, tree_errors = publishable_stage2_run_ids(loaded)
+    summary["errors"].extend(tree_errors)
+    for path, payload in loaded:
+        run_id = str(payload.get("research_run_id") or payload.get("run_id") or "").strip()
+        if run_id not in allowed:
+            continue
+        kind = KIND_BY_FILENAME.get(path.name)
+        if not kind:
+            continue
+        try:
             logical = logical_artifact_path(path, root)
             key = "github_stage2_results/{0}".format(logical)
             ingest_artifact(
