@@ -900,6 +900,31 @@ def test_holdout_audit_and_progress_refresh_are_not_skipped():
     assert issubclass(ResearchStateSyncError, RuntimeError)
 
 
+def test_completed_stage1_detail_failure_is_blocking():
+    from jobs.sync_quantconnect import stage1_detail_failure_is_blocking
+
+    name = "S1__SPYTrend__WFO-abc123de__TRAIN__IS__001"
+    assert stage1_detail_failure_is_blocking(name, {"status": "Completed"}) is True
+    assert stage1_detail_failure_is_blocking(name, {"status": "Runtime Error"}) is True
+    assert stage1_detail_failure_is_blocking(name, {"status": "In Progress"}) is False
+    assert stage1_detail_failure_is_blocking("live-bot", {"status": "Completed"}) is False
+    source = (Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py").read_text(
+        encoding="utf-8"
+    )
+    assert "stage1_detail_failure_is_blocking" in source
+    detail_block = source.split("Stage 1 detail read failed", 1)[1]
+    assert "raise ResearchStateSyncError" in detail_block.split("LEGACY_UPSERT_SQL", 1)[0]
+
+
+def test_generic_backtest_sync_errors_are_not_swallowed():
+    source = (Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py").read_text(
+        encoding="utf-8"
+    )
+    error_block = source.split('f"Backtest sync error: {exc}"', 1)[1].split("else:", 1)[0]
+    assert "research_state_failures.append" in error_block
+    assert "ERROR: research-state sync failed" in source
+
+
 def test_backtest_cron_installer_uses_nonblocking_flock():
     from pathlib import Path
 

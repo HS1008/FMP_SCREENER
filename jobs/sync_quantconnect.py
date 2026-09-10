@@ -28,7 +28,7 @@ from jobs.stage1_backtests import (
     upsert_research_run,
 )
 from qc_research.dates import chart_request_window
-from qc_research.parsing import is_stage1_name, parse_equity_chart
+from qc_research.parsing import is_failed_status, is_stage1_name, parse_equity_chart
 
 
 # Shared lock for the one-minute backtests-only cron and production
@@ -1572,6 +1572,12 @@ def sync_backtests(
                         "Stage 1 detail read failed for "
                         f"{name} ({backtest_id}): {exc}"
                     )
+                    if stage1_detail_failure_is_blocking(name, backtest):
+                        raise ResearchStateSyncError(
+                            "Stage 1 detail read failed for {0} ({1}): {2}".format(
+                                name, backtest_id, exc
+                            )
+                        ) from exc
                     conn.execute(text(LEGACY_UPSERT_SQL), base)
             elif is_stage1_name(name) and row_existing and row_existing.get("research_run_id"):
                 merged = merge_stage1_lightweight_metrics(row_existing, metrics)
@@ -1732,7 +1738,15 @@ def parse_args(argv=None):
 
 
 class ResearchStateSyncError(RuntimeError):
-    """Holdout audit or research-run progress failed; do not hide it."""
+    """Holdout audit, progress refresh, or a completed Stage 1 detail read failed."""
+
+
+def stage1_detail_failure_is_blocking(name, backtest) -> bool:
+    """Finished Stage 1 rows must not fall back to a metadata-less legacy upsert."""
+    if not is_stage1_name(name):
+        return False
+    status = str((backtest or {}).get("status") or "").lower()
+    return "completed" in status or is_failed_status(status, backtest)
 
 
 def migration_failure_exit_code(migration_error, sync_backtests_requested: bool):
@@ -1863,6 +1877,9 @@ def main(argv=None):
             except Exception as exc:
                 print(
                     f"Backtest sync error: {exc}"
+                )
+                research_state_failures.append(
+                    "Backtest sync error for {0}: {1}".format(strategy_id, exc)
                 )
         else:
             print("Skipping backtest sync (--live-only).")
