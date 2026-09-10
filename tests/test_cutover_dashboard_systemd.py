@@ -151,6 +151,26 @@ def test_cutover_source_never_calls_systemctl_mutate():
     assert "subprocess" not in text
 
 
+def test_cutover_reads_readonly_url_from_env_file_when_process_env_lacks_it(tmp_path, monkeypatch):
+    monkeypatch.delenv("DASHBOARD_READONLY_URL", raising=False)
+    monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
+    monkeypatch.delenv("STREAMLIT_ALLOW_PROVIDER_FETCH", raising=False)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://fmp:secret@127.0.0.1/fmp")
+    tree = _ready_tree(tmp_path)
+    report = evaluate_cutover(
+        password_file=tree["pw"],
+        current_link=tree["current"],
+        systemd_exec="/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py",
+        systemd_env_file=tree["env_file"],
+        verify_rc=0,
+    )
+    assert report["readonly_proven"] is True
+    assert report["ready"] is True
+    assert report["writer_env_keys_present"] == []
+    assert "readonly_unproven" not in report["blockers"]
+    assert "writer_identity" not in report["blockers"]
+
+
 def test_everyday_deploy_records_cutover_dry_run_and_never_applies():
     deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     assert "jobs.cutover_dashboard_systemd" in deploy
@@ -161,6 +181,13 @@ def test_everyday_deploy_records_cutover_dry_run_and_never_applies():
     assert "/var/lib/fmp/deploy/cutover_readiness.json" in deploy
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("jobs.cutover_dashboard_systemd")
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
+    cutover_block = deploy.split("Recording systemd cutover readiness", 1)[1].split(
+        "Restarting Streamlit", 1
+    )[0]
+    assert "/etc/fmp/fmp-dashboard.env" in cutover_block
+    assert "unset DATABASE_URL" in cutover_block
+    assert "source /root/FMP_SCREENER/.env" not in cutover_block
+    assert ". /root/FMP_SCREENER/.env" not in cutover_block
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
     assert "jobs.cutover_dashboard_systemd" in docs
     assert "--apply" in docs

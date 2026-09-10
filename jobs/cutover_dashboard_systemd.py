@@ -55,6 +55,47 @@ def _truthy(value: Any) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _assignment_value(text: str, key: str) -> str:
+    prefix = key + "="
+    for line in text.splitlines():
+        raw = line.strip()
+        if raw.startswith("export "):
+            raw = raw[7:].strip()
+        if raw.startswith(prefix):
+            return raw.split("=", 1)[1].strip().strip("'").strip('"')
+    return ""
+
+
+def identity_env_from_file(path: Path, base: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Copy process env and overlay dashboard identity from the systemd env file.
+
+    Does not print values. Writer key names in the file are still reported by
+    ``scan_systemd_env_file``; this overlay only needs URL and flag presence.
+    """
+    from db.dashboard_engine import WRITER_ENV_KEYS
+
+    environ = dict(base if base is not None else os.environ)
+    for key in (
+        *WRITER_ENV_KEYS,
+        "DASHBOARD_READONLY_URL",
+        "DASHBOARD_ALLOW_WRITER_FALLBACK",
+        "STREAMLIT_ALLOW_PROVIDER_FETCH",
+    ):
+        environ.pop(key, None)
+    if not path.is_file():
+        return environ
+    text = path.read_text(encoding="utf-8")
+    for key in (
+        "DASHBOARD_READONLY_URL",
+        "DASHBOARD_ALLOW_WRITER_FALLBACK",
+        "STREAMLIT_ALLOW_PROVIDER_FETCH",
+    ):
+        value = _assignment_value(text, key)
+        if value:
+            environ[key] = value
+    return environ
+
+
 def scan_systemd_env_file(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {
@@ -102,9 +143,12 @@ def evaluate_cutover(
     apply: bool = False,
     allow_cutover: bool | None = None,
 ) -> dict[str, Any]:
-    environ = env if env is not None else os.environ
+    env_file = Path(systemd_env_file or (env or os.environ).get("FMP_DASHBOARD_ENV") or DEFAULT_ENV_FILE)
+    if env is not None:
+        environ = dict(env)
+    else:
+        environ = identity_env_from_file(env_file)
     current = Path(current_link or environ.get("FMP_CURRENT_LINK") or DEFAULT_CURRENT_LINK)
-    env_file = Path(systemd_env_file or environ.get("FMP_DASHBOARD_ENV") or DEFAULT_ENV_FILE)
     facts = collect_facts(
         env=environ,
         password_file=password_file,
