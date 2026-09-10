@@ -295,6 +295,22 @@ def test_mi_research_workspace_identity_report_does_not_source_writer_checkout_e
     assert "source /root/FMP_SCREENER/.env" in preflight
 
 
+def test_activate_verify_phase_does_not_source_writer_checkout_env():
+    text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
+    verify = text.split("phase_verify()", 1)[1].split("sanitize_unit_journal", 1)[0]
+    assert "load_writer_env" not in verify
+    assert 'source "$ENV_FILE"' in verify
+    assert "unset DATABASE_URL" in verify
+    assert "unset MARKET_INTELLIGENCE_DATABASE_URL" in verify or "MARKET_INTELLIGENCE_DATABASE_URL" in verify
+    assert "FMP_IDENTITY_ENV_ONLY=1" in verify
+    assert "verify_mi_dashboard" in verify
+    assert "verify_dashboard_identity.sh" in verify
+    ingest = text.split("phase_ingest_fred()", 1)[1].split("phase_ingest_finra()", 1)[0]
+    assert "load_writer_env" in ingest
+    mi_verify = (ROOT / "jobs" / "verify_mi_dashboard.py").read_text()
+    assert "strip_writer_database_env" in mi_verify
+
+
 def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
     assert "MI_ADMIN_DATABASE_URL" in text

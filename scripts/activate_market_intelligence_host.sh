@@ -407,7 +407,19 @@ phase_ingest() {
 
 phase_verify() {
   echo "PHASE verify"
-  load_writer_env
+  if [ ! -f "$ENV_FILE" ]; then
+    echo "missing ${ENV_FILE}" >&2
+    exit 1
+  fi
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+  unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL
+  unset FMP_DATABASE_URL FMP_DATABASE_WRITER_URL
+  unset DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+  export FMP_IDENTITY_ENV_ONLY=1
+  export FMP_DASHBOARD_ENV="${FMP_DASHBOARD_ENV:-/etc/fmp/fmp-dashboard.env}"
   systemctl is-active --quiet fmp-dashboard
   echo "dashboard_active=yes"
   python -m jobs.verify_mi_dashboard --json
