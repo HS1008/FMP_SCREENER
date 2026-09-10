@@ -83,3 +83,14 @@ def test_production_verify_workflow_runs_host_audit():
     assert text.index("verify_tlt_monitor --live") < text.index("jobs.audit_host_dashboard")
     assert "--require-readonly" in text
     assert "jobs or change systemd" in text
+
+
+def test_everyday_deploy_runs_host_audit_before_restart():
+    deploy = Path(".github/workflows/deploy.yml").read_text(encoding="utf-8")
+    assert "jobs.audit_host_dashboard" in deploy
+    assert "--require-readonly" in deploy
+    assert "--verify-rc" in deploy
+    assert "/var/lib/fmp/deploy/host_audit.json" in deploy
+    assert deploy.index("jobs.report_deploy_identity") < deploy.index("jobs.audit_host_dashboard")
+    assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
+    assert "host dashboard audit failed" in deploy

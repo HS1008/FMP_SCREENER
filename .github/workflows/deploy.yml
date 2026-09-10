@@ -131,9 +131,26 @@ jobs:
               --immutable-rc "$IMMUTABLE_RC" \
               --verify-rc "$VERIFY_RC"
 
+            echo "Auditing host Streamlit identity (no secrets, no systemd change)..."
+            set -a
+            if [ -f /etc/fmp/fmp-dashboard.env ]; then
+              # shellcheck disable=SC1091
+              . /etc/fmp/fmp-dashboard.env
+            fi
+            set +a
+            AUDIT_RC=0
+            python -m jobs.audit_host_dashboard \
+              --verify-rc "$VERIFY_RC" \
+              --out /var/lib/fmp/deploy/host_audit.json \
+              --require-readonly || AUDIT_RC=$?
+
             if [ "$VERIFY_RC" != "0" ]; then
               echo "dashboard identity verify failed rc=${VERIFY_RC}"
               exit "$VERIFY_RC"
+            fi
+            if [ "$AUDIT_RC" != "0" ]; then
+              echo "host dashboard audit failed rc=${AUDIT_RC}"
+              exit "$AUDIT_RC"
             fi
 
             echo "Restarting Streamlit..."

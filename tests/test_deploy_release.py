@@ -44,6 +44,11 @@ def test_release_script_is_additive_and_supports_rollback():
     assert "--skip-identity" not in deploy
     assert "FMP_IMMUTABLE_RELEASE_STRICT" in deploy
     assert "jobs.report_deploy_identity" in deploy
+    assert "jobs.audit_host_dashboard" in deploy
+    assert "--require-readonly" in deploy
+    assert "/var/lib/fmp/deploy/host_audit.json" in deploy
+    assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
+    assert deploy.index("/etc/fmp/fmp-dashboard.env") < deploy.index("jobs.audit_host_dashboard")
     assert "systemctl restart fmp-dashboard" in deploy
     assert (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").is_file()
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
