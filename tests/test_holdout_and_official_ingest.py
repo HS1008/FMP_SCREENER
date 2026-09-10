@@ -248,6 +248,13 @@ def test_official_sealed_qc_backtest_ids_come_from_committed_trees():
     models = official_sealed_model_ids()
     assert "ridge-2015-67b04ffc3e6c" in models
     assert "not-an-official-model" not in models
+    from qc_research.contracts.sealed_results import official_sealed_spec_hashes
+
+    hashes = official_sealed_spec_hashes()
+    assert "7684df2e9dff44fa" in hashes
+    assert "d8f43c83ddec8d70" in hashes
+    assert "ae38eb0e1ff2e078" in hashes
+    assert "not-an-official-hash" not in hashes
 
 
 def test_committed_tree_digests_match_and_refuse_drift():
@@ -523,7 +530,47 @@ def test_official_monitor_strategy_register_is_insert_once():
     assert "DO UPDATE" in captured[0]
 
 
-def test_object_store_get_refused_before_account_read():
+def test_strategy_spec_seals_official_fingerprint_even_for_unsealed_run():
+    from qc_research.platform_ingest import ingest_platform_payload
+
+    captured: list[str] = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            captured.append(str(statement))
+
+    ingest_platform_payload(
+        _Conn(),
+        kind="strategy_spec",
+        payload={
+            "research_run_id": "UNSEALED_COPY",
+            "config_fingerprint": "7684df2e9dff44fa",
+            "strategy_id": "OtherTrend",
+            "identity": {
+                "config_fingerprint": "7684df2e9dff44fa",
+                "strategy_id": "OtherTrend",
+            },
+        },
+    )
+    assert captured
+    assert "DO NOTHING" in captured[0]
+    assert "DO UPDATE" not in captured[0]
+    captured.clear()
+    ingest_platform_payload(
+        _Conn(),
+        kind="strategy_spec",
+        payload={
+            "research_run_id": "UNSEALED_COPY",
+            "config_fingerprint": "deadbeefdeadbeef",
+            "strategy_id": "FutureBondTrend",
+            "identity": {
+                "config_fingerprint": "deadbeefdeadbeef",
+                "strategy_id": "FutureBondTrend",
+            },
+        },
+    )
+    assert captured
+    assert "DO UPDATE" in captured[0]
     from qc_research.object_store_sync import ObjectStoreClient
 
     def _fail(_endpoint, _payload):

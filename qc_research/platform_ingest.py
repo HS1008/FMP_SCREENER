@@ -275,11 +275,25 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
     elif kind == "strategy_spec":
         spec = inner if inner.get("identity") else payload
         identity = spec.get("identity") or {}
+        spec_hash = str(
+            identity.get("config_fingerprint") or payload.get("config_fingerprint") or ""
+        )
+        strategy_id = str(identity.get("strategy_id") or payload.get("strategy_id") or "")
+        from qc_research.contracts.sealed_results import (
+            official_monitor_strategy_ids,
+            official_sealed_spec_hashes,
+        )
+
+        freeze = (
+            sealed
+            or strategy_id in official_monitor_strategy_ids()
+            or (spec_hash and spec_hash in official_sealed_spec_hashes())
+        )
         conn.execute(
-            text(_conflict_sql(UPSERT_SPEC, sealed=sealed)),
+            text(_conflict_sql(UPSERT_SPEC, sealed=freeze)),
             {
-                "strategy_spec_hash": identity.get("config_fingerprint") or payload.get("config_fingerprint") or "",
-                "strategy_id": identity.get("strategy_id") or payload.get("strategy_id") or "",
+                "strategy_spec_hash": spec_hash,
+                "strategy_id": strategy_id,
                 "strategy_family_id": identity.get("strategy_family_id"),
                 "research_lineage_id": identity.get("research_lineage_id"),
                 "research_mode": identity.get("research_mode"),

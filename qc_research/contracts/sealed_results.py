@@ -64,6 +64,8 @@ _QC_BACKTEST_ID_KEYS = frozenset(
 )
 _SEALED_QC_BACKTEST_IDS: frozenset[str] | None = None
 _SEALED_MODEL_IDS: frozenset[str] | None = None
+_SEALED_SPEC_HASHES: frozenset[str] | None = None
+_SPEC_HASH_KEYS = frozenset({"config_fingerprint", "fingerprint", "strategy_spec_hash"})
 
 
 def _collect_qc_backtest_ids(value: Any, found: set[str]) -> None:
@@ -91,6 +93,20 @@ def _collect_model_ids(value: Any, found: set[str]) -> None:
     if isinstance(value, list):
         for item in value:
             _collect_model_ids(item, found)
+
+
+def _collect_spec_hashes(value: Any, found: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _SPEC_HASH_KEYS:
+                text = str(item or "").strip()
+                if text:
+                    found.add(text)
+            _collect_spec_hashes(item, found)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_spec_hashes(item, found)
 
 
 def committed_tree_digest(rel: str) -> str:
@@ -144,13 +160,18 @@ def verify_committed_tree_digests(payload: Mapping[str, Any] | None = None) -> d
 
 
 def _ensure_sealed_tree_ids() -> None:
-    """Load published QC backtest ids and model ids from pinned committed trees."""
-    global _SEALED_QC_BACKTEST_IDS, _SEALED_MODEL_IDS
-    if _SEALED_QC_BACKTEST_IDS is not None and _SEALED_MODEL_IDS is not None:
+    """Load published QC backtest ids, model ids, and spec hashes from pinned trees."""
+    global _SEALED_QC_BACKTEST_IDS, _SEALED_MODEL_IDS, _SEALED_SPEC_HASHES
+    if (
+        _SEALED_QC_BACKTEST_IDS is not None
+        and _SEALED_MODEL_IDS is not None
+        and _SEALED_SPEC_HASHES is not None
+    ):
         return
     verify_committed_tree_digests()
     found: set[str] = set()
     models: set[str] = set()
+    hashes: set[str] = set()
     from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
 
     found.update(official_tlt_qc_backtest_ids())
@@ -169,8 +190,10 @@ def _ensure_sealed_tree_ids() -> None:
                 continue
             _collect_qc_backtest_ids(payload, found)
             _collect_model_ids(payload, models)
+            _collect_spec_hashes(payload, hashes)
     _SEALED_QC_BACKTEST_IDS = frozenset(found)
     _SEALED_MODEL_IDS = frozenset(models)
+    _SEALED_SPEC_HASHES = frozenset(hashes)
 
 
 def official_sealed_qc_backtest_ids() -> frozenset[str]:
@@ -190,6 +213,16 @@ def official_sealed_model_ids() -> frozenset[str]:
     """
     _ensure_sealed_tree_ids()
     return _SEALED_MODEL_IDS or frozenset()
+
+
+def official_sealed_spec_hashes() -> frozenset[str]:
+    """Published config fingerprints in sealed committed trees.
+
+    Includes TLT ``fingerprint`` and CSFML/Stage 1 ``config_fingerprint``.
+    Does not invent unpublished hashes.
+    """
+    _ensure_sealed_tree_ids()
+    return _SEALED_SPEC_HASHES or frozenset()
 
 
 def _run_id(payload: Mapping[str, Any] | None) -> str:
