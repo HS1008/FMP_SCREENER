@@ -89,8 +89,11 @@ def test_streamlit_entrypoints_strip_writer_and_never_call_load_dotenv():
     dashboard = (ROOT / "dashboard.py").read_text(encoding="utf-8")
     main = dashboard.split("def main()", 1)[1].split("\n\n", 1)[0]
     assert "load_streamlit_env()" in main
-    assert "if api_key and _background_warm_enabled():" in dashboard
-    assert "def _background_warm_enabled" in dashboard
+    assert "import data_loader" not in dashboard
+    assert "import tech_rotation_engine" not in dashboard
+    legacy = (ROOT / "legacy_fmp_dashboard.py").read_text(encoding="utf-8")
+    assert "if api_key and _background_warm_enabled():" in legacy
+    assert "def _background_warm_enabled" in legacy
 
 
 FORBIDDEN_PROVIDER_IMPORTS = (
@@ -119,7 +122,9 @@ def test_production_streamlit_pages_do_not_import_provider_clients():
             assert needle not in text, "{0} imports provider path {1}".format(path.name, needle)
         assert "object_get(" not in text
     dashboard = (ROOT / "dashboard.py").read_text(encoding="utf-8")
-    assert "provider_fetch_allowed" in dashboard or "refuse_provider_fetch" in dashboard
+    legacy = (ROOT / "legacy_fmp_dashboard.py").read_text(encoding="utf-8")
+    assert "provider_fetch_allowed" in legacy or "refuse_provider_fetch" in legacy
+    assert "fmp_free_mode" in dashboard
     assert "STREAMLIT_ALLOW_PROVIDER_FETCH" in (ROOT / "qc_research" / "ui_boundary.py").read_text(
         encoding="utf-8"
     )

@@ -58,7 +58,7 @@ def test_failed_series_isolated_and_error_redacted(mi_db):
         runs = {r.dataset: r.status for r in conn.execute(text("SELECT dataset, status FROM mi_ingestion_runs"))}
         fresh = {r.dataset: (r.transport_status, r.freshness_status) for r in conn.execute(text("SELECT dataset, transport_status, freshness_status FROM mi_data_freshness"))}
     assert runs["series:DGS2"] == "FAILED" and runs["series:DGS10"] == "SUCCEEDED"
-    assert fresh["series:DGS2"] == ("FAILED", "UNKNOWN") and fresh["series:DGS10"] == ("OK", "FRESH")
+    assert fresh["series:DGS2"] == ("FAILED", "TRANSPORT_FAILURE") and fresh["series:DGS10"] == ("OK", "LATEST_AVAILABLE")
 
 
 def test_metadata_mismatch_is_reported_not_silently_accepted(mi_db):

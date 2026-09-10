@@ -28,7 +28,11 @@ def surface_status(row: Mapping[str, Any] | None) -> str:
         return STALE
     if quote in {"DELAYED", "OFFLINE_CACHED"} or transport == "PARTIAL":
         return DELAYED
-    if freshness in {"FRESH", "OK", "CURRENT"} or transport == "OK":
+    if freshness in {"INGESTION_OVERDUE", "INVALID_FUTURE"}:
+        return DELAYED
+    if freshness in {"MISSING", "TRANSPORT_FAILURE"}:
+        return UNAVAILABLE if freshness == "MISSING" else BLOCKED
+    if freshness in {"FRESH", "OK", "CURRENT", "LATEST_AVAILABLE", "AWAITING_RELEASE"} or transport == "OK":
         return CURRENT
     if transport in {"CONFIGURATION_REQUIRED", "NEVER_ATTEMPTED"} or freshness in {"UNKNOWN", ""}:
         if not row.get("latest_observation_date"):

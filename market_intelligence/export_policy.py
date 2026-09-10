@@ -45,7 +45,7 @@ VALUE_KEYS = {
     "value", "oas_bps", "change_1d_bps", "change_1w_bps", "change_1m_bps", "change_3m_bps",
     "percentile", "zscore", "yield_pct", "chg_prev_bps", "chg_1w_bps", "chg_1m_bps", "chg_3m_bps",
     "latest", "transforms", "history", "metrics", "comparison", "mean", "std",
-    "rs_chg_1w", "rs_chg_1m", "rs_chg_3m", "rs_chg_6m", "rs_chg_12m", "ret_1d", "ret_1m", "ret_1w", "ret_3m", "ret_6m", "ret_12m",
+    "rs_chg_1d", "rs_chg_1w", "rs_chg_1m", "rs_chg_3m", "rs_chg_6m", "rs_chg_12m", "ret_1d", "ret_1m", "ret_1w", "ret_3m", "ret_6m", "ret_12m",
     "rank", "ranks", "leadership", "score", "weights", "returns", "coverage_stats",
     "total_volume", "total_trades", "total_transactions", "volume_change", "trade_count_change",
     "customer_net_volume", "customer_buy_volume", "customer_sell_volume", "total_volume_quantity",
