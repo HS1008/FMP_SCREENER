@@ -70,6 +70,11 @@ def test_dashboard_readonly_sql_sets_read_only_defaults():
     assert "strategies" in sql
     assert "research_runs" in sql
     assert "backtests" in sql
+    assert "holdout_exposures" in sql
+    assert "strategy_specs" in sql
+    assert "research_pair_diagnostics" in sql
+    assert "research_fixed_income_metrics" in sql
+    assert "research_risk_metrics" in sql
 
 
 def test_verify_job_exits_3_when_url_unset(monkeypatch, capsys):
@@ -290,6 +295,11 @@ def test_verify_job_covers_monitor_tables():
     assert "INSERT INTO ml_trials" in text
     assert "INSERT INTO ml_models" in text
     assert "INSERT INTO research_experiments" in text
+    assert "INSERT INTO holdout_exposures" in text
+    assert "INSERT INTO strategy_specs" in text
+    assert "INSERT INTO research_pair_diagnostics" in text
+    assert "INSERT INTO research_fixed_income_metrics" in text
+    assert "INSERT INTO research_risk_metrics" in text
     assert "CREATE TABLE dashboard_readonly_probe" in text
     required = "\n".join(REQUIRED_SELECTS)
     assert "FROM backtests" in required

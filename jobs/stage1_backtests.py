@@ -142,6 +142,24 @@ def official_stage1_backtest_count(conn, research_run_id: str) -> int:
     return 0
 
 
+def unlabeled_qc_needs_detail(
+    existing: dict[str, Any] | None,
+    backtest: dict[str, Any] | None,
+) -> bool:
+    """True when a cloud name cannot recover a run id without /backtests/read.
+
+    First INSERT and later rewrites of unlabeled rows must not LEGACY-upsert
+    until parameterSet can be checked against sealed_results_run_ids.
+    Does not invent unpublished Stage 1 or e7b24642 QC backtest IDs.
+    """
+    name = str((backtest or {}).get("name") or "")
+    if listed_stage1_run_id(name, existing):
+        return False
+    if existing is None:
+        return True
+    return not str((existing or {}).get("research_run_id") or "").strip()
+
+
 def official_stage1_backtest_upsert_blocked(
     conn,
     *,
@@ -193,6 +211,8 @@ def needs_detail_read(existing: dict[str, Any] | None, backtest: dict[str, Any])
     status = str(backtest.get("status") or "").lower()
     completed = "completed" in status
     failed = is_failed_status(status, backtest)
+    if unlabeled_qc_needs_detail(existing, backtest):
+        return True
     if not is_stage1_name(name):
         return False
     from qc_research.contracts.sealed_results import is_sealed_results_run

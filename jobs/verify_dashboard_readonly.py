@@ -75,6 +75,47 @@ CORE_MUTATION_PROBES = (
         "UPDATE_EXPERIMENTS",
     ),
     ("DELETE FROM research_experiments WHERE FALSE", "DELETE_EXPERIMENTS"),
+    (
+        "INSERT INTO holdout_exposures "
+        "(strategy_id, research_lineage_id, holdout_start, status) "
+        "VALUES ('x', 'x', '2020-01-01', 'x')",
+        "INSERT_HOLDOUT",
+    ),
+    ("UPDATE holdout_exposures SET status = status WHERE FALSE", "UPDATE_HOLDOUT"),
+    ("DELETE FROM holdout_exposures WHERE FALSE", "DELETE_HOLDOUT"),
+    (
+        "INSERT INTO strategy_specs (strategy_spec_hash, strategy_id, spec_json) "
+        "VALUES ('x', 'x', '{}')",
+        "INSERT_SPECS",
+    ),
+    ("UPDATE strategy_specs SET strategy_id = strategy_id WHERE FALSE", "UPDATE_SPECS"),
+    ("DELETE FROM strategy_specs WHERE FALSE", "DELETE_SPECS"),
+    (
+        "INSERT INTO research_pair_diagnostics (research_run_id, pair_left, pair_right) "
+        "VALUES ('x', 'x', 'x')",
+        "INSERT_PAIRS",
+    ),
+    (
+        "UPDATE research_pair_diagnostics SET pair_left = pair_left WHERE FALSE",
+        "UPDATE_PAIRS",
+    ),
+    ("DELETE FROM research_pair_diagnostics WHERE FALSE", "DELETE_PAIRS"),
+    (
+        "INSERT INTO research_fixed_income_metrics (research_run_id, metric_name) "
+        "VALUES ('x', 'x')",
+        "INSERT_FI",
+    ),
+    (
+        "UPDATE research_fixed_income_metrics SET metric_name = metric_name WHERE FALSE",
+        "UPDATE_FI",
+    ),
+    ("DELETE FROM research_fixed_income_metrics WHERE FALSE", "DELETE_FI"),
+    (
+        "INSERT INTO research_risk_metrics (research_run_id, metric_name) VALUES ('x', 'x')",
+        "INSERT_RISK",
+    ),
+    ("UPDATE research_risk_metrics SET metric_name = metric_name WHERE FALSE", "UPDATE_RISK"),
+    ("DELETE FROM research_risk_metrics WHERE FALSE", "DELETE_RISK"),
     ("CREATE TABLE dashboard_readonly_probe (id int)", "CREATE"),
 )
 

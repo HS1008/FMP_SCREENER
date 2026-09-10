@@ -27,6 +27,7 @@ from jobs.stage1_backtests import (
     official_stage1_backtest_upsert_blocked,
     refresh_research_run_progress,
     stage1_upsert_fields,
+    unlabeled_qc_needs_detail,
     upsert_research_run,
 )
 from qc_research.dates import chart_request_window
@@ -1606,6 +1607,11 @@ def sync_backtests(
                             "Stage 1 detail read failed for {0} ({1}): {2}".format(
                                 name, backtest_id, exc
                             )
+                        )
+                    elif unlabeled_qc_needs_detail(row_existing, backtest):
+                        print(
+                            "Skipping unlabeled QC insert until detail recovers "
+                            f"a research_run_id for {name} ({backtest_id}): {exc}"
                         )
                     else:
                         conn.execute(text(LEGACY_UPSERT_SQL), base)

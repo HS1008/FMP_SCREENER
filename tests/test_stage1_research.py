@@ -1963,6 +1963,7 @@ def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras(
         needs_equity_curve,
         official_stage1_backtest_count,
         official_stage1_backtest_upsert_blocked,
+        unlabeled_qc_needs_detail,
     )
 
     class _CountConn:
@@ -2064,6 +2065,11 @@ def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras(
     ) == "sealed_results_backtest_immutable"
     assert official_stage1_backtest_upsert_blocked(
         _CountConn(0),
+        research_run_id="STAGE2_CrossSectionalFactorML_e7b24642",
+        existing_row=None,
+    ) == "sealed_results_backtest_immutable"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
         research_run_id="PLATFORM_TLTDurationMomentum_V0",
         existing_row={"research_run_id": "PLATFORM_TLTDurationMomentum_V0"},
     ) == "official_stage1_backtest_immutable"
@@ -2073,6 +2079,11 @@ def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras(
     assert needs_detail_read(None, completed) is True
     assert needs_equity_curve(None, completed, 0) is True
     renamed = {"name": "renamed-qc-backtest", "status": "Completed."}
+    assert unlabeled_qc_needs_detail(None, renamed) is True
+    assert needs_detail_read(None, renamed) is True
+    assert unlabeled_qc_needs_detail({"research_run_id": ""}, renamed) is True
+    assert unlabeled_qc_needs_detail(existing, renamed) is False
+    assert unlabeled_qc_needs_detail(None, completed) is False
     assert official_stage1_backtest_upsert_blocked(
         _CountConn(81),
         research_run_id=listed_stage1_run_id("renamed-qc-backtest", existing) or None,
@@ -2100,6 +2111,11 @@ def test_sync_quantconnect_skips_official_stage1_rewrite():
     assert "if is_stage1_name(name):\n                official_block" not in sync_fn
     assert sync_fn.index("if official_block:") < sync_fn.index("STAGE1_LIGHTWEIGHT_UPSERT_SQL")
     assert "and not official_block" in sync_fn
+    assert "unlabeled_qc_needs_detail" in sync_fn
+    assert "Skipping unlabeled QC insert" in sync_fn
+    assert sync_fn.index("unlabeled_qc_needs_detail") < sync_fn.index(
+        "conn.execute(text(LEGACY_UPSERT_SQL), base)"
+    )
 
 
 def test_audit_holdout_exposures_skips_official_stage1():
