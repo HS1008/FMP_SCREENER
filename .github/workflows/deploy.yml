@@ -170,7 +170,18 @@ jobs:
             fi
 
             echo "Verifying official CSFML V1 identity (read-only, missing run is not a deploy failure)..."
-            python -m qc_research.verify_csfml_v1 --live
+            if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
+              echo "FAIL: /etc/fmp/fmp-dashboard.env is required for CSFML V1 query-back"
+              exit 1
+            fi
+            (
+              set -a
+              # shellcheck disable=SC1091
+              . /etc/fmp/fmp-dashboard.env
+              set +a
+              unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+              python -m qc_research.verify_csfml_v1 --live
+            )
 
             echo "Recording systemd cutover readiness (dry-run, no unit change)..."
             CUTOVER_RC=0

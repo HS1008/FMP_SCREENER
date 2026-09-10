@@ -63,10 +63,23 @@ echo "Ingesting platform artifact (idempotent second pass)..."
 python -m qc_research.ingest_platform_artifacts "${INGEST_ARGS[@]}"
 
 if echo "${TARGET}${STRATEGY_ID}" | grep -Eq 'TLTDurationMomentum|tlt_duration_momentum'; then
-  echo "Query-back TLTDurationMomentum identity..."
-  python -m qc_research.verify_tlt_monitor --live --root "$TARGET"
-  echo "Strategy Monitor AppTest against live PostgreSQL..."
-  python -m qc_research.verify_tlt_monitor --live --apptest --root "$TARGET"
+  if [ ! -f /etc/fmp/fmp-dashboard.env ]; then
+    echo "FAIL: /etc/fmp/fmp-dashboard.env is required for platform ingest query-back"
+    exit 1
+  fi
+  (
+    set -a
+    # shellcheck disable=SC1091
+    source /etc/fmp/fmp-dashboard.env
+    set +a
+    unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+    export FMP_IDENTITY_ENV_ONLY=1
+    export FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env
+    echo "Query-back TLTDurationMomentum identity..."
+    python -m qc_research.verify_tlt_monitor --live --root "$TARGET"
+    echo "Strategy Monitor AppTest against live PostgreSQL..."
+    python -m qc_research.verify_tlt_monitor --live --apptest --root "$TARGET"
+  )
 fi
 
 DELIVERY_REPORT="$ROOT/delivery/report.json"

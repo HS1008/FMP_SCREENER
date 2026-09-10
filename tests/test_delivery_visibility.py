@@ -154,6 +154,12 @@ def test_workflow_and_live_script_wire_explicit_ref_and_report():
     assert 'TARGET="$LOCAL_ROOT"' in WORKFLOW and 'TARGET="$LOCAL_CANDIDATE"' in WORKFLOW
     # Triggers unchanged: no push trigger was introduced.
     assert "push:" not in WORKFLOW
+    query = LIVE_SCRIPT.split("verify_tlt_monitor --live", 1)[0]
+    assert "/etc/fmp/fmp-dashboard.env" in query
+    assert "unset DATABASE_URL" in query
+    assert "FMP_IDENTITY_ENV_ONLY=1" in query
+    assert query.rfind("source /etc/fmp/fmp-dashboard.env") > query.rfind("source \"$DROPLET_ENV\"")
+    assert "source /root/FMP_SCREENER/.env" not in LIVE_SCRIPT.split("verify_tlt_monitor --live", 1)[1]
 
 
 # ---- PostgreSQL-backed: idempotent ingestion, invalid hash, preservation, recorded facts -----------------

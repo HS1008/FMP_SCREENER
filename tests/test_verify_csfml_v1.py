@@ -74,6 +74,11 @@ def test_verify_module_is_readonly_and_wired_without_require_present():
     assert "qc_research.verify_csfml_v1" in deploy
     assert "--live" in deploy
     assert "--require-present" not in deploy
+    csfml = deploy.split("qc_research.verify_csfml_v1 --live", 1)[0]
+    assert "/etc/fmp/fmp-dashboard.env" in csfml[-400:]
+    assert "unset DATABASE_URL" in csfml[-400:]
+    assert "source /root/FMP_SCREENER/.env" not in csfml[-400:]
+    assert ". /root/FMP_SCREENER/.env" not in csfml[-400:]
     verify = (ROOT / ".github" / "workflows" / "platform_research_verify.yml").read_text(
         encoding="utf-8"
     )
