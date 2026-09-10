@@ -886,6 +886,20 @@ def test_stage2_results_ingest_errors_are_not_swallowed():
     assert "ERROR: Stage 2 results ingest failed" in source
 
 
+def test_holdout_audit_and_progress_refresh_are_not_skipped():
+    from jobs.sync_quantconnect import ResearchStateSyncError
+
+    source = (Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py").read_text(
+        encoding="utf-8"
+    )
+    assert "Holdout exposure audit skipped" not in source
+    assert "Research run progress refresh skipped" not in source
+    assert "ResearchStateSyncError" in source
+    assert "research_state_failures" in source
+    assert "ERROR: research-state sync failed" in source
+    assert issubclass(ResearchStateSyncError, RuntimeError)
+
+
 def test_backtest_cron_installer_uses_nonblocking_flock():
     from pathlib import Path
 

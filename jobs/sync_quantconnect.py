@@ -1636,11 +1636,15 @@ def sync_backtests(
         try:
             audit_holdout_exposures(conn, strategy_id)
         except Exception as exc:
-            print(f"Holdout exposure audit skipped: {exc}")
+            raise ResearchStateSyncError(
+                "Holdout exposure audit failed for {0}: {1}".format(strategy_id, exc)
+            ) from exc
         try:
             refresh_research_run_progress(conn, strategy_id)
         except Exception as exc:
-            print(f"Research run progress refresh skipped: {exc}")
+            raise ResearchStateSyncError(
+                "Research run progress refresh failed for {0}: {1}".format(strategy_id, exc)
+            ) from exc
 
     print(
         f"Backtest sync: {len(backtests)} listed, "
@@ -1727,6 +1731,10 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+class ResearchStateSyncError(RuntimeError):
+    """Holdout audit or research-run progress failed; do not hide it."""
+
+
 def migration_failure_exit_code(migration_error, sync_backtests_requested: bool):
     if migration_error and sync_backtests_requested:
         return 1
@@ -1767,6 +1775,7 @@ def main(argv=None):
         print("WARNING: continuing --live-only without Stage 1 schema updates.")
 
     stage2_failures: list[str] = []
+    research_state_failures: list[str] = []
     strategies = get_strategies()
 
     print(
@@ -1848,6 +1857,9 @@ def main(argv=None):
                         "project is not initialized."
                     )
 
+            except ResearchStateSyncError as exc:
+                print(str(exc))
+                research_state_failures.append(str(exc))
             except Exception as exc:
                 print(
                     f"Backtest sync error: {exc}"
@@ -2044,6 +2056,11 @@ def main(argv=None):
     if stage2_failures:
         print("ERROR: Stage 2 results ingest failed")
         for item in stage2_failures:
+            print("  {0}".format(item))
+        return 1
+    if research_state_failures:
+        print("ERROR: research-state sync failed")
+        for item in research_state_failures:
             print("  {0}".format(item))
         return 1
 
