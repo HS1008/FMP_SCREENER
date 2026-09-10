@@ -68,6 +68,9 @@ def test_identity_script_fails_closed_without_url_or_fallback():
     assert result.returncode == 3
     assert "DASHBOARD_READONLY_URL required" in result.stdout
     assert "postgresql" not in result.stdout.lower()
+    script = (ROOT / "scripts" / "verify_dashboard_identity.sh").read_text(encoding="utf-8")
+    assert "python3" in script
+    assert "PYTHON_BIN" in script
 
 
 def test_identity_script_allows_explicit_writer_fallback():
