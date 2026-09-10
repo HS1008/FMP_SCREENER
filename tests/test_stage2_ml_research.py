@@ -40,6 +40,7 @@ MONITOR = (ROOT / "pages" / "strategy_monitor.py").read_text(encoding="utf-8")
 SYNC = (ROOT / "jobs" / "sync_quantconnect.py").read_text(encoding="utf-8")
 ML_UI = (ROOT / "qc_research" / "ml_monitor_ui.py").read_text(encoding="utf-8")
 STORE = (ROOT / "qc_research" / "object_store_sync.py").read_text(encoding="utf-8")
+STAGE2_SQL = (ROOT / "qc_research" / "ingest" / "stage2_sql.py").read_text(encoding="utf-8")
 CRON = (ROOT / "scripts" / "install_backtest_sync_cron.sh").read_text(encoding="utf-8")
 
 
@@ -406,7 +407,10 @@ def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert "object_get" not in SYNC
     assert "/object/get" not in SYNC
     assert "--live-only" in SYNC
-    assert "ON CONFLICT" in STORE
+    assert "ON CONFLICT" in STAGE2_SQL
+    assert "from qc_research.ingest.stage2_sql import" in STORE
+    assert "promotion_gate" in STAGE2_SQL
+    assert "normalize_research_lifecycle" in STAGE2_SQL
     assert SYNC.find("sync_stage2_results") < SYNC.find("Skipping backtest sync (--live-only)")
     assert "object_get(" not in STORE[STORE.find("def sync_stage2_object_store") :]
     live_001 = (ROOT / "db" / "migrations" / "001_stage1_research.sql").read_text(encoding="utf-8")

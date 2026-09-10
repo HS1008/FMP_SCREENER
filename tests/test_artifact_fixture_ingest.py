@@ -76,6 +76,20 @@ def test_fixtures_ingest_against_disposable_postgres(pg_engine):
 
                 meta = json.loads(meta)
             assert meta.get("binary_published") is not True
+        lifecycle = conn.execute(
+            text(
+                """
+                SELECT promotion_gate, delivery_status, economic_gate, holdout_status, holdout_accessed
+                FROM research_runs
+                WHERE research_kind = 'stage2_ml'
+                """
+            )
+        ).mappings().first()
+        assert lifecycle is not None
+        assert lifecycle["economic_gate"] == "NOT_DEFINED"
+        assert lifecycle["promotion_gate"] == "HUMAN_REVIEW_REQUIRED"
+        assert lifecycle["holdout_status"] == "LOCKED"
+        assert lifecycle["holdout_accessed"] is False
 
 
 def test_stage1_fixture_keeps_81_and_no_holdout():

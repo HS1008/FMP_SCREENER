@@ -19,6 +19,8 @@ CURRENT_LINK="${FMP_CURRENT_LINK:-/opt/fmp/current}"
 PREVIOUS_LINK="${FMP_PREVIOUS_LINK:-/opt/fmp/previous}"
 SHA=""
 ROLLBACK=0
+SKIP_RESTART=0
+SKIP_PREFLIGHT=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -26,6 +28,8 @@ while [ $# -gt 0 ]; do
     --rollback) ROLLBACK=1; shift ;;
     --repo) REPO_URL="$2"; shift 2 ;;
     --release-root) RELEASE_ROOT="$2"; shift 2 ;;
+    --skip-restart) SKIP_RESTART=1; shift ;;
+    --skip-preflight) SKIP_PREFLIGHT=1; shift ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
@@ -46,7 +50,9 @@ if [ "$ROLLBACK" = 1 ]; then
     ln -sfn "$prev" "$CURRENT_LINK"
   fi
   echo "rolled_back_to=$(basename "$prev")"
-  systemctl restart fmp-dashboard
+  if [ "$SKIP_RESTART" != 1 ]; then
+    systemctl restart fmp-dashboard
+  fi
   exit 0
 fi
 
@@ -63,24 +69,25 @@ if [ ! -d "$target/.git" ]; then
   git -C "$target" checkout --detach "$SHA"
 fi
 
-if [ -f "$target/requirements.txt" ]; then
-  python3 -m pip install -r "$target/requirements.txt"
-fi
-
-(
-  cd "$target"
-  python -m jobs.apply_migrations
-  python -m pytest -q tests/test_deploy_release.py tests/test_ui_boundary.py tests/test_surface_status.py
-  if [ -n "${DASHBOARD_READONLY_URL:-}" ]; then
-    python -m jobs.verify_dashboard_readonly
+if [ "$SKIP_PREFLIGHT" != 1 ]; then
+  if [ -f "$target/requirements.txt" ]; then
+    python3 -m pip install -r "$target/requirements.txt"
   fi
-)
+  (
+    cd "$target"
+    python -m jobs.apply_migrations
+    python -m pytest -q tests/test_deploy_release.py tests/test_ui_boundary.py tests/test_surface_status.py
+    if [ -n "${DASHBOARD_READONLY_URL:-}" ]; then
+      python -m jobs.verify_dashboard_readonly
+    fi
+  )
+fi
 
 if [ -L "$CURRENT_LINK" ]; then
   ln -sfn "$(readlink -f "$CURRENT_LINK")" "$PREVIOUS_LINK"
 fi
 ln -sfn "$target" "$CURRENT_LINK"
 echo "current_release=$SHA"
-if systemctl is-enabled fmp-dashboard >/dev/null 2>&1; then
+if [ "$SKIP_RESTART" != 1 ] && systemctl is-enabled fmp-dashboard >/dev/null 2>&1; then
   systemctl restart fmp-dashboard
 fi
