@@ -210,8 +210,10 @@ materialize_env() {
       --env-file "$SYSTEMD_ENV" \
       --key DASHBOARD_READONLY_URL \
       --value-file "$URL_FILE" \
-      --create-from "$ROOT/deploy/fmp-dashboard.env.example"
+      --create-from "$ROOT/deploy/fmp-dashboard.env.example" \
+      --scrub-streamlit-writer
     echo "systemd_env=written"
+    echo "systemd_env=writer_keys_removed"
     wrote=1
   fi
   if [ -n "${DASHBOARD_ENV:-}" ]; then

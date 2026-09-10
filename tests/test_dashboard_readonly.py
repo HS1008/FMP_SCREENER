@@ -28,6 +28,7 @@ def test_provision_script_applies_sql_via_admin_or_peer_not_writer():
     assert "sudo -n -u postgres" in script
     assert "-f -" in script
     assert "The dashboard writer cannot CREATE ROLE" in script
+    assert "--scrub-streamlit-writer" in script
     for line in script.splitlines():
         if "dashboard_readonly.sql" in line:
             assert "DATABASE_URL" not in line
@@ -287,8 +288,17 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
     pw_file.write_text(password + "\n", encoding="utf-8")
     os.chmod(pw_file, 0o600)
     dashboard_env = tmp_path / "dash.env"
-    dashboard_env.write_text("# test env\nFMP_API_KEY=not-a-db-secret\n", encoding="utf-8")
+    dashboard_env.write_text(
+        "# test env\nFMP_API_KEY=not-a-db-secret\n"
+        "MARKET_INTELLIGENCE_DATABASE_URL=postgresql://writer:keep-for-cli@127.0.0.1/fmp\n",
+        encoding="utf-8",
+    )
     systemd_env = tmp_path / "etc" / "fmp-dashboard.env"
+    systemd_env.parent.mkdir(parents=True, exist_ok=True)
+    systemd_env.write_text(
+        "DATABASE_URL=postgresql://writer:strip-me@127.0.0.1/fmp\nDB_USER=writer\nFMP_API_KEY=keep-systemd\n",
+        encoding="utf-8",
+    )
     admin_on_test_db = make_url(pg_admin_url).set(
         database=make_url(pg_database).database,
         drivername="postgresql",
@@ -332,8 +342,23 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
         materialized = dashboard_env.read_text(encoding="utf-8")
         assert "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:" in materialized
         assert "FMP_API_KEY=not-a-db-secret" in materialized
+        assert "MARKET_INTELLIGENCE_DATABASE_URL=postgresql://writer:keep-for-cli@127.0.0.1/fmp" in materialized
         systemd_text = systemd_env.read_text(encoding="utf-8")
         assert "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:" in systemd_text
+        assert "FMP_API_KEY=keep-systemd" in systemd_text
+        assert "systemd_env=writer_keys_removed" in result.stdout
+        for line in systemd_text.splitlines():
+            key = line.split("=", 1)[0].lstrip("#").strip()
+            assert key not in {
+                "DATABASE_URL",
+                "MARKET_INTELLIGENCE_DATABASE_URL",
+                "DB_PASSWORD",
+                "DB_HOST",
+                "DB_USER",
+                "DB_NAME",
+                "DB_PORT",
+                "DASHBOARD_ALLOW_WRITER_FALLBACK",
+            }
         url = None
         for line in materialized.splitlines():
             if line.startswith("DASHBOARD_READONLY_URL="):
