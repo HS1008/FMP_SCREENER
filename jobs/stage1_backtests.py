@@ -93,13 +93,26 @@ def listed_stage1_run_id(
     name: str | None,
     existing: dict[str, Any] | None = None,
 ) -> str:
-    """Best-effort Stage 1 run id from a stored row or the QC backtest name."""
+    """Best-effort official run id from a stored row or the QC backtest name.
+
+    Stage 1 uses S1__ names. Official CSFML uses S2__ names. TLT and renamed
+    rows may only embed the sealed run id in the QC name.
+    """
     run_id = str((existing or {}).get("research_run_id") or "").strip()
     if run_id:
         return run_id
     from qc_research.parsing import parse_name_fallback
 
-    return str(parse_name_fallback(name).get("research_run_id") or "").strip()
+    parsed = str(parse_name_fallback(name).get("research_run_id") or "").strip()
+    if parsed:
+        return parsed
+    from qc_research.contracts.sealed_results import sealed_results_run_ids
+
+    text = str(name or "")
+    for sealed in sorted(sealed_results_run_ids(), key=len, reverse=True):
+        if sealed and sealed in text:
+            return sealed
+    return ""
 
 
 def official_stage1_backtest_count(conn, research_run_id: str) -> int:

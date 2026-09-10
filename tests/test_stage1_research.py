@@ -1987,6 +1987,25 @@ def test_official_stage1_backtest_upsert_blocked_keeps_existing_and_caps_extras(
     official_name = "S1__SPYTrend__STAGE1_SPYTrend_c04553d8__PARAM_SENS__IS__001"
     existing = {"backtest_id": "bt-1", "research_run_id": OFFICIAL_STAGE1_RUN}
     assert listed_stage1_run_id(official_name, None) == OFFICIAL_STAGE1_RUN
+    csfml_name = (
+        "S2__CrossSectionalFactorML__STAGE2_CrossSectionalFactorML_54a5543f__ML_TRAIN__2015__001"
+    )
+    assert listed_stage1_run_id(csfml_name, None) == "STAGE2_CrossSectionalFactorML_54a5543f"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=listed_stage1_run_id(csfml_name, None) or None,
+        existing_row=None,
+    ) == "sealed_results_backtest_immutable"
+    assert listed_stage1_run_id("PLATFORM_TLTDurationMomentum_V0", None) == (
+        "PLATFORM_TLTDurationMomentum_V0"
+    )
+    synthetic = "S2__SyntheticStage2__run__ML_OOS_TEST__2015__002"
+    assert listed_stage1_run_id(synthetic, None) == "run"
+    assert official_stage1_backtest_upsert_blocked(
+        _CountConn(0),
+        research_run_id=listed_stage1_run_id(synthetic, None) or None,
+        existing_row=None,
+    ) is None
     assert official_stage1_backtest_upsert_blocked(
         _CountConn(81),
         research_run_id=OFFICIAL_STAGE1_RUN,

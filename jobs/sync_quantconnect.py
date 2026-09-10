@@ -1526,7 +1526,7 @@ def sync_backtests(
             if official_block:
                 action = "insert" if not row_existing else "rewrite"
                 print(
-                    f"Skipping official Stage 1 QC {action} for "
+                    f"Skipping official sealed QC {action} for "
                     f"{name} ({backtest_id}): {official_block}"
                 )
                 continue
@@ -1588,7 +1588,7 @@ def sync_backtests(
                     )
                     if detail_block:
                         print(
-                            "Skipping official Stage 1 QC rewrite for "
+                            "Skipping official sealed QC rewrite for "
                             f"{name} ({backtest_id}): {detail_block}"
                         )
                     else:
