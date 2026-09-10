@@ -238,6 +238,103 @@ def test_official_tlt_wrapped_payloads_match_committed_file():
         )
 
 
+def test_identical_sealed_artifact_skips_child_table_writes():
+    from qc_research.contracts.hashing import payload_for_hash, sha256_payload
+    from qc_research.ingest.stage2_sql import mark_run_incomplete, update_run_metadata
+
+    path = (
+        ROOT
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / PIN["full_suite_run_id"]
+        / "2015"
+        / "training_summary.json"
+    )
+    official = json.loads(path.read_text(encoding="utf-8"))
+    sha = sha256_payload(payload_for_hash(official))
+
+    class _StoredConn:
+        def __init__(self):
+            self.writes: list[str] = []
+
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "SELECT sha256" in sql:
+
+                class _Result:
+                    def mappings(self_inner):
+                        class _Mappings:
+                            def first(self_map):
+                                return {"sha256": sha}
+
+                        return _Mappings()
+
+                return _Result()
+            self.writes.append(sql)
+            return None
+
+    conn = _StoredConn()
+    ingest_artifact(
+        conn,
+        key="sealed-train-2015",
+        kind="training_summary",
+        payload=official,
+        logical_path=str(path),
+    )
+    joined = "\n".join(conn.writes).lower()
+    assert "research_artifacts" in joined
+    assert "ml_trials" not in joined
+    assert "ml_feature_diagnostics" not in joined
+
+    summary_path = (
+        ROOT
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / PIN["full_suite_run_id"]
+        / "run_summary.json"
+    )
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    class _ExistsConn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "SELECT 1 FROM research_runs" in sql:
+
+                class _Result:
+                    def fetchone(self_inner):
+                        return (1,)
+
+                return _Result()
+            raise AssertionError("must not upsert official research_runs")
+
+    update_run_metadata(_ExistsConn(), summary)
+    mark_run_incomplete(_RefuseConn(), PIN["full_suite_run_id"], "reconstruct")
+
+
+def test_platform_identity_skips_existing_sealed_run():
+    from qc_research.platform_ingest import ingest_platform_payload
+    from qc_research.tlt_duration_momentum import wrap_tlt_duration_momentum_record
+
+    path = ROOT / "qc_research" / "platform_artifacts" / "tlt_duration_momentum.json"
+    record = json.loads(path.read_text(encoding="utf-8"))
+    wrapped = wrap_tlt_duration_momentum_record(record)
+    summary = next(payload for kind, payload in wrapped if kind == "run_summary")
+
+    class _ExistsConn:
+        def execute(self, statement, params=None):
+            sql = str(statement)
+            if "SELECT 1 FROM research_runs" in sql:
+
+                class _Result:
+                    def fetchone(self_inner):
+                        return (1,)
+
+                return _Result()
+            raise AssertionError("must not rewrite sealed platform identity")
+
+    ingest_platform_payload(_ExistsConn(), kind="run_summary", payload=summary)
+
+
 def test_official_csfml_v1_mutated_pin_fields_are_refused():
     base = {
         "research_run_id": PIN["full_suite_run_id"],

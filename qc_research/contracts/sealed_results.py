@@ -254,6 +254,28 @@ def existing_artifact_sha(conn, key: str) -> str | None:
     return None
 
 
+def research_run_exists(conn, run_id: str) -> bool:
+    """True when research_runs already has this id. Missing lookup is False."""
+    from sqlalchemy import text
+
+    key = str(run_id or "").strip()
+    if not key:
+        return False
+    result = conn.execute(
+        text("SELECT 1 FROM research_runs WHERE research_run_id = :rid"),
+        {"rid": key},
+    )
+    if result is None:
+        return False
+    fetchone = getattr(result, "fetchone", None)
+    if fetchone is not None:
+        return fetchone() is not None
+    mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return False
+    return mappings().first() is not None
+
+
 def refuse_sealed_artifact_overwrite(conn, *, key: str, run_id: str, incoming_sha: str) -> None:
     if run_id not in sealed_results_run_ids():
         return

@@ -24,6 +24,7 @@ from qc_research.contracts.kinds import (
 )
 from qc_research.contracts.label_integrity import refuse_impersonated_official_csfml_v1
 from qc_research.contracts.sealed_results import (
+    existing_artifact_sha,
     refuse_sealed_artifact_overwrite,
     refuse_sealed_committed_mismatch,
     sealed_results_run_ids,
@@ -253,6 +254,7 @@ def ingest_artifact(
         refuse_sealed_artifact_overwrite(conn, key=key, run_id=run_id, incoming_sha=sha)
     except ValueError as exc:
         raise ArtifactSyncError(str(exc)) from exc
+    existing = existing_artifact_sha(conn, key)
     upsert_artifact(
         conn,
         key=key,
@@ -263,6 +265,8 @@ def ingest_artifact(
         transport=transport,
         logical_path=logical_path,
     )
+    if run_id in sealed_results_run_ids() and existing and existing == sha:
+        return sha
     if kind == "training_summary":
         upsert_trials_from_training_summary(conn, payload)
         upsert_features_from_training_summary(conn, payload)

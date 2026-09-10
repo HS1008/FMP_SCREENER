@@ -176,7 +176,11 @@ def platform_run_identity(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None:
-    from qc_research.contracts.sealed_results import refuse_sealed_committed_mismatch
+    from qc_research.contracts.sealed_results import (
+        refuse_sealed_committed_mismatch,
+        research_run_exists,
+        sealed_results_run_ids,
+    )
 
     refuse_sealed_committed_mismatch(payload)
     inner = _inner(payload)
@@ -284,6 +288,8 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
     if kind in {"run_summary", "run_manifest"} and run_id:
         identity = platform_run_identity(payload)
         if identity["strategy_id"]:
+            if str(run_id) in sealed_results_run_ids() and research_run_exists(conn, str(run_id)):
+                return
             conn.execute(text(UPSERT_PLATFORM_RUN), identity)
             register_platform_monitor_strategy(conn, identity)
 

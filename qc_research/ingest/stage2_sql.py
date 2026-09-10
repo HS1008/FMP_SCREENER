@@ -252,6 +252,10 @@ def upsert_signals_from_oos(conn, payload: dict[str, Any]) -> int:
 
 
 def mark_run_incomplete(conn, run_id: str, warning: str) -> None:
+    from qc_research.contracts.sealed_results import sealed_results_run_ids
+
+    if str(run_id or "") in sealed_results_run_ids():
+        return
     conn.execute(
         text(
             """
@@ -276,6 +280,15 @@ def update_run_metadata(conn, payload: dict[str, Any]) -> None:
     """
     run_id = payload.get("research_run_id") or payload.get("run_id")
     if not run_id:
+        return
+    from qc_research.contracts.sealed_results import (
+        refuse_sealed_committed_mismatch,
+        research_run_exists,
+        sealed_results_run_ids,
+    )
+
+    refuse_sealed_committed_mismatch(payload)
+    if str(run_id) in sealed_results_run_ids() and research_run_exists(conn, str(run_id)):
         return
     holdout = payload.get("holdout_spec") or payload.get("holdout") or {}
     lifecycle = normalize_research_lifecycle(payload)
