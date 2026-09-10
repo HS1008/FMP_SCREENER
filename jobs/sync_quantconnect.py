@@ -1733,6 +1733,13 @@ def migration_failure_exit_code(migration_error, sync_backtests_requested: bool)
     return None
 
 
+def stage2_results_ingest_failed(summary=None, error=None) -> bool:
+    """Canonical GitHub stage2-results ingest must not be swallowed."""
+    if error is not None:
+        return True
+    return bool(summary and summary.get("errors"))
+
+
 def main(argv=None):
     args = parse_args(argv)
     sync_live = not args.backtests_only
@@ -1759,6 +1766,7 @@ def main(argv=None):
     if migration_error and not sync_bts:
         print("WARNING: continuing --live-only without Stage 1 schema updates.")
 
+    stage2_failures: list[str] = []
     strategies = get_strategies()
 
     print(
@@ -1824,8 +1832,16 @@ def main(argv=None):
                                     len(store_summary.get("errors") or []),
                                 )
                             )
+                        if stage2_results_ingest_failed(store_summary):
+                            stage2_failures.append(
+                                "{0}: {1}".format(
+                                    strategy_id,
+                                    "; ".join(store_summary.get("errors") or ["ingest failed"]),
+                                )
+                            )
                     except Exception as store_exc:
                         print("Stage 2 results ingest error: {0}".format(store_exc))
+                        stage2_failures.append("{0}: {1}".format(strategy_id, store_exc))
                 else:
                     print(
                         "Skipping research backtest sync; dedicated research "
@@ -2024,6 +2040,12 @@ def main(argv=None):
             except Exception as exc:
                 print("ERROR: failed to import run summary: {0}".format(exc))
                 return 1
+
+    if stage2_failures:
+        print("ERROR: Stage 2 results ingest failed")
+        for item in stage2_failures:
+            print("  {0}".format(item))
+        return 1
 
     return 0
 

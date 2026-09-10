@@ -872,6 +872,20 @@ def test_migration_failure_exits_nonzero_when_backtests_requested():
     assert migration_failure_exit_code(None, True) is None
 
 
+def test_stage2_results_ingest_errors_are_not_swallowed():
+    from jobs.sync_quantconnect import stage2_results_ingest_failed
+
+    assert stage2_results_ingest_failed({"errors": []}) is False
+    assert stage2_results_ingest_failed({"ingested": 2, "errors": []}) is False
+    assert stage2_results_ingest_failed({"errors": ["bad hash"]}) is True
+    assert stage2_results_ingest_failed(error=RuntimeError("boom")) is True
+    source = (Path(__file__).resolve().parent.parent / "jobs" / "sync_quantconnect.py").read_text(
+        encoding="utf-8"
+    )
+    assert "stage2_failures.append" in source
+    assert "ERROR: Stage 2 results ingest failed" in source
+
+
 def test_backtest_cron_installer_uses_nonblocking_flock():
     from pathlib import Path
 

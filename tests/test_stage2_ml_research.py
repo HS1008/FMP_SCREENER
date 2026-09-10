@@ -405,6 +405,8 @@ def test_streamlit_stage2_is_postgres_only_and_fragment_intact():
     assert "window.parent.location.reload" not in MONITOR
     assert "jobs.sync_quantconnect --backtests-only" in CRON
     assert "sync_stage2_results" in SYNC
+    assert "stage2_results_ingest_failed" in SYNC
+    assert "ERROR: Stage 2 results ingest failed" in SYNC
     assert "object_get" not in SYNC
     assert "/object/get" not in SYNC
     assert "--live-only" in SYNC
