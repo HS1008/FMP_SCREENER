@@ -36,23 +36,39 @@ if [ -z "${DATABASE_URL:-}" ] && { [ -z "${DB_HOST:-}" ] || [ -z "${DB_NAME:-}" 
   exit 1
 fi
 
-if [ -f /root/FMP_SCREENER/venv/bin/activate ]; then
+# Live PostgreSQL ingest uses the immutable release tree when present, then the
+# git-pull checkout. It never uses a copied Actions tree as CODE_ROOT on the droplet.
+# Artifact files may still live under ROOT (typically /tmp/fmp-platform-ingest).
+IMMUTABLE_ROOT="/opt/fmp/current"
+GIT_CHECKOUT="/root/FMP_SCREENER"
+INGEST_MODULE="qc_research/ingest_platform_artifacts.py"
+
+if [ -d "$IMMUTABLE_ROOT" ]; then
+  if [ ! -f "$IMMUTABLE_ROOT/$INGEST_MODULE" ]; then
+    echo "FAIL: deployed ingest module missing at $IMMUTABLE_ROOT"
+    exit 1
+  fi
+  CODE_ROOT="$IMMUTABLE_ROOT"
+elif [ -d "$GIT_CHECKOUT" ]; then
+  if [ ! -f "$GIT_CHECKOUT/$INGEST_MODULE" ]; then
+    echo "FAIL: deployed ingest module missing at $GIT_CHECKOUT"
+    exit 1
+  fi
+  CODE_ROOT="$GIT_CHECKOUT"
+else
+  CODE_ROOT="$ROOT"
+fi
+
+if [ -f "$CODE_ROOT/venv/bin/activate" ]; then
+  # shellcheck disable=SC1091
+  source "$CODE_ROOT/venv/bin/activate"
+elif [ -f /root/FMP_SCREENER/venv/bin/activate ]; then
+  # Release trees populated with --skip-preflight may not have a local venv yet.
   # shellcheck disable=SC1091
   source /root/FMP_SCREENER/venv/bin/activate
 fi
 
-# Live PostgreSQL ingest uses the deployed checkout, not a copied Actions tree.
-# Artifact files may still live under ROOT (typically /tmp/fmp-platform-ingest).
-DEPLOYED_ROOT="/root/FMP_SCREENER"
-if [ -d "$DEPLOYED_ROOT" ]; then
-  if [ ! -f "$DEPLOYED_ROOT/qc_research/ingest_platform_artifacts.py" ]; then
-    echo "FAIL: deployed ingest module missing at $DEPLOYED_ROOT"
-    exit 1
-  fi
-  CODE_ROOT="$DEPLOYED_ROOT"
-else
-  CODE_ROOT="$ROOT"
-fi
+echo "Live ingest CODE_ROOT=$CODE_ROOT"
 
 cd "$CODE_ROOT"
 export PYTHONPATH="$CODE_ROOT"

@@ -155,6 +155,10 @@ def test_production_verify_workflow_runs_host_audit():
     assert "does not ingest or write PostgreSQL" in text
     assert "FMP_IDENTITY_ENV_ONLY=1" in text
     assert "FMP_DASHBOARD_ENV=/etc/fmp/fmp-dashboard.env" in text
+    assert "CODE_ROOT=/opt/fmp/current" in text
+    assert "CODE_ROOT=/root/FMP_SCREENER" in text
+    assert text.index("CODE_ROOT=/opt/fmp/current") < text.index("CODE_ROOT=/root/FMP_SCREENER")
+    assert "live code root missing on droplet" in text
 
 
 def test_everyday_deploy_runs_host_audit_before_restart():

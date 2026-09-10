@@ -89,6 +89,8 @@ def inspect_current_link(current: Path) -> dict[str, Any]:
         "release_sha_ok": bool(RELEASE_SHA.fullmatch(sha)),
         "verify_script_present": (root / "scripts" / "verify_dashboard_identity.sh").is_file(),
         "dashboard_py_present": (root / "dashboard.py").is_file(),
+        "streamlit_venv_present": (root / "venv" / "bin" / "streamlit").is_file(),
+        "ingest_module_present": (root / "qc_research" / "ingest_platform_artifacts.py").is_file(),
     }
 
 
@@ -137,6 +139,10 @@ def evaluate_cutover(
         blockers.append("verify_script_missing")
     if not layout["dashboard_py_present"]:
         blockers.append("dashboard_py_missing")
+    if not layout["streamlit_venv_present"]:
+        blockers.append("streamlit_venv_missing")
+    if not layout["ingest_module_present"]:
+        blockers.append("ingest_module_missing")
     if not env_scan["present"]:
         blockers.append("systemd_env_missing")
     elif not env_scan["readonly_url_assignment"]:
@@ -176,6 +182,8 @@ def evaluate_cutover(
         "current_release_sha_ok": layout["release_sha_ok"],
         "verify_script_present": layout["verify_script_present"],
         "dashboard_py_present": layout["dashboard_py_present"],
+        "streamlit_venv_present": layout["streamlit_venv_present"],
+        "ingest_module_present": layout["ingest_module_present"],
         "systemd_env_present": env_scan["present"],
         "systemd_env_readonly_url_assignment": env_scan["readonly_url_assignment"],
         "systemd_still_git_pull": facts["systemd_exec_contains_root_checkout"]

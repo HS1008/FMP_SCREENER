@@ -22,6 +22,10 @@ def _ready_tree(tmp_path: Path) -> dict[str, Path]:
     (release / "scripts").mkdir(parents=True)
     (release / "scripts" / "verify_dashboard_identity.sh").write_text("#!/bin/bash\n", encoding="utf-8")
     (release / "dashboard.py").write_text("# dashboard\n", encoding="utf-8")
+    (release / "venv" / "bin").mkdir(parents=True)
+    (release / "venv" / "bin" / "streamlit").write_text("#!/bin/sh\n", encoding="utf-8")
+    (release / "qc_research").mkdir(parents=True)
+    (release / "qc_research" / "ingest_platform_artifacts.py").write_text("# ingest\n", encoding="utf-8")
     current = tmp_path / "current"
     current.symlink_to(release)
     pw = tmp_path / "dashboard_readonly.pw"
@@ -67,6 +71,8 @@ def test_dry_run_is_ready_while_systemd_still_uses_git_pull(tmp_path):
     assert report["systemd_cutover_proven"] is False
     assert report["systemd_mutated"] is False
     assert report["mode"] == "dry_run"
+    assert report["streamlit_venv_present"] is True
+    assert report["ingest_module_present"] is True
     assert cutover_exit_code(report, require_ready=True, apply=False) == 0
 
 
@@ -165,6 +171,28 @@ def test_missing_immutable_current_is_recorded_not_a_deploy_failure(tmp_path):
     assert cutover_exit_code(report, require_ready=True, apply=False) == 8
 
 
+def test_missing_release_venv_blocks_cutover_ready(tmp_path):
+    tree = _ready_tree(tmp_path)
+    streamlit = tree["current"].resolve() / "venv" / "bin" / "streamlit"
+    streamlit.unlink()
+    report = evaluate_cutover(
+        env={
+            "DASHBOARD_READONLY_URL": "postgresql://dashboard_readonly:secret@127.0.0.1/fmp",
+            "FMP_STREAMLIT_READONLY": "1",
+        },
+        password_file=tree["pw"],
+        current_link=tree["current"],
+        systemd_exec="/root/FMP_SCREENER/venv/bin/streamlit run dashboard.py",
+        systemd_env_file=tree["env_file"],
+        verify_rc=0,
+    )
+    assert report["ready"] is False
+    assert "streamlit_venv_missing" in report["blockers"]
+    assert report["streamlit_venv_present"] is False
+    assert cutover_exit_code(report, require_ready=False, apply=False) == 0
+    assert cutover_exit_code(report, require_ready=True, apply=False) == 8
+
+
 def test_cutover_source_never_calls_systemctl_mutate():
     text = (ROOT / "jobs" / "cutover_dashboard_systemd.py").read_text(encoding="utf-8")
     assert "systemctl" not in text
@@ -212,6 +240,8 @@ def test_everyday_deploy_records_cutover_dry_run_and_never_applies():
     docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text(encoding="utf-8")
     assert "jobs.cutover_dashboard_systemd" in docs
     assert "--apply" in docs
+    assert "prefer `/opt/fmp/current`" in docs
+    assert "/opt/fmp/current/venv/bin/streamlit" in docs
 
 
 def test_write_facts_strips_secrets_from_cutover_report(tmp_path):

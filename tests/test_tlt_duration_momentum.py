@@ -399,13 +399,23 @@ def test_generic_ingest_workflow_is_event_driven():
     assert "platform-research-ingest" in workflow
     assert "repository_dispatch" in workflow
     assert "ingest_platform_live.sh" in workflow
-    assert "bash /root/FMP_SCREENER/scripts/ingest_platform_live.sh" in workflow
+    assert "/opt/fmp/current/scripts/ingest_platform_live.sh" in workflow
+    assert "/root/FMP_SCREENER/scripts/ingest_platform_live.sh" in workflow
+    assert workflow.index("/opt/fmp/current/scripts/ingest_platform_live.sh") < workflow.index(
+        "/root/FMP_SCREENER/scripts/ingest_platform_live.sh"
+    )
+    assert "ingest_platform_live.sh missing on droplet" in workflow
     assert "bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh" not in workflow
     assert "live PostgreSQL ingest is allowed only from refs/heads/main" in workflow
     assert "DO_SSH_KEY" in workflow
     assert "push:" not in tlt
     assert "superseded" in tlt.lower()
-    assert "bash /root/FMP_SCREENER/scripts/ingest_platform_live.sh" in tlt
+    assert "/opt/fmp/current/scripts/ingest_platform_live.sh" in tlt
+    assert "/root/FMP_SCREENER/scripts/ingest_platform_live.sh" in tlt
+    assert tlt.index("/opt/fmp/current/scripts/ingest_platform_live.sh") < tlt.index(
+        "/root/FMP_SCREENER/scripts/ingest_platform_live.sh"
+    )
+    assert "ingest_platform_live.sh missing on droplet" in tlt
     assert "bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh" not in tlt
     assert "live PostgreSQL ingest is allowed only from refs/heads/main" in tlt
     verify = (
@@ -426,6 +436,10 @@ def test_generic_ingest_workflow_is_event_driven():
     assert "verify_dashboard_identity.sh" in verify
     assert "--require-readonly" in verify
     assert "DO_SSH_KEY" in verify
+    assert "CODE_ROOT=/opt/fmp/current" in verify
+    assert "CODE_ROOT=/root/FMP_SCREENER" in verify
+    assert verify.index("CODE_ROOT=/opt/fmp/current") < verify.index("CODE_ROOT=/root/FMP_SCREENER")
+    assert "live code root missing on droplet" in verify
     assert "source /root/FMP_SCREENER/.env" not in verify
     assert ". /root/FMP_SCREENER/.env" not in verify
     assert "--dry-run" in verify

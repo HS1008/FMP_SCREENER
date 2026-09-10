@@ -57,5 +57,15 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" \
-            'STRATEGY_ID=TLTDurationMomentum bash /root/FMP_SCREENER/scripts/ingest_platform_live.sh /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/qc_research/platform_artifacts/tlt_duration_momentum.json'
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+            set -euo pipefail
+            if [ -f /opt/fmp/current/scripts/ingest_platform_live.sh ]; then
+              LIVE_INGEST=/opt/fmp/current/scripts/ingest_platform_live.sh
+            elif [ -f /root/FMP_SCREENER/scripts/ingest_platform_live.sh ]; then
+              LIVE_INGEST=/root/FMP_SCREENER/scripts/ingest_platform_live.sh
+            else
+              echo "FAIL: ingest_platform_live.sh missing on droplet"
+              exit 1
+            fi
+            STRATEGY_ID=TLTDurationMomentum bash "$LIVE_INGEST" /tmp/fmp-platform-ingest /tmp/fmp-platform-ingest/qc_research/platform_artifacts/tlt_duration_momentum.json
+          EOF
