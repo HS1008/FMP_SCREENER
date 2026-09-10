@@ -327,9 +327,7 @@ def update_run_metadata(conn, payload: dict[str, Any]) -> None:
         return
     holdout = payload.get("holdout_spec") or payload.get("holdout") or {}
     lifecycle = normalize_research_lifecycle(payload)
-    conn.execute(
-        text(
-            """
+    statement = """
             INSERT INTO research_runs (
                 research_run_id,
                 strategy_id,
@@ -436,7 +434,8 @@ def update_run_metadata(conn, payload: dict[str, Any]) -> None:
                 economic_gate = COALESCE(EXCLUDED.economic_gate, research_runs.economic_gate),
                 delivery_status = COALESCE(EXCLUDED.delivery_status, research_runs.delivery_status)
             """
-        ),
+    conn.execute(
+        text(conflict_sql(statement, sealed=str(run_id) in sealed_results_run_ids())),
         {
             "research_run_id": str(run_id),
             "strategy_id": payload.get("strategy_id") or "",

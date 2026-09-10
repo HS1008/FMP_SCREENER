@@ -901,9 +901,11 @@ def apply_run_summary(conn, payload: dict[str, Any]) -> None:
         )
     from qc_research.contracts.sealed_results import (
         SealedResultsError,
+        is_sealed_results_run,
         refuse_sealed_committed_mismatch,
         refuse_sealed_stage1_summary,
     )
+    from qc_research.ingest.stage2_sql import conflict_sql
 
     try:
         refuse_sealed_stage1_summary(payload)
@@ -917,7 +919,8 @@ def apply_run_summary(conn, payload: dict[str, Any]) -> None:
         )
     conn.execute(
         text(
-            """
+            conflict_sql(
+                """
             INSERT INTO research_runs (
                 research_run_id,
                 strategy_id,
@@ -979,7 +982,9 @@ def apply_run_summary(conn, payload: dict[str, Any]) -> None:
                     EXCLUDED.orchestrator_summary_json,
                     research_runs.orchestrator_summary_json
                 )
-            """
+            """,
+                sealed=is_sealed_results_run(run_id),
+            )
         ),
         {
             "research_run_id": run_id,

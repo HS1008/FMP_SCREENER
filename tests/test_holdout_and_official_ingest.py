@@ -119,8 +119,10 @@ def test_sealed_official_stage1_and_csfml_payloads_cannot_mutate():
     class _RecordingConn:
         def __init__(self):
             self.params = []
+            self.sql = []
 
         def execute(self, statement, params=None):
+            self.sql.append(str(statement))
             self.params.append(params)
 
             class _Result:
@@ -132,6 +134,7 @@ def test_sealed_official_stage1_and_csfml_payloads_cannot_mutate():
     recorded = _RecordingConn()
     apply_run_summary(recorded, official_stage1)
     assert recorded.params[-1]["research_run_id"] == "STAGE1_SPYTrend_c04553d8"
+    assert any("DO NOTHING" in sql and "DO UPDATE" not in sql for sql in recorded.sql)
     pin_ok_mutated = dict(official_stage1)
     pin_ok_mutated["config_fingerprint"] = "deadbeefdeadbeef"
     with pytest.raises(RunSummaryImportError, match="sealed"):
@@ -371,6 +374,34 @@ def test_identical_sealed_artifact_skips_child_table_writes():
 
     update_run_metadata(_ExistsConn(), summary)
     mark_run_incomplete(_RefuseConn(), PIN["full_suite_run_id"], "reconstruct")
+
+
+def test_sealed_csfml_run_metadata_insert_once_when_exists_check_misses():
+    from qc_research.ingest.stage2_sql import update_run_metadata
+
+    summary_path = (
+        ROOT
+        / "stage2_results"
+        / "CrossSectionalFactorML"
+        / PIN["full_suite_run_id"]
+        / "run_summary.json"
+    )
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    class _Conn:
+        def __init__(self):
+            self.calls = []
+
+        def execute(self, statement, params=None):
+            self.calls.append(str(statement))
+            return None
+
+    conn = _Conn()
+    update_run_metadata(conn, summary)
+    insert_sql = [sql for sql in conn.calls if "insert into research_runs" in sql.lower()]
+    assert insert_sql
+    assert all("DO NOTHING" in sql for sql in insert_sql)
+    assert all("DO UPDATE" not in sql for sql in insert_sql)
 
 
 def test_platform_identity_skips_existing_sealed_run():
