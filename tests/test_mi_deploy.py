@@ -282,6 +282,19 @@ def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
     assert "latest_observation_date" not in verify.split("python - <<'PY'", 1)[-1].split("PY", 1)[0]
 
 
+def test_mi_research_workspace_identity_report_does_not_source_writer_checkout_env():
+    verify = (ROOT / ".github" / "workflows" / "mi_research_workspace_verify.yml").read_text()
+    prefix = verify.split("Re-AppTest and report sanitized source/identity status", 1)[1]
+    prefix = prefix.split("python - <<'PY'", 1)[0]
+    assert "/etc/fmp/market_intelligence.env" in prefix
+    assert "unset DATABASE_URL" in prefix
+    assert "MARKET_INTELLIGENCE_DATABASE_URL" in prefix
+    assert "source /root/FMP_SCREENER/.env" not in prefix
+    assert ". /root/FMP_SCREENER/.env" not in prefix
+    preflight = (ROOT / ".github" / "workflows" / "mi_host_preflight.yml").read_text()
+    assert "source /root/FMP_SCREENER/.env" in preflight
+
+
 def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
     assert "MI_ADMIN_DATABASE_URL" in text

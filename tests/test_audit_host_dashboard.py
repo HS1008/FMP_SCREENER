@@ -129,6 +129,13 @@ def test_everyday_deploy_runs_host_audit_before_restart():
     assert deploy.index("jobs.report_deploy_identity") < deploy.index("jobs.audit_host_dashboard")
     assert deploy.index("jobs.audit_host_dashboard") < deploy.index("systemctl restart fmp-dashboard")
     assert "host dashboard audit failed" in deploy
+    audit_block = deploy.split("Auditing host Streamlit identity", 1)[1].split(
+        "Verifying official CSFML V1 identity", 1
+    )[0]
+    assert "/etc/fmp/fmp-dashboard.env" in audit_block
+    assert "unset DATABASE_URL" in audit_block
+    assert "source /root/FMP_SCREENER/.env" not in audit_block
+    assert ". /root/FMP_SCREENER/.env" not in audit_block
     assert "jobs.cutover_dashboard_systemd" in deploy
     assert deploy.index("jobs.cutover_dashboard_systemd") < deploy.index("systemctl restart fmp-dashboard")
     assert "--apply" not in deploy

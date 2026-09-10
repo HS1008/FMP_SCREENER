@@ -68,6 +68,14 @@ def test_release_script_is_additive_and_supports_rollback():
     record_prefix = deploy.split("jobs.record_deploy_identity_db", 1)[0]
     assert "/root/FMP_SCREENER/.env" in record_prefix[-500:]
     assert "/etc/fmp/fmp-dashboard.env" not in record_prefix.split("Persisting sanitized deploy identity", 1)[-1]
+    report_block = deploy.split("Recording deploy identity", 1)[1].split(
+        "Persisting sanitized deploy identity", 1
+    )[0]
+    assert "/etc/fmp/fmp-dashboard.env" in report_block
+    assert "jobs.report_deploy_identity" in report_block
+    assert "unset DATABASE_URL" in report_block
+    assert "source /root/FMP_SCREENER/.env" not in report_block
+    assert ". /root/FMP_SCREENER/.env" not in report_block
     assert "jobs.cutover_dashboard_systemd" in deploy
     assert "qc_research.verify_csfml_v1 --live" in deploy
     assert "--require-present" not in deploy
