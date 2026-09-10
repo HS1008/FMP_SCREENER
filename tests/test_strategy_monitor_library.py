@@ -34,6 +34,9 @@ def test_monitor_has_library_filters_and_stable_selection():
     assert "from db.dashboard_engine import DashboardIdentityError, dashboard_engine, load_streamlit_env" in MONITOR
     assert "load_streamlit_env()" in MONITOR
     assert "strip_writer_database_env()" not in MONITOR
+    assert "load_ops_identity" in MONITOR
+    assert "format_ops_identity_caption" in MONITOR
+    assert "_ops_caption" in MONITOR
     assert "DASHBOARD_ALLOW_WRITER_FALLBACK" in MONITOR
     assert "st.stop()" in MONITOR
     assert "arrow_safe_frame" in MONITOR

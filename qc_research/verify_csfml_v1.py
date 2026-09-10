@@ -152,14 +152,14 @@ def main(argv: list[str] | None = None) -> int:
 
     from db.dashboard_engine import (
         dashboard_engine,
-        strip_writer_database_env,
+        load_streamlit_env,
         writer_fallback_allowed,
     )
 
     if writer_fallback_allowed():
         print("DASHBOARD_ALLOW_WRITER_FALLBACK is not a live CSFML V1 verify path")
         return 4
-    strip_writer_database_env()
+    load_streamlit_env()
     engine = dashboard_engine()
     with engine.connect() as conn:
         row = query_csfml_v1_row(conn, run_id=str(pin["full_suite_run_id"]))

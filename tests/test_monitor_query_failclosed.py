@@ -48,6 +48,14 @@ def test_research_sql_helpers_do_not_swallow_generic_errors():
     assert "except ProgrammingError:" not in LIBRARY
     assert "read_sql_optional" in QUERIES
     assert "Paper/live tables stay optional" in QUERIES
+    assert "OPS_IDENTITY_SQL" in QUERIES
+    assert "read_sql_optional(engine, OPS_IDENTITY_SQL)" in QUERIES
+    assert "mi_v_ops_status" in QUERIES
+    ops_block = MONITOR.split("_ops_caption = format_ops_identity_caption", 1)[1].split(
+        "DATABASE LOADERS", 1
+    )[0]
+    assert "st.stop()" not in ops_block
+    assert "st.error(" not in ops_block
 
 
 def test_read_sql_raises_operational_error(monkeypatch):
@@ -185,3 +193,26 @@ def test_execute_one_raises_operational_error():
     engine.connect.side_effect = _operational_error()
     with pytest.raises(OperationalError):
         _execute_one(engine, "SELECT 1")
+
+
+def test_ops_identity_stays_empty_when_view_missing(monkeypatch):
+    from qc_research.read_models import monitor_queries as mq
+
+    monkeypatch.setattr(mq, "read_sql_optional", lambda *args, **kwargs: pd.DataFrame())
+    assert mq.load_ops_identity(object()) is None
+    assert mq.format_ops_identity_caption(None) is None
+    caption = mq.format_ops_identity_caption(
+        {
+            "dashboard_streamlit_readonly": True,
+            "dashboard_readonly_proven": False,
+            "systemd_cutover_proven": False,
+            "systemd_still_git_pull": True,
+            "deploy_git_sha": "abcdef1234567890",
+        }
+    )
+    assert caption is not None
+    assert "Streamlit read-only=yes" in caption
+    assert "dashboard read-only proven=no" in caption
+    assert "systemd cutover=no" in caption
+    assert "still git-pull unit=yes" in caption
+    assert "abcdef123456" in caption

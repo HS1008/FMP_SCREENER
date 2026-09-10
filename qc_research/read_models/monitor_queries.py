@@ -582,3 +582,63 @@ def load_backtest_equity_frame(engine, backtest_id: str) -> pd.DataFrame:
 
 def load_research_run_row(engine, run_id: str):
     return _execute_one(engine, RESEARCH_RUN_SQL, {"run_id": run_id})
+
+
+OPS_IDENTITY_SQL = """
+        SELECT
+            dashboard_streamlit_readonly,
+            dashboard_readonly_proven,
+            systemd_cutover_proven,
+            systemd_still_git_pull,
+            deploy_git_sha
+        FROM mi_v_ops_status
+        LIMIT 1
+        """
+
+
+def load_ops_identity(engine) -> dict[str, Any] | None:
+    """Deploy identity from mi_v_ops_status. Missing view stays empty."""
+    rows = read_sql_optional(engine, OPS_IDENTITY_SQL)
+    if rows is None or rows.empty:
+        return None
+    return {str(key): rows.iloc[0][key] for key in rows.columns}
+
+
+def _tri_state(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    try:
+        if bool(pd.isna(value)):
+            return "unknown"
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    text = str(value).strip().lower()
+    if text in {"true", "t", "1", "yes"}:
+        return "yes"
+    if text in {"false", "f", "0", "no"}:
+        return "no"
+    if text in {"none", "nan", ""}:
+        return "unknown"
+    return "unknown"
+
+
+def format_ops_identity_caption(row: dict[str, Any] | None) -> str | None:
+    """Human caption for Strategy Monitor. None when the ops view is absent."""
+    if not row:
+        return None
+    sha = str(row.get("deploy_git_sha") or "").strip()
+    if sha.lower() in {"none", "nan"}:
+        sha = ""
+    sha_text = sha[:12] if sha else "unrecorded"
+    return (
+        "Host identity: Streamlit read-only={0}; dashboard read-only proven={1}; "
+        "systemd cutover={2}; still git-pull unit={3}; deploy SHA={4}."
+    ).format(
+        _tri_state(row.get("dashboard_streamlit_readonly")),
+        _tri_state(row.get("dashboard_readonly_proven")),
+        _tri_state(row.get("systemd_cutover_proven")),
+        _tri_state(row.get("systemd_still_git_pull")),
+        sha_text,
+    )

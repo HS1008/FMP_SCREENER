@@ -27,11 +27,13 @@ from qc_research.ml_monitor_ui import (
     render_stage2_section,
 )
 from qc_research.read_models.monitor_queries import (
+    format_ops_identity_caption,
     load_backtest_equity_frame,
     load_backtests_frame,
     load_equity_history_frame,
     load_latest_positions_frame,
     load_latest_snapshot_row,
+    load_ops_identity,
     load_orders_frame,
     load_research_run_row,
     load_strategies_frame,
@@ -80,6 +82,13 @@ if engine is None:
         "mi_readonly cannot serve this page."
     )
     st.stop()
+
+try:
+    _ops_caption = format_ops_identity_caption(load_ops_identity(engine))
+except Exception:
+    _ops_caption = None
+if _ops_caption:
+    st.caption(_ops_caption)
 
 
 # =========================================================

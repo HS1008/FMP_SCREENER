@@ -274,16 +274,47 @@ def dashboard_ro_engine(pg_engine, pg_database, pg_admin_url, tmp_path):
     admin.dispose()
 
 
+def test_verify_job_covers_monitor_tables():
+    from jobs.verify_dashboard_readonly import (
+        CORE_MUTATION_PROBES,
+        OPTIONAL_MUTATION_PROBES,
+        OPTIONAL_SELECTS,
+        REQUIRED_SELECTS,
+    )
+
+    text = "\n".join(sql for sql, _label in CORE_MUTATION_PROBES)
+    assert "INSERT INTO backtests" in text
+    assert "INSERT INTO research_artifacts" in text
+    assert "CREATE TABLE dashboard_readonly_probe" in text
+    required = "\n".join(REQUIRED_SELECTS)
+    assert "FROM backtests" in required
+    assert "FROM research_artifacts" in required
+    optional = "\n".join(OPTIONAL_SELECTS)
+    assert "mi_v_ops_status" in optional
+    live = "\n".join(sql for sql, _label in OPTIONAL_MUTATION_PROBES)
+    assert "live_snapshots" in live
+    assert "positions" in live
+    job = (ROOT / "jobs" / "verify_dashboard_readonly.py").read_text(encoding="utf-8")
+    assert "readonly_monitor_tables=denied" in job
+
+
 def test_dashboard_readonly_role_selects_and_denies_writes(dashboard_ro_engine):
     engine, _url = dashboard_ro_engine
     with engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM research_runs")).scalar() >= 0
         assert conn.execute(text("SELECT COUNT(*) FROM strategies")).scalar() >= 0
         assert conn.execute(text("SELECT COUNT(*) FROM backtests")).scalar() >= 0
+        assert conn.execute(text("SELECT COUNT(*) FROM research_artifacts")).scalar() >= 0
     for sql in (
         "INSERT INTO research_runs (research_run_id, strategy_id) VALUES ('x', 'x')",
         "UPDATE research_runs SET strategy_id = strategy_id WHERE FALSE",
         "DELETE FROM research_runs WHERE FALSE",
+        "INSERT INTO backtests (backtest_id, strategy_id) VALUES ('x', 'x')",
+        "UPDATE backtests SET strategy_id = strategy_id WHERE FALSE",
+        "DELETE FROM backtests WHERE FALSE",
+        "INSERT INTO research_artifacts (artifact_key) VALUES ('x')",
+        "UPDATE research_artifacts SET artifact_type = artifact_type WHERE FALSE",
+        "DELETE FROM research_artifacts WHERE FALSE",
         "CREATE TABLE dashboard_readonly_probe (id int)",
     ):
         with pytest.raises(Exception) as excinfo:
@@ -299,6 +330,12 @@ def test_dashboard_readonly_privileges_hold_when_session_default_overridden(dash
         "INSERT INTO research_runs (research_run_id, strategy_id) VALUES ('x', 'x')",
         "UPDATE research_runs SET strategy_id = strategy_id WHERE FALSE",
         "DELETE FROM research_runs WHERE FALSE",
+        "INSERT INTO backtests (backtest_id, strategy_id) VALUES ('x', 'x')",
+        "UPDATE backtests SET strategy_id = strategy_id WHERE FALSE",
+        "DELETE FROM backtests WHERE FALSE",
+        "INSERT INTO research_artifacts (artifact_key) VALUES ('x')",
+        "UPDATE research_artifacts SET artifact_type = artifact_type WHERE FALSE",
+        "DELETE FROM research_artifacts WHERE FALSE",
         "CREATE TABLE dashboard_readonly_probe_rw (id int)",
     ):
         with pytest.raises(Exception) as excinfo:

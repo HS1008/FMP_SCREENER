@@ -66,6 +66,7 @@ def test_streamlit_entrypoints_strip_writer_and_never_call_load_dotenv():
         ROOT / "scratch_dashboard.py",
         ROOT / "run_scratch_dashboard.py",
         *(ROOT / "pages").glob("*.py"),
+        ROOT / "qc_research" / "preview_platform_monitor.py",
     )
     for path in streamlit_roots:
         text = path.read_text(encoding="utf-8")
@@ -73,7 +74,7 @@ def test_streamlit_entrypoints_strip_writer_and_never_call_load_dotenv():
         assert (
             "strip_writer_database_env" in text or "load_streamlit_env" in text
         ), f"{path.name} must strip writer credentials"
-        if path.parent.name == "pages":
+        if path.parent.name == "pages" or path.name == "preview_platform_monitor.py":
             assert "load_streamlit_env" in text, f"{path.name} must clear writer-fallback flags"
     engine = (ROOT / "db" / "dashboard_engine.py").read_text(encoding="utf-8")
     assert "def load_streamlit_env" in engine

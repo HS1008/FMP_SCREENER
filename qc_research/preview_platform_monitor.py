@@ -6,8 +6,11 @@ from pathlib import Path
 
 import streamlit as st
 
+from db.dashboard_engine import load_streamlit_env
 from qc_research.ml_monitor_ui import render_platform_view
 from qc_research.platform_ingest import monitor_view_from_artifacts, normalize_platform_file
+
+load_streamlit_env()
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT = ROOT / "qc_research" / "platform_artifacts" / "tlt_duration_momentum.json"

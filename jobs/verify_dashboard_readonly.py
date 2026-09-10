@@ -7,9 +7,52 @@ from __future__ import annotations
 
 import argparse
 import os
-import sys
 
 from sqlalchemy import create_engine, text
+
+
+REQUIRED_SELECTS = (
+    "SELECT COUNT(*) FROM research_runs",
+    "SELECT COUNT(*) FROM strategies",
+    "SELECT COUNT(*) FROM backtests",
+    "SELECT COUNT(*) FROM research_artifacts",
+)
+
+OPTIONAL_SELECTS = (
+    "SELECT dashboard_streamlit_readonly FROM mi_v_ops_status LIMIT 1",
+    "SELECT COUNT(*) FROM live_snapshots",
+    "SELECT COUNT(*) FROM positions",
+    "SELECT COUNT(*) FROM orders",
+    "SELECT COUNT(*) FROM trades",
+)
+
+CORE_MUTATION_PROBES = (
+    ("INSERT INTO research_runs (research_run_id, strategy_id) VALUES ('x', 'x')", "INSERT"),
+    ("UPDATE research_runs SET strategy_id = strategy_id WHERE FALSE", "UPDATE"),
+    ("DELETE FROM research_runs WHERE FALSE", "DELETE"),
+    ("INSERT INTO backtests (backtest_id, strategy_id) VALUES ('x', 'x')", "INSERT_BACKTESTS"),
+    ("UPDATE backtests SET strategy_id = strategy_id WHERE FALSE", "UPDATE_BACKTESTS"),
+    ("DELETE FROM backtests WHERE FALSE", "DELETE_BACKTESTS"),
+    ("INSERT INTO research_artifacts (artifact_key) VALUES ('x')", "INSERT_ARTIFACTS"),
+    ("UPDATE research_artifacts SET artifact_type = artifact_type WHERE FALSE", "UPDATE_ARTIFACTS"),
+    ("DELETE FROM research_artifacts WHERE FALSE", "DELETE_ARTIFACTS"),
+    ("CREATE TABLE dashboard_readonly_probe (id int)", "CREATE"),
+)
+
+OPTIONAL_MUTATION_PROBES = (
+    ("INSERT INTO live_snapshots (strategy_id) VALUES ('x')", "INSERT_LIVE"),
+    ("UPDATE live_snapshots SET strategy_id = strategy_id WHERE FALSE", "UPDATE_LIVE"),
+    ("DELETE FROM live_snapshots WHERE FALSE", "DELETE_LIVE"),
+    ("INSERT INTO positions (strategy_id) VALUES ('x')", "INSERT_POSITIONS"),
+    ("UPDATE positions SET strategy_id = strategy_id WHERE FALSE", "UPDATE_POSITIONS"),
+    ("DELETE FROM positions WHERE FALSE", "DELETE_POSITIONS"),
+    ("INSERT INTO orders (strategy_id) VALUES ('x')", "INSERT_ORDERS"),
+    ("UPDATE orders SET strategy_id = strategy_id WHERE FALSE", "UPDATE_ORDERS"),
+    ("DELETE FROM orders WHERE FALSE", "DELETE_ORDERS"),
+    ("INSERT INTO trades (strategy_id) VALUES ('x')", "INSERT_TRADES"),
+    ("UPDATE trades SET strategy_id = strategy_id WHERE FALSE", "UPDATE_TRADES"),
+    ("DELETE FROM trades WHERE FALSE", "DELETE_TRADES"),
+)
 
 
 def _url() -> str:
@@ -27,15 +70,15 @@ def run() -> int:
         else url
     )
     with engine.connect() as conn:
-        conn.execute(text("SELECT COUNT(*) FROM research_runs"))
-        conn.execute(text("SELECT COUNT(*) FROM strategies"))
+        for statement in REQUIRED_SELECTS:
+            conn.execute(text(statement))
+        for statement in OPTIONAL_SELECTS:
+            try:
+                conn.execute(text(statement))
+            except Exception:
+                conn.rollback()
         denied = []
-        for statement, label in (
-            ("INSERT INTO research_runs (research_run_id, strategy_id) VALUES ('x', 'x')", "INSERT"),
-            ("UPDATE research_runs SET strategy_id = strategy_id WHERE FALSE", "UPDATE"),
-            ("DELETE FROM research_runs WHERE FALSE", "DELETE"),
-            ("CREATE TABLE dashboard_readonly_probe (id int)", "CREATE"),
-        ):
+        for statement, label in CORE_MUTATION_PROBES + OPTIONAL_MUTATION_PROBES:
             try:
                 conn.execute(text(statement))
                 conn.rollback()
@@ -50,6 +93,7 @@ def run() -> int:
     print("readonly_update=denied")
     print("readonly_delete=denied")
     print("readonly_create=denied")
+    print("readonly_monitor_tables=denied")
     return 0
 
 

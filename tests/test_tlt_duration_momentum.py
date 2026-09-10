@@ -379,7 +379,7 @@ def test_generic_ingest_workflow_is_event_driven():
     assert "dashboard_engine" in Path(
         DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
     ).read_text(encoding="utf-8")
-    assert "strip_writer_database_env()" in Path(
+    assert "load_streamlit_env()" in Path(
         DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
     ).read_text(encoding="utf-8")
     assert "Does not create QuantConnect jobs" in verify

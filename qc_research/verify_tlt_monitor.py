@@ -71,7 +71,7 @@ def main(argv: list[str] | None = None) -> int:
         DashboardIdentityError,
         dashboard_database_url,
         dashboard_engine,
-        strip_writer_database_env,
+        load_streamlit_env,
         writer_fallback_allowed,
     )
 
@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> int:
         print("DASHBOARD_READONLY_URL unset. Live TLT query-back requires dashboard_readonly.")
         return 1
     if want_live:
-        strip_writer_database_env()
+        load_streamlit_env()
         try:
             engine = dashboard_engine()
         except DashboardIdentityError as exc:

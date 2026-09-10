@@ -137,8 +137,8 @@ def test_live_csfml_strips_writer_env_before_engine(monkeypatch):
 
     called: list[str] = []
 
-    def strip():
-        called.append("strip")
+    def load():
+        called.append("load")
         return ["DATABASE_URL"]
 
     def engine():
@@ -147,7 +147,7 @@ def test_live_csfml_strips_writer_env_before_engine(monkeypatch):
 
     monkeypatch.setenv("DASHBOARD_READONLY_URL", "postgresql://dashboard_readonly:x@127.0.0.1/fmp")
     monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
-    monkeypatch.setattr("db.dashboard_engine.strip_writer_database_env", strip)
+    monkeypatch.setattr("db.dashboard_engine.load_streamlit_env", load)
     monkeypatch.setattr("db.dashboard_engine.dashboard_engine", engine)
     try:
         main(["--live"])
@@ -155,13 +155,14 @@ def test_live_csfml_strips_writer_env_before_engine(monkeypatch):
         pass
     else:
         raise AssertionError("expected DashboardIdentityError")
-    assert called == ["strip", "engine"]
+    assert called == ["load", "engine"]
 
 
 def test_verify_module_is_readonly_and_wired_without_require_present():
     text = (ROOT / "qc_research" / "verify_csfml_v1.py").read_text(encoding="utf-8")
     assert "dashboard_engine" in text
-    assert "strip_writer_database_env()" in text
+    assert "load_streamlit_env()" in text
+    assert "strip_writer_database_env()" not in text
     assert "postgres_engine" not in text
     assert "begin()" not in text
     assert "DATABASE_URL" not in text

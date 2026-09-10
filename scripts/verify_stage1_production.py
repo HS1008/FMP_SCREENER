@@ -978,7 +978,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         from db.dashboard_engine import (
             dashboard_engine,
-            strip_writer_database_env,
+            load_streamlit_env,
             writer_fallback_allowed,
         )
 
@@ -986,7 +986,7 @@ def main(argv: list[str] | None = None) -> int:
             raise RuntimeError(
                 "DASHBOARD_ALLOW_WRITER_FALLBACK is not a Stage 1 production verify path"
             )
-        strip_writer_database_env()
+        load_streamlit_env()
         engine = dashboard_engine()
 
         with engine.connect() as conn:
