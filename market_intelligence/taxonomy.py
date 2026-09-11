@@ -3,6 +3,11 @@
 These are display mappings, not official taxonomies and not point-in-time
 classifications. Do not replay today's baskets into trusted backtests.
 SMH and XSD are ETF comparisons, not mutually exclusive subindustries.
+
+Sector keys use the repository's canonical labels (``sector_mapping.CANONICAL_SECTORS``,
+``canonical_sectors_v1``): the XLK sector is ``"Technology"`` so independent EOD rows and
+legacy rows describe the same sector. The GICS name "Information Technology" is accepted
+as an input alias by ``sector_mapping.FMP_LEGACY_TO_CANONICAL``.
 """
 
 from __future__ import annotations
@@ -24,7 +29,7 @@ SECTOR_PROXIES: dict[str, str] = {
     "Financials": "XLF",
     "Health Care": "XLV",
     "Industrials": "XLI",
-    "Information Technology": "XLK",
+    "Technology": "XLK",
     "Materials": "XLB",
     "Real Estate": "XLRE",
     "Utilities": "XLU",
@@ -34,7 +39,7 @@ BENCHMARK_SPY = "SPY"
 
 # Industry ETF comparisons we actually have as listed ETFs. Empty means explicit unavailable.
 INDUSTRY_PROXIES: dict[str, dict[str, str]] = {
-    "Information Technology": {
+    "Technology": {
         "Semiconductors ETF (SMH, comparison)": "SMH",
         "Equal-weight Semiconductors ETF (XSD, comparison)": "XSD",
     },
@@ -63,24 +68,24 @@ class BasketDef:
 
 
 SEMI_BASKETS: tuple[BasketDef, ...] = (
-    BasketDef("AI_COMPUTE_GPUS", "AI Compute / GPUs", "Information Technology", "Semiconductors", ("NVDA", "AMD"), KIND_CUSTOM_BASKET, "Curated current-context names, not an official subindustry."),
-    BasketDef("SEMI_EQUIPMENT", "Semiconductor Equipment", "Information Technology", "Semiconductors", ("ASML", "AMAT", "LRCX", "KLAC"), KIND_CUSTOM_BASKET),
-    BasketDef("MEMORY", "Memory", "Information Technology", "Semiconductors", ("MU",), KIND_CUSTOM_BASKET),
-    BasketDef("NETWORKING", "Networking / Connectivity", "Information Technology", "Semiconductors", ("AVGO", "MRVL"), KIND_CUSTOM_BASKET),
-    BasketDef("ANALOG_INDUSTRIAL", "Analog / Industrial", "Information Technology", "Semiconductors", ("TXN", "ADI", "ON"), KIND_CUSTOM_BASKET),
-    BasketDef("FOUNDRY", "Foundry / Manufacturing", "Information Technology", "Semiconductors", ("TSM",), KIND_CUSTOM_BASKET),
-    BasketDef("MOBILE_CONSUMER", "Mobile / Consumer Chips", "Information Technology", "Semiconductors", ("QCOM",), KIND_CUSTOM_BASKET),
+    BasketDef("AI_COMPUTE_GPUS", "AI Compute / GPUs", "Technology", "Semiconductors", ("NVDA", "AMD"), KIND_CUSTOM_BASKET, "Curated current-context names, not an official subindustry."),
+    BasketDef("SEMI_EQUIPMENT", "Semiconductor Equipment", "Technology", "Semiconductors", ("ASML", "AMAT", "LRCX", "KLAC"), KIND_CUSTOM_BASKET),
+    BasketDef("MEMORY", "Memory", "Technology", "Semiconductors", ("MU",), KIND_CUSTOM_BASKET),
+    BasketDef("NETWORKING", "Networking / Connectivity", "Technology", "Semiconductors", ("AVGO", "MRVL"), KIND_CUSTOM_BASKET),
+    BasketDef("ANALOG_INDUSTRIAL", "Analog / Industrial", "Technology", "Semiconductors", ("TXN", "ADI", "ON"), KIND_CUSTOM_BASKET),
+    BasketDef("FOUNDRY", "Foundry / Manufacturing", "Technology", "Semiconductors", ("TSM",), KIND_CUSTOM_BASKET),
+    BasketDef("MOBILE_CONSUMER", "Mobile / Consumer Chips", "Technology", "Semiconductors", ("QCOM",), KIND_CUSTOM_BASKET),
 )
 
 SEMI_ETF_COMPARISONS: tuple[BasketDef, ...] = (
-    BasketDef("SMH_ETF", "SMH (mega-cap semi ETF comparison)", "Information Technology", "Semiconductors", ("SMH",), KIND_ETF_COMPARISON, "ETF comparison, not a mutually exclusive subindustry."),
-    BasketDef("XSD_ETF", "XSD (equal-weight semi ETF comparison)", "Information Technology", "Semiconductors", ("XSD",), KIND_ETF_COMPARISON, "ETF comparison, not a mutually exclusive subindustry."),
+    BasketDef("SMH_ETF", "SMH (mega-cap semi ETF comparison)", "Technology", "Semiconductors", ("SMH",), KIND_ETF_COMPARISON, "ETF comparison, not a mutually exclusive subindustry."),
+    BasketDef("XSD_ETF", "XSD (equal-weight semi ETF comparison)", "Technology", "Semiconductors", ("XSD",), KIND_ETF_COMPARISON, "ETF comparison, not a mutually exclusive subindustry."),
 )
 
 TECH_THEME_BASKETS: tuple[BasketDef, ...] = (
-    BasketDef("CYBERSECURITY", "Cybersecurity", "Information Technology", "Software", ("CRWD", "PANW", "ZS", "FTNT"), KIND_CUSTOM_BASKET),
-    BasketDef("ENTERPRISE_SOFTWARE", "Enterprise Software", "Information Technology", "Software", ("MSFT", "CRM", "NOW", "ORCL"), KIND_CUSTOM_BASKET),
-    BasketDef("CLOUD_DATA", "Cloud / Data Infrastructure", "Information Technology", None, ("AMZN", "MSFT", "GOOGL"), KIND_THEME, "Cross-sector names; not an official industry."),
+    BasketDef("CYBERSECURITY", "Cybersecurity", "Technology", "Software", ("CRWD", "PANW", "ZS", "FTNT"), KIND_CUSTOM_BASKET),
+    BasketDef("ENTERPRISE_SOFTWARE", "Enterprise Software", "Technology", "Software", ("MSFT", "CRM", "NOW", "ORCL"), KIND_CUSTOM_BASKET),
+    BasketDef("CLOUD_DATA", "Cloud / Data Infrastructure", "Technology", None, ("AMZN", "MSFT", "GOOGL"), KIND_THEME, "Cross-sector names; not an official industry."),
     BasketDef("DATACENTER_POWER", "Data Center Power & Cooling", "Industrials", None, ("VRT", "ETN", "NVT"), KIND_THEME),
     BasketDef("INTERNET_PLATFORMS", "Internet Platforms", "Communication Services", None, ("META", "GOOGL"), KIND_THEME),
 )

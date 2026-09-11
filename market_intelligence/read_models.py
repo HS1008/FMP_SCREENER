@@ -14,7 +14,7 @@ from typing import Any
 
 from sqlalchemy import text
 
-from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CURVE_SLOPES, CURVE_TENORS, EXPORT_ATTRIBUTION_REQUIRED, FRED_ATTRIBUTION, CREDIT_SERIES
+from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CURVE_SLOPES, CURVE_TENORS, EXPORT_ATTRIBUTION_REQUIRED, EXPORT_INTERNAL_ONLY, FRED_ATTRIBUTION, CREDIT_SERIES
 from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness
 from market_intelligence.nulls import normalize_payload
 
@@ -390,9 +390,13 @@ def rates_context(conn) -> dict[str, Any]:
                 {
                     "tenor": tenor,
                     "value": float(nom["yield_pct"]) - float(real_row["value"]),
+                    "units": "percentage_points",
                     "observation_date": nom["observation_date"],
-                    "kind": "derived_nominal_minus_real",
-                    "note": "Not the published T5YIE/T10YIE breakeven series.",
+                    "label": "derived_nominal_minus_real",
+                    "source": {"nominal": nom.get("source_id"), "real": real_row.get("source_id") or ("TREASURY" if str(real_row.get("series_id") or "").startswith("UST_") else "FRED")},
+                    "notes": "Derived same-date nominal minus real par yield. Not the published T5YIE/T10YIE breakeven series.",
+                    # Both legs are public attribution-required government series.
+                    "export_scope": EXPORT_ATTRIBUTION_REQUIRED,
                 }
             )
     policy = [_series_block(latest[s], metrics) for s in ("DFF", "SOFR") if s in latest and latest[s].get("observation_date")]
@@ -451,8 +455,33 @@ def credit_context(conn) -> dict[str, Any]:
     }
 
 
+def source_export_scopes(conn) -> dict[str, str]:
+    """``source_id -> usage_scope`` from the source registry (curated view).
+
+    The registry is the single place where a provider's redistribution posture is recorded.
+    Callers must treat a missing source as ``INTERNAL_ONLY`` (fail closed); a derived
+    sector return from an entitlement-unverified equity adapter is not automatically
+    exportable to a remote AI client.
+    """
+    scopes: dict[str, str] = {}
+    try:
+        for row in _rows(conn, "SELECT source_id, usage_scope FROM mi_v_source_health"):
+            sid = str(row.get("source_id") or "").strip()
+            scope = str(row.get("usage_scope") or "").strip().upper()
+            if sid and scope:
+                scopes[sid] = scope
+    except Exception:  # noqa: BLE001 - a missing view means no rights are known
+        return {}
+    return scopes
+
+
+def _scope_for_source(scopes: dict[str, str], source_id: Any) -> str:
+    return scopes.get(str(source_id or "").strip()) or EXPORT_INTERNAL_ONLY
+
+
 def sectors_context(conn) -> dict[str, Any]:
     rows = sector_latest(conn)
+    scopes = source_export_scopes(conn)
     datasets: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         datasets.setdefault(row["dataset"], []).append(
@@ -471,12 +500,17 @@ def sectors_context(conn) -> dict[str, Any]:
                 "metrics": row["metrics_json"],
                 "coverage": row["coverage_json"],
                 "source_id": row["source_id"],
-                "export_scope": "INTERNAL_ONLY" if row["source_id"] == "FMP_LEGACY" else "ATTRIBUTION_REQUIRED",
+                "export_scope": _scope_for_source(scopes, row["source_id"]),
                 "artifact_sha256": row["artifact_sha256"],
             }
         )
     as_of_by_dataset = {ds: sorted({r["as_of"] for r in items if r["as_of"]}) for ds, items in datasets.items()}
-    return {"datasets": datasets, "as_of_by_dataset": as_of_by_dataset, "note": "Per-dataset as_of; rotation and dispersion bundles may differ."}
+    return {
+        "datasets": datasets,
+        "as_of_by_dataset": as_of_by_dataset,
+        "source_scopes": {sid: scopes.get(sid) for sid in sorted({str(r["source_id"]) for r in rows if r.get("source_id")})},
+        "note": "Per-dataset as_of; rotation and dispersion bundles may differ. export_scope follows the source registry usage_scope (unknown source -> INTERNAL_ONLY).",
+    }
 
 
 def pit_sector_context(conn, *, history_limit: int = MAX_HISTORY_ROWS) -> dict[str, Any]:
@@ -519,6 +553,7 @@ def pit_sector_context(conn, *, history_limit: int = MAX_HISTORY_ROWS) -> dict[s
 
 def industries_context(conn) -> dict[str, Any]:
     rows = industry_latest(conn)
+    scopes = source_export_scopes(conn)
     out: dict[str, dict[str, list[dict[str, Any]]]] = {}
     for row in rows:
         out.setdefault(row["dataset"], {}).setdefault(row["parent_sector_key"], []).append(
@@ -531,7 +566,7 @@ def industries_context(conn) -> dict[str, Any]:
                 "metrics": row["metrics_json"],
                 "coverage": row.get("provenance_json") or {},
                 "source_id": row["source_id"],
-                "export_scope": "INTERNAL_ONLY" if row["source_id"] == "FMP_LEGACY" else "ATTRIBUTION_REQUIRED",
+                "export_scope": _scope_for_source(scopes, row["source_id"]),
             }
         )
     return {"datasets": out}

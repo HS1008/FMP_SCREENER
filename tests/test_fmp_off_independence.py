@@ -83,7 +83,7 @@ def test_fixture_equity_writes_1d_rs(mi_db):
     with mi_db.connect() as conn:
         ctx = sectors_context(conn)
     rows = (ctx.get("datasets") or {}).get("ETF_RS_VS_SPY") or []
-    tech = next((row for row in rows if row["sector_key"] == "Information Technology"), None)
+    tech = next((row for row in rows if row["sector_key"] == "Technology"), None)
     assert tech is not None
     assert tech["source_id"] == "EQUITY_EOD"
     assert tech["metrics"]["ret_1d"] is not None

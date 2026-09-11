@@ -30,12 +30,18 @@ from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
+from ai_gateway.api import attach as attach_ai_gateway
 from market_intelligence.export_policy import build_envelope, finalize_envelope
 from market_intelligence.nulls import normalize_payload
 from market_intelligence.read_models import data_health_context, morning_latest, snapshot_age
 from market_intelligence.readonly_db import ReadOnlyUnavailable, probe_readonly, readonly_connection
 
 logger = logging.getLogger("ai_context_api")
+
+# The only POST surfaces are the MCP JSON-RPC endpoint and the OAuth authorization-code
+# flow. Both are read-only with respect to the database; everything else stays GET-only.
+_WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_POST_ALLOWED_PREFIXES = ("/mcp", "/oauth")
 
 TOKEN_ENV = "AI_CONTEXT_API_TOKEN"
 API_VERSION = "v1"
@@ -85,7 +91,11 @@ async def _sanitized_errors(_request: Request, exc: Exception) -> JSONResponse:
 
 @app.middleware("http")
 async def _reject_mutations(request: Request, call_next: Callable):
-    if request.method not in {"GET", "HEAD", "OPTIONS"}:
+    path = request.url.path
+    post_allowed = request.method == "POST" and any(path == prefix or path.startswith(prefix + "/") for prefix in _POST_ALLOWED_PREFIXES)
+    if request.method in _WRITE_METHODS and not post_allowed:
+        return JSONResponse(status_code=405, content={"detail": "read-only API"})
+    if request.method not in {"GET", "HEAD", "OPTIONS", "POST"}:
         return JSONResponse(status_code=405, content={"detail": "read-only API"})
     response = await call_next(request)
     response.headers["Cache-Control"] = "no-store"
@@ -223,6 +233,10 @@ def data_health_live_route() -> dict[str, Any]:
         delivery_health=snapshot_age(snapshot),
     )
     return finalize_envelope(envelope)
+
+
+# Read-only semantic gateway (REST /api/v1/* and MCP /mcp) on the same read-only role.
+attach_ai_gateway(app)
 
 
 def main() -> None:  # pragma: no cover - operator entrypoint

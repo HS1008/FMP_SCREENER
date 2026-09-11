@@ -383,7 +383,7 @@ def write_snapshots(conn, *, as_of: date, prices: dict[str, dict[date, float]], 
             member_px = {m: prices.get(m) or {} for m in basket.members}
             index = daily_rebalanced_equal_weight(member_px, end=as_of)
             idx_series = {p.as_of: p.level for p in index}
-            bench = xlk if sector == "Information Technology" else (prices.get(SECTOR_PROXIES[sector]) or {})
+            bench = xlk if sector == "Technology" else (prices.get(SECTOR_PROXIES[sector]) or {})
             metrics, coverage = compute_metrics(idx_series, bench or spy, as_of)
             last_pt = index[-1] if index else None
             coverage = dict(coverage)
@@ -393,7 +393,7 @@ def write_snapshots(conn, *, as_of: date, prices: dict[str, dict[date, float]], 
             coverage["weighting"] = BASKET_METHOD_VERSION
             coverage["kind"] = basket.kind
             coverage["notes"] = basket.notes
-            coverage["xlk_comparison"] = sector == "Information Technology"
+            coverage["xlk_comparison"] = sector == "Technology"
             conn.execute(
                 text(
                     """
@@ -419,7 +419,7 @@ def write_snapshots(conn, *, as_of: date, prices: dict[str, dict[date, float]], 
                     "as_of": as_of,
                     "schema": SCHEMA_VERSION,
                     "method": METHODOLOGY_VERSION,
-                    "bench": "XLK" if sector == "Information Technology" else SECTOR_PROXIES[sector],
+                    "bench": "XLK" if sector == "Technology" else SECTOR_PROXIES[sector],
                     "metrics": strict_dumps(metrics),
                     "coverage": strict_dumps(coverage),
                     "sha": _artifact_sha({"basket": basket.key, "as_of": as_of.isoformat(), "metrics": metrics}),
