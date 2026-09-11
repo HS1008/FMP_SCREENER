@@ -245,11 +245,15 @@ def ingest_treasury(
             report.rejected += counts.rejected
             report.series_written += 1
             for point in latest_by_date.values():
+                # SAVEPOINT so a missing mi_provider_observations table (pre-026 schema or
+                # SQLite unit tests) cannot poison the enclosing PostgreSQL transaction.
+                nested = conn.begin_nested()
                 try:
                     _record_provider_row(conn, point, retrieved_at=retrieved_at, run_id=rid)
-                except Exception:
-                    # Table arrives in migration 026; SQLite unit tests may skip it.
-                    pass
+                    nested.commit()
+                except Exception:  # noqa: BLE001
+                    nested.rollback()
+                    report.details["provider_rows_skipped"] = int(report.details.get("provider_rows_skipped") or 0) + 1
         record_freshness(
             conn,
             source_id=TREASURY_SOURCE_ID,
