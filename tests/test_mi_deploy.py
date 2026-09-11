@@ -80,10 +80,13 @@ def test_env_example_has_only_placeholders_and_documents_every_consumed_variable
     assert assigned
     for name, value in assigned:
         cleaned = value.split("#")[0].strip().strip('"')
-        assert cleaned in {"", "0", "127.0.0.1", "8765", "5432", "fmp", "fmp_writer", "FMP Research ops@example.com", "/root/FMP_SCREENER/outputs/precomputed"} or "CHANGE_ME" in cleaned, (name, value)
+        assert cleaned in {"", "0", "1", "60", "external", "127.0.0.1", "8765", "5432", "fmp", "fmp_writer", "FMP Research ops@example.com", "/root/FMP_SCREENER/outputs/precomputed"} or "CHANGE_ME" in cleaned, (name, value)
     names = {n for n, _ in assigned}
-    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "MI_FMP_FREE", "MI_ALLOW_LEGACY_FMP", "MI_EQUITY_PROVIDER", "MI_TREASURY_ENABLED"):
+    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "MI_FMP_FREE", "MI_ALLOW_LEGACY_FMP", "MI_EQUITY_PROVIDER", "MI_TREASURY_ENABLED", "AI_GATEWAY_EXPORT_MODE", "AI_GATEWAY_REMOTE_VALUE_SOURCES", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE"):
         assert required in names
+    # The remote export policy must never be documented as owner-by-default.
+    mode = dict(assigned).get("AI_GATEWAY_EXPORT_MODE", "").split("#")[0].strip()
+    assert mode == "external"
 
 
 def test_units_reference_real_entrypoints():
