@@ -404,6 +404,19 @@ if [ "$SKIP_RESTART" != 1 ]; then
     echo "Restarting private IBKR ingest API..."
     systemctl restart fmp-ibkr-ingest.service
   fi
+  if systemctl cat fmp-ai-context-api.service >/dev/null 2>&1; then
+    # Read-only AI context API + gateway (REST /api/v1, MCP /mcp). Loopback bind; the unit
+    # loads only /etc/fmp/ai_context_api.env (read-only DB URL + token). A restart failure
+    # is reported but does not roll back the verified dashboard release.
+    echo "Restarting read-only AI gateway..."
+    if systemctl restart fmp-ai-context-api.service && systemctl is-active --quiet fmp-ai-context-api.service; then
+      echo "ai_gateway=restarted"
+    else
+      echo "ai_gateway=restart_failed (dashboard release kept; inspect journalctl -u fmp-ai-context-api)"
+    fi
+  else
+    echo "ai_gateway=unit_absent"
+  fi
 fi
 
 echo "migrations_applied=once"

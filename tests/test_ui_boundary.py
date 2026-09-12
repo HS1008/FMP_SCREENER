@@ -89,8 +89,11 @@ def test_streamlit_entrypoints_strip_writer_and_never_call_load_dotenv():
     dashboard = (ROOT / "dashboard.py").read_text(encoding="utf-8")
     main = dashboard.split("def main()", 1)[1].split("\n\n", 1)[0]
     assert "load_streamlit_env()" in main
-    assert "if api_key and _background_warm_enabled():" in dashboard
-    assert "def _background_warm_enabled" in dashboard
+    assert "import data_loader" not in dashboard
+    assert "import tech_rotation_engine" not in dashboard
+    legacy = (ROOT / "legacy_fmp_dashboard.py").read_text(encoding="utf-8")
+    assert "if api_key and _background_warm_enabled():" in legacy
+    assert "def _background_warm_enabled" in legacy
 
 
 FORBIDDEN_PROVIDER_IMPORTS = (
@@ -103,7 +106,32 @@ FORBIDDEN_PROVIDER_IMPORTS = (
     "import data_sources.fred",
     "from data_sources.finra",
     "EIA_API",
+    # Post-FMP producers: ingestion belongs to jobs/, never to page render.
+    "market_intelligence.treasury_xml",
+    "market_intelligence.ingest_treasury",
+    "market_intelligence.equity_eod",
+    "market_intelligence.fred_client",
+    "market_intelligence.finra_client",
+    "ai_gateway",
+    "urllib.request",
 )
+
+
+def test_market_intelligence_pages_read_postgresql_only():
+    """MI page modules render DB reads; Treasury/FRED/FINRA/equity producers and the gateway are not imported."""
+    modules = [
+        ROOT / "market_intelligence" / "pages_ui.py",
+        ROOT / "market_intelligence" / "ui.py",
+        ROOT / "market_intelligence" / "page_registry.py",
+        ROOT / "dashboard.py",
+    ]
+    for path in modules:
+        text = path.read_text(encoding="utf-8")
+        for needle in FORBIDDEN_PROVIDER_IMPORTS:
+            assert needle not in text, "{0} imports producer path {1}".format(path.name, needle)
+        assert "financialmodelingprep" not in text.lower()
+    ui = (ROOT / "market_intelligence" / "ui.py").read_text(encoding="utf-8")
+    assert "Reloads cached database reads only" in ui
 
 
 def test_production_streamlit_pages_do_not_import_provider_clients():
@@ -119,7 +147,9 @@ def test_production_streamlit_pages_do_not_import_provider_clients():
             assert needle not in text, "{0} imports provider path {1}".format(path.name, needle)
         assert "object_get(" not in text
     dashboard = (ROOT / "dashboard.py").read_text(encoding="utf-8")
-    assert "provider_fetch_allowed" in dashboard or "refuse_provider_fetch" in dashboard
+    legacy = (ROOT / "legacy_fmp_dashboard.py").read_text(encoding="utf-8")
+    assert "provider_fetch_allowed" in legacy or "refuse_provider_fetch" in legacy
+    assert "fmp_free_mode" in dashboard
     assert "STREAMLIT_ALLOW_PROVIDER_FETCH" in (ROOT / "qc_research" / "ui_boundary.py").read_text(
         encoding="utf-8"
     )

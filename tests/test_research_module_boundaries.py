@@ -79,7 +79,9 @@ def test_streamlit_pages_do_not_import_ingest_sql():
     assert "qc_research.ingest" not in dashboard
     assert "writer_db" not in dashboard
     assert "load_streamlit_env" in dashboard
-    assert "def _background_warm_enabled" in dashboard
+    legacy = (ROOT / "legacy_fmp_dashboard.py").read_text(encoding="utf-8")
+    assert "def _background_warm_enabled" in legacy
+    assert "import data_loader" not in dashboard
     forbidden = (
         "writer_db",
         "object_store_sync",

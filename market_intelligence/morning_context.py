@@ -89,7 +89,7 @@ _IDENTITY_KEYS = {
 _NUMERIC_VALUE_KEYS = {
     "value", "oas_bps", "yield_pct", "chg_prev_bps", "chg_1w_bps", "chg_1m_bps", "chg_3m_bps",
     "change_1d_bps", "change_1w_bps", "change_1m_bps", "change_3m_bps", "percentile", "zscore",
-    "rs_chg_1w", "rs_chg_1m", "rs_chg_3m", "rs_chg_6m", "rs_chg_12m", "ret_1d", "ret_1m", "ret_1w", "ret_3m",
+    "rs_chg_1d", "rs_chg_1w", "rs_chg_1m", "rs_chg_3m", "rs_chg_6m", "rs_chg_12m", "ret_1d", "ret_1m", "ret_1w", "ret_3m",
 }
 
 # Per-section cadence used to judge captured staleness against the capture time (summary only).
@@ -225,9 +225,9 @@ def _required_input_row(series_id: str, data: Any, capture_date: date) -> dict[s
         freshness = None
     elif not has_value:
         state = "MISSING_OBS"
-        freshness = assess_freshness(obs_d, cadence, capture_date) if obs_d is not None else None
+        freshness = assess_freshness(obs_d, cadence, capture_date, series_id=series_id, source_id="FRED") if obs_d is not None else None
     else:
-        freshness = assess_freshness(obs_d, cadence, capture_date)
+        freshness = assess_freshness(obs_d, cadence, capture_date, series_id=series_id, source_id="FRED")
         state = "STALE" if freshness.status == "STALE" else "AVAILABLE"
     pub = (block or {}).get("publication_status")
     if pub == "QUARANTINED_METADATA":
@@ -289,9 +289,15 @@ def section_status(name: str, data: Any, *, required: list[str], capture_date: d
     # Summary freshness is the worst required input (stale wins). Section cadence stays the declared default.
     if stale_series:
         worst = next(i for i in inputs if i["series_id"] == stale_series[0])
-        freshness = assess_freshness(date.fromisoformat(worst["observation_date"]) if worst.get("observation_date") else None, worst.get("cadence") or cadence, capture_date)
+        freshness = assess_freshness(
+            date.fromisoformat(worst["observation_date"]) if worst.get("observation_date") else None,
+            worst.get("cadence") or cadence,
+            capture_date,
+            series_id=worst.get("series_id"),
+            source_id="FRED",
+        )
     elif latest is not None:
-        freshness = assess_freshness(latest, cadence, capture_date)
+        freshness = assess_freshness(latest, cadence, capture_date, series_id=required_series[0] if required_series else None, source_id="FRED")
     else:
         freshness = None
     status = SECTION_OK if not missing_fields and not missing_series else SECTION_PARTIAL
@@ -336,6 +342,7 @@ def _market_section(
                 "entity_kind": row["entity_kind"],
                 "instrument_id": row["instrument_id"],
                 "as_of": row["as_of"],
+                "rs_chg_1d": metrics.get("rs_chg_1d"),
                 "rs_chg_1w": metrics.get("rs_chg_1w"),
                 "rs_chg_1m": metrics.get("rs_chg_1m"),
                 "rs_chg_3m": metrics.get("rs_chg_3m"),
@@ -508,7 +515,7 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
         completeness = COMPLETENESS_EMPTY
     else:
         completeness = COMPLETENESS_PARTIAL
-    stale_sources = [h for h in (health.get("sources") or []) if h.get("freshness_status") == "STALE"]
+    stale_sources = [h for h in (health.get("sources") or []) if h.get("freshness_status") == "STALE" and not h.get("retired_optional")]
     body = {
         "schema_version": SCHEMA_VERSION,
         "generated_at": generated_at.isoformat(),
@@ -529,7 +536,7 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
         "captured_health": {
             "evaluated_at": cutoff_at.isoformat(),
             "stale_sources": [{k: h.get(k) for k in ("source_id", "freshness_dataset", "latest_observation_date", "dataset_cadence")} for h in stale_sources],
-            "failed_transport": [{k: h.get(k) for k in ("source_id", "freshness_dataset", "transport_status")} for h in (health.get("sources") or []) if h.get("transport_status") in ("FAILED", "METADATA_REJECTED", "PARTIAL")],
+            "failed_transport": [{k: h.get(k) for k in ("source_id", "freshness_dataset", "transport_status")} for h in (health.get("failed_transport") or [])],
             "quarantined_series": _quarantined_series(macro),
         },
         "sections": {name: {k: sections[name][k] for k in ("status", "reason", "data")} for name in SECTION_ORDER},

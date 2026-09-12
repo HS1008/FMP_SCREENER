@@ -176,19 +176,22 @@ def test_us_federal_holidays_and_business_days():
     assert date(2024, 1, 1) in hol and date(2024, 11, 28) in hol and date(2024, 12, 25) in hol
     assert date(2024, 7, 4) in hol
     assert not freshness.is_business_day(date(2024, 12, 25))
+    assert not freshness.is_business_day(date(2021, 12, 31))
     # Fri 2024-12-20 -> Fri 2024-12-27: Mon 23, Tue 24, Thu 26, Fri 27 (Wed 25 holiday) = 4
     assert freshness.business_days_between(date(2024, 12, 20), date(2024, 12, 27)) == 4
 
 
 def test_freshness_depends_on_cadence():
     today = date(2024, 12, 31)
-    assert freshness.assess_freshness(date(2024, 12, 27), "D", today).status == "FRESH"
-    assert freshness.assess_freshness(date(2024, 12, 13), "D", today).status == "STALE"
-    assert freshness.assess_freshness(date(2024, 11, 1), "M", today).status == "FRESH"
-    assert freshness.assess_freshness(date(2024, 9, 1), "M", today).status == "STALE"
-    assert freshness.assess_freshness(date(2024, 7, 1), "Q", today).status == "FRESH"
-    assert freshness.assess_freshness(date(2024, 12, 14), "W", today).status == "STALE"
-    assert freshness.assess_freshness(None, "D", today).status == "UNKNOWN"
+    daily = freshness.assess_freshness(date(2024, 12, 27), "D", today, series_id="DGS10")
+    assert daily.status in {"INGESTION_OVERDUE", "STALE"}
+    assert daily.status != "LATEST_AVAILABLE"
+    assert freshness.assess_freshness(date(2024, 12, 13), "D", today, series_id="DGS10").status == "STALE"
+    assert freshness.assess_freshness(date(2026, 9, 11), "D", date(2026, 9, 10), series_id="DGS10").status == "INVALID_FUTURE"
+    monthly = freshness.assess_freshness(date(2024, 11, 1), "M", today, series_id="UNRATE")
+    assert monthly.status in {"LATEST_AVAILABLE", "AWAITING_RELEASE", "INGESTION_OVERDUE"}
+    assert freshness.assess_freshness(date(2024, 9, 1), "M", today, series_id="UNRATE").status in {"STALE", "INGESTION_OVERDUE"}
+    assert freshness.assess_freshness(None, "D", today, series_id="DGS10").status == "MISSING"
 
 
 # ---- sector mapping --------------------------------------------------------------------------

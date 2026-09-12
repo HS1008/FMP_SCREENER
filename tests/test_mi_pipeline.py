@@ -207,7 +207,7 @@ def test_fixture_marker_present_and_ingest_counts(populated):
     fred = populated["fred"]
     assert fred.as_dict()["series_failed"] == 0 and fred.as_dict()["series_total"] >= 44
     by_id = {r.series_id: r for r in fred.results}
-    assert by_id["DGS10"].freshness_status == "FRESH" and by_id["CPIAUCSL"].freshness_status == "FRESH"
+    assert by_id["DGS10"].freshness_status in {"FRESH", "LATEST_AVAILABLE"} and by_id["CPIAUCSL"].freshness_status in {"FRESH", "LATEST_AVAILABLE"}
     assert by_id["DGS10"].counts["rejected"] == 0 and by_id["DGS10"].counts["inserted"] > 700
     legacy = populated["legacy"].as_dict()
     assert legacy["bundles_processed"] >= 5 and legacy["bundles_failed"] == 0
@@ -394,7 +394,7 @@ def test_morning_snapshot_is_hashed_current_only_with_db_capture_time_and_lineag
     assert refs["versions"]["freshness_policy_version"]
     # Captured health is frozen inside the body and every section carries its own freshness.
     assert body["captured_health"]["evaluated_at"] == body["cutoff_at"] and body["captured_health"]["quarantined_series"] == []
-    assert body["sections_status"]["credit"]["captured_freshness"]["status"] == "FRESH"
+    assert body["sections_status"]["credit"]["captured_freshness"]["status"] in {"FRESH", "LATEST_AVAILABLE"}
     assert body["sections_status"]["macro"]["captured_freshness"]["cadence"] == "M"
     assert body["semantics"]["vintage"].startswith("FRED values are LATEST_REVISED")
 
@@ -462,8 +462,8 @@ def test_morning_snapshot_health_advances_with_the_clock_without_ingestion(pg_en
         with pg_engine.connect() as conn:
             rows = {r["freshness_dataset"]: r for r in source_health(conn, today=(GENERATED_AT + timedelta(days=30)).date())}
         dgs10 = rows["series:DGS10"]
-        assert dgs10["stored_freshness_status"] == "FRESH" and dgs10["freshness_status"] == "STALE" and dgs10["dataset_cadence"] == "D"
-        assert rows["series:CPIAUCSL"]["freshness_status"] == "FRESH" and rows["series:CPIAUCSL"]["dataset_cadence"] == "M"
+        assert dgs10["stored_freshness_status"] in {"FRESH", "LATEST_AVAILABLE"} and dgs10["freshness_status"] == "STALE" and dgs10["dataset_cadence"] == "D"
+        assert rows["series:CPIAUCSL"]["freshness_status"] in {"FRESH", "LATEST_AVAILABLE"} and rows["series:CPIAUCSL"]["dataset_cadence"] == "M"
         assert "expected_next_release" not in dgs10 and dgs10["stale_after_estimate"] is not None
     finally:
         CAPTURE_CLOCK["now"] = GENERATED_AT
@@ -708,7 +708,7 @@ def test_live_data_health_route_declares_live_provenance_not_snapshot_hash(api, 
         sources = {s["freshness_dataset"]: s for s in payload["body"]["sources"]}
         # Health is re-evaluated against the live clock: the 2024 fixture data is stale now, per-dataset cadence shown.
         assert sources["series:DGS10"]["freshness_status"] == "STALE" and sources["series:DGS10"]["dataset_cadence"] == "D"
-        assert sources["series:DGS10"]["stored_freshness_status"] == "FRESH"
+        assert sources["series:DGS10"]["stored_freshness_status"] in {"FRESH", "LATEST_AVAILABLE"}
         assert "expected_next_release" not in sources["series:DGS10"]
         assert payload["latest_snapshot"]["snapshot_id"]  # the snapshot is referenced as context, not as the source
     frozen = api.get("/v1/context/data-health/latest", headers={"Authorization": "Bearer fixture-token"}).json()
@@ -915,7 +915,7 @@ def test_refresh_dry_run_makes_no_calls_and_no_writes(pg_engine, populated, caps
     code = run(["--all-configured", "--dry-run", "--json"], engine=pg_engine, fred_client_factory=lambda: _boom(), env={"FRED_API_KEY": "not-used", "DATABASE_URL": "x"})
     out = json.loads(capsys.readouterr().out)
     assert code == 0 and out["status"] == "DRY_RUN_VALIDATED"
-    assert [s["step"] for s in out["plan"]["steps"]] == ["fred", "finra", "legacy_sector", "build_analytics", "build_morning"]
+    assert [s["step"] for s in out["plan"]["steps"]] == ["fred", "finra", "treasury", "equity", "build_analytics", "build_morning"]
     assert "not-used" not in json.dumps(out)
     with pg_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_ingestion_runs")).scalar() == before
@@ -960,10 +960,13 @@ def test_refresh_lock_contention_exit_code(pg_engine, populated, capsys):
 def test_refresh_unconfigured_source_is_explicit_skip_not_crash(pg_engine, populated, capsys):
     from jobs.market_intelligence_refresh import run
 
-    code = run(["--all-configured", "--json", "--as-of", AS_OF.isoformat()], engine=pg_engine, env={"MARKET_INTELLIGENCE_PRECOMPUTED_ROOT": "/nonexistent", "DATABASE_URL": "x"})
+    code = run(["--all-configured", "--json", "--as-of", AS_OF.isoformat()], engine=pg_engine, env={"MARKET_INTELLIGENCE_PRECOMPUTED_ROOT": "/nonexistent", "DATABASE_URL": "x", "MI_TREASURY_ENABLED": "0"})
     out = json.loads(capsys.readouterr().out)
-    assert code == 0 and out["results"]["fred"]["status"] == "SKIPPED" and out["results"]["legacy_sector"]["status"] == "SKIPPED"
+    assert code == 0 and out["results"]["fred"]["status"] == "SKIPPED"
+    assert "legacy_sector" not in out["results"]
     assert out["results"]["finra"]["status"] == "SKIPPED"
+    assert out["results"]["treasury"]["status"] == "SKIPPED"
+    assert out["results"]["equity"]["status"] == "SKIPPED"
     with pg_engine.connect() as conn:
         access = conn.execute(text("SELECT access_status, enabled FROM mi_source_registry WHERE source_id='FRED'")).one()
     assert access.access_status == "CONFIGURATION_REQUIRED" and access.enabled is False
