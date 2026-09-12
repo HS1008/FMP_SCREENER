@@ -11,13 +11,13 @@ import html
 import secrets
 import time
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 from ai_gateway.auth import mint_access_token, server_token
-from ai_gateway.config import oauth_enabled, public_base_url
+from ai_gateway.config import is_loopback_host, oauth_enabled, public_base_url
 from ai_gateway.logging import log_event
 
 router = APIRouter(tags=["oauth"])
@@ -26,6 +26,45 @@ _clients: dict[str, dict[str, Any]] = {}
 _codes: dict[str, dict[str, Any]] = {}
 CODE_TTL_SECONDS = 300
 TOKEN_TTL_SECONDS = 3600
+MAX_REDIRECTS = 8
+
+
+def normalize_redirect_uri(raw: object) -> str | None:
+    """Exact registered callback. No wildcards, fragments, or arbitrary remote http."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text or "*" in text or "\\" in text or any(ch.isspace() for ch in text):
+        return None
+    parsed = urlparse(text)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in {"https", "http"}:
+        return None
+    if parsed.fragment or parsed.username or parsed.password or not parsed.netloc:
+        return None
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return None
+    if scheme == "http" and not is_loopback_host(host):
+        return None
+    if scheme == "https" and ("*" in host or host.startswith(".")):
+        return None
+    netloc = parsed.netloc.lower()
+    path = parsed.path or ""
+    return urlunparse((scheme, netloc, path, "", parsed.query, ""))
+
+
+def registered_redirects(client_id: str) -> list[str]:
+    client = _clients.get(client_id) or {}
+    return list(client.get("redirect_uris") or [])
+
+
+def redirect_is_registered(client_id: str, redirect_uri: str) -> bool:
+    normalized = normalize_redirect_uri(redirect_uri)
+    if normalized is None:
+        return False
+    allowed = registered_redirects(client_id)
+    return bool(allowed) and normalized in allowed
 
 
 def issuer(request: Request) -> str:
@@ -94,11 +133,25 @@ async def register_client(request: Request) -> JSONResponse:
         body = {}
     client_id = "mcp_" + secrets.token_urlsafe(16)
     redirects = body.get("redirect_uris") or []
-    if not isinstance(redirects, list):
-        redirects = []
+    if not isinstance(redirects, list) or not redirects:
+        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+    if len(redirects) > MAX_REDIRECTS:
+        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for item in redirects:
+        normalized = normalize_redirect_uri(item)
+        if normalized is None:
+            return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        cleaned.append(normalized)
+    if not cleaned:
+        return JSONResponse({"error": "invalid_redirect_uri"}, status_code=400)
     _clients[client_id] = {
         "client_id": client_id,
-        "redirect_uris": [str(item) for item in redirects if isinstance(item, str)],
+        "redirect_uris": cleaned,
         "client_name": str(body.get("client_name") or "mcp-client"),
         "token_endpoint_auth_method": "none",
     }
@@ -166,6 +219,8 @@ def authorize_get(
         return _authorize_page(error="This authorization request is missing required OAuth parameters.")
     if code_challenge_method and code_challenge_method != "S256":
         return _authorize_page(error="Only PKCE S256 is supported.")
+    if not redirect_is_registered(client_id, redirect_uri):
+        return _authorize_page(error="redirect_uri is not registered for this client.")
     return _authorize_page(
         response_type=response_type,
         client_id=client_id,
@@ -194,6 +249,11 @@ def authorize_post(
     configured = server_token()
     if configured is None or not oauth_enabled():
         return _authorize_page(error="Authorization is not configured.")
+    if not redirect_is_registered(client_id, redirect_uri):
+        return _authorize_page(error="redirect_uri is not registered for this client.")
+    normalized = normalize_redirect_uri(redirect_uri)
+    if normalized is None:
+        return _authorize_page(error="redirect_uri is not registered for this client.")
     import hmac as hmac_mod
 
     presented = token.strip().encode("utf-8")
@@ -211,15 +271,12 @@ def authorize_post(
             scope=scope,
             resource=resource,
         )
-    client = _clients.get(client_id)
-    if client and client["redirect_uris"] and redirect_uri not in client["redirect_uris"]:
-        return _authorize_page(error="redirect_uri is not registered for this client.")
     _purge()
     code = secrets.token_urlsafe(24)
     _codes[code] = {
         "exp": time.time() + CODE_TTL_SECONDS,
         "client_id": client_id,
-        "redirect_uri": redirect_uri,
+        "redirect_uri": normalized,
         "code_challenge": code_challenge,
         "resource": resource or resource_url(request),
         "scope": scope or "mi.read",
@@ -228,7 +285,7 @@ def authorize_post(
     query = {"code": code}
     if state:
         query["state"] = state
-    target = redirect_uri + ("&" if "?" in redirect_uri else "?") + urlencode(query)
+    target = normalized + ("&" if "?" in normalized else "?") + urlencode(query)
     return RedirectResponse(target, status_code=302)
 
 
@@ -245,7 +302,7 @@ async def token_endpoint(request: Request) -> JSONResponse:
     record = _codes.pop(code, None)
     if grant != "authorization_code" or record is None:
         return JSONResponse({"error": "invalid_grant"}, status_code=400)
-    if record["redirect_uri"] != redirect_uri or (client_id and record["client_id"] != client_id):
+    if record["redirect_uri"] != normalize_redirect_uri(redirect_uri) or (client_id and record["client_id"] != client_id):
         return JSONResponse({"error": "invalid_grant"}, status_code=400)
     if not verifier or _s256(verifier) != record["code_challenge"]:
         return JSONResponse({"error": "invalid_grant"}, status_code=400)

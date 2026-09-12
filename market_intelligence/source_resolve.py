@@ -45,15 +45,26 @@ class ResolvedObservation:
     candidates: tuple[str, ...] = ()
 
 
-def _obs_date(row: Mapping[str, Any] | None) -> date | None:
+def observation_date_of(row: Mapping[str, Any] | None, *keys: str) -> date | None:
+    """Parse the first present date field. Retrieval timestamps are never accepted."""
     if not row:
         return None
-    raw = row.get("observation_date")
-    if raw is None:
-        return None
-    if isinstance(raw, date):
-        return raw
-    return date.fromisoformat(str(raw)[:10])
+    fields = keys or ("observation_date", "as_of")
+    for key in fields:
+        raw = row.get(key)
+        if raw in (None, ""):
+            continue
+        if isinstance(raw, date):
+            return raw
+        try:
+            return date.fromisoformat(str(raw)[:10])
+        except ValueError:
+            continue
+    return None
+
+
+def _obs_date(row: Mapping[str, Any] | None) -> date | None:
+    return observation_date_of(row, "observation_date")
 
 
 def _source_rank(source_id: str) -> int:
@@ -113,6 +124,56 @@ def resolve_observation(
     )
 
 
+def prefer_rows_by_group(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    group_key: str,
+    date_keys: Sequence[str] = ("observation_date", "as_of"),
+    source_key: str = "source_id",
+    preference: Sequence[str] = TIE_PREFERENCE,
+) -> list[Mapping[str, Any]]:
+    """Newest valid observation date wins; same-date ties use ``preference``.
+
+    Rows with a missing/unparseable observation date are dropped so they cannot
+    masquerade as current. ``retrieved_at`` is ignored.
+    """
+    grouped: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        if not row:
+            continue
+        key = str(row.get(group_key) or "")
+        if not key:
+            continue
+        if observation_date_of(row, *date_keys) is None:
+            continue
+        grouped.setdefault(key, []).append(row)
+    chosen: list[Mapping[str, Any]] = []
+    for key, candidates in grouped.items():
+        mapped = []
+        originals: list[Mapping[str, Any]] = []
+        for row in candidates:
+            mapped.append(
+                {
+                    "series_id": key,
+                    "source_id": str(row.get(source_key) or ""),
+                    "observation_date": observation_date_of(row, *date_keys),
+                    "value": True,
+                }
+            )
+            originals.append(row)
+        resolved = resolve_observation(key, mapped, preference=preference)
+        if resolved is None:
+            continue
+        for row, candidate in zip(originals, mapped):
+            if (
+                str(candidate.get("source_id") or "") == resolved.source_id
+                and candidate.get("observation_date") == resolved.observation_date
+            ):
+                chosen.append(row)
+                break
+    return chosen
+
+
 def latest_common_observation_date(
     per_tenor: Mapping[str, Mapping[date, Any]],
     required: Sequence[str],
@@ -132,5 +193,7 @@ __all__ = [
     "ResolvedObservation",
     "TIE_PREFERENCE",
     "latest_common_observation_date",
+    "observation_date_of",
+    "prefer_rows_by_group",
     "resolve_observation",
 ]

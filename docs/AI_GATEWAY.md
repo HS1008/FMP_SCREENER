@@ -28,7 +28,8 @@ Source status: [`SOURCE_REPLACEMENT_MATRIX.md`](SOURCE_REPLACEMENT_MATRIX.md).
   views only), one `READ ONLY` transaction per request, statement timeout, bounded rows.
 * Frozen morning snapshots stay on `/v1/context/*` (`ai_context_api.py`). Live semantic tools
   live on `/api/v1/*` and MCP `/mcp`. Both are mounted in the same `fmp-ai-context-api` unit.
-* Research views come from **migration 027** (`027_ai_gateway_strategy_views.sql`). The
+* Research views come from **migration 027** (`027_ai_gateway_strategy_views.sql`) and the
+  fail-closed run proof in **migration 028** (`028_gateway_holdout_failclosed.sql`). The
   concurrent gateway PR's `020_…` number belonged to the deploy-hardening lineage and was not
   reused; applied SQL is never renumbered.
 
@@ -43,7 +44,7 @@ Source status: [`SOURCE_REPLACEMENT_MATRIX.md`](SOURCE_REPLACEMENT_MATRIX.md).
 | `get_industry_rotation` | ETF comparisons vs sector ETF (SMH, XSD, KRE, XBI, XOP, XRT) | current-context hierarchy, not GICS |
 | `get_subindustry_rotation` | Curated equal-dollar baskets (semiconductor internals, themes) | `official_gics_subindustry=false`; sectors without a defensible mapping are `SUBGROUP_UNAVAILABLE` |
 | `get_order_flow` | FINRA Query API aggregates | not an order book |
-| `get_strategy_*` | migration 027 views | holdout fail-closed (below) |
+| `get_strategy_*` | migrations 027 + 028 views | holdout fail-closed (below) |
 | `get_data_health` | `mi_v_source_health` | freshness v2 vocabulary, observation vs ingestion timestamps, transport status |
 
 ## Threat model
@@ -68,10 +69,13 @@ transmitting stored values from our server to a third-party AI service. Therefor
 
 * `AI_GATEWAY_EXPORT_MODE=external` (default) — every session receives the restrictive policy.
 * `AI_GATEWAY_EXPORT_MODE=owner` — permission for **local** sessions only: stdio MCP
-  (`python -m ai_gateway --stdio`) or an HTTP client on loopback with no `X-Forwarded-For` /
-  `X-Real-IP` header while the gateway is bound to loopback. nginx forwards remote clients from
-  127.0.0.1 *with* those headers, so proxied requests are remote. A non-loopback bind refuses
-  owner mode entirely. Cache entries are partitioned by the effective mode.
+  (`python -m ai_gateway --stdio`) or a **direct** HTTP client on loopback whose `Host` is
+  loopback, with **no** reverse-proxy headers (`X-Forwarded-For`, `X-Real-IP`, `Forwarded`,
+  `X-Forwarded-Host`, `X-Forwarded-Proto`, `Via`) while the gateway is bound to loopback.
+  nginx on the same host forwards remote clients from 127.0.0.1 *with* those headers and a
+  public `Host`; those requests are always remote. `AI_GATEWAY_TRUST_PROXY=0` cannot restore
+  owner mode. A non-loopback bind refuses owner mode entirely. Cache entries are partitioned
+  by the effective mode.
 * `AI_GATEWAY_REMOTE_VALUE_SOURCES=` — comma-separated `source_id`s whose `INTERNAL_ONLY` /
   `RESTRICTED_REDISTRIBUTION` values a human has confirmed may be transmitted remotely under the
   provider's terms. Empty by default. This is the only mechanism for exposing such values to a
@@ -86,8 +90,10 @@ aggregates are identity/date/status only until an entitlement decision is record
 
 ## Holdout fail-closed (defense in depth)
 
-1. **SQL** (`027_…`): a run is exposed only if it never accessed the holdout
-   (`holdout_accessed=false`, no `ACCESSED`/`OPEN` status, no `ACCESSED_*` exposure). An
+1. **SQL** (`027_…` plus `028_…`): a run is exposed only when holdout access is **proven**
+   (`holdout_accessed IS FALSE`, `holdout_status` is `LOCKED` for Stage 2 / `LOCKED` or
+   `EXPOSED_PRIOR_TO_STAGE1` for Stage 1, and Stage 2 `holdout_exposure_status` is
+   `PRISTINE`/`NEVER_ACCESSED`). NULL or unknown run-level flags are hidden. An
    experiment needs `research_is_holdout IS FALSE` (NULL = unknown = hidden), a known test type
    without `HOLDOUT`, and a **known** `test_end < 2025-01-01`. An artifact must be non-model
    (type/path/key/transport) and bound to a visible experiment, or run-scoped with *every*
@@ -153,10 +159,10 @@ AI_GATEWAY_EXPORT_MODE=owner python -m ai_gateway --stdio   # owner values, loca
 
 ## Production deployment (private first)
 
-1. Merge and deploy the release; `scripts/deploy_host.sh` applies migration 027 once from the
+1. Merge and deploy the release; `scripts/deploy_host.sh` applies migrations 027 and 028 once from the
    staged SHA and restarts `fmp-ai-context-api.service` when the unit exists.
 2. Refresh grants: `psql "$ADMIN_DATABASE_URL" -f db/roles/market_intelligence_readonly.sql`
-   (idempotent; adds the four 027 views).
+   (idempotent; adds the four gateway research views).
 3. Verify privately on the host:
 
 ```bash

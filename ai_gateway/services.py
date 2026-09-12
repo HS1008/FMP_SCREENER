@@ -43,6 +43,7 @@ from market_intelligence.read_models import (
 )
 from market_intelligence.readonly_db import ReadOnlyUnavailable, readonly_connection
 from market_intelligence.sector_mapping import CANONICAL_SECTORS, CLASSIFICATION_VERSION
+from market_intelligence.source_resolve import TIE_PREFERENCE, prefer_rows_by_group
 from market_intelligence.taxonomy import (
     ALL_BASKETS,
     INDUSTRY_PROXIES,
@@ -120,6 +121,10 @@ HOLDOUT_START = date(2025, 1, 1)
 HOLDOUT_TOKENS = ("HOLDOUT",)
 MODEL_TOKENS = ("model", ".pkl", ".joblib", ".onnx", "pickle", "binary", "object_store")
 ARTIFACT_LINEAGE_ALLOWED = frozenset({"NONHOLDOUT_EXPERIMENT_BOUND", "NONHOLDOUT_RUN_ALL_EXPERIMENTS_PROVEN"})
+PROVEN_RUN_HOLDOUT_STATUS = frozenset({"LOCKED"})
+PROVEN_STAGE1_HOLDOUT_STATUS = frozenset({"LOCKED", "EXPOSED_PRIOR_TO_STAGE1"})
+PROVEN_RUN_EXPOSURE_STATUS = frozenset({"PRISTINE", "NEVER_ACCESSED"})
+STAGE1_RESEARCH_KINDS = frozenset({"stage1"})
 
 RATES_SOURCE_NOTE = (
     "Official U.S. Treasury Daily Par Yield Curve XML is preferred when its observation date is "
@@ -134,7 +139,9 @@ SECTOR_SOURCE_NOTE = (
     "(P_asset[t]/P_bench[t]) / (P_asset[t-1]/P_bench[t-1]) - 1 with asset and benchmark on the same "
     "two sessions. Missing sessions are null, never forward-filled; zero is a valid return. "
     "Multi-session gaps are not called 1D. EQUITY_EOD marks the independent equity adapter; "
-    "FMP_LEGACY marks precomputed bundles (never a live FMP call). export_scope follows the source "
+    "FMP_LEGACY marks precomputed bundles (never a live FMP call). Source selection uses the "
+    "shared resolver: newest valid observation date, then EQUITY_EOD before FMP_LEGACY on a "
+    "same-date tie; retrieval time never decides. export_scope follows the source "
     "registry: an entitlement-unverified provider stays INTERNAL_ONLY for remote clients."
 )
 
@@ -340,26 +347,31 @@ def _rank_sectors(rows: list[dict[str, Any]], metric: str) -> list[dict[str, Any
 
 
 def _preferred_sector_rows(sectors: dict[str, Any]) -> tuple[list[dict[str, Any]], str | None]:
-    """Independent EOD rows win over legacy bundles for the same sector; source is reported."""
+    """Newest observation date wins; same-date ties use the shared source preference.
+
+    Retrieval time is ignored. EQUITY_EOD beats FMP_LEGACY only on a same-date tie.
+    A newer FMP_LEGACY row beats stale EQUITY_EOD. Null dates are dropped.
+    """
     rows = list((sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or [])
-    by_sector: dict[str, dict[str, Any]] = {}
+    prepared: list[dict[str, Any]] = []
     for row in rows:
-        key = str(row.get("canonical_sector") or row.get("sector_key") or "")
-        current = by_sector.get(key)
-        if current is None:
-            by_sector[key] = row
-            continue
-        cur_legacy = str(current.get("source_id") or "") == "FMP_LEGACY"
-        new_legacy = str(row.get("source_id") or "") == "FMP_LEGACY"
-        if cur_legacy and not new_legacy:
-            by_sector[key] = row
-        elif cur_legacy == new_legacy and str(row.get("as_of") or "") > str(current.get("as_of") or ""):
-            by_sector[key] = row
-    chosen = list(by_sector.values())
+        item = dict(row)
+        if not item.get("canonical_sector") and item.get("sector_key"):
+            item["canonical_sector"] = item.get("sector_key")
+        prepared.append(item)
+    chosen_maps = prefer_rows_by_group(
+        prepared,
+        group_key="canonical_sector",
+        date_keys=("as_of", "observation_date"),
+        source_key="source_id",
+        preference=TIE_PREFERENCE,
+    )
+    chosen = [dict(row) for row in chosen_maps]
     sources = sorted({str(r.get("source_id")) for r in chosen if r.get("source_id")})
     primary = None
     if sources:
-        primary = "EQUITY_EOD" if "EQUITY_EOD" in sources else sources[0]
+        ranked = [sid for sid in TIE_PREFERENCE if sid in sources]
+        primary = ranked[0] if ranked else sources[0]
     return chosen, primary
 
 
@@ -1109,7 +1121,8 @@ def _holdout_blocked(row: dict[str, Any], *, require_known_end: bool = True) -> 
 
     Any holdout marker, any 2025+ boundary, an unknown window END, or an explicit-true
     holdout flag blocks the row. ``research_is_holdout`` must be explicitly false when the
-    column is present (NULL = unknown = blocked).
+    column is present (NULL = unknown = blocked). Run-level holdout access that is NULL or
+    otherwise unproven is hidden for Stage 2 (and for unknown lineage).
     """
     test_type = str(row.get("research_test_type") or row.get("test_type") or "")
     phase = str(row.get("research_phase") or row.get("phase") or "")
@@ -1121,11 +1134,38 @@ def _holdout_blocked(row: dict[str, Any], *, require_known_end: bool = True) -> 
         return True
     if row.get("research_is_holdout") is True:
         return True
-    for key in ("run_holdout_status", "holdout_status"):
-        if str(row.get(key) or "").upper() in {"ACCESSED", "OPEN", "UNSEALED"}:
+    kind = str(row.get("research_kind") or "").strip().lower()
+    is_stage1 = kind in STAGE1_RESEARCH_KINDS
+    run_keys_present = any(
+        key in row
+        for key in (
+            "run_holdout_status",
+            "holdout_status",
+            "run_holdout_exposure_status",
+            "holdout_exposure_status",
+            "holdout_accessed",
+        )
+    )
+    if run_keys_present:
+        status = str(row.get("run_holdout_status") if "run_holdout_status" in row else row.get("holdout_status") or "").upper()
+        exposure = str(
+            row.get("run_holdout_exposure_status")
+            if "run_holdout_exposure_status" in row
+            else row.get("holdout_exposure_status") or ""
+        ).upper()
+        if "holdout_accessed" in row and row.get("holdout_accessed") is not False:
             return True
-    if str(row.get("run_holdout_exposure_status") or "").upper() in {"ACCESSED_ONCE", "REPEATEDLY_ACCESSED"}:
-        return True
+        allowed_status = PROVEN_STAGE1_HOLDOUT_STATUS if is_stage1 else PROVEN_RUN_HOLDOUT_STATUS
+        if status not in allowed_status:
+            return True
+        if not is_stage1 and exposure not in PROVEN_RUN_EXPOSURE_STATUS:
+            return True
+    else:
+        for key in ("run_holdout_status", "holdout_status"):
+            if str(row.get(key) or "").upper() in {"ACCESSED", "OPEN", "UNSEALED"}:
+                return True
+        if str(row.get("run_holdout_exposure_status") or "").upper() in {"ACCESSED_ONCE", "REPEATEDLY_ACCESSED"}:
+            return True
     ends = []
     for key in ("oos_end", "test_end"):
         if key in row:

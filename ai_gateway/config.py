@@ -96,10 +96,10 @@ def remote_value_sources(env: Mapping[str, str] | None = None) -> tuple[str, ...
 
 
 def trust_proxy(env: Mapping[str, str] | None = None) -> bool:
-    """When true, ``X-Forwarded-For`` marks a request as remote even from loopback.
+    """Kept for compatibility. Owner mode is never granted because of this flag.
 
-    Default on: a loopback request carrying proxy headers is treated as remote. Turning
-    this off does NOT make remote requests local; it only stops honouring the header.
+    Proxy headers always mark a request as remote. Setting this to 0 does not make a
+    reverse-proxied or public-Host request local.
     """
     raw = _env(TRUST_PROXY_ENV, "1", env=env)
     return _truthy(raw)

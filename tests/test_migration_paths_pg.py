@@ -5,7 +5,7 @@ Scenarios (each on its own throw-away database):
 A. fresh empty database -> every migration applies once, hashes recorded, second apply no-op;
 B. simulated production: migrations 001-019 recorded the way the pre-checksum runner on
    ``main`` recorded them (filename-only rows, no sha256 column) -> the new runner backfills
-   only trusted baseline hashes, applies 020-027, records their hashes, and is idempotent;
+   only trusted baseline hashes, applies 020-028, records their hashes, and is idempotent;
 C. an already-applied file changed on disk -> the runner fails closed and applies nothing;
 D. the read-only role provisioned from ``db/roles/*.sql`` can SELECT every gateway view and
    cannot mutate or read raw research tables (SQLSTATE 42501 / 25006).
@@ -77,7 +77,7 @@ def test_gateway_migration_is_the_next_number_and_last():
     names = [p.name for p in _all_files()]
     numbers = [int(n[:3]) for n in names]
     assert numbers == list(range(1, len(names) + 1)), "migration numbers must be contiguous"
-    assert names[-1] == "027_ai_gateway_strategy_views.sql"
+    assert names[-1] == "028_gateway_holdout_failclosed.sql"
     assert not any(n.startswith("020_ai_gateway") for n in names), "the concurrent PR's duplicate 020 must not survive"
 
 
@@ -85,7 +85,7 @@ def test_scenario_a_fresh_database_applies_everything_once_with_hashes(scratch_d
     engine, _url = scratch_db
     first = apply_migrations(engine=engine)
     assert first and not any(name.endswith("(skipped)") for name in first)
-    assert first[-1] == "027_ai_gateway_strategy_views.sql"
+    assert first[-1] == "028_gateway_holdout_failclosed.sql"
     recorded = _recorded(engine)
     for path in _all_files():
         assert recorded[path.name] == migration_sha256(path)
@@ -96,7 +96,7 @@ def test_scenario_a_fresh_database_applies_everything_once_with_hashes(scratch_d
     assert set(GATEWAY_VIEWS) <= views
 
 
-def test_scenario_b_simulated_production_001_019_upgrades_through_027(scratch_db):
+def test_scenario_b_simulated_production_001_019_upgrades_through_028(scratch_db):
     engine, _url = scratch_db
     baseline = load_checksum_baseline()
     legacy = [p for p in _all_files() if p.name < "020"]
@@ -117,7 +117,7 @@ def test_scenario_b_simulated_production_001_019_upgrades_through_027(scratch_db
     applied = [n for n in upgraded if not n.endswith("(skipped)")]
     assert len(skipped) == 19
     assert applied == [p.name for p in _all_files() if p.name >= "020"]
-    assert applied[-1] == "027_ai_gateway_strategy_views.sql"
+    assert applied[-1] == "028_gateway_holdout_failclosed.sql"
     recorded = _recorded(engine)
     # Historical rows adopted the trusted baseline hash (not a bless of whatever was on disk: the
     # values are equal here only because the files are the committed baseline files).

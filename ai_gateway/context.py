@@ -7,15 +7,19 @@ operator preference with *where the request came from*.
 
 A request is LOCAL only when every one of these holds:
 
-* the transport is stdio (a local MCP client spawned the process), or the HTTP client
-  address is loopback;
-* no reverse-proxy headers (``X-Forwarded-For``, ``X-Real-IP``, ``Forwarded``) are present
-  while ``AI_GATEWAY_TRUST_PROXY`` is on (the default) — nginx on the same host forwards
-  remote clients from 127.0.0.1;
-* the gateway itself is bound to a loopback address (a non-loopback bind means the process
-  is intentionally reachable from elsewhere, so it refuses owner mode entirely).
+    * the transport is stdio (a local MCP client spawned the process), or the HTTP client
+      address is loopback;
+    * no reverse-proxy headers are present (``X-Forwarded-For``, ``X-Real-IP``, ``Forwarded``,
+      ``X-Forwarded-Host``, ``X-Forwarded-Proto``, ``Via``). Presence of any of these means the
+      request crossed nginx/public HTTP and is REMOTE even if the TCP peer is 127.0.0.1.
+      ``AI_GATEWAY_TRUST_PROXY`` cannot restore owner mode;
+    * the HTTP ``Host`` header is a loopback name (or the Starlette test host). A public Host
+      on a loopback TCP peer is the nginx-on-localhost pattern and is REMOTE;
+    * the gateway itself is bound to a loopback address (a non-loopback bind means the process
+      is intentionally reachable from elsewhere, so it refuses owner mode entirely).
 
-Anything else is REMOTE and gets ``external``.
+Anything else is REMOTE and gets ``external``. Proxy/loopback header spoofing never grants
+owner privileges.
 """
 
 from __future__ import annotations
@@ -31,14 +35,23 @@ from ai_gateway.config import (
     configured_export_mode,
     is_loopback_host,
     remote_value_sources,
-    trust_proxy,
 )
 
 TRANSPORT_HTTP = "http"
 TRANSPORT_STDIO = "stdio"
 TRANSPORT_UNKNOWN = "unknown"
 
-PROXY_HEADERS = ("x-forwarded-for", "x-real-ip", "forwarded", "x-forwarded-host")
+PROXY_HEADERS = (
+    "x-forwarded-for",
+    "x-real-ip",
+    "forwarded",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+    "x-forwarded-port",
+    "via",
+)
+# Starlette TestClient default Host. Never treat a public DNS name as local.
+_LOCAL_HTTP_HOST_NAMES = frozenset({"testserver"})
 
 
 @dataclass(frozen=True)
@@ -79,16 +92,42 @@ def reset_context(token) -> None:
     _CURRENT.reset(token)
 
 
+def _hostname_from_host_header(value: object) -> str:
+    text = str(value or "").strip().lower()
+    if not text:
+        return ""
+    if text.startswith("["):
+        end = text.find("]")
+        if end > 0:
+            return text[1:end]
+    if "://" in text:
+        text = text.split("://", 1)[1]
+    return text.split("/", 1)[0].split(":", 1)[0]
+
+
+def _host_header_is_public(headers: Mapping[str, str]) -> bool:
+    hostname = _hostname_from_host_header(headers.get("host"))
+    if not hostname or hostname in _LOCAL_HTTP_HOST_NAMES:
+        return False
+    return not is_loopback_host(hostname)
+
+
 def http_context(*, client_host: str | None, headers: Mapping[str, str] | None, bind: str | None = None) -> RequestContext:
     lowered = {str(k).lower(): v for k, v in (headers or {}).items()}
     has_proxy_header = any(name in lowered and str(lowered[name]).strip() for name in PROXY_HEADERS)
-    proxied = bool(has_proxy_header and trust_proxy())
+    public_host = _host_header_is_public(lowered)
+    # Fail closed: any proxy header or public Host means the request left the process.
+    # AI_GATEWAY_TRUST_PROXY cannot restore owner mode for a proxied request.
+    proxied = bool(has_proxy_header or public_host)
     return RequestContext(
         transport=TRANSPORT_HTTP,
         client_host=client_host,
         proxied=proxied,
         bind=bind or bind_host(),
-        details={"proxy_headers_present": has_proxy_header},
+        details={
+            "proxy_headers_present": has_proxy_header,
+            "public_host_header": public_host,
+        },
     )
 
 

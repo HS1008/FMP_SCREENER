@@ -19,7 +19,8 @@ from ai_gateway.config import configured_export_mode, cors_origins, is_loopback_
 from ai_gateway.errors import GatewayError, RATE_LIMITED
 from ai_gateway.mcp_protocol import handle_rpc, parse_messages, tools_list
 from ai_gateway.rate_limit import SlidingWindowLimiter
-from ai_gateway.services import FORBIDDEN_TOOLS, HANDLERS, TOOL_SPECS, _artifact_blocked, _holdout_blocked, register
+from ai_gateway.oauth import normalize_redirect_uri
+from ai_gateway.services import FORBIDDEN_TOOLS, HANDLERS, TOOL_SPECS, _artifact_blocked, _holdout_blocked, _preferred_sector_rows, register
 from ai_gateway.validation import (
     bounded_range,
     clamp_limit,
@@ -148,6 +149,10 @@ def test_validation_bounds_and_enums():
         {"outer_window_id": "2016", "oos_start": "2016-01-01", "oos_end": None},
         {"research_test_type": "VALIDATION", "test_end": "2022-12-31", "research_is_holdout": False, "run_holdout_status": "ACCESSED"},
         {"research_test_type": "VALIDATION", "test_end": "2022-12-31", "research_is_holdout": False, "run_holdout_exposure_status": "ACCESSED_ONCE"},
+        {"research_test_type": "VALIDATION", "test_end": "2022-12-31", "research_is_holdout": False, "run_holdout_status": None},
+        {"research_test_type": "VALIDATION", "test_end": "2022-12-31", "research_is_holdout": False, "run_holdout_status": "LOCKED", "run_holdout_exposure_status": None},
+        {"research_test_type": "VALIDATION", "test_end": "2022-12-31", "research_is_holdout": False, "holdout_accessed": None},
+        {"research_test_type": "VALIDATION", "test_end": "2022-12-31", "research_is_holdout": False, "run_holdout_status": "UNKNOWN", "run_holdout_exposure_status": "PRISTINE"},
     ],
 )
 def test_holdout_rows_are_blocked_in_python_as_well_as_sql(row):
@@ -184,6 +189,36 @@ def test_non_holdout_artifact_bound_to_visible_experiment_passes():
     assert not _artifact_blocked({"artifact_type": "run_summary", "lineage_status": "NONHOLDOUT_RUN_ALL_EXPERIMENTS_PROVEN", "run_experiment_count": 31, "run_visible_experiment_count": 31, "research_experiment_id": None})
 
 
+def test_gateway_sector_rows_follow_newest_date_then_source_preference():
+    newer_fmp = {"canonical_sector": "Technology", "sector_key": "Technology", "source_id": "FMP_LEGACY", "as_of": "2026-09-10", "metrics": {"ret_1d": 0.02}}
+    older_ibkr = {"canonical_sector": "Technology", "sector_key": "Technology", "source_id": "EQUITY_EOD", "as_of": "2026-09-09", "metrics": {"ret_1d": 0.01}}
+    chosen, primary = _preferred_sector_rows({"datasets": {"ETF_RS_VS_SPY": [older_ibkr, newer_fmp]}})
+    assert len(chosen) == 1 and chosen[0]["source_id"] == "FMP_LEGACY" and primary == "FMP_LEGACY"
+    newer_ibkr = dict(older_ibkr, as_of="2026-09-11")
+    chosen, primary = _preferred_sector_rows({"datasets": {"ETF_RS_VS_SPY": [newer_fmp, newer_ibkr]}})
+    assert chosen[0]["source_id"] == "EQUITY_EOD" and chosen[0]["as_of"] == "2026-09-11" and primary == "EQUITY_EOD"
+    same_fmp = dict(newer_fmp, as_of="2026-09-10")
+    same_ibkr = dict(older_ibkr, as_of="2026-09-10")
+    chosen, primary = _preferred_sector_rows({"datasets": {"ETF_RS_VS_SPY": [same_fmp, same_ibkr]}})
+    assert chosen[0]["source_id"] == "EQUITY_EOD" and primary == "EQUITY_EOD"
+    null_date = dict(newer_ibkr, as_of=None)
+    chosen, _ = _preferred_sector_rows({"datasets": {"ETF_RS_VS_SPY": [null_date, newer_fmp]}})
+    assert chosen[0]["source_id"] == "FMP_LEGACY"
+    missing = {"canonical_sector": "Energy", "source_id": "EQUITY_EOD", "as_of": "2026-09-10", "metrics": {}}
+    chosen, _ = _preferred_sector_rows({"datasets": {"ETF_RS_VS_SPY": [missing]}})
+    assert chosen[0]["metrics"] == {}
+
+
+def test_oauth_redirect_uri_exact_match_rejects_wildcards_and_remote_http():
+    assert normalize_redirect_uri("https://chatgpt.example/cb") == "https://chatgpt.example/cb"
+    assert normalize_redirect_uri("http://127.0.0.1:8787/cb") == "http://127.0.0.1:8787/cb"
+    assert normalize_redirect_uri("https://chatgpt.example/*") is None
+    assert normalize_redirect_uri("http://evil.example/cb") is None
+    assert normalize_redirect_uri("javascript:alert(1)") is None
+    assert normalize_redirect_uri("https://chatgpt.example/cb#frag") is None
+    assert normalize_redirect_uri("") is None
+
+
 # ---- export mode decision matrix -------------------------------------------------------------------
 
 
@@ -205,6 +240,11 @@ def test_default_export_mode_is_external(monkeypatch):
         (gw_context.http_context(client_host="::1", headers={}, bind="127.0.0.1"), "owner"),
         (gw_context.http_context(client_host="127.0.0.1", headers={"X-Forwarded-For": "203.0.113.9"}, bind="127.0.0.1"), "external"),
         (gw_context.http_context(client_host="127.0.0.1", headers={"x-real-ip": "203.0.113.9"}, bind="127.0.0.1"), "external"),
+        (gw_context.http_context(client_host="127.0.0.1", headers={"Forwarded": 'for="203.0.113.9"'}, bind="127.0.0.1"), "external"),
+        (gw_context.http_context(client_host="127.0.0.1", headers={"X-Forwarded-Proto": "https"}, bind="127.0.0.1"), "external"),
+        (gw_context.http_context(client_host="127.0.0.1", headers={"Host": "mcp.example.com"}, bind="127.0.0.1"), "external"),
+        (gw_context.http_context(client_host="127.0.0.1", headers={"X-Forwarded-For": "127.0.0.1"}, bind="127.0.0.1"), "external"),
+        (gw_context.http_context(client_host="127.0.0.1", headers={"Host": "127.0.0.1"}, bind="127.0.0.1"), "owner"),
         (gw_context.http_context(client_host="203.0.113.9", headers={}, bind="127.0.0.1"), "external"),
         (gw_context.http_context(client_host="127.0.0.1", headers={}, bind="0.0.0.0"), "external"),
         (gw_context.http_context(client_host=None, headers={}, bind="127.0.0.1"), "external"),
@@ -219,6 +259,17 @@ def test_external_preference_never_yields_owner_even_locally(monkeypatch):
     monkeypatch.setenv("AI_GATEWAY_EXPORT_MODE", "external")
     assert gw_context.effective_export_mode(gw_context.stdio_context()) == "external"
     assert gw_context.effective_export_mode(gw_context.http_context(client_host="127.0.0.1", headers={}, bind="127.0.0.1")) == "external"
+
+
+def test_trust_proxy_off_cannot_restore_owner_mode(monkeypatch):
+    monkeypatch.setenv("AI_GATEWAY_EXPORT_MODE", "owner")
+    monkeypatch.setenv("AI_GATEWAY_TRUST_PROXY", "0")
+    ctx = gw_context.http_context(
+        client_host="127.0.0.1",
+        headers={"X-Forwarded-For": "198.51.100.7"},
+        bind="127.0.0.1",
+    )
+    assert gw_context.effective_export_mode(ctx) == "external"
 
 
 def test_is_loopback_host():

@@ -96,7 +96,10 @@ VALUES
   ('GW_RUN_MIXED',    'GW_STRAT', 'COMPLETE', 'cccc3333', 'ML', 'NOT_DEFINED', 'LOCKED', 'LOCKED',   'PRISTINE',      FALSE, 0, 2, 2, 2, 0, 0),
   ('GW_RUN_2025',     'GW_STRAT', 'COMPLETE', 'dddd4444', 'ML', 'NOT_DEFINED', 'LOCKED', 'LOCKED',   'PRISTINE',      FALSE, 0, 1, 1, 1, 0, 0),
   ('GW_RUN_UNKNOWN',  'GW_STRAT', 'COMPLETE', 'eeee5555', 'ML', 'NOT_DEFINED', 'LOCKED', 'LOCKED',   'PRISTINE',      FALSE, 0, 0, 0, 0, 0, 0),
-  ('GW_RUN_NULLFLAG', 'GW_STRAT', 'COMPLETE', 'ffff6666', 'ML', 'NOT_DEFINED', 'LOCKED', 'LOCKED',   'PRISTINE',      FALSE, 0, 1, 1, 1, 0, 0);
+  ('GW_RUN_NULLFLAG', 'GW_STRAT', 'COMPLETE', 'ffff6666', 'ML', 'NOT_DEFINED', 'LOCKED', 'LOCKED',   'PRISTINE',      FALSE, 0, 1, 1, 1, 0, 0),
+  ('GW_RUN_NULLSTAT', 'GW_STRAT', 'COMPLETE', 'gggg7777', 'ML', 'NOT_DEFINED', 'LOCKED', NULL,      'PRISTINE',      FALSE, 0, 1, 1, 1, 0, 0),
+  ('GW_RUN_NULLACC',  'GW_STRAT', 'COMPLETE', 'hhhh8888', 'ML', 'NOT_DEFINED', 'LOCKED', 'LOCKED',   'PRISTINE',      NULL,  0, 1, 1, 1, 0, 0),
+  ('GW_RUN_NULLEXP',  'GW_STRAT', 'COMPLETE', 'iiii9999', 'ML', 'NOT_DEFINED', 'LOCKED', 'LOCKED',   NULL,            FALSE, 0, 1, 1, 1, 0, 0);
 
 INSERT INTO backtests (backtest_id, strategy_id, name, status, research_run_id, research_experiment_id, research_test_type, research_phase, research_window_id, research_is_holdout, test_start, test_end, sharpe_ratio)
 VALUES
@@ -106,7 +109,10 @@ VALUES
   ('gw-mixed-2018', 'GW_STRAT', 'S2__OOS_2018',        'Completed', 'GW_RUN_MIXED',    'OOS_2018',               'ML_OOS_TEST',      'OOS',     '2018', FALSE, DATE '2018-01-01', DATE '2018-12-31', 0.5),
   ('gw-mixed-null', 'GW_STRAT', 'S2__diagnostics',     'Completed', 'GW_RUN_MIXED',    'DIAG_NULL_DATES',        'ML_OOS_TEST',      'HOLDOUT', NULL,   FALSE, NULL,              NULL,              8.8),
   ('gw-2025-oos',   'GW_STRAT', 'S2__OOS_2025Q1',      'Completed', 'GW_RUN_2025',     'OOS_2025Q1',             'ML_OOS_TEST',      'OOS',     '2025', FALSE, DATE '2025-01-01', DATE '2025-03-31', 7.7),
-  ('gw-nullflag',   'GW_STRAT', 'S2__OOS_2020',        'Completed', 'GW_RUN_NULLFLAG', 'OOS_2020',               'ML_OOS_TEST',      'OOS',     '2020', NULL,  DATE '2020-01-01', DATE '2020-12-31', 6.6);
+  ('gw-nullflag',   'GW_STRAT', 'S2__OOS_2020',        'Completed', 'GW_RUN_NULLFLAG', 'OOS_2020',               'ML_OOS_TEST',      'OOS',     '2020', NULL,  DATE '2020-01-01', DATE '2020-12-31', 6.6),
+  ('gw-nullstat',   'GW_STRAT', 'S2__OOS_2015',        'Completed', 'GW_RUN_NULLSTAT', 'OOS_2015',               'ML_OOS_TEST',      'OOS',     '2015', FALSE, DATE '2015-01-01', DATE '2015-12-31', 5.5),
+  ('gw-nullacc',    'GW_STRAT', 'S2__OOS_2014',        'Completed', 'GW_RUN_NULLACC',  'OOS_2014',               'ML_OOS_TEST',      'OOS',     '2014', FALSE, DATE '2014-01-01', DATE '2014-12-31', 4.4),
+  ('gw-nullexp',    'GW_STRAT', 'S2__OOS_2013',        'Completed', 'GW_RUN_NULLEXP',  'OOS_2013',               'ML_OOS_TEST',      'OOS',     '2013', FALSE, DATE '2013-01-01', DATE '2013-12-31', 3.3);
 
 INSERT INTO research_oos_windows (research_run_id, outer_window_id, oos_start, oos_end, metrics_json)
 VALUES
@@ -237,6 +243,9 @@ def test_nonholdout_runs_view_excludes_runs_that_accessed_the_holdout(gateway_db
     with gateway_db.connect() as conn:
         runs = {r[0] for r in conn.execute(text("SELECT research_run_id FROM mi_v_strategy_nonholdout_runs WHERE strategy_id = 'GW_STRAT'"))}
     assert "GW_RUN_HOLDOUT" not in runs
+    assert "GW_RUN_NULLSTAT" not in runs
+    assert "GW_RUN_NULLACC" not in runs
+    assert "GW_RUN_NULLEXP" not in runs
     assert {"GW_RUN_OK", "GW_RUN_MIXED", "GW_RUN_2025", "GW_RUN_UNKNOWN", "GW_RUN_NULLFLAG"} <= runs
 
 
@@ -249,6 +258,7 @@ def test_experiments_view_only_returns_explicit_pre2025_nonholdout_rows(gateway_
     assert all(r["test_end"] < date(2025, 1, 1) for r in rows)
     dumped = json.dumps(rows, default=str)
     assert "9.9" not in dumped and "8.8" not in dumped and "7.7" not in dumped and "6.6" not in dumped
+    assert "5.5" not in dumped and "4.4" not in dumped and "3.3" not in dumped
 
 
 def test_oos_windows_view_excludes_2025_null_end_and_holdout_runs(gateway_db):
@@ -338,6 +348,15 @@ def test_owner_env_does_not_change_remote_sessions(remote, monkeypatch):
     assert payload["export_mode"] == "external" and payload["owner_session"] is False
     proxied = _client(LOCAL).get("/api/v1/sectors", headers={**HEADERS, "X-Forwarded-For": "203.0.113.9"}).json()
     assert proxied["export_mode"] == "external"
+    forwarded = _client(LOCAL).get("/api/v1/sectors", headers={**HEADERS, "Forwarded": 'for="203.0.113.9";proto=https'}).json()
+    assert forwarded["export_mode"] == "external"
+    public_host = _client(LOCAL).get("/api/v1/sectors", headers={**HEADERS, "Host": "mcp.example.com"}).json()
+    assert public_host["export_mode"] == "external"
+    loopback_spoof = _client(LOCAL).get("/api/v1/sectors", headers={**HEADERS, "X-Forwarded-For": "127.0.0.1"}).json()
+    assert loopback_spoof["export_mode"] == "external"
+    monkeypatch.setenv("AI_GATEWAY_TRUST_PROXY", "0")
+    still_remote = _client(LOCAL).get("/api/v1/sectors", headers={**HEADERS, "X-Forwarded-For": "198.51.100.7"}).json()
+    assert still_remote["export_mode"] == "external"
 
 
 def test_remote_sector_rotation_keeps_identity_but_not_entitlement_unverified_values(remote):
@@ -592,6 +611,38 @@ def test_oauth_pkce_flow_binds_the_token_to_this_resource(remote):
     with_jwt = remote.get("/api/v1/data-health", headers={"Authorization": "Bearer " + access})
     assert with_jwt.status_code == 200 and with_jwt.json()["export_mode"] == "external"
     assert TOKEN not in json.dumps(minted.json())
+
+
+def test_oauth_register_and_authorize_require_exact_https_redirect(remote):
+    import base64
+    import hashlib
+
+    assert remote.post("/oauth/register", json={"redirect_uris": ["https://evil.example/*"], "client_name": "wild"}).status_code == 400
+    assert remote.post("/oauth/register", json={"redirect_uris": ["http://evil.example/cb"], "client_name": "http"}).status_code == 400
+    assert remote.post("/oauth/register", json={"redirect_uris": ["javascript:alert(1)"], "client_name": "js"}).status_code == 400
+    assert remote.post("/oauth/register", json={"redirect_uris": [], "client_name": "empty"}).status_code == 400
+    registered = remote.post("/oauth/register", json={"redirect_uris": ["https://chatgpt.example/cb"], "client_name": "chatgpt"}).json()
+    client_id = registered["client_id"]
+    verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+    swapped = remote.post(
+        "/oauth/authorize",
+        data={"token": TOKEN, "response_type": "code", "client_id": client_id, "redirect_uri": "https://attacker.example/steal", "state": "s", "code_challenge": challenge, "code_challenge_method": "S256"},
+        follow_redirects=False,
+    )
+    assert swapped.status_code == 200 and "not registered" in swapped.text
+    granted = remote.post(
+        "/oauth/authorize",
+        data={"token": TOKEN, "response_type": "code", "client_id": client_id, "redirect_uri": "https://chatgpt.example/cb", "state": "s", "code_challenge": challenge, "code_challenge_method": "S256"},
+        follow_redirects=False,
+    )
+    assert granted.status_code == 302
+    code = granted.headers["location"].split("code=", 1)[1].split("&", 1)[0]
+    substituted = remote.post(
+        "/oauth/token",
+        data={"grant_type": "authorization_code", "code": code, "redirect_uri": "https://attacker.example/steal", "client_id": client_id, "code_verifier": verifier},
+    )
+    assert substituted.status_code == 400 and substituted.json()["error"] == "invalid_grant"
 
 
 def test_ready_reports_export_policy(remote):
