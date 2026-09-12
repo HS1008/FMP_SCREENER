@@ -302,7 +302,11 @@ async def token_endpoint(request: Request) -> JSONResponse:
     record = _codes.pop(code, None)
     if grant != "authorization_code" or record is None:
         return JSONResponse({"error": "invalid_grant"}, status_code=400)
-    if record["redirect_uri"] != normalize_redirect_uri(redirect_uri) or (client_id and record["client_id"] != client_id):
+    # client_id is required and must exactly match the authorization-code binding.
+    # An omitted or substituted client_id is invalid_grant, not a skipped check.
+    if not client_id or client_id not in _clients or record["client_id"] != client_id:
+        return JSONResponse({"error": "invalid_grant"}, status_code=400)
+    if record["redirect_uri"] != normalize_redirect_uri(redirect_uri):
         return JSONResponse({"error": "invalid_grant"}, status_code=400)
     if not verifier or _s256(verifier) != record["code_challenge"]:
         return JSONResponse({"error": "invalid_grant"}, status_code=400)

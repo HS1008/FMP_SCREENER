@@ -645,6 +645,111 @@ def test_oauth_register_and_authorize_require_exact_https_redirect(remote):
     assert substituted.status_code == 400 and substituted.json()["error"] == "invalid_grant"
 
 
+def _oauth_register_and_code(remote, *, redirect="https://chatgpt.example/cb"):
+    import base64
+    import hashlib
+
+    registered = remote.post("/oauth/register", json={"redirect_uris": [redirect], "client_name": "chatgpt"}).json()
+    client_id = registered["client_id"]
+    verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest()).rstrip(b"=").decode("ascii")
+    granted = remote.post(
+        "/oauth/authorize",
+        data={
+            "token": TOKEN,
+            "response_type": "code",
+            "client_id": client_id,
+            "redirect_uri": redirect,
+            "state": "s",
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+        },
+        follow_redirects=False,
+    )
+    assert granted.status_code == 302
+    code = granted.headers["location"].split("code=", 1)[1].split("&", 1)[0]
+    return client_id, code, verifier, redirect
+
+
+def test_oauth_token_requires_exact_bound_client_id(remote):
+    client_id, code, verifier, redirect = _oauth_register_and_code(remote)
+    minted = remote.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect,
+            "client_id": client_id,
+            "code_verifier": verifier,
+        },
+    )
+    assert minted.status_code == 200
+    assert minted.json()["token_type"] == "Bearer"
+
+
+def test_oauth_token_omitted_client_id_is_invalid_grant(remote):
+    _client_id, code, verifier, redirect = _oauth_register_and_code(remote)
+    omitted = remote.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect,
+            "code_verifier": verifier,
+        },
+    )
+    assert omitted.status_code == 400 and omitted.json()["error"] == "invalid_grant"
+
+
+def test_oauth_token_wrong_client_id_is_invalid_grant(remote):
+    other = remote.post("/oauth/register", json={"redirect_uris": ["https://chatgpt.example/cb"], "client_name": "other"}).json()
+    _client_id, code, verifier, redirect = _oauth_register_and_code(remote)
+    swapped = remote.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect,
+            "client_id": other["client_id"],
+            "code_verifier": verifier,
+        },
+    )
+    assert swapped.status_code == 400 and swapped.json()["error"] == "invalid_grant"
+
+
+def test_oauth_token_unregistered_client_is_rejected(remote):
+    client_id, code, verifier, redirect = _oauth_register_and_code(remote)
+    from ai_gateway import oauth as oauth_mod
+
+    oauth_mod._clients.pop(client_id, None)
+    gone = remote.post(
+        "/oauth/token",
+        data={
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": redirect,
+            "client_id": client_id,
+            "code_verifier": verifier,
+        },
+    )
+    assert gone.status_code == 400 and gone.json()["error"] == "invalid_grant"
+
+
+def test_oauth_empty_redirect_registration_is_rejected(remote):
+    assert remote.post("/oauth/register", json={"redirect_uris": [""], "client_name": "blank"}).status_code == 400
+    unregistered = remote.get(
+        "/oauth/authorize",
+        params={
+            "response_type": "code",
+            "client_id": "mcp_not_registered",
+            "redirect_uri": "https://chatgpt.example/cb",
+            "code_challenge": "abc",
+            "code_challenge_method": "S256",
+        },
+    )
+    assert unregistered.status_code == 200 and "not registered" in unregistered.text
+
+
 def test_ready_reports_export_policy(remote):
     assert remote.get("/ready").status_code == 401
     ready = remote.get("/ready", headers=HEADERS)
