@@ -159,8 +159,10 @@ class YahooAdapter:
 class CollectorStoreAdapter:
     """Canonical IBKR equity EOD on a host that must not open a TWS socket.
 
-    Windows collector pushes bars. DigitalOcean refresh rebuilds snapshots from
-    stored EQUITY_EOD rows. ``fetch`` never connects to TWS.
+    Windows collector pushes bars. FINALIZE is the only snapshot promotion
+    point. Ordinary DigitalOcean refresh reports existing finalized COMPLETE
+    state and never rebuilds snapshots from OPEN or PARTIAL raw bars.
+    ``fetch`` never connects to TWS.
     """
 
     source_id: str = "IBKR"
@@ -168,8 +170,8 @@ class CollectorStoreAdapter:
     rebuild_only: bool = True
     reason: str = (
         "IBKR is the canonical EQUITY_EOD producer. Collection runs on the Windows "
-        "TWS host (python -m ibkr_collector fetch-eod). This process consumes stored "
-        "bars and never opens a TWS socket."
+        "TWS host (python -m ibkr_collector fetch-eod). This process never opens a "
+        "TWS socket and never promotes OPEN-batch raw bars."
     )
 
     def fetch(self, symbols: list[str], start: date, end: date) -> list[EquityBar]:
@@ -622,7 +624,16 @@ def _stored_adjustment_basis(conn, symbols: list[str]) -> str:
 
 
 def _rebuild_from_stored(conn, *, symbols: list[str], run_id: str, provider: str | None) -> tuple[date | None, int]:
-    load_provider = provider if provider in {"IBKR", "YAHOO", "FIXTURE"} else None
+    """Maintenance rebuild from already-stored bars.
+
+    Ordinary IBKR collector refresh must not call this. It would publish
+    snapshots from OPEN-batch staged bars. Yahoo/fixture adapters may still
+    use it. An explicit IBKR maintenance rebuild must only use a FINALIZED
+    COMPLETE batch; that path is not wired into scheduled refresh.
+    """
+    if provider == "IBKR":
+        return _report_existing_ibkr_state(conn)
+    load_provider = provider if provider in {"YAHOO", "FIXTURE"} else None
     prices = load_adj_closes(conn, symbols, source_id=EQUITY_SOURCE_ID, provider=load_provider)
     as_of = None
     for series in prices.values():
@@ -643,6 +654,31 @@ def _rebuild_from_stored(conn, *, symbols: list[str], run_id: str, provider: str
         provider=provider,
     )
     return as_of, written
+
+
+def _report_existing_ibkr_state(conn) -> tuple[date | None, int]:
+    """Read last COMPLETE published snapshot. Never write snapshots. Never use OPEN bars."""
+    from market_intelligence.equity_eod_batch import published_complete_snapshot_as_of
+
+    return published_complete_snapshot_as_of(conn), 0
+
+
+def _ibkr_refresh_coverage(conn, prior: Mapping[str, Any] | None) -> tuple[str | None, dict[str, Any] | None]:
+    from market_intelligence.equity_eod_batch import BATCH_OPEN, latest_open_equity_batch
+
+    open_batch = latest_open_equity_batch(conn)
+    if open_batch is None:
+        return None, None
+    return "IN_PROGRESS", {
+        "published_coverage_status": (prior or {}).get("coverage_status"),
+        "latest_collection_attempt": {
+            "batch_id": open_batch["batch_id"],
+            "state": BATCH_OPEN,
+            "received_chunks": int(open_batch["received_chunks"] or 0),
+            "chunk_count": int(open_batch["chunk_count"] or 0),
+        },
+        "snapshot_promotion": "blocked_open_batch",
+    }
 
 
 def ingest_equity_eod(
@@ -687,16 +723,23 @@ def ingest_equity_eod(
             latest = latest_stored_bar_date(conn, symbols)
             if latest is not None:
                 start = latest - timedelta(days=7)
+        ibkr_collector_mode = getattr(adapter, "rebuild_only", False) or adapter.source_id == "IBKR"
         if getattr(adapter, "rebuild_only", False):
-            as_of, snaps = _rebuild_from_stored(conn, symbols=symbols, run_id=rid, provider=adapter.source_id)
+            as_of, snaps = _report_existing_ibkr_state(conn)
             report.latest_observation = as_of
-            report.snapshots_written = snaps
+            report.snapshots_written = 0
             report.status = RUN_SKIPPED
             prior = conn.execute(
-                text("SELECT transport_status FROM mi_data_freshness WHERE source_id=:s AND dataset='equity_etf_daily_bars'"),
+                text(
+                    """
+                    SELECT transport_status, coverage_status FROM mi_data_freshness
+                    WHERE source_id=:s AND dataset='equity_etf_daily_bars'
+                    """
+                ),
                 {"s": EQUITY_SOURCE_ID},
-            ).scalar()
-            transport = prior if prior in {TRANSPORT_OK, "PARTIAL"} else TRANSPORT_SKIPPED
+            ).mappings().first()
+            transport = (prior["transport_status"] if prior and prior["transport_status"] in {TRANSPORT_OK, "PARTIAL"} else TRANSPORT_SKIPPED)
+            meta, cov_json = _ibkr_refresh_coverage(conn, prior)
             record_freshness(
                 conn,
                 source_id=EQUITY_SOURCE_ID,
@@ -709,13 +752,30 @@ def ingest_equity_eod(
                 run_id=rid,
                 today=today,
                 series_id="SPY",
+                metadata_status=meta,
+                coverage_json=cov_json,
             )
-            finish_run(conn, rid, status=RUN_SKIPPED, details={"reason": adapter.reason, "rebuilt_from_stored": as_of is not None, "snapshots": snaps, "tws_socket": False})
+            finish_run(
+                conn,
+                rid,
+                status=RUN_SKIPPED,
+                details={
+                    "reason": adapter.reason,
+                    "rebuilt_from_stored": False,
+                    "snapshots": 0,
+                    "tws_socket": False,
+                    "promoted_open_batch": False,
+                    "reported_finalized_as_of": as_of.isoformat() if as_of else None,
+                },
+            )
             return report
         try:
             bars = adapter.fetch(symbols, start, today)
         except AdapterUnavailable as exc:
-            as_of, snaps = _rebuild_from_stored(conn, symbols=symbols, run_id=rid, provider=adapter.source_id)
+            if ibkr_collector_mode:
+                as_of, snaps = _report_existing_ibkr_state(conn)
+            else:
+                as_of, snaps = _rebuild_from_stored(conn, symbols=symbols, run_id=rid, provider=adapter.source_id)
             report.latest_observation = as_of
             report.snapshots_written = snaps
             report.reason = str(exc)
@@ -727,16 +787,24 @@ def ingest_equity_eod(
                 cadence="D",
                 transport_status=TRANSPORT_SKIPPED,
                 latest_observation=as_of,
-                success=as_of is not None,
+                success=False if ibkr_collector_mode else as_of is not None,
                 error_redacted=str(exc)[:200],
                 run_id=rid,
                 today=today,
                 series_id="SPY",
             )
-            finish_run(conn, rid, status=RUN_SKIPPED, details={"reason": str(exc), "rebuilt_from_stored": as_of is not None, "snapshots": snaps})
+            finish_run(
+                conn,
+                rid,
+                status=RUN_SKIPPED,
+                details={"reason": str(exc), "rebuilt_from_stored": (not ibkr_collector_mode) and as_of is not None, "snapshots": snaps, "tws_socket": False},
+            )
             return report
         except Exception as exc:  # noqa: BLE001
-            as_of, snaps = _rebuild_from_stored(conn, symbols=symbols, run_id=rid, provider=adapter.source_id)
+            if ibkr_collector_mode:
+                as_of, snaps = _report_existing_ibkr_state(conn)
+            else:
+                as_of, snaps = _rebuild_from_stored(conn, symbols=symbols, run_id=rid, provider=adapter.source_id)
             report.latest_observation = as_of
             report.snapshots_written = snaps
             report.failed = True
@@ -755,7 +823,13 @@ def ingest_equity_eod(
                 today=today,
                 series_id="SPY",
             )
-            finish_run(conn, rid, status=RUN_FAILED, error_redacted=exc.__class__.__name__, details={"rebuilt_from_stored": as_of is not None})
+            finish_run(
+                conn,
+                rid,
+                status=RUN_FAILED,
+                error_redacted=exc.__class__.__name__,
+                details={"rebuilt_from_stored": (not ibkr_collector_mode) and as_of is not None, "tws_socket": False},
+            )
             return report
         retrieved = utcnow()
         counts = upsert_bars(conn, bars, run_id=rid, retrieved_at=retrieved, provider=adapter.source_id if adapter.source_id in {"IBKR", "YAHOO", "FIXTURE"} else None)

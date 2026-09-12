@@ -350,8 +350,10 @@ def test_interrupted_duplicate_reordered_and_idempotent_chunks(ingest_client, mi
     with mi_db.connect() as conn:
         snaps = conn.execute(text("SELECT COUNT(*) FROM mi_sector_snapshots WHERE source_id='EQUITY_EOD'")).scalar()
         fresh = conn.execute(text("SELECT coverage_status, metadata_status FROM mi_data_freshness WHERE source_id='EQUITY_EOD' AND dataset='equity_etf_daily_bars'")).mappings().first()
+        run_rows = conn.execute(text("SELECT status FROM mi_ingestion_runs WHERE source_id='EQUITY_EOD' AND dataset='equity_etf_daily_bars'")).all()
     assert snaps == 0
     assert fresh is None or fresh["coverage_status"] != "COMPLETE"
+    assert [row[0] for row in run_rows] == ["ATTEMPTED"]
     early = ingest_client.post(
         "/v1/equity_bars/finalize",
         headers=headers,
@@ -387,6 +389,8 @@ def test_interrupted_duplicate_reordered_and_idempotent_chunks(ingest_client, mi
     )
     assert done.status_code == 200, done.text
     assert done.json()["coverage_status"] == "PARTIAL"
+    assert done.json()["snapshots"] == 0
+    assert done.json().get("run_status") == "PARTIAL"
     again = ingest_client.post(
         "/v1/equity_bars/finalize",
         headers=headers,
@@ -411,6 +415,11 @@ def test_interrupted_duplicate_reordered_and_idempotent_chunks(ingest_client, mi
     assert freshness["coverage_status"] == "PARTIAL"
     assert freshness["metadata_status"] == "PARTIAL_COVERAGE"
     assert health == "PARTIAL"
+    with mi_db.connect() as conn:
+        snaps_after = conn.execute(text("SELECT COUNT(*) FROM mi_sector_snapshots WHERE source_id='EQUITY_EOD'")).scalar()
+        run_after = conn.execute(text("SELECT status FROM mi_ingestion_runs WHERE source_id='EQUITY_EOD' AND dataset='equity_etf_daily_bars'")).all()
+    assert snaps_after == 0
+    assert [row[0] for row in run_after] == ["PARTIAL"]
 
 
 def test_mismatched_chunk_hash_is_rejected(ingest_client):
@@ -463,3 +472,10 @@ def test_empty_universe_finalize_records_failed_coverage(ingest_client, mi_db):
     assert fresh["coverage_status"] == "EMPTY"
     assert fresh["metadata_status"] == "INCOMPLETE"
     assert fresh["transport_status"] == "FAILED"
+    with mi_db.connect() as conn:
+        snaps = conn.execute(text("SELECT COUNT(*) FROM mi_sector_snapshots WHERE source_id='EQUITY_EOD'")).scalar()
+        run_status = conn.execute(text("SELECT status FROM mi_ingestion_runs WHERE run_id = :r"), {"r": body["run_id"]}).scalar()
+        batch_state = conn.execute(text("SELECT state FROM mi_equity_eod_batches WHERE batch_id = :id"), {"id": batch_id}).scalar()
+    assert snaps == 0
+    assert run_status == "FAILED"
+    assert batch_state == "FAILED"

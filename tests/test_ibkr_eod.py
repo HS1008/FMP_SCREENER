@@ -687,6 +687,7 @@ def test_collector_store_rebuild_does_not_clobber_transport_ok(mi_db):
     ingest_equity_eod(mi_db, IBKRAdapter(recorded=recorded), today=date(2026, 9, 10), lookback_days=10, incremental=False)
     rebuilt = ingest_equity_eod(mi_db, CollectorStoreAdapter(), today=date(2026, 9, 10), lookback_days=10)
     assert rebuilt.status == "SKIPPED"
+    assert rebuilt.snapshots_written == 0
     with mi_db.connect() as conn:
         from sqlalchemy import text
 

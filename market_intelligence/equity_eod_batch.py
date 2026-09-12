@@ -1,8 +1,14 @@
 """Durable multi-chunk EQUITY_EOD batch protocol.
 
-Chunks may upsert bars immediately. Snapshots and successful freshness are
-written only on FINALIZE after every expected chunk has arrived. Retries of
-the same (batch_id, chunk_index, chunk_hash) are idempotent.
+A multi-chunk IBKR backfill is ONE logical ingestion attempt:
+
+    first chunk -> create batch + one mi_ingestion_run (ATTEMPTED)
+    later chunks -> upsert bars idempotently; run stays ATTEMPTED
+    FINALIZE -> SUCCEEDED / PARTIAL / FAILED
+
+Chunks may upsert raw bars immediately. Sector / industry / subgroup snapshots
+are published only on FINALIZE of a COMPLETE universe. PARTIAL and OPEN
+batches must not replace the last complete dashboard snapshot.
 """
 
 from __future__ import annotations
@@ -15,7 +21,17 @@ from sqlalchemy import text
 
 from ibkr_ingest.validate import EquityBarIngestRequest
 from market_intelligence.nulls import strict_dumps
-from market_intelligence.store import RUN_SUCCEEDED, TRANSPORT_OK, finish_run, record_freshness, start_run, utcnow
+from market_intelligence.store import (
+    RUN_ATTEMPTED,
+    RUN_FAILED,
+    RUN_PARTIAL,
+    RUN_SUCCEEDED,
+    TRANSPORT_OK,
+    finish_run,
+    record_freshness,
+    start_run,
+    utcnow,
+)
 
 BATCH_OPEN = "OPEN"
 BATCH_FINALIZED = "FINALIZED"
@@ -23,6 +39,16 @@ BATCH_FAILED = "FAILED"
 COVERAGE_COMPLETE = "COMPLETE"
 COVERAGE_PARTIAL = "PARTIAL"
 COVERAGE_EMPTY = "EMPTY"
+
+_ZERO_SUCCESS_OVERALL = frozenset({"FAILED", "EMPTY", "FAILURE"})
+_METADATA_FIELDS = (
+    "collector_id",
+    "provider",
+    "source_id",
+    "what_to_show",
+    "adjustment_basis",
+    "request_mode",
+)
 
 
 class BatchProtocolError(ValueError):
@@ -72,20 +98,96 @@ def coverage_status_of(coverage: Mapping[str, Any] | None) -> tuple[str, float, 
     return status, ratio, body
 
 
+def proven_zero_success_failed_attempt(coverage: Mapping[str, Any] | None) -> bool:
+    """Unknown-batch FINALIZE is allowed only for an explicitly failed empty attempt."""
+    if not coverage:
+        return False
+    claimed = str(coverage.get("coverage_status") or "").upper()
+    if claimed in {COVERAGE_COMPLETE, COVERAGE_PARTIAL}:
+        return False
+    overall = str(coverage.get("overall") or "").upper()
+    if overall not in _ZERO_SUCCESS_OVERALL:
+        return False
+    raw_ratio = coverage.get("coverage_ratio")
+    if raw_ratio is not None:
+        try:
+            if float(raw_ratio) != 0.0:
+                return False
+        except (TypeError, ValueError):
+            return False
+    status, ratio, body = coverage_status_of(coverage)
+    requested_n = int(body.get("requested") or 0)
+    success_n = int(body.get("successful_count") or 0)
+    failed_n = int(body.get("failed_count") or 0)
+    if status != COVERAGE_EMPTY:
+        return False
+    if requested_n <= 0 or success_n != 0 or failed_n != requested_n:
+        return False
+    if abs(float(ratio)) > 1e-12:
+        return False
+    return True
+
+
+def published_complete_snapshot_as_of(conn):
+    """Latest sector snapshot date. Snapshots are written only for COMPLETE batches."""
+    row = conn.execute(
+        text(
+            """
+            SELECT MAX(as_of) FROM mi_sector_snapshots
+            WHERE source_id = 'EQUITY_EOD' AND dataset = 'ETF_RS_VS_SPY'
+            """
+        )
+    ).scalar()
+    if row is None:
+        return None
+    if isinstance(row, date_cls):
+        return row
+    return date_cls.fromisoformat(str(row)[:10])
+
+
+def latest_open_equity_batch(conn) -> dict[str, Any] | None:
+    row = conn.execute(
+        text(
+            """
+            SELECT * FROM mi_equity_eod_batches
+            WHERE state = :state
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """
+        ),
+        {"state": BATCH_OPEN},
+    ).mappings().first()
+    return dict(row) if row is not None else None
+
+
+def _require_metadata_match(batch: Mapping[str, Any], fields: Mapping[str, Any]) -> None:
+    for name in _METADATA_FIELDS:
+        if name not in fields:
+            continue
+        expected = batch[name]
+        got = fields[name]
+        if expected != got:
+            raise BatchProtocolError("{0} does not match batch".format(name))
+    if "chunk_count" in fields and fields["chunk_count"] is not None:
+        if int(batch["chunk_count"]) != int(fields["chunk_count"]):
+            raise BatchProtocolError("chunk_count does not match batch")
+
+
 def _ensure_batch(conn, req: EquityBarIngestRequest) -> dict[str, Any]:
     existing = conn.execute(
         text("SELECT * FROM mi_equity_eod_batches WHERE batch_id = :id"),
         {"id": req.batch_id},
     ).mappings().first()
     if existing is None:
+        run_id = start_run(conn, source_id=req.source_id, dataset="equity_etf_daily_bars")
         conn.execute(
             text(
                 """
                 INSERT INTO mi_equity_eod_batches (
                     batch_id, collector_id, source_id, provider, what_to_show, adjustment_basis,
-                    request_mode, chunk_count, state, coverage_json
+                    request_mode, chunk_count, state, coverage_json, ingestion_run_id
                 ) VALUES (
-                    :id, :cid, :src, :prov, :wts, :adj, :mode, :n, :state, CAST(:cov AS JSONB)
+                    :id, :cid, :src, :prov, :wts, :adj, :mode, :n, :state, CAST(:cov AS JSONB), :run
                 )
                 """
             ),
@@ -100,20 +202,41 @@ def _ensure_batch(conn, req: EquityBarIngestRequest) -> dict[str, Any]:
                 "n": req.chunk_count,
                 "state": BATCH_OPEN,
                 "cov": strict_dumps(req.coverage or {}),
+                "run": run_id,
             },
         )
         return conn.execute(text("SELECT * FROM mi_equity_eod_batches WHERE batch_id = :id"), {"id": req.batch_id}).mappings().one()
     if existing["state"] == BATCH_FAILED:
         raise BatchProtocolError("batch {0} is failed".format(req.batch_id))
-    if existing["collector_id"] != req.collector_id:
-        raise BatchProtocolError("collector_id does not match batch")
-    if int(existing["chunk_count"]) != int(req.chunk_count):
-        raise BatchProtocolError("chunk_count does not match batch")
-    if existing["provider"] != req.provider or existing["source_id"] != req.source_id:
-        raise BatchProtocolError("provider/source_id does not match batch")
-    if existing["what_to_show"] != req.what_to_show or existing["adjustment_basis"] != req.adjustment_basis:
-        raise BatchProtocolError("adjustment provenance does not match batch")
+    _require_metadata_match(
+        existing,
+        {
+            "collector_id": req.collector_id,
+            "provider": req.provider,
+            "source_id": req.source_id,
+            "what_to_show": req.what_to_show,
+            "adjustment_basis": req.adjustment_basis,
+            "request_mode": req.request_mode,
+            "chunk_count": req.chunk_count,
+        },
+    )
     return existing
+
+
+def _logical_run_id(conn, batch: Mapping[str, Any], *, source_id: str) -> str:
+    existing = batch.get("ingestion_run_id")
+    if existing:
+        status = conn.execute(text("SELECT status FROM mi_ingestion_runs WHERE run_id = :r"), {"r": existing}).scalar()
+        if status == RUN_ATTEMPTED:
+            return str(existing)
+        if status in {RUN_SUCCEEDED, RUN_PARTIAL, RUN_FAILED}:
+            return str(existing)
+    run_id = start_run(conn, source_id=source_id, dataset="equity_etf_daily_bars")
+    conn.execute(
+        text("UPDATE mi_equity_eod_batches SET ingestion_run_id = :run, updated_at = NOW() WHERE batch_id = :id"),
+        {"run": run_id, "id": batch["batch_id"]},
+    )
+    return run_id
 
 
 def record_chunk(conn, req: EquityBarIngestRequest) -> dict[str, Any]:
@@ -125,7 +248,12 @@ def record_chunk(conn, req: EquityBarIngestRequest) -> dict[str, Any]:
             {"id": req.batch_id, "i": req.chunk_index},
         ).scalar()
         if prior == digest:
-            return {"duplicate": True, "chunk_hash": digest, "state": BATCH_FINALIZED}
+            return {
+                "duplicate": True,
+                "chunk_hash": digest,
+                "state": BATCH_FINALIZED,
+                "run_id": batch.get("ingestion_run_id"),
+            }
         raise BatchProtocolError("batch already finalized")
     prior = conn.execute(
         text("SELECT chunk_hash, bar_count FROM mi_equity_eod_batch_chunks WHERE batch_id=:id AND chunk_index=:i"),
@@ -134,7 +262,12 @@ def record_chunk(conn, req: EquityBarIngestRequest) -> dict[str, Any]:
     if prior is not None:
         if prior["chunk_hash"] != digest:
             raise BatchProtocolError("chunk {0} hash mismatch".format(req.chunk_index))
-        return {"duplicate": True, "chunk_hash": digest, "state": batch["state"]}
+        return {
+            "duplicate": True,
+            "chunk_hash": digest,
+            "state": batch["state"],
+            "run_id": batch.get("ingestion_run_id"),
+        }
     conn.execute(
         text(
             """
@@ -157,7 +290,12 @@ def record_chunk(conn, req: EquityBarIngestRequest) -> dict[str, Any]:
         ),
         {"id": req.batch_id, "bars": len(req.records), "cov": strict_dumps(req.coverage or {})},
     )
-    return {"duplicate": False, "chunk_hash": digest, "state": BATCH_OPEN}
+    return {
+        "duplicate": False,
+        "chunk_hash": digest,
+        "state": BATCH_OPEN,
+        "run_id": batch.get("ingestion_run_id"),
+    }
 
 
 def _refuse_provider_mix(conn, *, source_id: str, provider: str) -> None:
@@ -180,6 +318,8 @@ def stage_equity_bars(conn, req: EquityBarIngestRequest) -> dict[str, Any]:
 
     _refuse_provider_mix(conn, source_id=req.source_id, provider=req.provider)
     chunk_meta = record_chunk(conn, req)
+    batch = conn.execute(text("SELECT * FROM mi_equity_eod_batches WHERE batch_id = :id"), {"id": req.batch_id}).mappings().one()
+    run_id = _logical_run_id(conn, batch, source_id=req.source_id)
     bars: list[EquityBar] = []
     for raw in req.records:
         day = raw["bar_date"]
@@ -203,19 +343,8 @@ def stage_equity_bars(conn, req: EquityBarIngestRequest) -> dict[str, Any]:
             )
         )
     retrieved = utcnow()
-    run_id = start_run(conn, source_id=req.source_id, dataset="equity_etf_daily_bars")
     counts = upsert_bars(conn, bars, run_id=run_id, retrieved_at=retrieved, provider=req.provider)
-    conn.execute(
-        text("UPDATE mi_equity_eod_batches SET ingestion_run_id = COALESCE(ingestion_run_id, :run), updated_at = NOW() WHERE batch_id = :id"),
-        {"run": run_id, "id": req.batch_id},
-    )
-    finish_run(
-        conn,
-        run_id,
-        status=RUN_SUCCEEDED,
-        counts=counts,
-        details={"collector_id": req.collector_id, "batch_id": req.batch_id, "chunk_index": req.chunk_index, "chunk_count": req.chunk_count, "staged": True},
-    )
+    # The logical run stays ATTEMPTED until FINALIZE. A chunk is not a completed ingestion.
     return {
         "received": len(bars),
         "inserted": counts.get("inserted", 0),
@@ -228,7 +357,61 @@ def stage_equity_bars(conn, req: EquityBarIngestRequest) -> dict[str, Any]:
         "chunk_hash": chunk_meta["chunk_hash"],
         "duplicate_chunk": chunk_meta["duplicate"],
         "run_id": run_id,
+        "run_status": RUN_ATTEMPTED,
         "latest_observation": max((b.bar_date for b in bars), default=None),
+    }
+
+
+def _create_zero_success_failed_batch(
+    conn,
+    *,
+    batch_id: str,
+    collector_id: str,
+    coverage: Mapping[str, Any],
+    request_mode: str,
+    provider: str,
+    source_id: str,
+    what_to_show: str,
+    adjustment_basis: str,
+) -> dict[str, Any]:
+    run_id = start_run(conn, source_id=source_id, dataset="equity_etf_daily_bars")
+    conn.execute(
+        text(
+            """
+            INSERT INTO mi_equity_eod_batches (
+                batch_id, collector_id, source_id, provider, what_to_show, adjustment_basis,
+                request_mode, chunk_count, state, coverage_json, ingestion_run_id
+            ) VALUES (
+                :id, :cid, :src, :prov, :wts, :adj, :mode, 0, :state, CAST(:cov AS JSONB), :run
+            )
+            """
+        ),
+        {
+            "id": batch_id,
+            "cid": collector_id,
+            "src": source_id,
+            "prov": provider,
+            "wts": what_to_show,
+            "adj": adjustment_basis,
+            "mode": request_mode,
+            "state": BATCH_OPEN,
+            "cov": strict_dumps(dict(coverage)),
+            "run": run_id,
+        },
+    )
+    return conn.execute(text("SELECT * FROM mi_equity_eod_batches WHERE batch_id = :id"), {"id": batch_id}).mappings().one()
+
+
+def _duplicate_finalize_payload(batch: Mapping[str, Any], batch_id: str) -> dict[str, Any]:
+    return {
+        "ok": True,
+        "finalized": True,
+        "duplicate": True,
+        "batch_id": batch_id,
+        "snapshots": 0,
+        "coverage_status": batch["coverage_status"],
+        "run_id": batch["finalized_run_id"] or batch.get("ingestion_run_id"),
+        "latest_observation": None,
     }
 
 
@@ -250,45 +433,33 @@ def finalize_equity_eod_batch(
 
     batch = conn.execute(text("SELECT * FROM mi_equity_eod_batches WHERE batch_id = :id"), {"id": batch_id}).mappings().first()
     if batch is None:
-        if not coverage:
+        if not proven_zero_success_failed_attempt(coverage):
             raise BatchProtocolError("unknown batch_id", status_code=400)
-        conn.execute(
-            text(
-                """
-                INSERT INTO mi_equity_eod_batches (
-                    batch_id, collector_id, source_id, provider, what_to_show, adjustment_basis,
-                    request_mode, chunk_count, state, coverage_json
-                ) VALUES (
-                    :id, :cid, :src, :prov, :wts, :adj, :mode, 0, :state, CAST(:cov AS JSONB)
-                )
-                """
-            ),
+        batch = _create_zero_success_failed_batch(
+            conn,
+            batch_id=batch_id,
+            collector_id=collector_id,
+            coverage=coverage or {},
+            request_mode=request_mode,
+            provider=provider,
+            source_id=source_id,
+            what_to_show=what_to_show,
+            adjustment_basis=adjustment_basis,
+        )
+    else:
+        _require_metadata_match(
+            batch,
             {
-                "id": batch_id,
-                "cid": collector_id,
-                "src": source_id,
-                "prov": provider,
-                "wts": what_to_show,
-                "adj": adjustment_basis,
-                "mode": request_mode,
-                "state": BATCH_OPEN,
-                "cov": strict_dumps(dict(coverage or {})),
+                "collector_id": collector_id,
+                "provider": provider,
+                "source_id": source_id,
+                "what_to_show": what_to_show,
+                "adjustment_basis": adjustment_basis,
+                "request_mode": request_mode,
             },
         )
-        batch = conn.execute(text("SELECT * FROM mi_equity_eod_batches WHERE batch_id = :id"), {"id": batch_id}).mappings().one()
-    if batch["collector_id"] != collector_id:
-        raise BatchProtocolError("collector_id does not match batch")
-    if batch["state"] == BATCH_FINALIZED:
-        return {
-            "ok": True,
-            "finalized": True,
-            "duplicate": True,
-            "batch_id": batch_id,
-            "snapshots": 0,
-            "coverage_status": batch["coverage_status"],
-            "run_id": batch["finalized_run_id"],
-            "latest_observation": None,
-        }
+    if batch["state"] in {BATCH_FINALIZED, BATCH_FAILED}:
+        return _duplicate_finalize_payload(batch, batch_id)
     expected = int(batch["chunk_count"] or 0)
     received = int(batch["received_chunks"] or 0)
     if expected > 0 and received < expected:
@@ -303,6 +474,8 @@ def finalize_equity_eod_batch(
     cov_body["provider"] = provider
     cov_body["what_to_show"] = what_to_show
     cov_body["adjustment_basis"] = adjustment_basis
+    cov_body["source_id"] = source_id
+    cov_body["collector_id"] = collector_id
     cov_body["batch_id"] = batch_id
     upsert_source_registry(
         conn,
@@ -322,38 +495,59 @@ def finalize_equity_eod_batch(
         enabled={EQUITY_SOURCE_ID: True},
         access={EQUITY_SOURCE_ID: "CONFIGURED"},
     )
-    run_id = start_run(conn, source_id=EQUITY_SOURCE_ID, dataset="equity_etf_daily_bars")
+    run_id = _logical_run_id(conn, batch, source_id=EQUITY_SOURCE_ID)
     prices = load_adj_closes(conn, list(UNIVERSE_SYMBOLS), source_id=EQUITY_SOURCE_ID, provider=provider)
-    as_of = None
+    staged_as_of = None
     for series in prices.values():
         if series:
             last = max(series)
-            if as_of is None or last > as_of:
-                as_of = last
+            if staged_as_of is None or last > staged_as_of:
+                staged_as_of = last
+    published_as_of = published_complete_snapshot_as_of(conn)
+    complete = cov_status == COVERAGE_COMPLETE
     snapshots = 0
-    if as_of is not None and cov_status != COVERAGE_EMPTY:
+    # Only a COMPLETE universe may publish a new cross-section. PARTIAL keeps
+    # the last complete snapshot. Missing != zero; do not forward-fill.
+    if complete and staged_as_of is not None:
         snapshots = write_snapshots(
             conn,
-            as_of=as_of,
+            as_of=staged_as_of,
             prices=prices,
             source_id=EQUITY_SOURCE_ID,
             run_id=run_id,
             adjustment_basis=adjustment_basis,
             provider=provider,
         )
-    complete = cov_status == COVERAGE_COMPLETE
-    metadata = "VALIDATED" if complete else ("PARTIAL_COVERAGE" if cov_status == COVERAGE_PARTIAL else "INCOMPLETE")
+        freshness_as_of = staged_as_of
+        transport = TRANSPORT_OK
+        run_status = RUN_SUCCEEDED
+        metadata = "VALIDATED"
+        batch_state = BATCH_FINALIZED
+    elif cov_status == COVERAGE_PARTIAL:
+        freshness_as_of = published_as_of
+        transport = TRANSPORT_OK
+        run_status = RUN_PARTIAL
+        metadata = "PARTIAL_COVERAGE"
+        batch_state = BATCH_FINALIZED
+    else:
+        freshness_as_of = published_as_of
+        transport = "FAILED"
+        run_status = RUN_FAILED
+        metadata = "INCOMPLETE"
+        batch_state = BATCH_FAILED
+    cov_body["logical_ingestion_status"] = run_status
+    cov_body["snapshot_promotion"] = "published" if snapshots else "blocked"
     record_freshness(
         conn,
         source_id=EQUITY_SOURCE_ID,
         dataset="equity_etf_daily_bars",
         cadence="D",
-        transport_status=TRANSPORT_OK if as_of is not None else "FAILED",
-        latest_observation=as_of,
+        transport_status=transport,
+        latest_observation=freshness_as_of,
         success=complete,
         error_redacted=None if complete else "universe coverage incomplete",
         run_id=run_id,
-        latest_observation_retrieved_at=utcnow() if as_of is not None else None,
+        latest_observation_retrieved_at=utcnow() if complete and staged_as_of is not None else None,
         metadata_status=metadata,
         series_id="SPY",
         coverage_status=cov_status,
@@ -363,8 +557,16 @@ def finalize_equity_eod_batch(
     finish_run(
         conn,
         run_id,
-        status=RUN_SUCCEEDED,
-        details={"collector_id": collector_id, "batch_id": batch_id, "snapshots": snapshots, "coverage_status": cov_status, "finalized": True},
+        status=run_status,
+        counts={"received": int(batch["bars_received"] or 0)},
+        details={
+            "collector_id": collector_id,
+            "batch_id": batch_id,
+            "snapshots": snapshots,
+            "coverage_status": cov_status,
+            "finalized": True,
+            "logical_batch": True,
+        },
     )
     conn.execute(
         text(
@@ -376,18 +578,16 @@ def finalize_equity_eod_batch(
                 coverage_status = :cstatus,
                 finalized_run_id = :run,
                 finalized_at = NOW(),
-                updated_at = NOW(),
-                request_mode = :mode
+                updated_at = NOW()
             WHERE batch_id = :id
             """
         ),
         {
-            "state": BATCH_FINALIZED,
+            "state": batch_state,
             "cov": strict_dumps(cov_body),
             "ratio": ratio,
             "cstatus": cov_status,
             "run": run_id,
-            "mode": request_mode,
             "id": batch_id,
         },
     )
@@ -400,7 +600,8 @@ def finalize_equity_eod_batch(
         "coverage_status": cov_status,
         "coverage_ratio": ratio,
         "run_id": run_id,
-        "latest_observation": as_of.isoformat() if as_of else None,
+        "run_status": run_status,
+        "latest_observation": (staged_as_of.isoformat() if complete and staged_as_of else (published_as_of.isoformat() if published_as_of else None)),
         "received": int(batch["bars_received"] or 0),
         "inserted": 0,
         "unchanged": 0,
