@@ -138,6 +138,7 @@ SOURCE_DEFAULT_CALENDAR = {
     "EQUITY_EOD": CAL_NYSE,
     "FMP_LEGACY": CAL_NYSE,
     "YAHOO": CAL_NYSE,
+    "IBKR": CAL_NYSE,
 }
 
 
@@ -148,6 +149,17 @@ def policy_for(*, series_id: str | None = None, source_id: str | None = None, ca
         cal = SOURCE_DEFAULT_CALENDAR[source_id]
         freq = str(cadence or "D").upper()
         if freq in {"D", "INTRADAY"}:
+            # Equity daily bars: expected observation is the last completed NYSE session.
+            if cal == CAL_NYSE:
+                return FreshnessPolicy(
+                    calendar=cal,
+                    cadence=freq,
+                    typical_release=time(16, 0),
+                    overdue_sessions=1,
+                    stale_sessions=3,
+                    same_day_available=True,
+                    notes="US equity/ETF last completed session.",
+                )
             return FreshnessPolicy(calendar=cal, cadence=freq, overdue_sessions=1, stale_sessions=3)
     return None
 

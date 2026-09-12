@@ -51,10 +51,14 @@ INFORMATIONAL_ERROR_CODES = frozenset(
         2158,
         2174,
         2100,
+        2188,  # up-to-the-second historical bars need a streaming subscription; EOD bars may still follow
     }
 )
 ENTITLEMENT_ERROR_CODES = frozenset({354, 10089, 10167, 10168, 10197, 10225, 2186})
 CONNECTIVITY_ERROR_CODES = frozenset({502, 504, 1100, 1300, 2110, 326, 507, 1101, 1102})
+PACING_ERROR_CODES = frozenset({420})
+HISTORICAL_ERROR_CODES = frozenset({162, 165, 366})
+INVALID_CONTRACT_ERROR_CODES = frozenset({200, 321})
 
 BLOCKED_ECLIENT_METHODS = (
     "placeOrder",
@@ -76,7 +80,6 @@ BLOCKED_ECLIENT_METHODS = (
     "reqPnLSingle",
     "reqFamilyCodes",
     "exercisePositions",
-    "reqHistoricalData",
     "reqHistoricalTicks",
     "reqHeadTimeStamp",
     "reqHistogramData",
@@ -134,4 +137,10 @@ def classify_error(code: int) -> str:
         return "entitlement"
     if code in CONNECTIVITY_ERROR_CODES:
         return "connectivity"
+    if code in PACING_ERROR_CODES:
+        return "pacing"
+    if code in HISTORICAL_ERROR_CODES:
+        return "historical"
+    if code in INVALID_CONTRACT_ERROR_CODES:
+        return "invalid_contract"
     return "error"

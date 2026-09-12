@@ -77,7 +77,7 @@ def test_gateway_migration_is_the_next_number_and_last():
     names = [p.name for p in _all_files()]
     numbers = [int(n[:3]) for n in names]
     assert numbers == list(range(1, len(names) + 1)), "migration numbers must be contiguous"
-    assert names[-1] == "029_holdout_accessed_nullable.sql"
+    assert names[-1] == "031_ibkr_eod_batch_protocol.sql"
     assert not any(n.startswith("020_ai_gateway") for n in names), "the concurrent PR's duplicate 020 must not survive"
 
 
@@ -85,7 +85,7 @@ def test_scenario_a_fresh_database_applies_everything_once_with_hashes(scratch_d
     engine, _url = scratch_db
     first = apply_migrations(engine=engine)
     assert first and not any(name.endswith("(skipped)") for name in first)
-    assert first[-1] == "029_holdout_accessed_nullable.sql"
+    assert first[-1] == "031_ibkr_eod_batch_protocol.sql"
     recorded = _recorded(engine)
     for path in _all_files():
         assert recorded[path.name] == migration_sha256(path)
@@ -117,7 +117,7 @@ def test_scenario_b_simulated_production_001_019_upgrades_through_028(scratch_db
     applied = [n for n in upgraded if not n.endswith("(skipped)")]
     assert len(skipped) == 19
     assert applied == [p.name for p in _all_files() if p.name >= "020"]
-    assert applied[-1] == "029_holdout_accessed_nullable.sql"
+    assert applied[-1] == "031_ibkr_eod_batch_protocol.sql"
     recorded = _recorded(engine)
     # Historical rows adopted the trusted baseline hash (not a bless of whatever was on disk: the
     # values are equal here only because the files are the committed baseline files).

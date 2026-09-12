@@ -13,7 +13,7 @@ from typing import Any
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 
-from ibkr_ingest.validate import PayloadError, validate_heartbeat, validate_quote_batch
+from ibkr_ingest.validate import PayloadError, validate_equity_bar_batch, validate_equity_finalize, validate_heartbeat, validate_quote_batch
 
 logger = logging.getLogger("ibkr_ingest")
 
@@ -111,3 +111,55 @@ def quotes(body: dict[str, Any]) -> dict[str, Any]:
         "duplicate": counts["unchanged"],
         "results": counts["results"],
     }
+
+
+@app.post("/v1/equity_bars", dependencies=[Depends(require_token)])
+def equity_bars(body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        request = validate_equity_bar_batch(body)
+    except PayloadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    from market_intelligence.equity_eod_batch import BatchProtocolError
+    from market_intelligence.ibkr_store import ingest_equity_bars
+
+    try:
+        with ingest_engine().begin() as conn:
+            stored = ingest_equity_bars(conn, request.records, collector_id=request.collector_id, request=request)
+    except BatchProtocolError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    latest = stored.get("latest_observation")
+    if hasattr(latest, "isoformat"):
+        latest = latest.isoformat()
+    return {
+        "ok": True,
+        "collector_id": request.collector_id,
+        "received": stored.get("received", len(request.records)),
+        "inserted": stored.get("inserted", 0),
+        "unchanged": stored.get("unchanged", 0),
+        "snapshots": stored.get("snapshots", 0),
+        "latest_observation": latest,
+        "run_id": stored.get("run_id"),
+        "batch_id": stored.get("batch_id") or request.batch_id,
+        "chunk_index": request.chunk_index,
+        "chunk_count": request.chunk_count,
+        "finalized": bool(stored.get("finalized")),
+        "coverage_status": stored.get("coverage_status"),
+    }
+
+
+@app.post("/v1/equity_bars/finalize", dependencies=[Depends(require_token)])
+def equity_bars_finalize(body: dict[str, Any]) -> dict[str, Any]:
+    try:
+        payload = validate_equity_finalize(body)
+    except PayloadError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    from market_intelligence.equity_eod_batch import BatchProtocolError, finalize_equity_eod_batch
+
+    try:
+        with ingest_engine().begin() as conn:
+            stored = finalize_equity_eod_batch(conn, **payload)
+    except BatchProtocolError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
+    return stored

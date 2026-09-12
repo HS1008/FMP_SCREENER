@@ -106,6 +106,8 @@ MI_TABLES_TRUNCATE = (
     "mi_finra_dataset_capability",
     "mi_collector_status",
     "mi_market_quotes",
+    "mi_equity_eod_batch_chunks",
+    "mi_equity_eod_batches",
     "mi_market_bars",
     "mi_instrument_identifiers",
     "mi_market_instruments",

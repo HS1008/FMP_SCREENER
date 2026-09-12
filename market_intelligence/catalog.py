@@ -395,7 +395,7 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "expected_cadence": "D",
         "usage_scope": EXPORT_INTERNAL_ONLY,
         "attribution": "Independent daily bars. Never labeled as FMP.",
-        "terms_notes": "Yahoo is optional and entitlement-unverified. Missing access is UNAVAILABLE, not an FMP fallback.",
+        "terms_notes": "Yahoo is optional and entitlement-unverified. IBKR is available behind MI_EQUITY_PROVIDER=ibkr via the Windows collector (ADJUSTED_LAST). Missing access is UNAVAILABLE, not an FMP fallback. IBKR values stay INTERNAL_ONLY until a human confirms remote export rights.",
         "units_metadata": {"price": "adjusted_close"},
     },
 )

@@ -360,3 +360,43 @@ def upsert_heartbeat(conn, payload: Mapping[str, Any]) -> None:
             "overflow": overflow,
         },
     )
+
+
+def ingest_equity_bars(conn, records: list[Mapping[str, Any]], *, collector_id: str, request=None) -> dict[str, Any]:
+    """Stage collector-posted daily bars. Snapshots/freshness happen on finalize."""
+    from ibkr_ingest.validate import EquityBarIngestRequest
+    from market_intelligence.equity_eod_batch import finalize_equity_eod_batch, stage_equity_bars
+
+    if request is None:
+        raise ValueError("equity bar ingest requires a validated batch request")
+    if not isinstance(request, EquityBarIngestRequest):
+        raise TypeError("request must be EquityBarIngestRequest")
+    staged = stage_equity_bars(conn, request)
+    if not request.auto_finalize:
+        staged["latest_observation"] = staged["latest_observation"].isoformat() if staged.get("latest_observation") else None
+        return staged
+    finalized = finalize_equity_eod_batch(
+        conn,
+        batch_id=request.batch_id,
+        collector_id=collector_id,
+        coverage=request.coverage,
+        request_mode=request.request_mode,
+        provider=request.provider,
+        source_id=request.source_id,
+        what_to_show=request.what_to_show,
+        adjustment_basis=request.adjustment_basis,
+    )
+    received = staged.get("received", 0)
+    inserted = staged.get("inserted", 0)
+    unchanged = staged.get("unchanged", 0)
+    latest = staged.get("latest_observation")
+    staged.update(finalized)
+    staged["finalized"] = True
+    staged["received"] = received
+    staged["inserted"] = inserted
+    staged["unchanged"] = unchanged
+    if latest is not None and not staged.get("latest_observation"):
+        staged["latest_observation"] = latest.isoformat() if hasattr(latest, "isoformat") else latest
+    elif hasattr(staged.get("latest_observation"), "isoformat"):
+        staged["latest_observation"] = staged["latest_observation"].isoformat()
+    return staged

@@ -72,7 +72,7 @@ class IBKRMarketDataAdapter:
 
     source_id = IBKR_SOURCE_ID
     ENABLE_FLAG = "MI_IBKR_MARKET_DATA_ENABLED"
-    CAPABILITIES = {"quotes": "windows-local delayed/live snapshot via TWS", "bars": "not in this collector", "orders": "never"}
+    CAPABILITIES = {"quotes": "windows-local delayed/live snapshot via TWS", "bars": "daily EOD via Windows collector fetch-eod (ADJUSTED_LAST); not a server TWS socket", "orders": "never"}
 
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
         return AdapterStatus(

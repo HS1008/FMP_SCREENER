@@ -325,6 +325,9 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             elif name == "equity":
                 from market_intelligence.equity_eod import ingest_equity_eod
 
+                # Windows collector pushes bars. This host consumes stored EQUITY_EOD
+                # rows when MI_EQUITY_PROVIDER=ibkr/ibkr_collector; it never opens TWS.
+
                 report = ingest_equity_eod(engine, parent_run_id=parent_run_id, today=as_of, env=env)
                 status["results"][name] = report.as_dict()
                 if report.failed:
