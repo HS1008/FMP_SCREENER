@@ -116,7 +116,11 @@ def proven_zero_success_failed_attempt(coverage: Mapping[str, Any] | None) -> bo
         except (TypeError, ValueError):
             return False
     status, ratio, body = coverage_status_of(coverage)
-    requested_n = int(body.get("requested") or 0)
+    requested_raw = body.get("requested")
+    if isinstance(requested_raw, list):
+        requested_n = len(requested_raw)
+    else:
+        requested_n = int(requested_raw or 0)
     success_n = int(body.get("successful_count") or 0)
     failed_n = int(body.get("failed_count") or 0)
     if status != COVERAGE_EMPTY:

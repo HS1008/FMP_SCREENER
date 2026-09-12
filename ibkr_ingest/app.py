@@ -146,6 +146,7 @@ def equity_bars(body: dict[str, Any]) -> dict[str, Any]:
         "chunk_count": request.chunk_count,
         "finalized": bool(stored.get("finalized")),
         "coverage_status": stored.get("coverage_status"),
+        "run_status": stored.get("run_status"),
     }
 
 
