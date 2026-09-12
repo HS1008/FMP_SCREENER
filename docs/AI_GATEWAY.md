@@ -29,9 +29,10 @@ Source status: [`SOURCE_REPLACEMENT_MATRIX.md`](SOURCE_REPLACEMENT_MATRIX.md).
 * Frozen morning snapshots stay on `/v1/context/*` (`ai_context_api.py`). Live semantic tools
   live on `/api/v1/*` and MCP `/mcp`. Both are mounted in the same `fmp-ai-context-api` unit.
 * Research views come from **migration 027** (`027_ai_gateway_strategy_views.sql`) and the
-  fail-closed run proof in **migration 028** (`028_gateway_holdout_failclosed.sql`). The
-  concurrent gateway PR's `020_…` number belonged to the deploy-hardening lineage and was not
-  reused; applied SQL is never renumbered.
+  fail-closed run proof in **migration 028** (`028_gateway_holdout_failclosed.sql`).
+  **Migration 029** makes `research_runs.holdout_accessed` nullable with no default so unknown
+  access cannot masquerade as `FALSE`. The concurrent gateway PR's `020_…` number belonged to
+  the deploy-hardening lineage and was not reused; applied SQL is never renumbered.
 
 ## Data path the gateway describes
 
@@ -90,10 +91,11 @@ aggregates are identity/date/status only until an entitlement decision is record
 
 ## Holdout fail-closed (defense in depth)
 
-1. **SQL** (`027_…` plus `028_…`): a run is exposed only when holdout access is **proven**
-   (`holdout_accessed IS FALSE`, `holdout_status` is `LOCKED` for Stage 2 / `LOCKED` or
+1. **SQL** (`027_…` plus `028_…` plus `029_…`): a run is exposed only when holdout access is
+   **proven** (`holdout_accessed IS FALSE`; NULL is unknown and hidden after 029 drops the
+   `NOT NULL DEFAULT FALSE` masquerade). `holdout_status` is `LOCKED` for Stage 2 / `LOCKED` or
    `EXPOSED_PRIOR_TO_STAGE1` for Stage 1, and Stage 2 `holdout_exposure_status` is
-   `PRISTINE`/`NEVER_ACCESSED`). NULL or unknown run-level flags are hidden. An
+   `PRISTINE`/`NEVER_ACCESSED`. NULL or unknown run-level flags are hidden. An
    experiment needs `research_is_holdout IS FALSE` (NULL = unknown = hidden), a known test type
    without `HOLDOUT`, and a **known** `test_end < 2025-01-01`. An artifact must be non-model
    (type/path/key/transport) and bound to a visible experiment, or run-scoped with *every*
