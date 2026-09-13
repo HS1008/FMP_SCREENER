@@ -17,9 +17,9 @@
 #   - run 2023+ research experiments
 #   - listen for its own completion (no recursion)
 #
-# Shares fmp-post-deploy-host with Platform Research and Market Intelligence
-# production verify (cancel-in-progress: false). Those jobs mutate shared
-# host/database state and must not overlap.
+# GitHub concurrency is per-workflow (cancel-in-progress: false) so a sibling
+# post-deploy job is not cancelled. Mutating host/database work shares
+# /var/lock/fmp-post-deploy.lock with Market Intelligence production verify.
 #
 # Next automation layer (NOT implemented here):
 #   Cursor → QuantConnect smoke test → this workflow
@@ -38,7 +38,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: fmp-post-deploy-host
+  group: fmp-post-deploy-${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
@@ -82,6 +82,17 @@ jobs:
         run: |
           ssh "$DO_USER@$DO_HOST" << 'EOF'
             set -euo pipefail
+
+            if [ -f /opt/fmp/current/scripts/lib_post_deploy_lock.sh ]; then
+              # shellcheck disable=SC1091
+              . /opt/fmp/current/scripts/lib_post_deploy_lock.sh
+            elif [ -f /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh ]; then
+              # shellcheck disable=SC1091
+              . /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh
+            else
+              echo "FAIL: scripts/lib_post_deploy_lock.sh missing on droplet"
+              exit 1
+            fi
 
             if [ -d /opt/fmp/current ]; then
               if [ ! -f /opt/fmp/current/scripts/verify_stage1_production.py ]; then

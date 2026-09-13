@@ -92,6 +92,7 @@ def test_dashboard_readonly_sql_sets_read_only_defaults():
     assert "research_pair_diagnostics" in sql
     assert "research_fixed_income_metrics" in sql
     assert "research_risk_metrics" in sql
+    assert "schema_migrations" in sql
 
 
 def test_verify_job_exits_3_when_url_unset(monkeypatch, capsys):

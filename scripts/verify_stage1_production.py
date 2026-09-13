@@ -880,28 +880,44 @@ def load_holdout_exposures(conn) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
-def verify_live_spytrend() -> tuple[str, dict[str, Any]]:
+def verify_live_spytrend(
+    strategy_row: dict[str, Any] | None = None,
+) -> tuple[str, dict[str, Any]]:
     from jobs.sync_quantconnect import (
         get_live_portfolio,
         get_live_status,
-        get_strategies,
         parse_portfolio,
     )
 
-    strategies = get_strategies()
-    target = None
-    for row in strategies:
-        if row["strategy_id"] == STRATEGY_ID or (row.get("name") or "") == STRATEGY_ID:
-            target = row
-            break
-    if target is None:
+    if strategy_row is None:
+        from db.dashboard_engine import (
+            dashboard_engine,
+            load_streamlit_env,
+            writer_fallback_allowed,
+        )
+
+        if writer_fallback_allowed():
+            raise RuntimeError(
+                "DASHBOARD_ALLOW_WRITER_FALLBACK is not a Stage 1 production verify path"
+            )
+        load_streamlit_env()
+        with dashboard_engine().connect() as conn:
+            strategy_row = load_spytrend_strategy(conn)
+
+    if strategy_row is None:
         failed = evaluate_live_parser(None, None)
         failed["failures"].append("SPYTrend is not registered in strategies")
         return "MISSING", failed
 
+    qc_project_id = strategy_row.get("qc_project_id")
+    if not qc_project_id:
+        failed = evaluate_live_parser(None, None)
+        failed["failures"].append("SPYTrend qc_project_id is missing")
+        return "MISSING", failed
+
     status = "UNKNOWN"
     try:
-        live_result = get_live_status(target["qc_project_id"])
+        live_result = get_live_status(qc_project_id)
         status = str(live_result.get("status") or "UNKNOWN")
     except Exception as exc:
         failed = evaluate_live_parser(None, None)
@@ -909,7 +925,7 @@ def verify_live_spytrend() -> tuple[str, dict[str, Any]]:
         return status, failed
 
     try:
-        raw = get_live_portfolio(target["qc_project_id"])
+        raw = get_live_portfolio(qc_project_id)
         portfolio = parse_portfolio(raw)
     except Exception as exc:
         failed = evaluate_live_parser(None, None)
@@ -967,6 +983,7 @@ def main(argv: list[str] | None = None) -> int:
     smoke: dict[str, Any] = {"status": "FAIL", "count": 0}
     stage1_run: dict[str, Any] = {"status": "SKIP", "present": False}
     official_stage1: dict[str, Any] = {"status": "SKIP", "present": False}
+    strategy_row: dict[str, Any] | None = None
     tree = inspect_git_working_tree()
     failures.extend(tree.get("failures") or [])
     working_tree_label = (
@@ -1028,7 +1045,7 @@ def main(argv: list[str] | None = None) -> int:
         failures.append("database verification error: {0}".format(redact(str(exc))))
 
     try:
-        live_status, live = verify_live_spytrend()
+        live_status, live = verify_live_spytrend(strategy_row)
         failures.extend(live.get("failures") or [])
     except Exception as exc:
         failures.append("live verification error: {0}".format(redact(str(exc))))

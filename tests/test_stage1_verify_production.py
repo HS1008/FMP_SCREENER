@@ -224,6 +224,9 @@ def test_workflow_uses_existing_secrets_and_does_not_install_cron():
     )
     assert "live code root missing on droplet" in workflow
     assert "flock -w 180 /root/FMP_SCREENER/outputs/backtest_sync.flock" in workflow
+    assert "lib_post_deploy_lock.sh" in workflow
+    assert "group: fmp-post-deploy-${{ github.workflow }}" in workflow
+    assert "group: fmp-post-deploy-host" not in workflow
     assert "cd ${CODE_ROOT}" in workflow
     assert "/etc/fmp/fmp-dashboard.env" in workflow
     assert "DASHBOARD_ALLOW_WRITER_FALLBACK" in workflow
@@ -311,6 +314,12 @@ def test_stage1_production_verify_uses_dashboard_readonly():
     assert query.index("source /etc/fmp/fmp-dashboard.env") < query.index(
         "python scripts/verify_stage1_production.py"
     )
+    live_fn = script.split("def verify_live_spytrend", 1)[1].split("def parse_args", 1)[0]
+    assert "get_strategies" not in live_fn
+    assert "from db.connection import engine" not in live_fn
+    assert "load_spytrend_strategy" in live_fn
+    assert "get_live_status" in live_fn
+    assert "dashboard_engine" in live_fn
 
 
 def test_deploy_installs_backtest_sync_cron_after_migrations():
@@ -690,6 +699,41 @@ def test_official_stage1_identity_refuses_pin_drift_and_holdout():
     )
     assert holdout["status"] == "FAIL"
     assert any("holdout_accessed" in item for item in holdout["failures"])
+
+
+def test_verify_live_spytrend_uses_readonly_strategy_row(monkeypatch):
+    from jobs.sync_quantconnect import parse_portfolio
+    from scripts.verify_stage1_production import verify_live_spytrend
+
+    raw = {
+        "portfolio": {
+            "cash": {"USD": {"valueInAccountCurrency": 388.12}},
+            "holdings": {"SPY": {"q": 10.0, "p": 500.0, "v": 5000.0}},
+        }
+    }
+
+    def boom_strategies():
+        raise AssertionError("writer get_strategies must not run")
+
+    def live_status(project_id):
+        assert project_id == "qc-1"
+        return {"status": "Running"}
+
+    def live_portfolio(project_id):
+        assert project_id == "qc-1"
+        return raw
+
+    monkeypatch.setattr("jobs.sync_quantconnect.get_strategies", boom_strategies)
+    monkeypatch.setattr("jobs.sync_quantconnect.get_live_status", live_status)
+    monkeypatch.setattr("jobs.sync_quantconnect.get_live_portfolio", live_portfolio)
+    status, live = verify_live_spytrend(
+        {"strategy_id": "SPYTrend", "qc_project_id": "qc-1"}
+    )
+    assert status == "Running"
+    assert live["ok"] is True
+    assert live["position_count"] == 1
+    parsed = parse_portfolio(raw)
+    assert parsed["equity"] == live["equity"]
 
 
 def test_production_verify_queries_official_stage1_identity():

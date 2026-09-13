@@ -53,6 +53,12 @@ Do not merge platform-MI into this line. Do not launch QuantConnect.
 systemd cutover to `/opt/fmp/current` is **not** performed automatically.
 `cutover --apply` still refuses to install the live unit.
 
+A successful deploy then starts Stage 1, Platform Research, and Market
+Intelligence production verify. Those workflows use per-workflow GitHub
+concurrency (`cancel-in-progress: false`). Stage 1 and Market Intelligence
+mutating sessions share `/var/lock/fmp-post-deploy.lock`; Platform Research
+is read-only and does not take that flock.
+
 ## 3. Host files that must already exist
 
 - `/etc/fmp/fmp-dashboard.env` (required; missing file fails deploy)
