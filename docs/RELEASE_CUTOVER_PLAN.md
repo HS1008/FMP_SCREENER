@@ -41,12 +41,14 @@ Do not merge platform-MI into this line. Do not launch QuantConnect.
    - **Validate:** migrate once from the staged interpreter/code root,
      provision/verify read-only identity, query-back official research rows,
      persist sanitized deploy identity, dry-run cutover readiness.
-   - **Activate:** checkout the existing unit tree to the **requested SHA**
-     (not `git pull origin main`), restart `fmp-dashboard`, observe the live
-     PID, write `/var/lib/fmp/deploy/host_audit.json`, require running-service
-     identity. SHA equality is enforced only when the process uses
-     `/opt/fmp/current`. On restart/verify/audit failure the checkout is
-     restored to the pre-activate SHA.
+   - **Activate:** fetch the requested SHA from the authoritative remote
+     with ancestry (not from the shallow staged clone, not `git pull origin
+     main`), checkout that SHA, assert `git log -1` and parent connectivity,
+     restart `fmp-dashboard`, observe the live PID, write
+     `/var/lib/fmp/deploy/host_audit.json`, require running-service identity.
+     SHA equality is enforced only when the process uses `/opt/fmp/current`.
+     On restart/verify/audit failure the checkout is restored to the
+     pre-activate SHA.
 
 systemd cutover to `/opt/fmp/current` is **not** performed automatically.
 `cutover --apply` still refuses to install the live unit.
@@ -55,9 +57,9 @@ systemd cutover to `/opt/fmp/current` is **not** performed automatically.
 
 - `/etc/fmp/fmp-dashboard.env` (required; missing file fails deploy)
 - `/etc/fmp/fmp-writer.env` (preferred writer identity for migrations)
-- `/etc/fmp/secrets/dashboard_readonly.pw` **or** the legacy
-  `/root/FMP_SCREENER/.secrets/dashboard_readonly.pw` (copied, not deleted,
-  on first migrate)
+- `/etc/fmp/secrets/dashboard_readonly.pw` (canonical). A leftover
+  `/root/FMP_SCREENER/.secrets/dashboard_readonly.pw` is copied, not deleted,
+  on first migrate and is not recreated.
 - Existing `/root/FMP_SCREENER` checkout, virtualenv, systemd unit, cron/timers
 - Official research rows already in PostgreSQL
 - GitHub secrets: `DO_SSH_KEY`, `DO_SSH_KNOWN_HOSTS`, `DO_HOST`, `DO_USER`

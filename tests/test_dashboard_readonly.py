@@ -20,6 +20,19 @@ from sqlalchemy.engine import make_url
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_provision_script_defaults_to_host_secret_path():
+    script = (ROOT / "scripts" / "provision_dashboard_readonly.sh").read_text(encoding="utf-8")
+    assert 'HOST_PW_FILE="/etc/fmp/secrets/dashboard_readonly.pw"' in script
+    assert 'PW_FILE="$HOST_PW_FILE"' in script
+    assert "expected_pw_file=/etc/fmp/secrets/dashboard_readonly.pw" in script
+    assert "dashboard_readonly_pw=migrated_to_etc_fmp_secrets" in script
+    activate = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text(
+        encoding="utf-8"
+    )
+    assert 'DASH_RO_PW_FILE="/etc/fmp/secrets/dashboard_readonly.pw"' in activate
+    assert 'DASH_RO_PW_FILE="/root/FMP_SCREENER/.secrets/dashboard_readonly.pw"' not in activate
+
+
 def test_provision_script_applies_sql_via_admin_or_peer_not_writer():
     script = (ROOT / "scripts" / "provision_dashboard_readonly.sh").read_text(encoding="utf-8")
     assert "MI_ADMIN_DATABASE_URL" in script

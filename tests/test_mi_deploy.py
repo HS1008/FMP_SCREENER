@@ -360,6 +360,42 @@ def test_mi_writer_engine_refuses_streamlit_only_when_writer_url_present(monkeyp
         writer_engine()
 
 
+def test_activate_host_script_uses_canonical_dashboard_readonly_secret():
+    text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
+    defaults = text.split("while [ $# -gt 0 ]", 1)[0]
+    assigned = [
+        line.strip()
+        for line in defaults.splitlines()
+        if line.startswith("DASH_RO_PW_FILE=")
+    ]
+    assert assigned == ['DASH_RO_PW_FILE="/etc/fmp/secrets/dashboard_readonly.pw"']
+    assert "--pw-file \"$DASH_RO_PW_FILE\"" in text
+    assert "/root/FMP_SCREENER/.secrets/dashboard_readonly.pw" in text
+    assert text.index('DASH_RO_PW_FILE="/etc/fmp/secrets/dashboard_readonly.pw"') < text.index(
+        "--pw-file \"$DASH_RO_PW_FILE\""
+    )
+    example = (TEMPLATES / "market_intelligence.env.example").read_text()
+    assert "/etc/fmp/secrets/dashboard_readonly.pw" in example
+    assert "/root/FMP_SCREENER/.secrets/dashboard_readonly.pw" not in example
+    docs = (ROOT / "docs" / "IMMUTABLE_DEPLOY.md").read_text()
+    assert "`/etc/fmp/secrets/dashboard_readonly.pw` is required" in docs or (
+        "password file at `/etc/fmp/secrets/dashboard_readonly.pw` is required" in docs
+    )
+
+
+def test_post_deploy_workflows_serialize_on_shared_host_group():
+    names = (
+        "stage1_verify.yml",
+        "platform_research_verify.yml",
+        "mi_research_workspace_verify.yml",
+    )
+    for name in names:
+        text = (ROOT / ".github" / "workflows" / name).read_text()
+        assert "group: fmp-post-deploy-host" in text
+        assert "cancel-in-progress: false" in text
+        assert "mi-research-workspace-verify" not in text
+
+
 def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
     assert "MI_ADMIN_DATABASE_URL" in text

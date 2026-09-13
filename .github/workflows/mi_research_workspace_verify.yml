@@ -2,6 +2,8 @@
 # Runs after Deploy FMP Dashboard succeeds on main (GitHub App tokens
 # cannot workflow_dispatch). Never prints secrets, observation values,
 # or restricted credit figures.
+# Shares fmp-post-deploy-host with Stage 1 and Platform Research production
+# verify (cancel-in-progress: false) so host/database mutations cannot overlap.
 name: Market Intelligence research workspace verify
 
 on:
@@ -18,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: mi-research-workspace-verify
+  group: fmp-post-deploy-host
   cancel-in-progress: false
 
 jobs:
