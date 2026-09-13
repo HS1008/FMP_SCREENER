@@ -207,6 +207,78 @@ def test_partial_45_of_46_does_not_publish_or_overwrite(ingest_client, mi_db):
     assert nvda_t1 == 0
 
 
+def test_partial_claims_disagreeing_on_failed_symbol_are_mismatch(ingest_client, mi_db):
+    missing_on_server = "AMD"
+    bars = [_eod_bar(symbol=s, day=T1, close=300.0, con_id=3000 + i) for i, s in enumerate(UNIVERSE) if s != missing_on_server]
+    r = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch(bars, batch_id=str(uuid.uuid4()), chunk_index=1, chunk_count=1, coverage=_coverage_partial("NVDA"), finalize=True),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["coverage_status"] == "COVERAGE_MISMATCH"
+    assert r.json()["run_status"] == "PARTIAL"
+    assert r.json()["promotion_eligible"] is False
+    assert r.json()["snapshots"] == 0
+    assert "AMD" in (r.json().get("missing_on_latest_observed_date") or [])
+
+
+def test_matching_partial_claims_remain_partial(ingest_client, mi_db):
+    missing = "NVDA"
+    bars = [_eod_bar(symbol=s, day=T1, close=300.0, con_id=3100 + i) for i, s in enumerate(UNIVERSE) if s != missing]
+    r = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch(bars, batch_id=str(uuid.uuid4()), chunk_index=1, chunk_count=1, coverage=_coverage_partial(missing), finalize=True),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["coverage_status"] == "PARTIAL"
+    assert r.json()["run_status"] == "PARTIAL"
+    assert r.json()["promotion_eligible"] is False
+
+
+def test_subset_smoke_claims_match_within_requested_scope(ingest_client, mi_db):
+    coverage = {
+        "requested": ["SPY", "NVDA"],
+        "successful": ["SPY"],
+        "failed": {"NVDA": "timeout"},
+        "coverage_ratio": 0.5,
+        "overall": "PARTIAL_SUCCESS",
+        "coverage_status": "PARTIAL",
+    }
+    r = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch([_eod_bar(symbol="SPY", day=T1, close=300.0, con_id=1)], batch_id=str(uuid.uuid4()), chunk_index=1, chunk_count=1, coverage=coverage, request_mode="smoke", finalize=True),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["coverage_status"] == "PARTIAL"
+    assert r.json()["promotion_eligible"] is False
+
+
+def test_subset_smoke_claims_disagreeing_within_scope_are_mismatch(ingest_client, mi_db):
+    coverage = {
+        "requested": ["SPY", "NVDA"],
+        "successful": ["SPY"],
+        "failed": {"NVDA": "timeout"},
+        "coverage_ratio": 0.5,
+        "overall": "PARTIAL_SUCCESS",
+        "coverage_status": "PARTIAL",
+    }
+    bars = [
+        _eod_bar(symbol="SPY", day=T1, close=300.0, con_id=1),
+        _eod_bar(symbol="NVDA", day=T1, close=180.0, con_id=2),
+    ]
+    r = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch(bars, batch_id=str(uuid.uuid4()), chunk_index=1, chunk_count=1, coverage=coverage, request_mode="smoke", finalize=True),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["coverage_status"] == "COVERAGE_MISMATCH"
+    assert r.json()["promotion_eligible"] is False
+
+
 def test_zero_of_46_records_failed_without_snapshots(ingest_client, mi_db):
     batch_id = str(uuid.uuid4())
     r = ingest_client.post("/v1/equity_bars/finalize", headers=_headers(), json=_finalize_body(batch_id, _coverage_failed()))
@@ -304,7 +376,9 @@ def test_reordered_chunks_then_finalize(ingest_client, mi_db):
     assert second.status_code == 200 and first.status_code == 200
     done = ingest_client.post("/v1/equity_bars/finalize", headers=_headers(), json=_finalize_body(batch_id, _coverage_partial()))
     assert done.status_code == 200
-    assert done.json()["coverage_status"] == "PARTIAL"
+    # Full-universe claim of 45/46 cannot match a batch that only observed SPY.
+    assert done.json()["coverage_status"] == "COVERAGE_MISMATCH"
+    assert done.json()["promotion_eligible"] is False
 
 
 def test_finalize_before_all_chunks_rejected(ingest_client):

@@ -1,9 +1,9 @@
 """Windows-local fetch-eod command. Read-only historical bars, no orders.
 
 Exit codes:
-  0  FULL_SUCCESS — every requested symbol returned valid bars
-  1  PARTIAL_SUCCESS — some requested symbols failed; successful bars may still be posted
-  2  FAILED — TWS down or zero successful symbols
+  0  FULL_SUCCESS — local fetch FULL_SUCCESS and server SUCCEEDED/COMPLETE/promotion_eligible
+  1  PARTIAL_SUCCESS or COVERAGE_MISMATCH — successful bars may still be stored; not fully fresh
+  2  FAILED — TWS down, zero successful symbols, or server FAILED/EMPTY
   3  config/delivery error
   4  eod.lock contention
 """
@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import sys
 import uuid
-from typing import Any
+from typing import Any, Mapping
 
 from ibkr_collector import DEFAULT_EOD_CLIENT_ID, DEFAULT_TWS_HOST, DEFAULT_TWS_PORT
 from ibkr_collector.config import load_config
@@ -23,8 +23,11 @@ from ibkr_collector.historical import (
     BACKFILL_DURATION,
     EXIT_CONFIG,
     EXIT_FAILED,
+    EXIT_FULL_SUCCESS,
     EXIT_LOCK,
+    EXIT_PARTIAL_SUCCESS,
     INCREMENTAL_DURATION,
+    OVERALL_FULL_SUCCESS,
     PHASE3_SYMBOLS,
     WHAT_TO_SHOW_ADJUSTED,
     connect_historical_session,
@@ -49,13 +52,38 @@ def acquire_eod_lock(cfg) -> InstanceLock | None:
 
 
 def request_mode_for(*, backfill: bool, symbols: list[str]) -> str:
+    """Label the collector run. History window is unchanged: 2 Y only with --backfill, else 1 W.
+
+    Scheduled ``fetch-eod`` against the dashboard universe is incremental, not a
+    one-off full-universe validation.
+    """
     if backfill:
         return "backfill"
     if symbols == list(PHASE3_SYMBOLS):
         return "smoke"
-    if symbols == list(UNIVERSE_SYMBOLS):
-        return "full"
     return "incremental"
+
+
+def exit_code_for_finalize(*, local_summary: Mapping[str, Any], server: Mapping[str, Any]) -> int:
+    """Combine local TWS coverage with the authoritative server finalize payload."""
+    local_full = local_summary.get("overall") == OVERALL_FULL_SUCCESS
+    run_status = str(server.get("run_status") or "").upper()
+    coverage = str(server.get("coverage_status") or "").upper()
+    promotion = bool(server.get("promotion_eligible"))
+    if run_status == "SUCCEEDED" and coverage == "COMPLETE" and promotion and local_full:
+        return EXIT_FULL_SUCCESS
+    if run_status == "FAILED" or coverage in {"FAILED", "EMPTY"}:
+        return EXIT_FAILED
+    if coverage in {"PARTIAL", "COVERAGE_MISMATCH"} or run_status == "PARTIAL":
+        return EXIT_PARTIAL_SUCCESS
+    if server.get("ok") is False:
+        return EXIT_FAILED
+    local_exit = exit_code_for_coverage(local_summary)
+    if local_exit != EXIT_FULL_SUCCESS:
+        return local_exit
+    if not promotion:
+        return EXIT_PARTIAL_SUCCESS
+    return EXIT_PARTIAL_SUCCESS
 
 
 def run_fetch_eod(args: Any) -> int:
@@ -122,7 +150,7 @@ def _run_fetch_eod(args: Any, cfg) -> int:
                 part["finalize"] = False
                 delivery.send_equity_bars(part)
                 posted += len(chunk)
-        delivery.finalize_equity_bars(
+        finalize_response = delivery.finalize_equity_bars(
             {
                 "collector_id": cfg.collector_id,
                 "batch_id": batch_id,
@@ -137,5 +165,23 @@ def _run_fetch_eod(args: Any, cfg) -> int:
     except DeliveryError as exc:
         sys.stderr.write("ingest delivery failed: {0}\n".format(exc))
         return EXIT_CONFIG
-    sys.stdout.write(json.dumps({"posted_bars": posted, "chunks": len(chunks), "batch_id": batch_id, "finalized": True}, sort_keys=True) + "\n")
-    return coverage_exit
+    exit_code = exit_code_for_finalize(local_summary=summary, server=finalize_response or {})
+    sys.stdout.write(
+        json.dumps(
+            {
+                "posted_bars": posted,
+                "chunks": len(chunks),
+                "batch_id": batch_id,
+                "finalized": True,
+                "local_fetch_status": summary.get("overall"),
+                "server_run_status": (finalize_response or {}).get("run_status"),
+                "server_coverage_status": (finalize_response or {}).get("coverage_status"),
+                "promotion_eligible": (finalize_response or {}).get("promotion_eligible"),
+                "exit_code": exit_code,
+            },
+            sort_keys=True,
+            default=str,
+        )
+        + "\n"
+    )
+    return exit_code

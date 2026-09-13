@@ -100,6 +100,46 @@ def _as_symbol_list(value: Any) -> list[str]:
     return []
 
 
+def _optional_symbol_set(value: Any) -> set[str] | None:
+    """Return a symbol set when the client supplied a list/dict; None if only a count."""
+    if isinstance(value, dict):
+        return {str(item) for item in value}
+    if isinstance(value, (list, tuple)):
+        return set(_as_symbol_list(value))
+    return None
+
+
+def _claimed_symbol_sets(claimed_coverage: Mapping[str, Any] | None) -> dict[str, set[str] | None]:
+    body = dict(claimed_coverage or {})
+    requested = _optional_symbol_set(body.get("requested_symbols"))
+    if requested is None:
+        requested = _optional_symbol_set(body.get("requested"))
+    successful = _optional_symbol_set(body.get("successful_symbols"))
+    if successful is None:
+        successful = _optional_symbol_set(body.get("successful"))
+    failed = _optional_symbol_set(body.get("failed_symbols"))
+    if failed is None:
+        failed = _optional_symbol_set(body.get("failed"))
+    return {"requested": requested, "successful": successful, "failed": failed}
+
+
+def _claim_scope(claimed_requested: set[str] | None, claimed_successful: set[str] | None, claimed_failed: set[str] | None) -> set[str] | None:
+    """Universe the collector described with symbol lists. Counts alone yield None."""
+    if claimed_requested is not None:
+        return claimed_requested
+    union: set[str] = set()
+    listed = False
+    if claimed_successful is not None:
+        union |= claimed_successful
+        listed = True
+    if claimed_failed is not None:
+        union |= claimed_failed
+        listed = True
+    if listed and union:
+        return union
+    return None
+
+
 def coverage_status_of(coverage: Mapping[str, Any] | None) -> tuple[str, float, dict[str, Any]]:
     body = dict(coverage or {})
     requested = body.get("requested")
@@ -531,25 +571,52 @@ def reconcile_batch_coverage(conn, batch: Mapping[str, Any], claimed_coverage: M
     else:
         server_status = COVERAGE_PARTIAL
     claimed_status, claimed_ratio, claimed_body = coverage_status_of(claimed_coverage)
-    claimed_successful = _as_symbol_list((claimed_coverage or {}).get("successful_symbols"))
-    if not claimed_successful:
-        claimed_successful = _as_symbol_list((claimed_coverage or {}).get("successful"))
+    claimed_sets = _claimed_symbol_sets(claimed_coverage)
+    claimed_requested = claimed_sets["requested"]
+    claimed_successful = claimed_sets["successful"]
+    claimed_failed = claimed_sets["failed"]
+    present_set = set(present_on_latest)
+    missing_latest_set = set(missing_on_latest)
+    claim_scope = _claim_scope(claimed_requested, claimed_successful, claimed_failed)
+    full_universe_claim = claim_scope is None or claim_scope == expected_set
     claim_complete = claimed_status == COVERAGE_COMPLETE
     server_complete = server_status == COVERAGE_COMPLETE
-    claim_lists_expected = (not claimed_successful) or (set(claimed_successful) == expected_set)
-    promotion_eligible = bool(server_complete and claim_complete and claim_lists_expected and int(claimed_body.get("failed_count") or 0) == 0)
+    claim_lists_expected = claimed_successful is None or claimed_successful == expected_set
+    promotion_eligible = bool(
+        server_complete and claim_complete and full_universe_claim and claim_lists_expected and int(claimed_body.get("failed_count") or 0) == 0
+    )
     reasons: list[str] = []
     if not server_complete:
         reasons.append("server_observed_incomplete_on_latest_date")
         if missing_on_latest:
             reasons.append("missing_on_latest_date:" + ",".join(missing_on_latest[:8]))
-    if claim_complete and not server_complete:
+    if full_universe_claim and claim_complete and not server_complete:
         reasons.append("collector_claim_complete_disagrees_with_batch_evidence")
-    if server_complete and not claim_complete:
+    if full_universe_claim and server_complete and not claim_complete:
         reasons.append("collector_claim_is_not_complete")
-    if claim_complete and claimed_successful and set(claimed_successful) != expected_set:
+    if claimed_successful is not None and claimed_successful != expected_set and claim_complete and full_universe_claim:
         reasons.append("claimed_successful_set_does_not_match_frozen_universe")
-    mismatch = (claim_complete != server_complete) or (claim_complete and not promotion_eligible)
+    set_mismatch = False
+    for label, claimed in (("requested", claimed_requested), ("successful", claimed_successful), ("failed", claimed_failed)):
+        if claimed is not None and not claimed <= expected_set:
+            set_mismatch = True
+            reasons.append("claimed_{0}_set_contains_symbols_outside_frozen_universe".format(label))
+    target_success = present_set if full_universe_claim else (present_set & claim_scope)
+    target_failed = missing_latest_set if full_universe_claim else (missing_latest_set & claim_scope)
+    if not full_universe_claim and present_set - claim_scope:
+        set_mismatch = True
+        reasons.append("observed_symbols_outside_claimed_request_scope")
+    if claimed_successful is not None and claimed_successful != target_success:
+        set_mismatch = True
+        reasons.append("claimed_successful_set_does_not_match_latest_date_observations")
+    if claimed_failed is not None and claimed_failed != target_failed:
+        set_mismatch = True
+        reasons.append("claimed_failed_set_does_not_match_missing_on_latest_date")
+    if full_universe_claim:
+        status_mismatch = (claim_complete != server_complete) or (claim_complete and not promotion_eligible)
+    else:
+        status_mismatch = False
+    mismatch = status_mismatch or set_mismatch
     return {
         "expected_symbols": expected,
         "expected_count": expected_count,
@@ -565,7 +632,12 @@ def reconcile_batch_coverage(conn, batch: Mapping[str, Any], claimed_coverage: M
         "claimed_coverage": claimed_body,
         "claimed_coverage_status": claimed_status,
         "claimed_coverage_ratio": claimed_ratio,
-        "claim_vs_observed_match": (not mismatch) and (claimed_status == server_status or (claimed_status == COVERAGE_EMPTY and server_status == COVERAGE_EMPTY)),
+        "claimed_requested_symbols": sorted(claimed_requested) if claimed_requested is not None else [],
+        "claimed_successful_symbols": sorted(claimed_successful) if claimed_successful is not None else [],
+        "claimed_failed_symbols": sorted(claimed_failed) if claimed_failed is not None else [],
+        "claim_scope_symbols": sorted(claim_scope) if claim_scope is not None else [],
+        "full_universe_claim": full_universe_claim,
+        "claim_vs_observed_match": not mismatch,
         "server_coverage_status": server_status,
         "promotion_eligible": promotion_eligible,
         "reasons": reasons,
@@ -769,7 +841,11 @@ def finalize_equity_eod_batch(
         batch_state = BATCH_FAILED
         coverage_status = COVERAGE_EMPTY
         ratio = 0.0
-    elif not observed["claim_vs_observed_match"] or (claimed_status == COVERAGE_COMPLETE and not promotion_eligible) or (server_status == COVERAGE_COMPLETE and claimed_status != COVERAGE_COMPLETE):
+    elif (
+        not observed["claim_vs_observed_match"]
+        or (bool(observed.get("full_universe_claim", True)) and claimed_status == COVERAGE_COMPLETE and not promotion_eligible)
+        or (bool(observed.get("full_universe_claim", True)) and server_status == COVERAGE_COMPLETE and claimed_status != COVERAGE_COMPLETE)
+    ):
         freshness_as_of = published_as_of
         transport = TRANSPORT_OK if server_status != COVERAGE_EMPTY else "FAILED"
         run_status = RUN_FAILED if server_status == COVERAGE_EMPTY else RUN_PARTIAL

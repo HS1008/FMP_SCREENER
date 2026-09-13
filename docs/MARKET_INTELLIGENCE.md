@@ -216,8 +216,11 @@ Prerequisites already present: `/root/FMP_SCREENER` checkout with `venv`, Postgr
       industry / subgroup snapshot only when every frozen symbol has a valid observation from
       **this** batch on the latest received date **and** the collector claim agrees. Older
       `mi_market_bars` rows cannot satisfy current-batch completeness. PARTIAL, COVERAGE_MISMATCH,
-      FAILED, and OPEN batches keep the last complete snapshot. Exit `0` only if every
-      requested symbol succeeded; partial coverage is exit `1` and is never marked fully fresh.
+      FAILED, and OPEN batches keep the last complete snapshot. Exit `0` only when the local
+      fetch is FULL_SUCCESS **and** the server finalize is SUCCEEDED / COMPLETE /
+      `promotion_eligible=true`. Server PARTIAL or COVERAGE_MISMATCH is exit `1`; FAILED /
+      EMPTY is exit `2`. Scheduled `fetch-eod` (dashboard universe, `1 W`) is labelled
+      `incremental`; `--backfill` is `backfill`; the five-symbol validation set is `smoke`.
       Uses client id 72 and `eod.lock`; does not share the quote collector lock.
       DigitalOcean `MI_EQUITY_PROVIDER=ibkr` / `ibkr_collector` reports finalized COMPLETE state
       and never opens TWS or promotes OPEN-batch raw bars. Do not enable production collection

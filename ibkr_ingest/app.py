@@ -148,6 +148,7 @@ def equity_bars(body: dict[str, Any]) -> dict[str, Any]:
         "coverage_status": stored.get("coverage_status"),
         "run_status": stored.get("run_status"),
         "state": stored.get("state"),
+        "promotion_eligible": bool(stored.get("promotion_eligible")),
         "missing_on_latest_observed_date": stored.get("missing_on_latest_observed_date") or [],
     }
 

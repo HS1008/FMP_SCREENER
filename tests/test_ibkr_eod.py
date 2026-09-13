@@ -581,6 +581,131 @@ def test_full_partial_and_empty_universe_coverage_exit_codes():
     assert exit_code_for_coverage(empty) == 2
 
 
+def test_request_mode_labels_scheduled_universe_as_incremental():
+    from ibkr_collector.eod_cli import request_mode_for
+
+    assert request_mode_for(backfill=True, symbols=list(UNIVERSE_SYMBOLS)) == "backfill"
+    assert request_mode_for(backfill=False, symbols=list(PHASE3_SYMBOLS)) == "smoke"
+    assert request_mode_for(backfill=False, symbols=list(UNIVERSE_SYMBOLS)) == "incremental"
+    assert request_mode_for(backfill=False, symbols=["SPY", "NVDA"]) == "incremental"
+
+
+def test_cli_exit_follows_authoritative_server_finalize():
+    from ibkr_collector.eod_cli import exit_code_for_finalize
+
+    local_full = {"overall": "FULL_SUCCESS"}
+    local_partial = {"overall": "PARTIAL_SUCCESS"}
+    assert (
+        exit_code_for_finalize(
+            local_summary=local_full,
+            server={"run_status": "SUCCEEDED", "coverage_status": "COMPLETE", "promotion_eligible": True, "ok": True},
+        )
+        == 0
+    )
+    assert (
+        exit_code_for_finalize(
+            local_summary=local_full,
+            server={"run_status": "PARTIAL", "coverage_status": "COVERAGE_MISMATCH", "promotion_eligible": False, "ok": True},
+        )
+        == 1
+    )
+    assert (
+        exit_code_for_finalize(
+            local_summary=local_full,
+            server={"run_status": "PARTIAL", "coverage_status": "PARTIAL", "promotion_eligible": False, "ok": True},
+        )
+        == 1
+    )
+    assert (
+        exit_code_for_finalize(
+            local_summary=local_full,
+            server={"run_status": "FAILED", "coverage_status": "EMPTY", "promotion_eligible": False, "ok": False},
+        )
+        == 2
+    )
+    assert (
+        exit_code_for_finalize(
+            local_summary=local_partial,
+            server={"run_status": "PARTIAL", "coverage_status": "PARTIAL", "promotion_eligible": False, "ok": True},
+        )
+        == 1
+    )
+
+
+def test_cli_delivery_failure_keeps_config_exit(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from ibkr_collector.config import CollectorConfig
+    from ibkr_collector.delivery import DeliveryError
+    from ibkr_collector.eod_cli import _run_fetch_eod
+
+    cfg = CollectorConfig(data_dir=tmp_path, ingest_url="http://127.0.0.1:9")
+    ok = _ok_result("SPY", [_raw_bar(date(2026, 9, 10), 100.0)], con_id=1)
+
+    class _Client:
+        def disconnect(self):
+            return None
+
+    class _FailingDelivery:
+        def configured(self):
+            return True
+
+        def send_equity_bars(self, payload):
+            return {"ok": True}
+
+        def finalize_equity_bars(self, payload):
+            raise DeliveryError("HTTP 500", retryable=True)
+
+    monkeypatch.setattr("ibkr_collector.eod_cli.connect_historical_session", lambda **kwargs: (object(), _Client(), None))
+    monkeypatch.setattr("ibkr_collector.eod_cli.fetch_universe", lambda *a, **k: [ok])
+    monkeypatch.setattr("ibkr_collector.eod_cli.read_ingest_token", lambda: "token")
+    monkeypatch.setattr("ibkr_collector.eod_cli.IngestClient", lambda *a, **k: _FailingDelivery())
+    args = SimpleNamespace(host="127.0.0.1", port=7496, client_id=72, symbols="SPY", backfill=False, dry_run=False)
+    assert _run_fetch_eod(args, cfg) == 3
+
+
+def test_cli_local_full_success_follows_server_mismatch(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+
+    from ibkr_collector.config import CollectorConfig
+    from ibkr_collector.eod_cli import _run_fetch_eod
+
+    cfg = CollectorConfig(data_dir=tmp_path, ingest_url="http://127.0.0.1:9")
+    ok_rows = [_ok_result(symbol, [_raw_bar(date(2026, 9, 10), 10.0 + i)], con_id=1000 + i) for i, symbol in enumerate(UNIVERSE_SYMBOLS)]
+
+    class _Client:
+        def disconnect(self):
+            return None
+
+    class _MismatchDelivery:
+        def configured(self):
+            return True
+
+        def send_equity_bars(self, payload):
+            return {"ok": True, "finalized": False}
+
+        def finalize_equity_bars(self, payload):
+            return {
+                "ok": True,
+                "finalized": True,
+                "run_status": "PARTIAL",
+                "coverage_status": "COVERAGE_MISMATCH",
+                "promotion_eligible": False,
+                "batch_id": payload["batch_id"],
+            }
+
+    monkeypatch.setattr("ibkr_collector.eod_cli.connect_historical_session", lambda **kwargs: (object(), _Client(), None))
+    monkeypatch.setattr("ibkr_collector.eod_cli.fetch_universe", lambda *a, **k: ok_rows)
+    monkeypatch.setattr("ibkr_collector.eod_cli.read_ingest_token", lambda: "token")
+    monkeypatch.setattr("ibkr_collector.eod_cli.IngestClient", lambda *a, **k: _MismatchDelivery())
+    args = SimpleNamespace(host="127.0.0.1", port=7496, client_id=72, symbols=None, backfill=False, dry_run=False)
+    assert _run_fetch_eod(args, cfg) == 1
+    captured = capsys.readouterr().out
+    assert "COVERAGE_MISMATCH" in captured
+    assert "FULL_SUCCESS" in captured
+    assert "promotion_eligible" in captured
+
+
 def test_fetch_symbol_entitlement_ambiguous_invalid_and_pacing_retry():
     entitled = FakeSession(qualify_map={"NVDA": (None, STATUS_NO_ENTITLEMENT, [354])})
     out = fetch_symbol(entitled, "NVDA", duration="1 W")
