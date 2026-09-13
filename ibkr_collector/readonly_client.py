@@ -51,7 +51,16 @@ class _ReadOnlyCallbacks:
         self.ticks: dict[int, dict[str, Any]] = {}
         self.market_data_types: dict[int, int] = {}
         self.raw_ticks: list[dict[str, Any]] = []
+        self.historical_bars: dict[int, list[dict[str, Any]]] = {}
+        self.historical_done: dict[int, threading.Event] = {}
+        self.historical_pending: set[int] = set()
         self._req_seq = 1000
+
+    def mark_historical(self, req_id: int) -> threading.Event:
+        with self._lock:
+            self.historical_pending.add(req_id)
+            self.historical_bars.setdefault(req_id, [])
+        return self.wait_event(req_id, self.historical_done)
 
     def next_req_id(self) -> int:
         with self._lock:
@@ -101,6 +110,8 @@ class _ReadOnlyCallbacks:
                 bucket = self.ticks.setdefault(reqId, {})
                 bucket["entitlement_error"] = True
                 bucket["entitlement_code"] = int(errorCode)
+            if reqId in self.historical_pending and kind in {"entitlement", "error", "pacing", "historical", "invalid_contract"}:
+                self.wait_event(reqId, self.historical_done).set()
         if kind == "info":
             logger.info("tws info code=%s req=%s", errorCode, reqId)
         elif kind == "entitlement":
@@ -205,6 +216,23 @@ class _ReadOnlyCallbacks:
         with self._lock:
             bucket = self.ticks.setdefault(reqId, {})
             bucket["snapshot_end"] = True
+
+    def historicalData(self, reqId: int, bar) -> None:
+        payload = {
+            "date": getattr(bar, "date", None) or getattr(bar, "time", None),
+            "open": finite_or_none(getattr(bar, "open", None)),
+            "high": finite_or_none(getattr(bar, "high", None)),
+            "low": finite_or_none(getattr(bar, "low", None)),
+            "close": finite_or_none(getattr(bar, "close", None)),
+            "volume": finite_or_none(getattr(bar, "volume", None)),
+        }
+        with self._lock:
+            self.historical_bars.setdefault(reqId, []).append(payload)
+
+    def historicalDataEnd(self, reqId: int, start: str, end: str) -> None:
+        with self._lock:
+            self.historical_pending.discard(reqId)
+        self.wait_event(reqId, self.historical_done).set()
 
 
 _CLIENT_CLS: type | None = None

@@ -835,6 +835,11 @@ def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
             for h in health
             if h.get("transport_status") in ("FAILED", "METADATA_REJECTED", "PARTIAL") and not h.get("retired_optional")
         ],
+        "incomplete_coverage": [
+            h
+            for h in health
+            if h.get("coverage_status") in ("PARTIAL", "EMPTY") and not h.get("retired_optional")
+        ],
         "quarantine": quarantine,
         "finra_quarantine": finra_quarantine,
         "export_scope": "INTERNAL_SUMMARY",

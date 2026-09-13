@@ -59,6 +59,7 @@ write endpoint, or writes from an AI actor.
 | Bond analytics `bond_analytics_v2`: verified brackets + re-pricing tolerance, honest domains (`UNSUPPORTED_*` statuses), first-coupon stubs, LAST never labelled MID, Z-spread only with documented curve + repricing | IMPLEMENTED_AND_TESTED (analytical cross-checks) | `bonds.py`, `jobs.bond_analytics` | no bond terms/quotes are ingested: every bond is a skip until a source exists |
 | Bond OAS / callable duration / floaters | NOT_IMPLEMENTED (flagged `UNSUPPORTED_NO_OPTION_MODEL`) | `bonds.py` | needs an option / floating-rate model |
 | IBKR market data (quotes) | IMPLEMENTED_AND_TESTED (Windows collector + ingest); live TWS handshake verified | `ibkr_collector/`, `ibkr_ingest/`, migration 016 | existing TWS session; delayed data if unentitled |
+| IBKR equity EOD (`ADJUSTED_LAST` daily bars) | IMPLEMENTED_AND_TESTED locally; Windows TWS 2026-09-11 ET: 5/5 smoke + 46/46 universe + disposable ingest. Production collection **off**. RIGHTS_PENDING. Soak NOT_STARTED. Windows `python -m ibkr_collector fetch-eod` (client id 72) → private ingest + finalize → `EQUITY_EOD` | `ibkr_collector/historical.py`, `ibkr_collector/eod_cli.py`, `market_intelligence/ibkr_eod.py`, migrations 030-032 | existing TWS on the collector host; DigitalOcean uses `CollectorStoreAdapter` and never opens TWS; remote AI export remains INTERNAL_ONLY. Collector coverage is a claim; COMPLETE requires server-observed batch evidence on the latest received date for every frozen `UNIVERSE_SYMBOLS` member |
 | IBKR orders / account / positions | DISABLED_BY_POLICY | `adapters.py`, `ibkr_collector/readonly_client.py` | no order surface exists |
 | FINRA TRACE | DISABLED_BY_POLICY -> ENTITLEMENT_REQUIRED when enabled | `adapters.py` | `MI_TRACE_ENABLED` + FINRA credentials (still no client) |
 | SEC EDGAR reference | CONFIGURATION_REQUIRED (opt-in) | `adapters.py` | `SEC_USER_AGENT` with contact + `MI_EDGAR_ENABLED=1`; never called by the timer |
@@ -207,6 +208,24 @@ Prerequisites already present: `/root/FMP_SCREENER` checkout with `venv`, Postgr
     * On the Windows collector host, from the repo with the collector venv:
       `python -m ibkr_collector install` then `start` / `stop` / `status` / `uninstall`.
       Uninstall removes the logon task only; PostgreSQL rows stay.
+      Optional daily bars (not production-default): `python -m ibkr_collector fetch-eod`
+      (incremental `1 W`) or `fetch-eod --backfill` (`2 Y`, enough for 200DMA and 252-session/12M).
+      Multi-chunk posts stay staged until `POST /v1/equity_bars/finalize`. Collector coverage
+      is diagnostic only. The server freezes canonical `UNIVERSE_SYMBOLS` on the batch, records
+      each observation in `mi_equity_eod_batch_observations`, and publishes a new sector /
+      industry / subgroup snapshot only when every frozen symbol has a valid observation from
+      **this** batch on the latest received date **and** the collector claim agrees. Older
+      `mi_market_bars` rows cannot satisfy current-batch completeness. PARTIAL, COVERAGE_MISMATCH,
+      FAILED, and OPEN batches keep the last complete snapshot. Exit `0` only when the local
+      fetch is FULL_SUCCESS **and** the server finalize is SUCCEEDED / COMPLETE /
+      `promotion_eligible=true`. Server PARTIAL or COVERAGE_MISMATCH is exit `1`; FAILED /
+      EMPTY is exit `2`. Scheduled `fetch-eod` (dashboard universe, `1 W`) is labelled
+      `incremental`; `--backfill` is `backfill`; the five-symbol validation set is `smoke`.
+      Uses client id 72 and `eod.lock`; does not share the quote collector lock.
+      DigitalOcean `MI_EQUITY_PROVIDER=ibkr` / `ibkr_collector` reports finalized COMPLETE state
+      and never opens TWS or promotes OPEN-batch raw bars. Do not enable production collection
+      until a multi-session soak succeeds. Do not cancel FMP. Remote AI export of IBKR values
+      remains disabled (`INTERNAL_ONLY`). Production activation is a human gate.
     Data Health (`pages/15_Data_Health`) shows heartbeat age from the database clock
     (`COLLECTOR_OFFLINE` if heartbeats are older than 90s). Closing TWS does not delete stored quotes.
 

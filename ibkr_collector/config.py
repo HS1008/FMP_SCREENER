@@ -58,6 +58,10 @@ class CollectorConfig:
         return self.data_dir / "collector.lock"
 
     @property
+    def eod_lock_path(self) -> Path:
+        return self.data_dir / "eod.lock"
+
+    @property
     def config_path(self) -> Path:
         return self.data_dir / "config.json"
 

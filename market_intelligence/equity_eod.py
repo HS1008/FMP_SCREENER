@@ -68,6 +68,8 @@ class EquityBar:
     adjustment_basis: str = "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND"
     provider_symbol: str = ""
     source_id: str = EQUITY_SOURCE_ID
+    con_id: int | None = None
+    provider: str | None = None
 
 
 class EquityDailyAdapter(Protocol):
@@ -137,7 +139,7 @@ class YahooAdapter:
                 close = float(row.get("Close")) if row.get("Close") == row.get("Close") else None
                 if close is None:
                     continue
-                out.append(EquityBar(symbol, day, close, close, provider_symbol=symbol, source_id=self.source_id))
+                out.append(EquityBar(symbol, day, close, close, provider_symbol=symbol, source_id=EQUITY_SOURCE_ID, provider="YAHOO"))
             return out
         for symbol in symbols:
             try:
@@ -149,8 +151,31 @@ class YahooAdapter:
                 close = row.get("Close")
                 if close != close:
                     continue
-                out.append(EquityBar(symbol, day, float(close), float(close), provider_symbol=symbol, source_id=self.source_id))
+                out.append(EquityBar(symbol, day, float(close), float(close), provider_symbol=symbol, source_id=EQUITY_SOURCE_ID, provider="YAHOO"))
         return out
+
+
+@dataclass
+class CollectorStoreAdapter:
+    """Canonical IBKR equity EOD on a host that must not open a TWS socket.
+
+    Windows collector pushes bars. FINALIZE is the only snapshot promotion
+    point. Ordinary DigitalOcean refresh reports existing finalized COMPLETE
+    state and never rebuilds snapshots from OPEN or PARTIAL raw bars.
+    ``fetch`` never connects to TWS.
+    """
+
+    source_id: str = "IBKR"
+    access_status: str = "CONFIGURED"
+    rebuild_only: bool = True
+    reason: str = (
+        "IBKR is the canonical EQUITY_EOD producer. Collection runs on the Windows "
+        "TWS host (python -m ibkr_collector fetch-eod). This process never opens a "
+        "TWS socket and never promotes OPEN-batch raw bars."
+    )
+
+    def fetch(self, symbols: list[str], start: date, end: date) -> list[EquityBar]:
+        raise AdapterUnavailable(self.reason)
 
 
 def adapter_from_env(env: Mapping[str, str] | None = None, *, fixture: EquityDailyAdapter | None = None) -> EquityDailyAdapter:
@@ -161,57 +186,69 @@ def adapter_from_env(env: Mapping[str, str] | None = None, *, fixture: EquityDai
         return YahooAdapter()
     if name == "fixture":
         return FixtureAdapter([])
+    if name in {"ibkr", "ibkr_collector"}:
+        return CollectorStoreAdapter()
     return UnavailableAdapter()
 
 
-def _ensure_instrument(conn, symbol: str, *, sector: str | None = None) -> None:
+def _ensure_instrument(conn, symbol: str, *, sector: str | None = None, con_id: int | None = None) -> None:
     conn.execute(
         text(
             """
-            INSERT INTO mi_market_instruments (instrument_id, display_name, asset_type, security_type, currency, canonical_sector, classification_version)
-            VALUES (:id, :id, 'equity', 'etf_or_stock', 'USD', :sector, :ver)
-            ON CONFLICT (instrument_id) DO UPDATE SET updated_at = NOW()
+            INSERT INTO mi_market_instruments (instrument_id, display_name, asset_type, security_type, currency, canonical_sector, classification_version, con_id)
+            VALUES (:id, :id, 'equity', 'etf_or_stock', 'USD', :sector, :ver, :con_id)
+            ON CONFLICT (instrument_id) DO UPDATE SET
+                updated_at = NOW(),
+                con_id = COALESCE(EXCLUDED.con_id, mi_market_instruments.con_id)
             """
         ),
-        {"id": symbol, "sector": sector, "ver": TAXONOMY_VERSION},
+        {"id": symbol, "sector": sector, "ver": TAXONOMY_VERSION, "con_id": con_id},
     )
 
 
-def upsert_bars(conn, bars: list[EquityBar], *, run_id: str, retrieved_at: datetime) -> dict[str, int]:
+def upsert_bars(conn, bars: list[EquityBar], *, run_id: str, retrieved_at: datetime, provider: str | None = None) -> dict[str, int]:
     inserted = unchanged = 0
     for bar in bars:
-        _ensure_instrument(conn, bar.instrument_id)
+        bar_provider = bar.provider or provider
+        _ensure_instrument(conn, bar.instrument_id, con_id=bar.con_id)
         existing = conn.execute(
             text(
                 """
-                SELECT adj_close_price FROM mi_market_bars
+                SELECT adj_close_price, provider FROM mi_market_bars
                 WHERE instrument_id=:i AND source_id=:s AND bar_interval='1D' AND bar_date=:d
                 """
             ),
             {"i": bar.instrument_id, "s": bar.source_id, "d": bar.bar_date},
-        ).scalar()
-        if existing is not None and float(existing) == float(bar.adj_close):
-            conn.execute(
-                text("UPDATE mi_market_bars SET last_seen_at=:t WHERE instrument_id=:i AND source_id=:s AND bar_interval='1D' AND bar_date=:d"),
-                {"t": retrieved_at, "i": bar.instrument_id, "s": bar.source_id, "d": bar.bar_date},
-            )
-            unchanged += 1
-            continue
+        ).mappings().first()
+        if existing is not None:
+            prior_provider = existing["provider"]
+            if prior_provider and bar_provider and prior_provider != bar_provider:
+                raise ValueError("refusing to mix provider {0} over {1} for {2}".format(bar_provider, prior_provider, bar.instrument_id))
+            if existing["adj_close_price"] is not None and float(existing["adj_close_price"]) == float(bar.adj_close):
+                conn.execute(
+                    text("UPDATE mi_market_bars SET last_seen_at=:t, con_id=COALESCE(:con_id, con_id), provider=COALESCE(:p, provider) WHERE instrument_id=:i AND source_id=:s AND bar_interval='1D' AND bar_date=:d"),
+                    {"t": retrieved_at, "i": bar.instrument_id, "s": bar.source_id, "d": bar.bar_date, "con_id": bar.con_id, "p": bar_provider},
+                )
+                unchanged += 1
+                continue
         conn.execute(
             text(
                 """
                 INSERT INTO mi_market_bars (
                     instrument_id, source_id, bar_interval, bar_date, open_price, high_price, low_price,
                     close_price, adj_close_price, volume, currency, adjustment_basis, retrieved_at,
-                    ingestion_run_id, first_seen_at, last_seen_at, provider_symbol
+                    ingestion_run_id, first_seen_at, last_seen_at, provider_symbol, con_id, provider
                 ) VALUES (
-                    :i, :s, '1D', :d, :o, :h, :l, :c, :a, :v, 'USD', :adj, :t, :run, :t, :t, :sym
+                    :i, :s, '1D', :d, :o, :h, :l, :c, :a, :v, 'USD', :adj, :t, :run, :t, :t, :sym, :con_id, :p
                 )
                 ON CONFLICT (instrument_id, source_id, bar_interval, bar_date) DO UPDATE SET
                     adj_close_price = EXCLUDED.adj_close_price,
                     close_price = EXCLUDED.close_price,
                     last_seen_at = EXCLUDED.retrieved_at,
-                    ingestion_run_id = EXCLUDED.ingestion_run_id
+                    ingestion_run_id = EXCLUDED.ingestion_run_id,
+                    adjustment_basis = EXCLUDED.adjustment_basis,
+                    con_id = COALESCE(EXCLUDED.con_id, mi_market_bars.con_id),
+                    provider = COALESCE(EXCLUDED.provider, mi_market_bars.provider)
                 """
             ),
             {
@@ -228,28 +265,42 @@ def upsert_bars(conn, bars: list[EquityBar], *, run_id: str, retrieved_at: datet
                 "t": retrieved_at,
                 "run": run_id,
                 "sym": bar.provider_symbol or bar.instrument_id,
+                "con_id": bar.con_id,
+                "p": bar_provider,
             },
         )
         inserted += 1
     return {"inserted": inserted, "unchanged": unchanged}
 
 
-def load_adj_closes(conn, symbols: list[str]) -> dict[str, dict[date, float]]:
+def load_adj_closes(
+    conn,
+    symbols: list[str],
+    *,
+    source_id: str = EQUITY_SOURCE_ID,
+    provider: str | None = None,
+) -> dict[str, dict[date, float]]:
+    """Load a single-provider EQUITY_EOD history. Never mixes IBKR/Yahoo/fixture/legacy rows."""
     if not symbols:
         return {}
-    rows = conn.execute(
-        text(
-            """
-            SELECT instrument_id, bar_date, adj_close_price
-            FROM mi_market_bars
-            WHERE instrument_id IN :syms AND bar_interval='1D' AND adj_close_price IS NOT NULL
-            ORDER BY instrument_id, bar_date
-            """
-        ).bindparams(bindparam("syms", expanding=True)),
-        {"syms": symbols},
-    ).all()
+    sql = """
+        SELECT instrument_id, bar_date, adj_close_price, provider
+        FROM mi_market_bars
+        WHERE instrument_id IN :syms AND bar_interval='1D' AND adj_close_price IS NOT NULL
+          AND source_id = :source
+    """
+    params: dict[str, Any] = {"syms": symbols, "source": source_id}
+    if provider:
+        sql += " AND provider = :provider"
+        params["provider"] = provider
+    sql += " ORDER BY instrument_id, bar_date"
+    rows = conn.execute(text(sql).bindparams(bindparam("syms", expanding=True)), params).all()
+    if provider is None:
+        providers = {row[3] for row in rows if row[3]}
+        if len(providers) > 1:
+            raise ValueError("mixed providers in EQUITY_EOD history: {0}".format(sorted(providers)))
     out: dict[str, dict[date, float]] = {s: {} for s in symbols}
-    for inst, day, value in rows:
+    for inst, day, value, _prov in rows:
         out.setdefault(inst, {})[day] = float(value)
     return out
 
@@ -281,7 +332,48 @@ def window_return(series: Mapping[date, float], as_of: date, sessions: int) -> f
     return right / left - 1.0
 
 
-def compute_metrics(asset: Mapping[date, float], bench: Mapping[date, float], as_of: date, *, expected_prev: date | None = None) -> tuple[dict[str, float | None], dict[str, Any]]:
+def pct_vs_dma(series: Mapping[date, float], as_of: date, window: int) -> float | None:
+    """P[t] / SMA(window ending at t) - 1. No forward fill; requires ``window`` stored sessions."""
+    dates = [d for d in sorted(series) if d <= as_of]
+    if len(dates) < window:
+        return None
+    window_dates = dates[-window:]
+    values = [series[d] for d in window_dates]
+    if any(v is None for v in values):
+        return None
+    mean = sum(values) / float(window)
+    if mean == 0:
+        return None
+    return values[-1] / mean - 1.0
+
+
+def latest_stored_bar_date(conn, symbols: list[str], *, source_id: str = EQUITY_SOURCE_ID) -> date | None:
+    if not symbols:
+        return None
+    row = conn.execute(
+        text(
+            """
+            SELECT MAX(bar_date) FROM mi_market_bars
+            WHERE source_id=:s AND bar_interval='1D' AND instrument_id IN :syms
+            """
+        ).bindparams(bindparam("syms", expanding=True)),
+        {"s": source_id, "syms": symbols},
+    ).scalar()
+    if row is None:
+        return None
+    if isinstance(row, date):
+        return row
+    return date.fromisoformat(str(row)[:10])
+
+
+def compute_metrics(
+    asset: Mapping[date, float],
+    bench: Mapping[date, float],
+    as_of: date,
+    *,
+    expected_prev: date | None = None,
+    adjustment_basis: str = "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND",
+) -> tuple[dict[str, float | None], dict[str, Any]]:
     last, px_t, prev, px_p = session_pair(asset, as_of)
     b_last, bx_t, b_prev, bx_p = session_pair(bench, as_of)
     session_prev = expected_prev if expected_prev is not None else (previous_session(last, CAL_NYSE) if last is not None else None)
@@ -294,10 +386,12 @@ def compute_metrics(asset: Mapping[date, float], bench: Mapping[date, float], as
         and prev == session_prev
         and b_prev == session_prev
     )
-    metrics: dict[str, float | None] = {key: None for key in list(RETURN_WINDOWS) + list(RS_WINDOWS)}
+    metrics: dict[str, float | None] = {key: None for key in list(RETURN_WINDOWS) + list(RS_WINDOWS) + ["pct_vs_50dma", "pct_vs_200dma"]}
     if aligned:
         metrics["ret_1d"] = aligned_session_return(px_t, px_p)
         metrics["rs_chg_1d"] = ratio_change_rs(px_t, px_p, bx_t, bx_p)
+    metrics["pct_vs_50dma"] = pct_vs_dma(asset, as_of, 50)
+    metrics["pct_vs_200dma"] = pct_vs_dma(asset, as_of, 200)
     for key, n in RETURN_WINDOWS.items():
         if key == "ret_1d":
             continue
@@ -317,8 +411,12 @@ def compute_metrics(asset: Mapping[date, float], bench: Mapping[date, float], as
         "as_of": last.isoformat() if last else None,
         "prev_session": prev.isoformat() if prev else None,
         "aligned_with_benchmark": aligned,
-        "adjustment_basis": "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND",
-        "return_kind": "price_return_not_proven_total_return",
+        "adjustment_basis": adjustment_basis,
+        "return_kind": (
+            "ibkr_adjusted_last_price_return"
+            if adjustment_basis == "IBKR_ADJUSTED_LAST"
+            else "price_return_not_proven_total_return"
+        ),
         "incomplete": not aligned,
     }
     return metrics, coverage
@@ -328,12 +426,24 @@ def _artifact_sha(payload: Mapping[str, Any]) -> str:
     return sha256(strict_dumps(payload).encode("utf-8")).hexdigest()
 
 
-def write_snapshots(conn, *, as_of: date, prices: dict[str, dict[date, float]], source_id: str, run_id: str) -> int:
+def write_snapshots(
+    conn,
+    *,
+    as_of: date,
+    prices: dict[str, dict[date, float]],
+    source_id: str,
+    run_id: str,
+    adjustment_basis: str = "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND",
+    provider: str | None = None,
+) -> int:
     spy = prices.get(BENCHMARK_SPY) or {}
     written = 0
     for sector, etf in SECTOR_PROXIES.items():
         series = prices.get(etf) or {}
-        metrics, coverage = compute_metrics(series, spy, as_of)
+        metrics, coverage = compute_metrics(series, spy, as_of, adjustment_basis=adjustment_basis)
+        coverage = dict(coverage)
+        if provider:
+            coverage["provider"] = provider
         body = {
             "sector_key": sector,
             "instrument_id": etf,
@@ -371,7 +481,7 @@ def write_snapshots(conn, *, as_of: date, prices: dict[str, dict[date, float]], 
                 "method": METHODOLOGY_VERSION,
                 "metrics": strict_dumps(metrics),
                 "coverage": strict_dumps(coverage),
-                "prov": strict_dumps({"taxonomy_version": TAXONOMY_VERSION, "source_id": source_id}),
+                "prov": strict_dumps({"taxonomy_version": TAXONOMY_VERSION, "source_id": source_id, "provider": provider}),
                 "refs": strict_dumps({"benchmark": BENCHMARK_SPY, "selection_reason": "latest_complete_session"}),
                 "sha": _artifact_sha(body),
                 "run": run_id,
@@ -384,7 +494,7 @@ def write_snapshots(conn, *, as_of: date, prices: dict[str, dict[date, float]], 
             index = daily_rebalanced_equal_weight(member_px, end=as_of)
             idx_series = {p.as_of: p.level for p in index}
             bench = xlk if sector == "Technology" else (prices.get(SECTOR_PROXIES[sector]) or {})
-            metrics, coverage = compute_metrics(idx_series, bench or spy, as_of)
+            metrics, coverage = compute_metrics(idx_series, bench or spy, as_of, adjustment_basis=adjustment_basis)
             last_pt = index[-1] if index else None
             coverage = dict(coverage)
             coverage["membership"] = list(basket.members)
@@ -495,6 +605,82 @@ class EquityIngestReport:
         }
 
 
+def _stored_adjustment_basis(conn, symbols: list[str]) -> str:
+    if not symbols:
+        return "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND"
+    value = conn.execute(
+        text(
+            """
+            SELECT adjustment_basis FROM mi_market_bars
+            WHERE source_id=:s AND bar_interval='1D' AND instrument_id IN :syms
+              AND adjustment_basis IS NOT NULL
+            ORDER BY bar_date DESC
+            LIMIT 1
+            """
+        ).bindparams(bindparam("syms", expanding=True)),
+        {"s": EQUITY_SOURCE_ID, "syms": symbols},
+    ).scalar()
+    return str(value or "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND")
+
+
+def _rebuild_from_stored(conn, *, symbols: list[str], run_id: str, provider: str | None) -> tuple[date | None, int]:
+    """Maintenance rebuild from already-stored bars.
+
+    Ordinary IBKR collector refresh must not call this. It would publish
+    snapshots from OPEN-batch staged bars. Yahoo/fixture adapters may still
+    use it. An explicit IBKR maintenance rebuild must only use a FINALIZED
+    COMPLETE batch; that path is not wired into scheduled refresh.
+    """
+    if provider == "IBKR":
+        return _report_existing_ibkr_state(conn)
+    load_provider = provider if provider in {"YAHOO", "FIXTURE"} else None
+    prices = load_adj_closes(conn, symbols, source_id=EQUITY_SOURCE_ID, provider=load_provider)
+    as_of = None
+    for series in prices.values():
+        if series:
+            last = max(series)
+            if as_of is None or last > as_of:
+                as_of = last
+    if as_of is None:
+        return None, 0
+    basis = _stored_adjustment_basis(conn, symbols)
+    written = write_snapshots(
+        conn,
+        as_of=as_of,
+        prices=prices,
+        source_id=EQUITY_SOURCE_ID,
+        run_id=run_id,
+        adjustment_basis=basis,
+        provider=provider,
+    )
+    return as_of, written
+
+
+def _report_existing_ibkr_state(conn) -> tuple[date | None, int]:
+    """Read last COMPLETE published snapshot. Never write snapshots. Never use OPEN bars."""
+    from market_intelligence.equity_eod_batch import published_complete_snapshot_as_of
+
+    return published_complete_snapshot_as_of(conn), 0
+
+
+def _ibkr_refresh_coverage(conn, prior: Mapping[str, Any] | None) -> tuple[str | None, dict[str, Any] | None]:
+    from market_intelligence.equity_eod_batch import BATCH_OPEN, latest_open_equity_batch
+
+    open_batch = latest_open_equity_batch(conn)
+    if open_batch is None:
+        return None, None
+    return "IN_PROGRESS", {
+        "published_coverage_status": (prior or {}).get("coverage_status"),
+        "latest_collection_attempt": {
+            "batch_id": open_batch["batch_id"],
+            "state": BATCH_OPEN,
+            "received_chunks": int(open_batch["received_chunks"] or 0),
+            "chunk_count": int(open_batch["chunk_count"] or 0),
+        },
+        "snapshot_promotion": "blocked_open_batch",
+    }
+
+
 def ingest_equity_eod(
     engine,
     adapter: EquityDailyAdapter | None = None,
@@ -504,12 +690,15 @@ def ingest_equity_eod(
     symbols: list[str] | None = None,
     lookback_days: int = 400,
     env: Mapping[str, str] | None = None,
+    incremental: bool = True,
 ) -> EquityIngestReport:
     today = today or utcnow().date()
     adapter = adapter or adapter_from_env(env)
     report = EquityIngestReport(access_status=adapter.access_status, reason=adapter.reason)
     symbols = list(symbols or UNIVERSE_SYMBOLS)
     start = today - timedelta(days=lookback_days)
+    if incremental and getattr(adapter, "source_id", "") == "IBKR":
+        getattr(adapter, "__dict__", {}).update({"incremental": True})
     with engine.begin() as conn:
         upsert_source_registry(
             conn,
@@ -530,53 +719,138 @@ def ingest_equity_eod(
             access={EQUITY_SOURCE_ID: adapter.access_status},
         )
         rid = start_run(conn, source_id=EQUITY_SOURCE_ID, dataset="equity_etf_daily_bars", parent_run_id=parent_run_id)
+        if incremental and getattr(adapter, "source_id", "") == "IBKR":
+            latest = latest_stored_bar_date(conn, symbols)
+            if latest is not None:
+                start = latest - timedelta(days=7)
+        ibkr_collector_mode = getattr(adapter, "rebuild_only", False) or adapter.source_id == "IBKR"
+        if getattr(adapter, "rebuild_only", False):
+            as_of, snaps = _report_existing_ibkr_state(conn)
+            report.latest_observation = as_of
+            report.snapshots_written = 0
+            report.status = RUN_SKIPPED
+            prior = conn.execute(
+                text(
+                    """
+                    SELECT transport_status, coverage_status FROM mi_data_freshness
+                    WHERE source_id=:s AND dataset='equity_etf_daily_bars'
+                    """
+                ),
+                {"s": EQUITY_SOURCE_ID},
+            ).mappings().first()
+            transport = (prior["transport_status"] if prior and prior["transport_status"] in {TRANSPORT_OK, "PARTIAL"} else TRANSPORT_SKIPPED)
+            meta, cov_json = _ibkr_refresh_coverage(conn, prior)
+            record_freshness(
+                conn,
+                source_id=EQUITY_SOURCE_ID,
+                dataset="equity_etf_daily_bars",
+                cadence="D",
+                transport_status=transport,
+                latest_observation=as_of,
+                success=False,
+                error_redacted=None,
+                run_id=rid,
+                today=today,
+                series_id="SPY",
+                metadata_status=meta,
+                coverage_json=cov_json,
+            )
+            finish_run(
+                conn,
+                rid,
+                status=RUN_SKIPPED,
+                details={
+                    "reason": adapter.reason,
+                    "rebuilt_from_stored": False,
+                    "snapshots": 0,
+                    "tws_socket": False,
+                    "promoted_open_batch": False,
+                    "reported_finalized_as_of": as_of.isoformat() if as_of else None,
+                },
+            )
+            return report
         try:
             bars = adapter.fetch(symbols, start, today)
         except AdapterUnavailable as exc:
+            if ibkr_collector_mode:
+                as_of, snaps = _report_existing_ibkr_state(conn)
+            else:
+                as_of, snaps = _rebuild_from_stored(conn, symbols=symbols, run_id=rid, provider=adapter.source_id)
+            report.latest_observation = as_of
+            report.snapshots_written = snaps
+            report.reason = str(exc)
+            report.status = RUN_SKIPPED
             record_freshness(
                 conn,
                 source_id=EQUITY_SOURCE_ID,
                 dataset="equity_etf_daily_bars",
                 cadence="D",
                 transport_status=TRANSPORT_SKIPPED,
-                latest_observation=None,
-                success=False,
+                latest_observation=as_of,
+                success=False if ibkr_collector_mode else as_of is not None,
                 error_redacted=str(exc)[:200],
                 run_id=rid,
                 today=today,
                 series_id="SPY",
             )
-            finish_run(conn, rid, status=RUN_SKIPPED, details={"reason": str(exc)})
-            report.status = RUN_SKIPPED
-            report.reason = str(exc)
+            finish_run(
+                conn,
+                rid,
+                status=RUN_SKIPPED,
+                details={"reason": str(exc), "rebuilt_from_stored": (not ibkr_collector_mode) and as_of is not None, "snapshots": snaps, "tws_socket": False},
+            )
             return report
         except Exception as exc:  # noqa: BLE001
+            if ibkr_collector_mode:
+                as_of, snaps = _report_existing_ibkr_state(conn)
+            else:
+                as_of, snaps = _rebuild_from_stored(conn, symbols=symbols, run_id=rid, provider=adapter.source_id)
+            report.latest_observation = as_of
+            report.snapshots_written = snaps
+            report.failed = True
+            report.status = RUN_FAILED
+            report.reason = exc.__class__.__name__
             record_freshness(
                 conn,
                 source_id=EQUITY_SOURCE_ID,
                 dataset="equity_etf_daily_bars",
                 cadence="D",
                 transport_status=TRANSPORT_FAILED,
-                latest_observation=None,
+                latest_observation=as_of,
                 success=False,
                 error_redacted=exc.__class__.__name__,
                 run_id=rid,
                 today=today,
                 series_id="SPY",
             )
-            finish_run(conn, rid, status=RUN_FAILED, error_redacted=exc.__class__.__name__)
-            report.failed = True
-            report.status = RUN_FAILED
-            report.reason = exc.__class__.__name__
+            finish_run(
+                conn,
+                rid,
+                status=RUN_FAILED,
+                error_redacted=exc.__class__.__name__,
+                details={"rebuilt_from_stored": (not ibkr_collector_mode) and as_of is not None, "tws_socket": False},
+            )
             return report
         retrieved = utcnow()
-        counts = upsert_bars(conn, bars, run_id=rid, retrieved_at=retrieved)
+        counts = upsert_bars(conn, bars, run_id=rid, retrieved_at=retrieved, provider=adapter.source_id if adapter.source_id in {"IBKR", "YAHOO", "FIXTURE"} else None)
         report.bars_written = counts["inserted"]
-        prices = load_adj_closes(conn, symbols)
+        load_provider = adapter.source_id if adapter.source_id in {"IBKR", "YAHOO", "FIXTURE"} else None
+        prices = load_adj_closes(conn, symbols, source_id=EQUITY_SOURCE_ID, provider=load_provider)
         as_of = max((b.bar_date for b in bars), default=None)
+        if as_of is None:
+            as_of = latest_stored_bar_date(conn, symbols)
         report.latest_observation = as_of
+        basis = bars[0].adjustment_basis if bars else _stored_adjustment_basis(conn, symbols)
         if as_of is not None:
-            report.snapshots_written = write_snapshots(conn, as_of=as_of, prices=prices, source_id=EQUITY_SOURCE_ID, run_id=rid)
+            report.snapshots_written = write_snapshots(
+                conn,
+                as_of=as_of,
+                prices=prices,
+                source_id=EQUITY_SOURCE_ID,
+                run_id=rid,
+                adjustment_basis=basis,
+                provider=adapter.source_id,
+            )
         record_freshness(
             conn,
             source_id=EQUITY_SOURCE_ID,
@@ -595,6 +869,7 @@ def ingest_equity_eod(
 
 
 __all__ = [
+    "CollectorStoreAdapter",
     "EQUITY_SOURCE_ID",
     "EquityBar",
     "EquityIngestReport",
@@ -605,5 +880,8 @@ __all__ = [
     "aligned_session_return",
     "compute_metrics",
     "ingest_equity_eod",
+    "latest_stored_bar_date",
+    "pct_vs_dma",
     "ratio_change_rs",
+    "upsert_bars",
 ]

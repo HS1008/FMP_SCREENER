@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, timedelta
+from pathlib import Path
 
 import pandas as pd
 import pytest
@@ -141,7 +142,7 @@ def test_failed_or_partial_bundles_are_quarantined_and_never_overwrite_valid_sna
     write_dispersion_bundle(root, "Technology", newer, ok=False)
     (root / "rotation" / "Healthcare" / "bundle_meta.json").write_text("{", encoding="utf-8")
     second = ingest_precomputed_root(mi_db, root, today=newer)
-    reasons = {q["bundle"].split("/")[-1]: q["reason"] for q in second.quarantined}
+    reasons = {Path(q["bundle"]).name: q["reason"] for q in second.quarantined}
     assert "ok=False" in reasons["Technology"]
     assert "unstable bundle read" in reasons["Healthcare"] or "Expecting" in reasons["Healthcare"]
     with mi_db.connect() as conn:

@@ -26,6 +26,13 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("uninstall", help="Remove the Windows task; PostgreSQL data is preserved")
     provision = sub.add_parser("provision-token", help="Store the ingest token from a local file into Credential Manager (never prints the token)")
     provision.add_argument("--from-file", required=True, help="Path to a local 0600 file containing only the token")
+    eod = sub.add_parser("fetch-eod", help="Read-only TWS historical daily bars (ADJUSTED_LAST); POST to private ingest. Separate client id from the quote collector.")
+    eod.add_argument("--backfill", action="store_true", help="Request 2 Y of daily bars (initial load; enough for 200DMA and 252-session/12M). Default is incremental 1 W.")
+    eod.add_argument("--symbols", default=None, help="Comma-separated symbols; default is the dashboard universe")
+    eod.add_argument("--client-id", type=int, default=None, help="TWS API client id (default 72; quote collector uses 71)")
+    eod.add_argument("--host", default=None)
+    eod.add_argument("--port", type=int, default=None)
+    eod.add_argument("--dry-run", action="store_true", help="Fetch and print coverage counts; do not POST bars")
     return parser
 
 
@@ -49,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
         from ibkr_collector.runner import run_forever
 
         return run_forever()
+    if args.command == "fetch-eod":
+        from ibkr_collector.eod_cli import run_fetch_eod
+
+        return run_fetch_eod(args)
     if args.command in {"start", "stop", "status", "install", "uninstall", "provision-token"}:
         from ibkr_collector.service_windows import dispatch
 

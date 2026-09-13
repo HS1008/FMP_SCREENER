@@ -57,3 +57,9 @@ class IngestClient:
 
     def send_quotes(self, collector_id: str, quotes: list[dict[str, Any]]) -> dict[str, Any]:
         return self._post("/v1/quotes", {"collector_id": collector_id, "quotes": quotes})
+
+    def send_equity_bars(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/v1/equity_bars", payload)
+
+    def finalize_equity_bars(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._post("/v1/equity_bars/finalize", payload)
