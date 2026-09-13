@@ -154,6 +154,7 @@ if [ ! -x "$CODE_ROOT/venv/bin/python" ]; then
   exit 3
 fi
 PYTHON_BIN="$CODE_ROOT/venv/bin/python"
+export PYTHONPATH="$CODE_ROOT"
 
 echo "Applying database migrations ONCE from the staged SHA..."
 (
@@ -211,7 +212,7 @@ export FMP_DASHBOARD_ENV="$DASHBOARD_ENV"
 ) || VERIFY_RC=$?
 
 echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
-bash scripts/install_backtest_sync_cron.sh "$ROOT"
+bash "$CODE_ROOT/scripts/install_backtest_sync_cron.sh" "$ROOT"
 
 echo "Recording deploy identity (no secrets)..."
 (
