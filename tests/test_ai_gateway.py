@@ -328,8 +328,10 @@ def test_source_specific_remote_right_is_explicit_and_narrow():
 def test_remote_value_sources_env_is_empty_by_default_and_normalised(monkeypatch):
     monkeypatch.delenv("AI_GATEWAY_REMOTE_VALUE_SOURCES", raising=False)
     assert remote_value_sources() == ()
+    assert "IBKR" not in remote_value_sources()
     monkeypatch.setenv("AI_GATEWAY_REMOTE_VALUE_SOURCES", " equity_eod, Treasury ,")
     assert remote_value_sources() == ("EQUITY_EOD", "TREASURY")
+    assert "IBKR" not in remote_value_sources()
 
 
 def test_envelope_records_mode_and_unknown_mode_fails_closed():

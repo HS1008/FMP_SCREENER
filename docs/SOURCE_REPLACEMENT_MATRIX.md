@@ -16,7 +16,7 @@ state, no guessed data), **PRESERVED** (sealed research evidence).
 | Derived nominal − real | n/a | Derived from same-date legs, labelled `derived_nominal_minus_real` | Fixture | inherits legs | `ATTRIBUTION_REQUIRED` (derived from public legs) | none | Never labelled as `T5YIE`/`T10YIE` |
 | Macro (payrolls, CPI, GDP, liquidity, policy rates) | FRED | FRED (retained) | RETAINED (production since MI v1) | Release-calendar policies per series (`SERIES_POLICIES`) | `ATTRIBUTION_REQUIRED` (FRED terms) | none | — |
 | Credit OAS (ICE BofA via FRED) | FRED | FRED (retained) | RETAINED | Daily, `US_TREASURY` calendar | `RESTRICTED_REDISTRIBUTION`: values never leave the host to a remote AI client without an explicit recorded right | none | Licence decision if remote value export is ever wanted (human) |
-| Sector daily bars (SPY + 11 sector ETFs) | FMP nightly bundles (`FMP_LEGACY`, `outputs/precomputed`) | `EQUITY_EOD` adapter → `mi_market_bars` (Yahoo optional, fixture for tests, `UNAVAILABLE` default) | FIXTURE_ONLY; production adapter **not configured** (`MI_EQUITY_PROVIDER` unset → explicit `ENTITLEMENT_UNVERIFIED`) | `NYSE` calendar, last completed session | `INTERNAL_ONLY` until a provider whose terms permit storage/redistribution is chosen; IBKR Pro, QuantConnect research and Yahoo availability do **not** imply export rights | None (never silently FMP) | **Human/provider decision**: choose and license the production equity EOD provider |
+| Sector daily bars (SPY + 11 sector ETFs) | FMP nightly bundles (`FMP_LEGACY`, `outputs/precomputed`) | `EQUITY_EOD` adapter → `mi_market_bars`. Providers: unset → `UNAVAILABLE`; `fixture` (tests); `yahoo` (optional); `ibkr`/`ibkr_collector` → Windows collector push (`ADJUSTED_LAST`, `IBKR_ADJUSTED_LAST`); DigitalOcean consumes stored bars and never opens TWS | **Windows live 2026-09-11 ET:** TWS `127.0.0.1:7496` client 72, 5/5 smoke + 46/46 universe `ADJUSTED_LAST` (501 bars/symbol, 2024-09-12…2026-09-11). Disposable local ingest: 23046 bars, 11 sector + 6 industry + 12 basket snapshots, `research_eligible=false`. Production remains `MI_EQUITY_PROVIDER` unset. **RIGHTS_PENDING. Soak NOT_STARTED. Do not cancel FMP.** | `NYSE` calendar, last completed session (transport success ≠ observation freshness ≠ universe coverage) | `INTERNAL_ONLY`. IBKR Pro / TWS access / paid market-data subscriptions do **not** imply remote AI redistribution rights | None (never silently FMP or Yahoo) | **Human gates**: (1) multi-session soak; (2) IBKR/exchange terms before any remote export; (3) only then consider production collector enablement |
 | Sector 1D return / 1D RS vs SPY | FMP legacy metrics | Derived from `EQUITY_EOD` bars: `ret_1d = P[t]/P[prev aligned session] − 1`, `rs_1d = (P/B)[t]/(P/B)[t−1] − 1` | Fixture (aligned sessions, holiday gap, zero ≠ null) | inherits bars | inherits bars (`INTERNAL_ONLY`) | none | Same as bars |
 | Longer sector windows (1W…12M RS) | FMP legacy | Derived from `EQUITY_EOD` bars | Fixture | inherits bars | inherits bars | none | Same as bars (+ history backfill depth) |
 | Industry RS (sector → industry) | FMP legacy industry bundles | ETF comparisons vs sector ETF (SMH, XSD, KRE, XBI, XOP, XRT) from `EQUITY_EOD` | Fixture | inherits bars | inherits bars | none | Same as bars; sectors without a listed ETF comparison stay `UNAVAILABLE` |
@@ -24,7 +24,8 @@ state, no guessed data), **PRESERVED** (sealed research evidence).
 | Constituent dispersion, profiles, current caps, FMP universe | FMP | Not replaced | UNAVAILABLE | — | — | none | Licensed constituent source (human) |
 | Order flow (bond aggregates) | FINRA Query API | FINRA (retained) | RETAINED | Daily aggregates | `INTERNAL_ONLY` (Query API terms) | none | — |
 | Individual TRACE prints | not entitled | explicit `ENTITLEMENT_REQUIRED` | UNAVAILABLE | — | — | none | TRAQS / TRACE API entitlement (human) |
-| IBKR quotes | Windows read-only collector | unchanged | RETAINED | intraday snapshots | `INTERNAL_ONLY` | none | No settings edits; never an export source |
+| IBKR quotes | Windows read-only collector (`client_id=71`, TWS `127.0.0.1:7496`) | unchanged | RETAINED | intraday snapshots | `INTERNAL_ONLY` | none | No settings edits; never an export source |
+| IBKR daily bars (dashboard universe, 46 symbols) | not previously ingested | Windows `python -m ibkr_collector fetch-eod` (`client_id=72`) → Tailscale `POST /v1/equity_bars` + finalize → `EQUITY_EOD` / provider `IBKR` | **Code + live TWS + full universe + disposable ingest validated 2026-09-11 ET.** `ADJUSTED_LAST` accepted (IBKR info 2188 only; no TRADES fallback). Coverage 46/46. Production collection **off**. Remote export **UNRESOLVED**. | `NYSE`, last completed session; incremental `1 W` after `2 Y` backfill; coverage completeness is separate from transport and observation freshness | `INTERNAL_ONLY`; not in `AI_GATEWAY_REMOTE_VALUE_SOURCES` | none (retain last stored bars) | Multi-session soak on the Windows host; human data-rights decision before remote AI; do not cancel FMP |
 | Stage 1 / CSFML / final holdout | Sealed research artifacts | Sealed | PRESERVED | — | never exported | — | Human research gates |
 
 ## Operating mode
@@ -35,9 +36,10 @@ boots without `FMP_API_KEY` and without importing legacy provider engines.
 
 ## What is NOT yet replaceable
 
-FMP is **not** fully replaceable until the production equity EOD provider is chosen and its
-entitlement recorded. Until then sector/industry/subgroup rows are either absent (provider
-unconfigured → explicit `UNAVAILABLE`) or come from the retired legacy bundles when a human
-opts in. Do not cancel the FMP subscription on the basis of this matrix; the recommendation
-becomes possible only after the equity provider decision and a multi-session live soak of
-Treasury XML + equity EOD on the production host.
+FMP is **not** fully replaceable. IBKR EOD code is implemented, a bounded Windows TWS session
+returned 46/46 `ADJUSTED_LAST` series with enough history for 200DMA and 252-session metrics,
+and one disposable local PostgreSQL ingest rebuilt sector/industry/subgroup snapshots. That is
+**not** a production soak, **not** a DigitalOcean ingest, and **not** a data-rights approval.
+Do not cancel the FMP subscription. Required before FMP retirement discussion: multi-session
+soak, production reliability, unexplained-gap review, sector/industry/subgroup parity vs FMP,
+and an explicit human rights decision. Production `MI_EQUITY_PROVIDER` remains unset.

@@ -256,9 +256,10 @@ def test_experiments_view_only_returns_explicit_pre2025_nonholdout_rows(gateway_
     assert ids == {"gw-ok-2016", "gw-ok-2017", "gw-mixed-2018"}
     assert all(r["research_is_holdout"] is False for r in rows)
     assert all(r["test_end"] < date(2025, 1, 1) for r in rows)
-    dumped = json.dumps(rows, default=str)
-    assert "9.9" not in dumped and "8.8" not in dumped and "7.7" not in dumped and "6.6" not in dumped
-    assert "5.5" not in dumped and "4.4" not in dumped and "3.3" not in dumped
+    sharpes = {str(r.get("sharpe_ratio")) for r in rows}
+    assert sharpes == {"0.9", "0.7", "0.5"}
+    hidden_sharpes = {"9.9", "8.8", "7.7", "6.6", "5.5", "4.4", "3.3"}
+    assert sharpes.isdisjoint(hidden_sharpes)
 
 
 def test_oos_windows_view_excludes_2025_null_end_and_holdout_runs(gateway_db):

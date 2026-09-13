@@ -243,7 +243,7 @@ def _provision_dashboard_role(admin_url: str, role: str, password: str | None, t
     path = tmp_dir / "{0}.sql".format(role)
     path.write_text(sql, encoding="utf-8")
     return subprocess.run(
-        [psql, admin_url, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", str(path)],
+        [psql, "-d", admin_url, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", str(path)],
         capture_output=True,
         text=True,
         check=False,

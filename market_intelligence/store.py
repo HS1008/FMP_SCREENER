@@ -490,7 +490,7 @@ def latest_observation_date(conn, series_id: str) -> date | None:
 
 # ---- freshness ----------------------------------------------------------------------
 
-def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None, transport_status: str, latest_observation: date | None, success: bool, error_redacted: str | None, run_id: str | None, today: date | None = None, metadata_status: str | None = None, latest_observation_retrieved_at: datetime | None = None, series_id: str | None = None) -> str:
+def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None, transport_status: str, latest_observation: date | None, success: bool, error_redacted: str | None, run_id: str | None, today: date | None = None, metadata_status: str | None = None, latest_observation_retrieved_at: datetime | None = None, series_id: str | None = None, coverage_status: str | None = None, coverage_ratio: float | None = None, coverage_json: Mapping[str, Any] | None = None) -> str:
     """Update transport + observation freshness separately. Failed retrievals keep last valid data.
 
     The stored ``freshness_status`` is the assessment *at write time*; readers must recompute
@@ -527,10 +527,12 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
             INSERT INTO mi_data_freshness (
                 source_id, dataset, last_attempt_at, last_success_at, latest_observation_date, expected_cadence,
                 tolerance_days, expected_next_release, transport_status, freshness_status, last_error_redacted,
-                last_run_id, updated_at, freshness_policy_version, latest_observation_retrieved_at, metadata_status
+                last_run_id, updated_at, freshness_policy_version, latest_observation_retrieved_at, metadata_status,
+                coverage_status, coverage_ratio, coverage_json
             ) VALUES (
                 :s, :d, NOW(), CASE WHEN :success THEN NOW() ELSE NULL END, :latest, :cadence,
-                :tol, :next_release, :transport, :fresh, :err, :run_id, NOW(), :policy, :retrieved, :meta
+                :tol, :next_release, :transport, :fresh, :err, :run_id, NOW(), :policy, :retrieved, :meta,
+                :cov_status, :cov_ratio, CAST(:cov_json AS JSONB)
             )
             ON CONFLICT (source_id, dataset) DO UPDATE SET
                 last_attempt_at = NOW(),
@@ -546,7 +548,10 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
                 updated_at = NOW(),
                 freshness_policy_version = :policy,
                 latest_observation_retrieved_at = COALESCE(:retrieved, mi_data_freshness.latest_observation_retrieved_at),
-                metadata_status = COALESCE(:meta, mi_data_freshness.metadata_status)
+                metadata_status = COALESCE(:meta, mi_data_freshness.metadata_status),
+                coverage_status = COALESCE(:cov_status, mi_data_freshness.coverage_status),
+                coverage_ratio = COALESCE(:cov_ratio, mi_data_freshness.coverage_ratio),
+                coverage_json = COALESCE(CAST(:cov_json AS JSONB), mi_data_freshness.coverage_json)
             """
         ),
         {
@@ -564,6 +569,9 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
             "policy": FRESHNESS_POLICY_VERSION,
             "retrieved": retrieved,
             "meta": metadata_status,
+            "cov_status": coverage_status,
+            "cov_ratio": coverage_ratio,
+            "cov_json": strict_dumps(coverage_json) if coverage_json is not None else None,
         },
     )
     return assessment.status

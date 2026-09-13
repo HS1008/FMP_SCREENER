@@ -37,6 +37,9 @@ def test_order_methods_are_on_the_block_list():
     assert "reqPositions" in BLOCKED_ECLIENT_METHODS
     assert "reqExecutions" in BLOCKED_ECLIENT_METHODS
     assert "reqMktData" not in BLOCKED_ECLIENT_METHODS
+    assert "reqHistoricalData" not in BLOCKED_ECLIENT_METHODS
+    assert classify_error(420) == "pacing"
+    assert classify_error(354) == "entitlement"
 
 
 def test_queue_is_idempotent_and_bounded(tmp_path: Path):
