@@ -84,6 +84,21 @@ def test_deploy_host_exports_pythonpath_for_jobs_modules():
     assert "$CODE_ROOT/scripts/install_backtest_sync_cron.sh" in host
 
 
+def test_deploy_host_runs_jobs_modules_from_staged_cwd():
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    assert "staged_python() {" in host
+    assert 'cd "$CODE_ROOT"' in host[host.index("staged_python() {") :]
+    for mod in (
+        "jobs.report_deploy_identity",
+        "jobs.cutover_dashboard_systemd",
+        "jobs.record_deploy_identity_db",
+        "jobs.observe_running_dashboard",
+        "jobs.audit_host_dashboard",
+    ):
+        assert "staged_python -m {0}".format(mod) in host
+        assert '"$PYTHON_BIN" -m {0}'.format(mod) not in host
+
+
 def test_first_deploy_legacy_filename_only_state(tmp_path):
     engine = create_engine("sqlite:///{0}".format(tmp_path / "oldprod.db"))
     staged = tmp_path / "migrations"

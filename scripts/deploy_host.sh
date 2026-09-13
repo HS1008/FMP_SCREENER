@@ -155,6 +155,15 @@ if [ ! -x "$CODE_ROOT/venv/bin/python" ]; then
 fi
 PYTHON_BIN="$CODE_ROOT/venv/bin/python"
 export PYTHONPATH="$CODE_ROOT"
+# deploy_host.sh cds to ROOT for git. Python puts cwd first on sys.path, so the
+# live checkout's older jobs/ package shadows PYTHONPATH on first deploy.
+staged_python() {
+  (
+    cd "$CODE_ROOT"
+    export PYTHONPATH="$CODE_ROOT"
+    exec "$PYTHON_BIN" "$@"
+  )
+}
 
 echo "Applying database migrations ONCE from the staged SHA..."
 (
@@ -221,7 +230,7 @@ echo "Recording deploy identity (no secrets)..."
   . "$DASHBOARD_ENV"
   set +a
   unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  "$PYTHON_BIN" -m jobs.report_deploy_identity \
+  staged_python -m jobs.report_deploy_identity \
     --sha "$SHA" \
     --checkout "$ROOT" \
     --mode git_pull \
@@ -316,7 +325,7 @@ CUTOVER_RC=0
   . "$DASHBOARD_ENV"
   set +a
   unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  "$PYTHON_BIN" -m jobs.cutover_dashboard_systemd \
+  staged_python -m jobs.cutover_dashboard_systemd \
     --verify-rc "$VERIFY_RC" \
     --env-file "$DASHBOARD_ENV" \
     --out /var/lib/fmp/deploy/cutover_readiness.json
@@ -340,7 +349,7 @@ echo "Persisting sanitized deploy identity to PostgreSQL..."
   fi
   set +a
   unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-  "$PYTHON_BIN" -m jobs.record_deploy_identity_db \
+  staged_python -m jobs.record_deploy_identity_db \
     --from /var/lib/fmp/deploy/current.json \
     --csfml /var/lib/fmp/deploy/csfml_v1_live.json \
     --tlt /var/lib/fmp/deploy/tlt_v0_live.json \
@@ -397,7 +406,7 @@ if [ "$SKIP_RESTART" != 1 ]; then
     exit "$POST_VERIFY_RC"
   fi
   echo "Observing running Streamlit identity after restart..."
-  "$PYTHON_BIN" -m jobs.observe_running_dashboard --out "$STATE_DIR/running_identity.json"
+  staged_python -m jobs.observe_running_dashboard --out "$STATE_DIR/running_identity.json"
   echo "Auditing host Streamlit identity after restart (no secrets, no systemd change)..."
   AUDIT_RC=0
   (
@@ -407,7 +416,7 @@ if [ "$SKIP_RESTART" != 1 ]; then
     . "$DASHBOARD_ENV"
     set +a
     unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-    "$PYTHON_BIN" -m jobs.audit_host_dashboard \
+    staged_python -m jobs.audit_host_dashboard \
       --verify-rc "$POST_VERIFY_RC" \
       --out "$STATE_DIR/host_audit.json" \
       --require-readonly \
