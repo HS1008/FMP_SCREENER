@@ -24,6 +24,7 @@ def test_provision_script_applies_sql_via_admin_or_peer_not_writer():
     script = (ROOT / "scripts" / "provision_dashboard_readonly.sh").read_text(encoding="utf-8")
     assert "MI_ADMIN_DATABASE_URL" in script
     assert "ADMIN_DATABASE_URL" in script
+    assert "MARKET_INTELLIGENCE_DATABASE_URL" in script
     assert "postgres_peer" in script
     assert "sudo -n -u postgres" in script
     assert "-f -" in script

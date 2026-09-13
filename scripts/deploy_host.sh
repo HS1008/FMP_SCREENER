@@ -19,6 +19,16 @@ if ! flock -n 9; then
   exit 75
 fi
 
+# GNU readlink -f prints a canonical path for a missing last component once
+# the parent exists. First deploy creates /opt/fmp via install -d of releases;
+# treating that as a current/previous pointer move would false-fail.
+resolved_existing_path() {
+  local p="$1"
+  if [ -L "$p" ] || [ -e "$p" ]; then
+    readlink -f "$p" 2>/dev/null || true
+  fi
+}
+
 ROOT="${FMP_CHECKOUT:-/root/FMP_SCREENER}"
 RELEASE_ROOT="${FMP_RELEASE_ROOT:-/opt/fmp/releases}"
 CURRENT_LINK="${FMP_CURRENT_LINK:-/opt/fmp/current}"
@@ -103,10 +113,7 @@ fi
 echo "Staging immutable release (no migrate, no restart, no activate, no provision)..."
 STAGED="$RELEASE_ROOT/$SHA"
 REPO_URL="${FMP_REPO_URL:-https://github.com/hs1008/fmp_screener.git}"
-CURRENT_BEFORE=""
-if [ -L "$CURRENT_LINK" ] || [ -e "$CURRENT_LINK" ]; then
-  CURRENT_BEFORE="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-fi
+CURRENT_BEFORE="$(resolved_existing_path "$CURRENT_LINK")"
 IMMUTABLE_RC=0
 install -d -m 0755 "$RELEASE_ROOT"
 if [ ! -d "$STAGED/.git" ]; then
@@ -136,7 +143,7 @@ if [ ! -x "$STAGED/venv/bin/streamlit" ]; then
   echo "FAIL: staged release venv is missing streamlit"
   exit 3
 fi
-if [ "$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)" != "$CURRENT_BEFORE" ]; then
+if [ "$(resolved_existing_path "$CURRENT_LINK")" != "$CURRENT_BEFORE" ]; then
   echo "FAIL: stage-only must not move current/previous pointers"
   exit 3
 fi
@@ -147,6 +154,16 @@ if [ ! -x "$CODE_ROOT/venv/bin/python" ]; then
   exit 3
 fi
 PYTHON_BIN="$CODE_ROOT/venv/bin/python"
+export PYTHONPATH="$CODE_ROOT"
+# deploy_host.sh cds to ROOT for git. Python puts cwd first on sys.path, so the
+# live checkout's older jobs/ package shadows PYTHONPATH on first deploy.
+staged_python() {
+  (
+    cd "$CODE_ROOT"
+    export PYTHONPATH="$CODE_ROOT"
+    exec "$PYTHON_BIN" "$@"
+  )
+}
 
 echo "Applying database migrations ONCE from the staged SHA..."
 (
@@ -172,6 +189,21 @@ echo "Applying database migrations ONCE from the staged SHA..."
   "$PYTHON_BIN" -m jobs.apply_migrations
 )
 
+# Staged --root has no checkout .env. Reuse the same writer identity as
+# migrations so CREATE ROLE targets quant_monitor, not the 'fmp' default.
+if [ -f "$WRITER_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$WRITER_ENV"
+  set +a
+elif [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env"
+  set +a
+fi
+unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+
 echo "Provisioning dashboard_readonly (password file required)..."
 bash "$CODE_ROOT/scripts/provision_dashboard_readonly.sh" --require --root "$CODE_ROOT"
 
@@ -189,7 +221,7 @@ export FMP_DASHBOARD_ENV="$DASHBOARD_ENV"
 ) || VERIFY_RC=$?
 
 echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
-bash scripts/install_backtest_sync_cron.sh "$ROOT"
+bash "$CODE_ROOT/scripts/install_backtest_sync_cron.sh" "$ROOT"
 
 echo "Recording deploy identity (no secrets)..."
 (
@@ -198,7 +230,7 @@ echo "Recording deploy identity (no secrets)..."
   . "$DASHBOARD_ENV"
   set +a
   unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  "$PYTHON_BIN" -m jobs.report_deploy_identity \
+  staged_python -m jobs.report_deploy_identity \
     --sha "$SHA" \
     --checkout "$ROOT" \
     --mode git_pull \
@@ -293,7 +325,7 @@ CUTOVER_RC=0
   . "$DASHBOARD_ENV"
   set +a
   unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-  "$PYTHON_BIN" -m jobs.cutover_dashboard_systemd \
+  staged_python -m jobs.cutover_dashboard_systemd \
     --verify-rc "$VERIFY_RC" \
     --env-file "$DASHBOARD_ENV" \
     --out /var/lib/fmp/deploy/cutover_readiness.json
@@ -317,7 +349,7 @@ echo "Persisting sanitized deploy identity to PostgreSQL..."
   fi
   set +a
   unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-  "$PYTHON_BIN" -m jobs.record_deploy_identity_db \
+  staged_python -m jobs.record_deploy_identity_db \
     --from /var/lib/fmp/deploy/current.json \
     --csfml /var/lib/fmp/deploy/csfml_v1_live.json \
     --tlt /var/lib/fmp/deploy/tlt_v0_live.json \
@@ -374,7 +406,7 @@ if [ "$SKIP_RESTART" != 1 ]; then
     exit "$POST_VERIFY_RC"
   fi
   echo "Observing running Streamlit identity after restart..."
-  "$PYTHON_BIN" -m jobs.observe_running_dashboard --out "$STATE_DIR/running_identity.json"
+  staged_python -m jobs.observe_running_dashboard --out "$STATE_DIR/running_identity.json"
   echo "Auditing host Streamlit identity after restart (no secrets, no systemd change)..."
   AUDIT_RC=0
   (
@@ -384,7 +416,7 @@ if [ "$SKIP_RESTART" != 1 ]; then
     . "$DASHBOARD_ENV"
     set +a
     unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
-    "$PYTHON_BIN" -m jobs.audit_host_dashboard \
+    staged_python -m jobs.audit_host_dashboard \
       --verify-rc "$POST_VERIFY_RC" \
       --out "$STATE_DIR/host_audit.json" \
       --require-readonly \
