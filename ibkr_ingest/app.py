@@ -133,7 +133,7 @@ def equity_bars(body: dict[str, Any]) -> dict[str, Any]:
     if hasattr(latest, "isoformat"):
         latest = latest.isoformat()
     return {
-        "ok": True,
+        "ok": bool(stored.get("ok", True)),
         "collector_id": request.collector_id,
         "received": stored.get("received", len(request.records)),
         "inserted": stored.get("inserted", 0),
@@ -147,6 +147,8 @@ def equity_bars(body: dict[str, Any]) -> dict[str, Any]:
         "finalized": bool(stored.get("finalized")),
         "coverage_status": stored.get("coverage_status"),
         "run_status": stored.get("run_status"),
+        "state": stored.get("state"),
+        "missing_on_latest_observed_date": stored.get("missing_on_latest_observed_date") or [],
     }
 
 

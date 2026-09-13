@@ -6,7 +6,7 @@ import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Any
+from typing import Any, Mapping
 
 from market_intelligence.calendars import CAL_NYSE, last_completed_session
 
@@ -445,7 +445,99 @@ def _validate_coverage(coverage: Any) -> dict[str, Any]:
     if not isinstance(coverage, dict):
         raise PayloadError("coverage must be an object")
     _forbid_keys(list(coverage))
+    if coverage:
+        _validate_coverage_claim(coverage)
     return coverage
+
+
+def _coverage_symbols(value: Any, *, field: str) -> list[str] | None:
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        symbols = [str(key) for key in value]
+    elif isinstance(value, list):
+        symbols = [str(item) for item in value]
+    else:
+        return None
+    if len(symbols) != len(set(symbols)):
+        raise PayloadError("duplicate symbol entries in {0}".format(field))
+    return symbols
+
+
+def _validate_coverage_claim(coverage: Mapping[str, Any]) -> None:
+    from market_intelligence.taxonomy import UNIVERSE_SYMBOLS
+
+    expected = set(UNIVERSE_SYMBOLS)
+    successful_list = _coverage_symbols(coverage.get("successful_symbols"), field="successful_symbols")
+    if successful_list is None:
+        successful_list = _coverage_symbols(coverage.get("successful"), field="successful")
+    failed_list = _coverage_symbols(coverage.get("failed_symbols"), field="failed_symbols")
+    if failed_list is None:
+        failed_list = _coverage_symbols(coverage.get("failed"), field="failed")
+    requested_list = _coverage_symbols(coverage.get("requested_symbols"), field="requested_symbols")
+    if requested_list is None:
+        requested_list = _coverage_symbols(coverage.get("requested"), field="requested")
+
+    if isinstance(coverage.get("successful"), int) and not isinstance(coverage.get("successful"), bool) and successful_list is not None:
+        if int(coverage["successful"]) != len(successful_list):
+            raise PayloadError("successful count does not match successful symbols")
+    if isinstance(coverage.get("failed"), int) and not isinstance(coverage.get("failed"), bool) and failed_list is not None:
+        if int(coverage["failed"]) != len(failed_list):
+            raise PayloadError("failed count does not match failed symbols")
+    if isinstance(coverage.get("requested"), int) and not isinstance(coverage.get("requested"), bool) and requested_list is not None:
+        if int(coverage["requested"]) != len(requested_list):
+            raise PayloadError("requested count does not match requested symbols")
+
+    success_n = len(successful_list) if successful_list is not None else int(coverage.get("successful") or 0)
+    if isinstance(coverage.get("successful"), int) and not isinstance(coverage.get("successful"), bool):
+        success_n = int(coverage["successful"])
+    failed_n = len(failed_list) if failed_list is not None else int(coverage.get("failed") or 0)
+    if isinstance(coverage.get("failed"), int) and not isinstance(coverage.get("failed"), bool):
+        failed_n = int(coverage["failed"])
+    if requested_list is not None:
+        requested_n = len(requested_list)
+    elif isinstance(coverage.get("requested"), int) and not isinstance(coverage.get("requested"), bool):
+        requested_n = int(coverage["requested"])
+    else:
+        requested_n = success_n + failed_n
+    if successful_list is not None and failed_list is not None and set(successful_list) & set(failed_list):
+        raise PayloadError("successful symbol appears in failed")
+    for field, symbols in (("successful", successful_list), ("failed", failed_list), ("requested", requested_list)):
+        if not symbols:
+            continue
+        outside = sorted(set(symbols) - expected)
+        if outside:
+            raise PayloadError("{0} symbols outside expected universe: {1}".format(field, ",".join(outside[:8])))
+    ratio = coverage.get("coverage_ratio")
+    if ratio is not None and requested_n:
+        computed = success_n / float(requested_n)
+        try:
+            claimed_ratio = float(ratio)
+        except (TypeError, ValueError) as exc:
+            raise PayloadError("coverage_ratio must be numeric") from exc
+        if abs(claimed_ratio - computed) > 1e-6:
+            raise PayloadError("coverage_ratio inconsistent with counts")
+    claimed_status = str(coverage.get("coverage_status") or "").upper()
+    if claimed_status == "COMPLETE" and failed_n > 0:
+        raise PayloadError("claim COMPLETE while failed_count > 0")
+    if claimed_status == "EMPTY" and success_n > 0:
+        raise PayloadError("claim EMPTY while successful_count > 0")
+    have_success = successful_list is not None or (
+        isinstance(coverage.get("successful"), int) and not isinstance(coverage.get("successful"), bool)
+    )
+    have_failed = failed_list is not None or (
+        isinstance(coverage.get("failed"), int) and not isinstance(coverage.get("failed"), bool)
+    )
+    if requested_n > 0 and have_success and have_failed and success_n + failed_n != requested_n:
+        raise PayloadError("requested count does not equal successful + failed")
+    computed_status = "EMPTY" if requested_n <= 0 or success_n <= 0 else ("COMPLETE" if failed_n == 0 and success_n == requested_n else "PARTIAL")
+    if computed_status == "EMPTY" and success_n > 0:
+        raise PayloadError("claim EMPTY while successful_count > 0")
+    if claimed_status in {"COMPLETE", "PARTIAL", "EMPTY"} and claimed_status != computed_status:
+        raise PayloadError("coverage_status contradicts counts")
+    overall = str(coverage.get("overall") or "").upper()
+    if overall in {"COMPLETE", "FULL_SUCCESS"} and computed_status != "COMPLETE":
+        raise PayloadError("overall COMPLETE contradicts counts")
 
 
 def _batch_id(raw: Any) -> str:

@@ -51,6 +51,7 @@ GRANT SELECT, INSERT, UPDATE ON mi_sector_snapshots TO mi_ibkr_ingest;
 GRANT SELECT, INSERT, UPDATE ON mi_industry_snapshots TO mi_ibkr_ingest;
 GRANT SELECT, INSERT, UPDATE ON mi_equity_eod_batches TO mi_ibkr_ingest;
 GRANT SELECT, INSERT, UPDATE ON mi_equity_eod_batch_chunks TO mi_ibkr_ingest;
+GRANT SELECT, INSERT, UPDATE ON mi_equity_eod_batch_observations TO mi_ibkr_ingest;
 GRANT USAGE, SELECT ON SEQUENCE mi_market_quotes_id_seq TO mi_ibkr_ingest;
 GRANT USAGE, SELECT ON SEQUENCE mi_instrument_identifiers_id_seq TO mi_ibkr_ingest;
 GRANT USAGE, SELECT ON SEQUENCE mi_market_bars_id_seq TO mi_ibkr_ingest;

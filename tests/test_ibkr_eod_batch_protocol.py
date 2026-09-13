@@ -327,6 +327,10 @@ def test_duplicate_finalization_is_idempotent(ingest_client, mi_db):
     assert again.status_code == 200
     assert again.json()["duplicate"] is True
     assert again.json()["snapshots"] == 0
+    assert again.json()["ok"] is True
+    assert again.json()["state"] == "FINALIZED"
+    assert again.json()["run_status"] == "SUCCEEDED"
+    assert again.json()["coverage_status"] == "COMPLETE"
     assert _snapshot_as_ofs(mi_db) == [date(2026, 9, 8)]
 
 
@@ -428,7 +432,7 @@ def test_open_batch_do_refresh_cannot_promote_staged_bars(mi_db, monkeypatch):
         _stage(mi_db, [_eod_bar(symbol=symbol, day=T1, close=500.0, con_id=4000 + next_index)], batch_id=open_id, chunk_index=next_index, chunk_count=chunk_count)
         next_index += 1
     while next_index <= chunk_count:
-        _stage(mi_db, [_eod_bar(symbol="SPY", day="2026-09-10", close=111.0 + next_index)], batch_id=open_id, chunk_index=next_index, chunk_count=chunk_count)
+        _stage(mi_db, [_eod_bar(symbol="SPY", day="2026-09-10", close=111.0)], batch_id=open_id, chunk_index=next_index, chunk_count=chunk_count)
         next_index += 1
     promoted = _finalize(mi_db, open_id, _coverage_complete())
     assert promoted["coverage_status"] == "COMPLETE"
@@ -477,3 +481,175 @@ def test_streamlit_pages_remain_db_only():
         text = (root / rel).read_text(encoding="utf-8")
         for needle in forbidden:
             assert needle not in text
+
+
+def test_fake_complete_with_45_actual_does_not_publish(ingest_client, mi_db):
+    first_id = str(uuid.uuid4())
+    complete = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch(_universe_bars(T0, 200.0), batch_id=first_id, chunk_index=1, chunk_count=1, coverage=_coverage_complete(), finalize=True),
+    )
+    assert complete.status_code == 200 and complete.json()["run_status"] == "SUCCEEDED"
+    t0_snaps = _snapshot_as_ofs(mi_db)
+    missing = "NVDA"
+    bars = [_eod_bar(symbol=s, day=T1, close=300.0, con_id=2100 + i) for i, s in enumerate(UNIVERSE) if s != missing]
+    lie = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch(bars, batch_id=str(uuid.uuid4()), chunk_index=1, chunk_count=1, coverage=_coverage_complete(), finalize=True),
+    )
+    assert lie.status_code == 200, lie.text
+    body = lie.json()
+    assert body["snapshots"] == 0
+    assert body["run_status"] != "SUCCEEDED"
+    assert body["coverage_status"] != "COMPLETE"
+    assert body["coverage_status"] == "COVERAGE_MISMATCH"
+    assert "NVDA" in (body.get("missing_on_latest_observed_date") or [])
+    assert _snapshot_as_ofs(mi_db) == t0_snaps
+    with mi_db.connect() as conn:
+        fresh = conn.execute(text("SELECT coverage_status, metadata_status, latest_observation_date FROM mi_data_freshness WHERE source_id='EQUITY_EOD' AND dataset='equity_etf_daily_bars'")).mappings().one()
+        obs = conn.execute(text("SELECT COUNT(DISTINCT symbol) FROM mi_equity_eod_batch_observations WHERE batch_id=:id"), {"id": body["batch_id"]}).scalar()
+    assert fresh["coverage_status"] == "COVERAGE_MISMATCH"
+    assert fresh["metadata_status"] == "COVERAGE_MISMATCH"
+    assert fresh["latest_observation_date"] == date(2026, 9, 8)
+    assert obs == len(UNIVERSE) - 1
+
+
+def test_fake_complete_with_one_actual_does_not_publish(ingest_client, mi_db):
+    r = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch([_eod_bar(day=T1)], batch_id=str(uuid.uuid4()), chunk_index=1, chunk_count=1, coverage=_coverage_complete(), finalize=True),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["snapshots"] == 0
+    assert r.json()["run_status"] != "SUCCEEDED"
+    assert r.json()["coverage_status"] == "COVERAGE_MISMATCH"
+    assert _snapshot_as_ofs(mi_db) == []
+    with mi_db.connect() as conn:
+        frozen = conn.execute(
+            text("SELECT expected_symbols_json, expected_symbols_sha256, universe_version FROM mi_equity_eod_batches WHERE batch_id=:id"),
+            {"id": r.json()["batch_id"]},
+        ).mappings().one()
+    assert len(frozen["expected_symbols_json"]) == len(UNIVERSE)
+    assert frozen["expected_symbols_sha256"]
+    assert frozen["universe_version"]
+
+
+def test_historical_rows_do_not_satisfy_current_batch(ingest_client, mi_db):
+    t0 = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch(_universe_bars(T0, 120.0), batch_id=str(uuid.uuid4()), chunk_index=1, chunk_count=1, coverage=_coverage_complete(), finalize=True),
+    )
+    assert t0.json()["coverage_status"] == "COMPLETE"
+    missing = "NVDA"
+    bars = [_eod_bar(symbol=s, day=T1, close=330.0, con_id=2200 + i) for i, s in enumerate(UNIVERSE) if s != missing]
+    lie = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch(bars, batch_id=str(uuid.uuid4()), chunk_index=1, chunk_count=1, coverage=_coverage_complete(), finalize=True),
+    )
+    assert lie.json()["coverage_status"] == "COVERAGE_MISMATCH"
+    assert lie.json()["snapshots"] == 0
+    assert lie.json()["run_status"] != "SUCCEEDED"
+    assert "NVDA" in lie.json()["missing_on_latest_observed_date"]
+    assert _snapshot_as_ofs(mi_db) == [date(2026, 9, 8)]
+    with mi_db.connect() as conn:
+        historical = conn.execute(text("SELECT COUNT(*) FROM mi_market_bars WHERE instrument_id='NVDA' AND source_id='EQUITY_EOD' AND bar_date=:d"), {"d": T0}).scalar()
+        t1 = conn.execute(text("SELECT COUNT(*) FROM mi_market_bars WHERE instrument_id='NVDA' AND source_id='EQUITY_EOD' AND bar_date=:d"), {"d": T1}).scalar()
+    assert historical == 1
+    assert t1 == 0
+
+
+def test_observed_complete_with_partial_claim_is_mismatch(ingest_client, mi_db):
+    r = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch(_universe_bars(T1, 140.0), batch_id=str(uuid.uuid4()), chunk_index=1, chunk_count=1, coverage=_coverage_partial(), finalize=True),
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["snapshots"] == 0
+    assert r.json()["run_status"] != "SUCCEEDED"
+    assert r.json()["coverage_status"] == "COVERAGE_MISMATCH"
+    assert _snapshot_as_ofs(mi_db) == []
+
+
+def test_contradictory_observation_is_rejected(ingest_client, mi_db):
+    batch_id = str(uuid.uuid4())
+    first = ingest_client.post("/v1/equity_bars", headers=_headers(), json=_eod_batch([_eod_bar(close=650.0)], batch_id=batch_id, chunk_index=1, chunk_count=2))
+    assert first.status_code == 200
+    changed = ingest_client.post(
+        "/v1/equity_bars",
+        headers=_headers(),
+        json=_eod_batch([_eod_bar(close=651.0)], batch_id=batch_id, chunk_index=2, chunk_count=2),
+    )
+    assert changed.status_code == 409
+    assert "contradictory observation" in changed.json()["detail"]
+    with mi_db.connect() as conn:
+        snaps = conn.execute(text("SELECT COUNT(*) FROM mi_sector_snapshots WHERE source_id='EQUITY_EOD'")).scalar()
+        state = conn.execute(text("SELECT state FROM mi_equity_eod_batches WHERE batch_id=:id"), {"id": batch_id}).scalar()
+        hashes = conn.execute(text("SELECT COUNT(*) FROM mi_equity_eod_batch_observations WHERE batch_id=:id"), {"id": batch_id}).scalar()
+    assert snaps == 0
+    assert state == "OPEN"
+    assert hashes == 1
+
+
+def test_duplicate_observation_same_content_is_idempotent(ingest_client, mi_db):
+    batch_id = str(uuid.uuid4())
+    bar = _eod_bar(close=650.0)
+    first = ingest_client.post("/v1/equity_bars", headers=_headers(), json=_eod_batch([bar], batch_id=batch_id, chunk_index=1, chunk_count=2))
+    again = ingest_client.post("/v1/equity_bars", headers=_headers(), json=_eod_batch([bar], batch_id=batch_id, chunk_index=1, chunk_count=2))
+    assert first.status_code == 200 and again.status_code == 200
+    with mi_db.connect() as conn:
+        obs = conn.execute(text("SELECT COUNT(*) FROM mi_equity_eod_batch_observations WHERE batch_id=:id"), {"id": batch_id}).scalar()
+        received = conn.execute(text("SELECT received_chunks FROM mi_equity_eod_batches WHERE batch_id=:id"), {"id": batch_id}).scalar()
+    assert obs == 1
+    assert received == 1
+
+
+def test_failed_duplicate_finalize_stays_failed(ingest_client, mi_db):
+    batch_id = str(uuid.uuid4())
+    payload = _finalize_body(batch_id, _coverage_failed())
+    first = ingest_client.post("/v1/equity_bars/finalize", headers=_headers(), json=payload)
+    again = ingest_client.post("/v1/equity_bars/finalize", headers=_headers(), json=payload)
+    assert first.status_code == 200 and again.status_code == 200
+    assert first.json()["run_status"] == "FAILED"
+    assert first.json()["ok"] is False
+    assert again.json()["duplicate"] is True
+    assert again.json()["ok"] is False
+    assert again.json()["state"] == "FAILED"
+    assert again.json()["run_status"] == "FAILED"
+    assert again.json()["coverage_status"] == "EMPTY"
+    with mi_db.connect() as conn:
+        runs = conn.execute(text("SELECT COUNT(*) FROM mi_ingestion_runs WHERE source_id='EQUITY_EOD' AND dataset='equity_etf_daily_bars'")).scalar()
+        snaps = conn.execute(text("SELECT COUNT(*) FROM mi_sector_snapshots WHERE source_id='EQUITY_EOD'")).scalar()
+        state = conn.execute(text("SELECT state FROM mi_equity_eod_batches WHERE batch_id=:id"), {"id": batch_id}).scalar()
+    assert runs == 1
+    assert snaps == 0
+    assert state == "FAILED"
+
+
+def test_received_chunks_do_not_double_count_existing_chunk_row(mi_db):
+    batch_id = str(uuid.uuid4())
+    first = _stage(mi_db, [_eod_bar()], batch_id=batch_id, chunk_index=1, chunk_count=2)
+    assert first["duplicate_chunk"] is False
+    with mi_db.begin() as conn:
+        conn.execute(
+            text(
+                """
+                INSERT INTO mi_equity_eod_batch_chunks (batch_id, chunk_index, chunk_count, chunk_hash, bar_count)
+                VALUES (:id, 2, 2, 'deadbeef', 1)
+                ON CONFLICT DO NOTHING
+                """
+            ),
+            {"id": batch_id},
+        )
+        conn.execute(text("UPDATE mi_equity_eod_batches SET received_chunks = 2 WHERE batch_id=:id"), {"id": batch_id})
+    # Staging the already-recorded chunk 1 again must not increment 2 -> 3.
+    again = _stage(mi_db, [_eod_bar()], batch_id=batch_id, chunk_index=1, chunk_count=2)
+    assert again["duplicate_chunk"] is True
+    with mi_db.connect() as conn:
+        received = conn.execute(text("SELECT received_chunks FROM mi_equity_eod_batches WHERE batch_id=:id"), {"id": batch_id}).scalar()
+    assert int(received) == 2

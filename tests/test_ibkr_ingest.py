@@ -321,6 +321,52 @@ def test_equity_ingest_rejects_false_provenance_and_future_bars():
         )
 
 
+def test_coverage_claim_rejects_contradictory_counts_and_outside_universe():
+    from ibkr_ingest.validate import PayloadError, validate_equity_bar_batch, validate_equity_finalize
+
+    completed = date(2026, 9, 10)
+    base = _eod_batch([_eod_bar()], batch_id="00000000-0000-4000-8000-000000000001", chunk_index=1, chunk_count=1, finalize=False)
+    with pytest.raises(PayloadError, match="successful symbol appears in failed"):
+        validate_equity_bar_batch({**base, "coverage": {"requested": ["SPY"], "successful": ["SPY"], "failed": {"SPY": "timeout"}}}, completed_session=completed)
+    with pytest.raises(PayloadError, match="outside expected universe"):
+        validate_equity_bar_batch({**base, "coverage": {"requested": ["NOTREAL"], "successful": ["NOTREAL"], "failed": {}}}, completed_session=completed)
+    with pytest.raises(PayloadError, match="duplicate symbol"):
+        validate_equity_bar_batch({**base, "coverage": {"requested": ["SPY", "SPY"], "successful": ["SPY", "SPY"], "failed": {}}}, completed_session=completed)
+    with pytest.raises(PayloadError, match="does not equal successful"):
+        validate_equity_bar_batch(
+            {**base, "coverage": {"requested": 2, "successful": ["SPY", "XLK"], "failed": {"NVDA": "timeout"}}},
+            completed_session=completed,
+        )
+    with pytest.raises(PayloadError, match="coverage_ratio inconsistent"):
+        validate_equity_bar_batch({**base, "coverage": {"requested": 2, "successful": ["SPY"], "failed": {"NVDA": "x"}, "coverage_ratio": 1.0}}, completed_session=completed)
+    with pytest.raises(PayloadError, match="claim COMPLETE while failed_count"):
+        validate_equity_finalize(
+            {
+                "collector_id": "harin-laptop",
+                "batch_id": "00000000-0000-4000-8000-000000000002",
+                "provider": "IBKR",
+                "source_id": "EQUITY_EOD",
+                "what_to_show": "ADJUSTED_LAST",
+                "adjustment_basis": "IBKR_ADJUSTED_LAST",
+                "request_mode": "full",
+                "coverage": {"requested": 46, "successful": 46, "failed": 1, "coverage_status": "COMPLETE"},
+            }
+        )
+    with pytest.raises(PayloadError, match="claim EMPTY while successful"):
+        validate_equity_finalize(
+            {
+                "collector_id": "harin-laptop",
+                "batch_id": "00000000-0000-4000-8000-000000000003",
+                "provider": "IBKR",
+                "source_id": "EQUITY_EOD",
+                "what_to_show": "ADJUSTED_LAST",
+                "adjustment_basis": "IBKR_ADJUSTED_LAST",
+                "request_mode": "full",
+                "coverage": {"requested": 1, "successful": ["SPY"], "failed": {}, "coverage_status": "EMPTY"},
+            }
+        )
+
+
 def test_interrupted_duplicate_reordered_and_idempotent_chunks(ingest_client, mi_db):
     import uuid
 
