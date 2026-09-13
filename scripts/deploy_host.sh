@@ -356,35 +356,45 @@ echo "Persisting sanitized deploy identity to PostgreSQL..."
     --stage1 /var/lib/fmp/deploy/stage1_live.json
 )
 
+# Helpers come from the staged SHA (this piped script may run against an older
+# live checkout). Do not fetch the live SHA from the shallow staged clone.
+GIT_RELEASE_LIB="$STAGED/scripts/lib_git_release.sh"
+if [ ! -f "$GIT_RELEASE_LIB" ]; then
+  echo "FAIL: staged release is missing scripts/lib_git_release.sh"
+  exit 3
+fi
+# shellcheck disable=SC1090
+. "$GIT_RELEASE_LIB"
+
 restore_checkout() {
   if [ -n "${PREV_HEAD:-}" ] && [ "$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)" != "$PREV_HEAD" ]; then
     echo "Restoring checkout to last pre-activate SHA $PREV_HEAD"
-    git -C "$ROOT" fetch "$STAGED" "$PREV_HEAD" || true
-    git -C "$ROOT" checkout --detach "$PREV_HEAD"
+    activate_live_checkout "$ROOT" "$PREV_HEAD" "$REPO_URL" "$STAGED" || {
+      echo "WARN: could not restore checkout to $PREV_HEAD with a connected graph"
+      return 1
+    }
   fi
 }
 
 if [ "$SKIP_RESTART" != 1 ]; then
   echo "Activating existing checkout to requested SHA (does not flip /opt/fmp/current)..."
-  git -C "$ROOT" fetch --update-head-ok "$STAGED" "$SHA"
-  git -C "$ROOT" checkout --detach "$SHA"
-  live_head="$(git -C "$ROOT" rev-parse HEAD)"
-  if [ "$live_head" != "$SHA" ]; then
-    echo "FAIL: checkout HEAD ${live_head} does not match requested ${SHA}"
-    restore_checkout
+  echo "Fetching $SHA from origin with ancestry; not from the shallow staged clone"
+  if ! activate_live_checkout "$ROOT" "$SHA" "$REPO_URL" "$STAGED"; then
+    echo "FAIL: live checkout git graph is incomplete after activation"
+    restore_checkout || true
     exit 3
   fi
   echo "Restarting Streamlit..."
   if ! systemctl restart fmp-dashboard; then
     echo "restart failed; restoring previous checkout"
-    restore_checkout
+    restore_checkout || true
     systemctl restart fmp-dashboard || true
     exit 1
   fi
   echo "Verifying Streamlit service..."
   if ! systemctl is-active --quiet fmp-dashboard; then
     echo "post-restart service inactive; restoring previous checkout"
-    restore_checkout
+    restore_checkout || true
     systemctl restart fmp-dashboard || true
     exit 1
   fi
@@ -401,7 +411,7 @@ if [ "$SKIP_RESTART" != 1 ]; then
   ) || POST_VERIFY_RC=$?
   if [ "$POST_VERIFY_RC" != "0" ]; then
     echo "post-restart dashboard identity verify failed rc=${POST_VERIFY_RC}"
-    restore_checkout
+    restore_checkout || true
     systemctl restart fmp-dashboard || true
     exit "$POST_VERIFY_RC"
   fi
@@ -426,7 +436,7 @@ if [ "$SKIP_RESTART" != 1 ]; then
   ) || AUDIT_RC=$?
   if [ "$AUDIT_RC" != "0" ]; then
     echo "host dashboard audit failed rc=${AUDIT_RC}"
-    restore_checkout
+    restore_checkout || true
     systemctl restart fmp-dashboard || true
     exit "$AUDIT_RC"
   fi

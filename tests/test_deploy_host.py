@@ -150,6 +150,38 @@ def test_systemd_unit_requires_dashboard_env():
     assert "User=fmp-dashboard" in PROPOSED_UNIT
 
 
+def test_deploy_host_activates_from_origin_with_commit_graph_assertion():
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    lib = (ROOT / "scripts" / "lib_git_release.sh").read_text(encoding="utf-8")
+    assert 'GIT_RELEASE_LIB="$STAGED/scripts/lib_git_release.sh"' in host
+    assert "activate_live_checkout" in host
+    assert 'activate_live_checkout "$ROOT" "$SHA" "$REPO_URL" "$STAGED"' in host
+    assert 'git -C "$ROOT" fetch --update-head-ok "$STAGED"' not in host
+    assert "not from the shallow staged clone" in host
+    assert "assert_commit_graph" in lib
+    assert "git log -1 failed; commit graph is incomplete" in lib
+    assert 'fetch --update-head-ok "$STAGED"' not in lib
+    assert "--depth 1" not in lib
+    assert "--refetch" in lib
+    assert "refusing to copy an incomplete commit" in lib
+
+
+def test_post_deploy_workflows_share_host_serialization():
+    names = (
+        "stage1_verify.yml",
+        "platform_research_verify.yml",
+        "mi_research_workspace_verify.yml",
+    )
+    for name in names:
+        text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert "group: fmp-post-deploy-host" in text, name
+        assert "cancel-in-progress: false" in text, name
+    deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
+    assert "group: fmp-deploy-main" in deploy
+    assert "fmp-post-deploy-host" not in deploy
+    assert "cancel-in-progress: false" in deploy
+
+
 def test_release_docs_describe_auto_deploy():
     docs = (ROOT / "docs" / "RELEASE_CUTOVER_PLAN.md").read_text(encoding="utf-8")
     assert "PRODUCTION DEPLOY EVENT" in docs

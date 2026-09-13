@@ -14,7 +14,8 @@
 #   /root/FMP_SCREENER/.secrets/finra_client_id
 #   /root/FMP_SCREENER/.secrets/finra_client_secret
 #   /root/FMP_SCREENER/.secrets/mi_readonly.pw
-#   /root/FMP_SCREENER/.secrets/dashboard_readonly.pw   # Strategy Monitor; provision_dashboard_readonly.sh
+#   /etc/fmp/secrets/dashboard_readonly.pw   # canonical Strategy Monitor secret
+#   /root/FMP_SCREENER/.secrets/dashboard_readonly.pw  # legacy; one-way migrate only
 #   /root/FMP_SCREENER/.secrets/ai_context_api_token
 #
 # CREATE ROLE uses an admin identity, never the dashboard writer:
@@ -30,7 +31,7 @@ FRED_KEY_FILE="/root/FMP_SCREENER/.secrets/fred_api_key"
 FINRA_ID_FILE="/root/FMP_SCREENER/.secrets/finra_client_id"
 FINRA_SECRET_FILE="/root/FMP_SCREENER/.secrets/finra_client_secret"
 RO_PW_FILE="/root/FMP_SCREENER/.secrets/mi_readonly.pw"
-DASH_RO_PW_FILE="/root/FMP_SCREENER/.secrets/dashboard_readonly.pw"
+DASH_RO_PW_FILE="/etc/fmp/secrets/dashboard_readonly.pw"
 AI_TOKEN_FILE="/root/FMP_SCREENER/.secrets/ai_context_api_token"
 API_ENV_FILE="/etc/fmp/ai_context_api.env"
 
