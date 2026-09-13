@@ -467,6 +467,20 @@ def build_analytics(conn, *, as_of: date | None = None, run_id: str | None = Non
         if wanted and spec.series_id not in wanted:
             continue
         obs = current_observations(conn, spec.series_id, end=as_of)
+        from market_intelligence.source_resolve import EQUIVALENTS
+
+        for alt in EQUIVALENTS.get(spec.series_id, ()):
+            if alt == spec.series_id:
+                continue
+            extra = current_observations(conn, alt, end=as_of)
+            for day, value in extra.items():
+                if day not in obs:
+                    obs[day] = value
+                elif obs[day] is None and value is not None:
+                    obs[day] = value
+                elif value is not None:
+                    # Same-date tie: Treasury overlay wins (alt ids are UST_*).
+                    obs[day] = value
         if not obs:
             report.series_without_data.append(spec.series_id)
             continue

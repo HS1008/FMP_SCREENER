@@ -184,12 +184,12 @@ def render_market_pulse() -> None:
     st.subheader("Sector leadership and weakness")
     if rs_rows:
         frame = pd.DataFrame(
-            [{"Sector": row["sector_key"], "ETF proxy": row["instrument_id"], "As of": row["as_of"], "1D return": (row["metrics"] or {}).get("ret_1d"), "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m"), "1M return": (row["metrics"] or {}).get("ret_1m")} for row in rs_rows]
+            [{"Sector": row["sector_key"], "ETF proxy": row["instrument_id"], "As of": row["as_of"], "Source": row.get("source_id"), "1D return": (row["metrics"] or {}).get("ret_1d"), "1D RS": (row["metrics"] or {}).get("rs_chg_1d"), "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m"), "1M return": (row["metrics"] or {}).get("ret_1m")} for row in rs_rows]
         ).sort_values("1M RS", ascending=False, na_position="last")
-        heat_cols = [name for name in ("1D return", "1W RS", "1M RS", "3M RS", "1M return") if name in frame.columns]
+        heat_cols = [name for name in ("1D return", "1D RS", "1W RS", "1M RS", "3M RS", "1M return") if name in frame.columns]
         st.dataframe(styled_heatmap(frame, heat_cols), use_container_width=True, hide_index=True)
         heatmap_legend()
-        st.caption("1D return is the last stored ETF session on adjusted close. Relative strength is the change in the ETF/SPY adjusted-close ratio, not an arithmetic excess return. ETF proxy, not a constituent aggregate. Missing 1D values are blank, not zero.")
+        st.caption("1D return and 1D RS use the last completed aligned session. RS is the change in the ETF/SPY adjusted-close ratio (not arithmetic excess). Missing values are blank, not zero. Source and as-of are per row.")
         open_registered_page("sectors", "Open Sectors")
     else:
         st.info("No sector snapshots stored.")
@@ -332,6 +332,13 @@ def render_rates_curve() -> None:
         as_of=compact_as_of([row.get("observation_date") for row in present])[0],
         warning="Tenors have different observation dates: {0}.".format(", ".join(rates.get("curve_observation_dates") or [])) if rates.get("curve_dates_mixed") else None,
     )
+    st.caption(
+        "Complete curve date {0} · sources {1}{2}".format(
+            rates.get("complete_curve_date") or "—",
+            ", ".join(rates.get("source_ids") or []) or "—",
+            " · FRED fallback" if rates.get("fallback") else "",
+        )
+    )
     if not present:
         st.info("No Treasury curve observations stored.")
         return
@@ -366,7 +373,7 @@ def render_rates_curve() -> None:
 
     with st.expander("Tenor table and other slopes"):
         st.dataframe(
-            pd.DataFrame([{"Tenor": row["tenor"], "Yield (%)": fmt(row["yield_pct"], "pct"), "Observation": row["observation_date"], "vs prior (bps)": fmt_signed(row.get("chg_prev_bps"), "bps"), "1W (bps)": fmt_signed(row.get("chg_1w_bps"), "bps"), "1M (bps)": fmt_signed(row.get("chg_1m_bps"), "bps"), "3M (bps)": fmt_signed(row.get("chg_3m_bps"), "bps")} for row in present]),
+            pd.DataFrame([{"Tenor": row["tenor"], "Yield (%)": fmt(row["yield_pct"], "pct"), "Observation": row["observation_date"], "Source": row.get("source_id"), "Fallback": row.get("fallback"), "vs prior (bps)": fmt_signed(row.get("chg_prev_bps"), "bps"), "1W (bps)": fmt_signed(row.get("chg_1w_bps"), "bps"), "1M (bps)": fmt_signed(row.get("chg_1m_bps"), "bps"), "3M (bps)": fmt_signed(row.get("chg_3m_bps"), "bps")} for row in present]),
             use_container_width=True,
             hide_index=True,
         )
@@ -376,6 +383,18 @@ def render_rates_curve() -> None:
         slope_cols = st.columns(max(1, len(slopes)))
         for i, (name, entry) in enumerate(slopes.items()):
             slope_cols[i % len(slope_cols)].metric(name, _transform_text(entry))
+        partial = rates.get("partial_newer") or []
+        if partial:
+            st.caption("Newer incomplete observations (not mixed into the complete curve):")
+            st.dataframe(
+                pd.DataFrame([{"Tenor": row["tenor"], "Yield (%)": fmt(row.get("yield_pct"), "pct"), "Observation": row.get("observation_date"), "Source": row.get("source_id")} for row in partial]),
+                use_container_width=True,
+                hide_index=True,
+            )
+        derived = rates.get("derived_nominal_minus_real") or []
+        if derived:
+            st.caption("Derived nominal minus real (same date only). Distinct from published breakevens.")
+            st.dataframe(pd.DataFrame(derived), use_container_width=True, hide_index=True)
 
     for title, key in (("Real yields (TIPS)", "real_yields"), ("Inflation compensation (market-implied, not survey)", "inflation_compensation"), ("Policy rates", "policy")):
         blocks = rates.get(key) or []
@@ -470,13 +489,13 @@ def render_sector_rotation_v2() -> None:
         basis = rows[0].get("return_basis") if rows else "—"
         st.caption("Benchmark {0} · as of {1} · {2} · ETF proxy, not a constituent aggregate.".format(benchmark, ", ".join(as_ofs), basis))
         if metric.startswith("Relative"):
-            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "1W": (row["metrics"] or {}).get("rs_chg_1w"), "1M": (row["metrics"] or {}).get("rs_chg_1m"), "3M": (row["metrics"] or {}).get("rs_chg_3m"), "6M": (row["metrics"] or {}).get("rs_chg_6m"), "12M": (row["metrics"] or {}).get("rs_chg_12m")} for row in rows])
-            value_cols = ["1W", "1M", "3M", "6M", "12M"]
-            st.caption("Relative strength = change in the ETF/benchmark adjusted-close ratio. 1-day RS is not in the stored bundle.")
+            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "As of": row["as_of"], "1D": (row["metrics"] or {}).get("rs_chg_1d"), "1W": (row["metrics"] or {}).get("rs_chg_1w"), "1M": (row["metrics"] or {}).get("rs_chg_1m"), "3M": (row["metrics"] or {}).get("rs_chg_3m"), "6M": (row["metrics"] or {}).get("rs_chg_6m"), "12M": (row["metrics"] or {}).get("rs_chg_12m")} for row in rows])
+            value_cols = ["1D", "1W", "1M", "3M", "6M", "12M"]
+            st.caption("Relative strength = change in the ETF/benchmark adjusted-close ratio on aligned sessions. 1D is side-by-side with longer horizons.")
         else:
-            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "1D": (row["metrics"] or {}).get("ret_1d"), "1W": (row["metrics"] or {}).get("ret_1w"), "1M": (row["metrics"] or {}).get("ret_1m"), "3M": (row["metrics"] or {}).get("ret_3m"), "12M": (row["metrics"] or {}).get("ret_12m")} for row in rows])
+            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "As of": row["as_of"], "1D": (row["metrics"] or {}).get("ret_1d"), "1W": (row["metrics"] or {}).get("ret_1w"), "1M": (row["metrics"] or {}).get("ret_1m"), "3M": (row["metrics"] or {}).get("ret_3m"), "12M": (row["metrics"] or {}).get("ret_12m")} for row in rows])
             value_cols = ["1D", "1W", "1M", "3M", "12M"]
-            st.caption("Absolute ETF returns on adjusted close, including the last stored session (1D) when present. Missing values are blank, not zero. Not equal-weight or cap-weight constituent portfolios.")
+            st.caption("Absolute ETF price returns on adjusted close. Missing values are blank, not zero. Dividend treatment is not proven from the vendor name alone.")
         order = {name: i for i, name in enumerate(CANONICAL_SECTORS)}
         frame["_o"] = frame["Sector"].map(lambda name: order.get(name, 99))
         frame = frame.sort_values(["_o", "Sector"]).drop(columns="_o")
@@ -487,12 +506,13 @@ def render_sector_rotation_v2() -> None:
         chosen = st.selectbox("Sector drilldown", names, key="sector_drilldown")
         selected = next((row for row in rows if row["sector_key"] == chosen), rows[0])
         metrics = selected.get("metrics") or {}
-        cols = st.columns(5)
+        cols = st.columns(6)
         cols[0].metric("1D ETF return", fmt_signed(metrics.get("ret_1d"), "fraction") if metrics.get("ret_1d") is not None else "—")
-        cols[1].metric("1M RS vs {0}".format(benchmark), fmt_signed(metrics.get("rs_chg_1m"), "fraction") if metrics.get("rs_chg_1m") is not None else "—")
-        cols[2].metric("1M ETF return", fmt_signed(metrics.get("ret_1m"), "fraction") if metrics.get("ret_1m") is not None else "—")
-        cols[3].metric("vs 50DMA", fmt_signed(metrics.get("pct_vs_50dma"), "fraction") if metrics.get("pct_vs_50dma") is not None else "—")
-        cols[4].metric("vs 200DMA", fmt_signed(metrics.get("pct_vs_200dma"), "fraction") if metrics.get("pct_vs_200dma") is not None else "—")
+        cols[1].metric("1D RS vs {0}".format(benchmark), fmt_signed(metrics.get("rs_chg_1d"), "fraction") if metrics.get("rs_chg_1d") is not None else "—")
+        cols[2].metric("1M RS vs {0}".format(benchmark), fmt_signed(metrics.get("rs_chg_1m"), "fraction") if metrics.get("rs_chg_1m") is not None else "—")
+        cols[3].metric("1M ETF return", fmt_signed(metrics.get("ret_1m"), "fraction") if metrics.get("ret_1m") is not None else "—")
+        cols[4].metric("vs 50DMA", fmt_signed(metrics.get("pct_vs_50dma"), "fraction") if metrics.get("pct_vs_50dma") is not None else "—")
+        cols[5].metric("vs 200DMA", fmt_signed(metrics.get("pct_vs_200dma"), "fraction") if metrics.get("pct_vs_200dma") is not None else "—")
         stale = (selected.get("coverage") or {}).get("price_status")
         if stale == "STALE":
             st.warning("{0} last price predates the bundle as-of; windowed metrics stay blank rather than being relabelled current.".format(selected.get("instrument_id")))
@@ -513,7 +533,7 @@ def render_sector_rotation_v2() -> None:
                 ]
             )
             st.dataframe(styled_heatmap(trend, ["1M return", "3M return", "12M return", "vs 50DMA", "vs 200DMA"]), use_container_width=True, hide_index=True)
-            st.caption("ETF returns on FMP adjusted close. Windows use the bundle session calendar; a metric is blank unless its full window is present.")
+            st.caption("ETF price returns on the stored adjustment basis. Windows use the session calendar; a metric is blank unless its full window is present.")
 
     disp = datasets.get("CONSTITUENT_DISPERSION") or []
     if disp:
@@ -526,24 +546,37 @@ def render_sector_rotation_v2() -> None:
                 hide_index=True,
             )
 
-    if st.toggle("Industry tables", value=False, key="sector_industries"):
-        industries = load_or_stop("industries_context")
-        ind_datasets = industries.get("datasets") or {}
-        if not ind_datasets:
-            st.info("No industry snapshots stored.")
+    st.subheader("Industry and custom subgroups")
+    industries = load_or_stop("industries_context")
+    ind_datasets = industries.get("datasets") or {}
+    if not ind_datasets:
+        st.info("No industry or subgroup snapshots stored. A meaningful subgroup is shown as unavailable rather than guessed.")
+    else:
+        dataset = st.selectbox("Industry dataset", sorted(ind_datasets), key="industry_dataset")
+        parents = sorted(ind_datasets[dataset])
+        parent = st.selectbox("Sector / theme", parents, key="industry_parent")
+        items = ind_datasets[dataset][parent]
+        if dataset == "SUBGROUP_UNAVAILABLE":
+            st.info("No curated subgroup is defined for this sector. Coverage is not guessed.")
+            frame = pd.DataFrame([{"Sector": row.get("parent_sector_key") or parent, "Group": row["industry_key"], "As of": row["as_of"], "Status": (row.get("coverage") or {}).get("status") or "UNAVAILABLE"} for row in items])
+            st.dataframe(frame, use_container_width=True, hide_index=True)
+        elif dataset in {"INDUSTRY_RS_VS_SECTOR_ETF", "THEME_RS"}:
+            frame = pd.DataFrame([{"Group": row["industry_key"], "Id": row["instrument_id"], "As of": row["as_of"], "Benchmark": row["benchmark"], "1D ret": (row["metrics"] or {}).get("ret_1d"), "1D RS": (row["metrics"] or {}).get("rs_chg_1d"), "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m"), "Coverage": (row.get("coverage") or {}).get("coverage")} for row in items])
+            st.dataframe(styled_heatmap(frame, ["1D ret", "1D RS", "1W RS", "1M RS", "3M RS"]), use_container_width=True, hide_index=True)
+            st.caption("Custom baskets are daily-rebalanced equal-dollar return indexes (current-context membership, not PIT). SMH/XSD are ETF comparisons, not exclusive subindustries. XLK remains the Technology comparison.")
+            chosen_g = st.selectbox("Group membership", [row["industry_key"] for row in items], key="industry_member")
+            detail = next((row for row in items if row["industry_key"] == chosen_g), items[0])
+            cov = detail.get("coverage") or {}
+            st.caption("Members: {0} · used: {1} · missing: {2} · method: {3}".format(
+                ", ".join(cov.get("membership") or []) or "—",
+                ", ".join(cov.get("members_used") or []) or "—",
+                ", ".join(cov.get("members_missing") or []) or "—",
+                cov.get("weighting") or detail.get("return_basis") or "—",
+            ))
         else:
-            dataset = st.selectbox("Industry dataset", sorted(ind_datasets))
-            parents = sorted(ind_datasets[dataset])
-            parent = st.selectbox("Sector / theme", parents)
-            items = ind_datasets[dataset][parent]
-            if dataset in {"INDUSTRY_RS_VS_SECTOR_ETF", "THEME_RS"}:
-                frame = pd.DataFrame([{"Industry": row["industry_key"], "ETF": row["instrument_id"], "As of": row["as_of"], "Benchmark": row["benchmark"], "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m")} for row in items])
-                st.dataframe(styled_heatmap(frame, ["1W RS", "1M RS", "3M RS"]), use_container_width=True, hide_index=True)
-                st.caption("Industry ETF baskets are proxies, not exact mutually exclusive classifications.")
-            else:
-                frame = pd.DataFrame([{"Industry": row["industry_key"], "As of": row["as_of"], "Companies": (row["metrics"] or {}).get("company_count"), "EW 1M": (row["metrics"] or {}).get("equal_weight_return_1m"), "CW 1M (current caps)": (row["metrics"] or {}).get("cap_weight_return_1m")} for row in items])
-                st.dataframe(styled_heatmap(frame, ["EW 1M", "CW 1M (current caps)"]), use_container_width=True, hide_index=True)
-            heatmap_legend()
+            frame = pd.DataFrame([{"Industry": row["industry_key"], "As of": row["as_of"], "Companies": (row["metrics"] or {}).get("company_count"), "EW 1M": (row["metrics"] or {}).get("equal_weight_return_1m"), "CW 1M (current caps)": (row["metrics"] or {}).get("cap_weight_return_1m")} for row in items])
+            st.dataframe(styled_heatmap(frame, ["EW 1M", "CW 1M (current caps)"]), use_container_width=True, hide_index=True)
+        heatmap_legend()
 
 
 # ---- PIT / methodology ------------------------------------------------------------------

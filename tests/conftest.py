@@ -110,6 +110,7 @@ MI_TABLES_TRUNCATE = (
     "mi_instrument_identifiers",
     "mi_market_instruments",
     "mi_macro_observations",
+    "mi_provider_observations",
     "mi_macro_series",
     "mi_data_freshness",
     "mi_ingestion_runs",

@@ -135,6 +135,14 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
     ),
 )
 
+def visible_page_specs() -> tuple[PageSpec, ...]:
+    from market_intelligence.fmp_mode import legacy_fmp_enabled
+
+    if legacy_fmp_enabled():
+        return PAGE_SPECS
+    return tuple(spec for spec in PAGE_SPECS if spec.route_id != "legacy_fmp")
+
+
 PAGE_BY_ROUTE: dict[str, PageSpec] = {spec.route_id: spec for spec in PAGE_SPECS}
 NAV_SECTIONS: tuple[str, ...] = ("Overview", "Markets", "Economy", "Research", "System")
 

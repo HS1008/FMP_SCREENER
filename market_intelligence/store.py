@@ -490,7 +490,7 @@ def latest_observation_date(conn, series_id: str) -> date | None:
 
 # ---- freshness ----------------------------------------------------------------------
 
-def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None, transport_status: str, latest_observation: date | None, success: bool, error_redacted: str | None, run_id: str | None, today: date | None = None, metadata_status: str | None = None, latest_observation_retrieved_at: datetime | None = None) -> str:
+def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None, transport_status: str, latest_observation: date | None, success: bool, error_redacted: str | None, run_id: str | None, today: date | None = None, metadata_status: str | None = None, latest_observation_retrieved_at: datetime | None = None, series_id: str | None = None) -> str:
     """Update transport + observation freshness separately. Failed retrievals keep last valid data.
 
     The stored ``freshness_status`` is the assessment *at write time*; readers must recompute
@@ -513,7 +513,14 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
         retrieved = prior["latest_observation_retrieved_at"]
     if retrieved is None and success and latest_observation is not None:
         retrieved = utcnow()
-    assessment = assess_freshness(effective_latest, cadence, today)
+    assessment = assess_freshness(
+        effective_latest,
+        cadence,
+        today,
+        series_id=series_id or (dataset.split("series:", 1)[1] if dataset and dataset.startswith("series:") else None),
+        source_id=source_id,
+        transport_status=transport_status,
+    )
     conn.execute(
         text(
             """

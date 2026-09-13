@@ -36,6 +36,8 @@ FMP_LEGACY_TO_CANONICAL: dict[str, str] = {
     "Industrials": "Industrials",
     "Real Estate": "Real Estate",
     "Technology": "Technology",
+    # GICS sector name accepted as an input alias for the canonical label.
+    "Information Technology": "Technology",
     "Utilities": "Utilities",
 }
 

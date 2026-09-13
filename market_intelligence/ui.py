@@ -166,6 +166,12 @@ def freshness_chip(status: str | None) -> str:
         "UNAVAILABLE": "⚪ Unavailable",
         "BLOCKED": "🔴 Blocked",
         "FRESH": "🟢 Current",
+        "LATEST_AVAILABLE": "🟢 Current",
+        "AWAITING_RELEASE": "🟢 Current",
+        "INGESTION_OVERDUE": "🟡 Delayed",
+        "INVALID_FUTURE": "🟡 Delayed",
+        "MISSING": "⚪ Unavailable",
+        "TRANSPORT_FAILURE": "🔴 Blocked",
         "UNKNOWN": "⚪ Unavailable",
     }
     return surface.get(key, "⚪ {0}".format(status or "unavailable"))

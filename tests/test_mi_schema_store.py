@@ -27,7 +27,7 @@ pytestmark = pytest.mark.usefixtures("pg_engine")
 
 def test_new_migrations_are_additive_and_numbered_after_007():
     names = sorted(p.name for p in MIGRATIONS.glob("*.sql"))
-    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025"))]
+    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025", "026", "027", "028", "029"))]
     assert new == [
         "008_market_intelligence_core.sql",
         "009_market_intelligence_analytics.sql",
@@ -47,19 +47,23 @@ def test_new_migrations_are_additive_and_numbered_after_007():
         "023_streamlit_readonly_identity.sql",
         "024_research_live_identity.sql",
         "025_stage1_live_identity.sql",
+        "026_treasury_equity_eod.sql",
+        "027_ai_gateway_strategy_views.sql",
+        "028_gateway_holdout_failclosed.sql",
+        "029_holdout_accessed_nullable.sql",
     ]
     for name in new:
         sql = (MIGRATIONS / name).read_text(encoding="utf-8").upper()
-        assert "DROP TABLE" not in sql and "ALTER TABLE" not in sql.replace("ALTER TABLE MI_", "")
+        assert "DROP TABLE" not in sql and "ALTER TABLE" not in sql.replace("ALTER TABLE MI_", "").replace("ALTER TABLE RESEARCH_", "")
         assert "DO $$" not in sql and "CREATE FUNCTION" not in sql and "CREATE TRIGGER" not in sql
         for statement in split_sql_statements((MIGRATIONS / name).read_text(encoding="utf-8")):
-            assert statement.upper().startswith(("CREATE TABLE IF NOT EXISTS MI_", "CREATE INDEX IF NOT EXISTS", "CREATE UNIQUE INDEX IF NOT EXISTS", "CREATE OR REPLACE VIEW MI_V_", "COMMENT ON", "ALTER TABLE MI_")), statement[:80]
+            assert statement.upper().startswith(("CREATE TABLE IF NOT EXISTS MI_", "CREATE INDEX IF NOT EXISTS", "CREATE UNIQUE INDEX IF NOT EXISTS", "CREATE OR REPLACE VIEW MI_V_", "COMMENT ON", "ALTER TABLE MI_", "ALTER TABLE RESEARCH_")), statement[:80]
 
 
 def test_migrations_applied_once_and_second_application_is_noop(pg_engine):
     with pg_engine.connect() as conn:
         applied = {r[0] for r in conn.execute(text("SELECT filename FROM schema_migrations"))}
-    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql", "013_research_idea_completeness.sql", "014_pit_sector_internals.sql", "015_metric_latest_skips_withdrawn.sql", "016_ibkr_collector.sql", "017_finra_order_flow.sql", "018_ibkr_callback_freshness.sql", "019_finra_identity_quarantine.sql", "020_ops_status_and_migration_checksum.sql", "021_ops_status_extended.sql", "022_deploy_host_identity.sql", "023_streamlit_readonly_identity.sql", "024_research_live_identity.sql", "025_stage1_live_identity.sql"} <= applied
+    assert {"008_market_intelligence_core.sql", "009_market_intelligence_analytics.sql", "010_research_ideas.sql", "011_bond_securities.sql", "012_market_intelligence_publication.sql", "013_research_idea_completeness.sql", "014_pit_sector_internals.sql", "015_metric_latest_skips_withdrawn.sql", "016_ibkr_collector.sql", "017_finra_order_flow.sql", "018_ibkr_callback_freshness.sql", "019_finra_identity_quarantine.sql", "020_ops_status_and_migration_checksum.sql", "021_ops_status_extended.sql", "022_deploy_host_identity.sql", "023_streamlit_readonly_identity.sql", "024_research_live_identity.sql", "025_stage1_live_identity.sql", "026_treasury_equity_eod.sql", "027_ai_gateway_strategy_views.sql", "028_gateway_holdout_failclosed.sql", "029_holdout_accessed_nullable.sql"} <= applied
     files = sorted(MIGRATIONS.glob("*.sql"))
     assert pending_migration_files(files, applied) == []
     # Second application must be a no-op (idempotent) and leave research tables intact.

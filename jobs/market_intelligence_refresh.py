@@ -29,6 +29,7 @@ from typing import Any
 
 from market_intelligence import CODE_VERSION
 from market_intelligence.catalog import CATALOG, CATALOG_VERSION, FRED_SOURCE_ID
+from market_intelligence.fmp_mode import fmp_free_mode, legacy_fmp_enabled, treasury_enabled
 from market_intelligence.fred_client import api_key_from_env
 from market_intelligence.locking import EXIT_LOCK_CONTENTION, LockContention, writer_lock
 from market_intelligence.nulls import strict_dumps
@@ -86,14 +87,45 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "mode": args.mode,
             }
         )
-    if args.legacy_sector or want_all:
+    if args.legacy_sector or (want_all and legacy_fmp_enabled(env)):
+        # Explicit --legacy-sector is a human opt-in for that run; --all-configured stays FMP-free.
+        legacy_allowed = bool(args.legacy_sector) or legacy_fmp_enabled(env)
         steps.append(
             {
                 "step": "legacy_sector",
                 "source_id": LEGACY_SOURCE_ID,
-                "configured": legacy_configured,
+                "configured": legacy_configured and legacy_allowed,
                 "root": legacy_root,
-                "action": "ingest" if legacy_configured else ("skip_unconfigured" if want_all else "fail_unconfigured"),
+                "action": (
+                    "ingest"
+                    if legacy_configured and legacy_allowed
+                    else ("skip_unconfigured" if want_all or fmp_free_mode(env) else "fail_unconfigured")
+                ),
+            }
+        )
+    if args.treasury or want_all:
+        ust_on = treasury_enabled(env)
+        steps.append(
+            {
+                "step": "treasury",
+                "source_id": "TREASURY",
+                "configured": ust_on,
+                "action": "ingest" if ust_on else ("skip_unconfigured" if want_all else "fail_unconfigured"),
+            }
+        )
+    from market_intelligence.equity_eod import adapter_from_env
+
+    equity_adapter = adapter_from_env(env)
+    if args.equity or want_all:
+        equity_ok = equity_adapter.access_status == "CONFIGURED"
+        steps.append(
+            {
+                "step": "equity",
+                "source_id": "EQUITY_EOD",
+                "configured": equity_ok,
+                "provider": equity_adapter.source_id,
+                "action": "ingest" if equity_ok else ("skip_unconfigured" if want_all else "fail_unconfigured"),
+                "reason": equity_adapter.reason,
             }
         )
     if args.build_analytics or want_all:
@@ -124,6 +156,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fred", action="store_true", help="Ingest the FRED catalog")
     parser.add_argument("--finra", action="store_true", help="Ingest FINRA Query API corporate-bond aggregates")
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
+    parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
+    parser.add_argument("--equity", action="store_true", help="Ingest independent equity/ETF daily bars")
     parser.add_argument("--build-analytics", action="store_true", help="Recompute versioned analytics")
     parser.add_argument("--build-morning", action="store_true", help="Build and publish a morning context snapshot")
     parser.add_argument("--all-configured", action="store_true", help="Run every configured step; disabled sources are explicit skips")
@@ -143,8 +177,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--build-analytics/--build-morning/--all-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--build-analytics/--build-morning/--all-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -216,10 +250,10 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
 
     finra_key = finra_configured_from_env(env)
     legacy_step = next((s for s in the_plan["steps"] if s["step"] == "legacy_sector"), None)
-    enabled = {FRED_SOURCE_ID: fred_key is not None, LEGACY_SOURCE_ID: bool(legacy_step and legacy_step["configured"]), FINRA_QUERY_SOURCE_ID: finra_key}
+    enabled = {FRED_SOURCE_ID: fred_key is not None, LEGACY_SOURCE_ID: bool(legacy_step and legacy_step["configured"] and legacy_fmp_enabled(env)), FINRA_QUERY_SOURCE_ID: finra_key}
     access = {
         FRED_SOURCE_ID: "CONFIGURED" if fred_key else "CONFIGURATION_REQUIRED",
-        LEGACY_SOURCE_ID: "CONFIGURED" if enabled[LEGACY_SOURCE_ID] else "CONFIGURATION_REQUIRED",
+        LEGACY_SOURCE_ID: "CONFIGURED" if enabled[LEGACY_SOURCE_ID] else ("RETIRED_OPTIONAL" if fmp_free_mode(env) else "CONFIGURATION_REQUIRED"),
         FINRA_QUERY_SOURCE_ID: "CONFIGURED" if finra_key else "CONFIGURATION_REQUIRED",
         FINRA_TRACE_SOURCE_ID: "ENTITLEMENT_REQUIRED",
     }
@@ -280,6 +314,20 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 report = ingest_precomputed_root(engine, step["root"], parent_run_id=parent_run_id)
                 status["results"][name] = report.as_dict()
                 if report.failed_bundles:
+                    failures += 1
+            elif name == "treasury":
+                from market_intelligence.ingest_treasury import ingest_treasury
+
+                report = ingest_treasury(engine, parent_run_id=parent_run_id, today=as_of)
+                status["results"][name] = report.as_dict()
+                if report.failed:
+                    failures += 1
+            elif name == "equity":
+                from market_intelligence.equity_eod import ingest_equity_eod
+
+                report = ingest_equity_eod(engine, parent_run_id=parent_run_id, today=as_of, env=env)
+                status["results"][name] = report.as_dict()
+                if report.failed:
                     failures += 1
             elif name == "build_analytics":
                 from market_intelligence.analytics import build_analytics, last_analytics_run_at
