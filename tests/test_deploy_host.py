@@ -76,6 +76,14 @@ def test_deploy_host_loads_writer_env_before_provision():
     assert "MARKET_INTELLIGENCE_DATABASE_URL" in script
 
 
+def test_deploy_host_exports_pythonpath_for_jobs_modules():
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    bind = host.index('PYTHON_BIN="$CODE_ROOT/venv/bin/python"')
+    path_export = host.index('export PYTHONPATH="$CODE_ROOT"', bind)
+    assert path_export < host.index("jobs.report_deploy_identity")
+    assert "$CODE_ROOT/scripts/install_backtest_sync_cron.sh" in host
+
+
 def test_first_deploy_legacy_filename_only_state(tmp_path):
     engine = create_engine("sqlite:///{0}".format(tmp_path / "oldprod.db"))
     staged = tmp_path / "migrations"
