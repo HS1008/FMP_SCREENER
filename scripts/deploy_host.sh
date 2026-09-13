@@ -19,6 +19,16 @@ if ! flock -n 9; then
   exit 75
 fi
 
+# GNU readlink -f prints a canonical path for a missing last component once
+# the parent exists. First deploy creates /opt/fmp via install -d of releases;
+# treating that as a current/previous pointer move would false-fail.
+resolved_existing_path() {
+  local p="$1"
+  if [ -L "$p" ] || [ -e "$p" ]; then
+    readlink -f "$p" 2>/dev/null || true
+  fi
+}
+
 ROOT="${FMP_CHECKOUT:-/root/FMP_SCREENER}"
 RELEASE_ROOT="${FMP_RELEASE_ROOT:-/opt/fmp/releases}"
 CURRENT_LINK="${FMP_CURRENT_LINK:-/opt/fmp/current}"
@@ -103,10 +113,7 @@ fi
 echo "Staging immutable release (no migrate, no restart, no activate, no provision)..."
 STAGED="$RELEASE_ROOT/$SHA"
 REPO_URL="${FMP_REPO_URL:-https://github.com/hs1008/fmp_screener.git}"
-CURRENT_BEFORE=""
-if [ -L "$CURRENT_LINK" ] || [ -e "$CURRENT_LINK" ]; then
-  CURRENT_BEFORE="$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)"
-fi
+CURRENT_BEFORE="$(resolved_existing_path "$CURRENT_LINK")"
 IMMUTABLE_RC=0
 install -d -m 0755 "$RELEASE_ROOT"
 if [ ! -d "$STAGED/.git" ]; then
@@ -136,7 +143,7 @@ if [ ! -x "$STAGED/venv/bin/streamlit" ]; then
   echo "FAIL: staged release venv is missing streamlit"
   exit 3
 fi
-if [ "$(readlink -f "$CURRENT_LINK" 2>/dev/null || true)" != "$CURRENT_BEFORE" ]; then
+if [ "$(resolved_existing_path "$CURRENT_LINK")" != "$CURRENT_BEFORE" ]; then
   echo "FAIL: stage-only must not move current/previous pointers"
   exit 3
 fi
