@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 from jobs.apply_migrations import MigrationDriftError, apply_migrations, migration_sha256
@@ -11,6 +12,20 @@ import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def _pointer_target(path: Path | str) -> str:
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    start = host.index("pointer_target()")
+    end = host.index("\n}\n", start) + 3
+    script = host[start:end] + 'pointer_target "$1"\n'
+    result = subprocess.run(
+        ["bash", "-c", script, "pointer_target", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.rstrip("\n")
 
 
 def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
@@ -39,6 +54,53 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "Applying database migrations ONCE" in host
     assert "MIGRATIONS_BACKFILL_SHA256" not in host
     assert "MERGING TO MAIN IS A PRODUCTION DEPLOY EVENT" in deploy
+
+
+def test_deploy_host_compares_pointers_with_existence_preserving_resolver():
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    assert "pointer_target()" in host
+    assert host.count('CURRENT_BEFORE="$(pointer_target "$CURRENT_LINK")"') == 1
+    assert host.count('PREVIOUS_BEFORE="$(pointer_target "$PREVIOUS_LINK")"') == 1
+    assert host.count('$(pointer_target "$CURRENT_LINK")') == 2
+    assert host.count('$(pointer_target "$PREVIOUS_LINK")') == 2
+    assert 'readlink -f "$CURRENT_LINK"' not in host
+    assert "FAIL: stage-only must not move current/previous pointers" in host
+
+
+def test_pointer_target_absent_current_is_empty_even_when_parent_exists(tmp_path):
+    missing = tmp_path / "opt" / "fmp" / "current"
+    missing.parent.mkdir(parents=True)
+    assert missing.exists() is False
+    raw = subprocess.run(
+        ["readlink", "-f", str(missing)],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert raw == str(missing.resolve())
+    assert _pointer_target(missing) == ""
+
+
+def test_pointer_target_unchanged_symlink_is_stable(tmp_path):
+    target = tmp_path / "releases" / "abc"
+    target.mkdir(parents=True)
+    current = tmp_path / "current"
+    current.symlink_to(target)
+    assert _pointer_target(current) == str(target.resolve())
+    assert _pointer_target(current) == _pointer_target(current)
+
+
+def test_pointer_target_detects_retargeted_symlink(tmp_path):
+    first = tmp_path / "releases" / "old"
+    second = tmp_path / "releases" / "new"
+    first.mkdir(parents=True)
+    second.mkdir(parents=True)
+    current = tmp_path / "current"
+    current.symlink_to(first)
+    before = _pointer_target(current)
+    current.unlink()
+    current.symlink_to(second)
+    assert before != _pointer_target(current)
 
 
 def test_deploy_host_migrates_once_from_staged_sha():
