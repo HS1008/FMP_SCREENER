@@ -284,6 +284,9 @@ def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
     assert "activate_market_intelligence_host.sh" in verify
     assert "lib_post_deploy_lock.sh" in verify
     assert ". /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh" in verify
+    assert "scripts/lib_post_deploy_lock.sh \\" not in verify
+    assert "chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh" in verify
+    assert "lib_post_deploy_lock.sh" not in verify.split("chmod 0755", 1)[1].splitlines()[0]
     assert "market_intelligence.env" in verify
     assert "stale_source=" in verify
     assert "failed_source=" in verify
