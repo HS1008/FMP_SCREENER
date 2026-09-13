@@ -89,12 +89,148 @@ def equity_point_counts(conn, strategy_id: str) -> dict[str, int]:
     return {row["backtest_id"]: int(row["n"]) for row in rows}
 
 
+def listed_stage1_run_id(
+    name: str | None,
+    existing: dict[str, Any] | None = None,
+) -> str:
+    """Best-effort official run id from a stored row or the QC backtest name.
+
+    Stage 1 uses S1__ names. Official CSFML uses S2__ names. TLT and renamed
+    rows may only embed the sealed run id in the QC name.
+    """
+    run_id = str((existing or {}).get("research_run_id") or "").strip()
+    if run_id:
+        return run_id
+    from qc_research.parsing import parse_name_fallback
+
+    parsed = str(parse_name_fallback(name).get("research_run_id") or "").strip()
+    if parsed:
+        return parsed
+    from qc_research.contracts.sealed_results import sealed_results_run_ids
+
+    text = str(name or "")
+    for sealed in sorted(sealed_results_run_ids(), key=len, reverse=True):
+        if sealed and sealed in text:
+            return sealed
+    return ""
+
+
+def official_stage1_backtest_count(conn, research_run_id: str) -> int | None:
+    """Stored official-run backtest count, or None when the lookup failed closed."""
+    result = conn.execute(
+        text(
+            """
+            SELECT COUNT(*) AS n
+            FROM backtests
+            WHERE research_run_id = :research_run_id
+            """
+        ),
+        {"research_run_id": research_run_id},
+    )
+    if result is None:
+        return None
+    mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return None
+    row = mappings().first()
+    if not row:
+        return None
+    if isinstance(row, dict):
+        if "n" not in row:
+            return None
+        try:
+            return int(row["n"])
+        except (TypeError, ValueError):
+            return None
+    mapping = getattr(row, "_mapping", None)
+    if mapping is None or "n" not in mapping:
+        return None
+    try:
+        return int(mapping["n"])
+    except (TypeError, ValueError):
+        return None
+
+
+def unlabeled_qc_needs_detail(
+    existing: dict[str, Any] | None,
+    backtest: dict[str, Any] | None,
+) -> bool:
+    """True when a cloud name cannot recover a run id without /backtests/read.
+
+    First INSERT and later rewrites of unlabeled rows must not LEGACY-upsert
+    until parameterSet can be checked against sealed_results_run_ids.
+    Does not invent unpublished Stage 1 or e7b24642 QC backtest IDs.
+    """
+    name = str((backtest or {}).get("name") or "")
+    if listed_stage1_run_id(name, existing):
+        return False
+    if existing is None:
+        return True
+    return not str((existing or {}).get("research_run_id") or "").strip()
+
+
+def official_stage1_backtest_upsert_blocked(
+    conn,
+    *,
+    research_run_id: str | None,
+    existing_row: dict[str, Any] | None = None,
+    backtest_id: str | None = None,
+) -> str | None:
+    """Skip QC backtest writes that would mutate official Stage 1 metrics.
+
+    First INSERT of official-run experiments is allowed until the pin
+    expected_experiment_count is stored, and only when that count can be
+    read. A missed COUNT cannot create an 82nd official row. Existing
+    official rows are never rewritten. Official research_runs identity is
+    not created here. Official TLT and published CSFML QC backtest IDs
+    are refused even when the cloud name omits the sealed run id.
+    """
+    from qc_research.contracts.sealed_results import (
+        is_sealed_results_run,
+        official_sealed_qc_backtest_ids,
+        official_stage1_pin,
+    )
+
+    qc_id = str(backtest_id or (existing_row or {}).get("backtest_id") or "").strip()
+    if qc_id and qc_id in official_sealed_qc_backtest_ids():
+        return "sealed_results_backtest_immutable"
+
+    existing_run = str((existing_row or {}).get("research_run_id") or "").strip()
+    incoming_run = str(research_run_id or "").strip()
+    existing_pin = official_stage1_pin(existing_run)
+    incoming_pin = official_stage1_pin(incoming_run)
+    existing_sealed = is_sealed_results_run(existing_run)
+    incoming_sealed = is_sealed_results_run(incoming_run)
+    if existing_row is not None and (existing_pin or incoming_pin or existing_sealed or incoming_sealed):
+        return "official_stage1_backtest_immutable"
+    if incoming_pin is None:
+        if incoming_sealed:
+            return "sealed_results_backtest_immutable"
+        return None
+    try:
+        expected_n = int(incoming_pin.get("expected_experiment_count"))
+    except (TypeError, ValueError):
+        return "official_stage1_pin_expected_count"
+    stored = official_stage1_backtest_count(conn, incoming_run)
+    if stored is None:
+        return "official_stage1_count_unknown"
+    if stored >= expected_n:
+        return "official_stage1_experiment_cap"
+    return None
+
+
 def needs_detail_read(existing: dict[str, Any] | None, backtest: dict[str, Any]) -> bool:
     name = backtest.get("name") or ""
     status = str(backtest.get("status") or "").lower()
     completed = "completed" in status
     failed = is_failed_status(status, backtest)
+    if unlabeled_qc_needs_detail(existing, backtest):
+        return True
     if not is_stage1_name(name):
+        return False
+    from qc_research.contracts.sealed_results import is_sealed_results_run
+
+    if existing is not None and is_sealed_results_run(existing.get("research_run_id")):
         return False
     if not completed and not failed:
         return True
@@ -116,6 +252,10 @@ def needs_legacy_date_hydration(
     if not name and existing:
         name = str(existing.get("name") or "")
     if is_stage1_name(name):
+        return False
+    from qc_research.contracts.sealed_results import is_sealed_results_run
+
+    if existing and is_sealed_results_run(existing.get("research_run_id")):
         return False
     if existing and existing.get("backtest_start") and existing.get("backtest_end"):
         return False
@@ -215,6 +355,10 @@ def needs_equity_curve(existing: dict[str, Any] | None, backtest: dict[str, Any]
     status = str(backtest.get("status") or "").lower()
     if not is_stage1_name(name):
         return False
+    from qc_research.contracts.sealed_results import is_sealed_results_run
+
+    if existing is not None and is_sealed_results_run(existing.get("research_run_id")):
+        return False
     if "completed" not in status:
         return False
     if is_failed_status(status, backtest):
@@ -307,6 +451,10 @@ def stage1_upsert_fields(detail: dict[str, Any], name: str | None) -> dict[str, 
 def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
     run_id = fields.get("research_run_id")
     if not run_id:
+        return
+    from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
+
+    if official_stage1_pin(run_id) or is_sealed_results_run(run_id):
         return
     from qc_research.parsing import is_smoke_test
 
@@ -401,7 +549,60 @@ def upsert_research_run(conn, strategy_id: str, fields: dict[str, Any]) -> None:
     )
 
 
+def _official_stage1_equity_immutable(conn, backtest_id: str) -> bool:
+    """True when official Stage 1 equity already exists and must not be rewritten."""
+    from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
+
+    result = conn.execute(
+        text("SELECT research_run_id FROM backtests WHERE backtest_id = :backtest_id"),
+        {"backtest_id": backtest_id},
+    )
+    if result is None:
+        return True
+    mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return True
+    run_id = ""
+    row = mappings().first()
+    if isinstance(row, dict):
+        run_id = str(row.get("research_run_id") or "")
+    elif row is not None:
+        mapping = getattr(row, "_mapping", None)
+        if mapping is not None:
+            run_id = str(mapping.get("research_run_id") or "")
+    if not official_stage1_pin(run_id) and not is_sealed_results_run(run_id):
+        return False
+    count_result = conn.execute(
+        text(
+            """
+            SELECT COUNT(*) AS n
+            FROM backtest_equity_points
+            WHERE backtest_id = :backtest_id
+            """
+        ),
+        {"backtest_id": backtest_id},
+    )
+    if count_result is None:
+        return True
+    count_mappings = getattr(count_result, "mappings", None)
+    if count_mappings is None:
+        return True
+    count_row = count_mappings().first()
+    if isinstance(count_row, dict):
+        return int(count_row.get("n") or 0) > 0
+    mapping = getattr(count_row, "_mapping", None) if count_row is not None else None
+    if mapping is not None:
+        return int(mapping.get("n") or 0) > 0
+    return True
+
+
 def insert_equity_points(conn, strategy_id: str, backtest_id: str, points: list[dict[str, Any]]) -> int:
+    from qc_research.contracts.sealed_results import official_sealed_qc_backtest_ids
+
+    if str(backtest_id or "") in official_sealed_qc_backtest_ids():
+        return 0
+    if _official_stage1_equity_immutable(conn, backtest_id):
+        return 0
     inserted = 0
     for point in points:
         timestamp = point.get("timestamp")
@@ -429,9 +630,7 @@ def insert_equity_points(conn, strategy_id: str, backtest_id: str, points: list[
                     :series_name
                 )
                 ON CONFLICT (backtest_id, timestamp, series_name)
-                DO UPDATE SET
-                    equity = EXCLUDED.equity,
-                    period_return = EXCLUDED.period_return
+                DO NOTHING
                 """
             ),
             {
@@ -566,23 +765,61 @@ def audit_holdout_exposures(conn, strategy_id: str) -> dict[str, Any] | None:
                 ),
             },
         )
-    conn.execute(
-        text(
-            """
-            UPDATE research_runs
-            SET holdout_exposure_status = :status
-            WHERE strategy_id = :strategy_id
-              AND COALESCE(research_lineage_id, strategy_id) = :lineage
-            """
-        ),
-        {"status": classified["status"], "strategy_id": strategy_id, "lineage": lineage},
-    )
+    from qc_research.contracts.sealed_results import sealed_results_run_ids
+
+    frozen = sealed_results_run_ids()
+    for run in runs:
+        run_id = str(run.get("research_run_id") or "").strip()
+        if not run_id or run_id in frozen:
+            continue
+        run_lineage = str(run.get("research_lineage_id") or strategy_id)
+        if run_lineage != str(lineage):
+            continue
+        conn.execute(
+            text(
+                """
+                UPDATE research_runs
+                SET holdout_exposure_status = :status
+                WHERE research_run_id = :research_run_id
+                """
+            ),
+            {"status": classified["status"], "research_run_id": run_id},
+        )
     return classified
 
 
 IN_PROGRESS = "IN_PROGRESS"
 COMPLETE = "COMPLETE"
 INCOMPLETE = "INCOMPLETE"
+TERMINAL_SUMMARY_STATUSES = {COMPLETE, INCOMPLETE}
+
+
+class RunSummaryImportError(ValueError):
+    """Orchestrator summary is not importable as authoritative state."""
+
+
+def existing_run_status(conn, research_run_id: str) -> str | None:
+    result = conn.execute(
+        text("SELECT run_status FROM research_runs WHERE research_run_id = :rid"),
+        {"rid": research_run_id},
+    )
+    if result is None:
+        return None
+    fetchone = getattr(result, "fetchone", None)
+    if fetchone is None:
+        return None
+    row = fetchone()
+    if row is None:
+        return None
+    if isinstance(row, (list, tuple)):
+        return str(row[0] or "") or None
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return str(mapping.get("run_status") or "") or None
+    try:
+        return str(row[0] or "") or None
+    except Exception:
+        return None
 
 
 def compute_research_run_progress(
@@ -636,14 +873,70 @@ def compute_research_run_progress(
     }
 
 
+def pin_terminal_run_status(existing: str | None, computed: str) -> str:
+    """Keep imported terminal status from being reopened as IN_PROGRESS.
+
+    Row-status math may still report IN_PROGRESS when the summary JSON is
+    missing. Refresh must not undo an authoritative terminal import.
+    COMPLETE never downgrades. RESEARCH_COMPLETE / NON_HOLDOUT_COMPLETE may
+    upgrade to COMPLETE. INCOMPLETE may upgrade to COMPLETE.
+    """
+    current = str(existing or "").strip()
+    nxt = str(computed or "").strip()
+    if current == COMPLETE:
+        return COMPLETE
+    if current in {"RESEARCH_COMPLETE", "NON_HOLDOUT_COMPLETE"} and nxt not in {
+        COMPLETE,
+        "RESEARCH_COMPLETE",
+        "NON_HOLDOUT_COMPLETE",
+    }:
+        return current
+    if current == INCOMPLETE and nxt not in TERMINAL_SUMMARY_STATUSES:
+        return INCOMPLETE
+    return nxt or current
+
+
 def apply_run_summary(conn, payload: dict[str, Any]) -> None:
-    """Upsert compact orchestrator run_summary.json into research_runs."""
+    """Upsert compact orchestrator run_summary.json into research_runs.
+
+    Only COMPLETE and INCOMPLETE become authoritative. IN_PROGRESS and
+    unknown statuses stay computed from QuantConnect row statuses until a
+    terminal summary arrives. Skipped-OOS Stage 1 trees publish INCOMPLETE
+    and must still import.
+    """
     if not payload or not payload.get("research_run_id"):
         raise ValueError("run summary is missing research_run_id")
     run_id = payload["research_run_id"]
+    incoming = str(payload.get("run_status") or "").strip()
+    if incoming not in TERMINAL_SUMMARY_STATUSES:
+        raise RunSummaryImportError(
+            "refusing to import {0} with run_status={1!r}; "
+            "authoritative summaries require COMPLETE or INCOMPLETE".format(
+                run_id, incoming or "unknown"
+            )
+        )
+    from qc_research.contracts.sealed_results import (
+        SealedResultsError,
+        is_sealed_results_run,
+        refuse_sealed_committed_mismatch,
+        refuse_sealed_stage1_summary,
+    )
+    from qc_research.ingest.stage2_sql import conflict_sql
+
+    try:
+        refuse_sealed_stage1_summary(payload)
+        refuse_sealed_committed_mismatch(payload)
+    except SealedResultsError as exc:
+        raise RunSummaryImportError(str(exc)) from exc
+    existing = existing_run_status(conn, run_id)
+    if existing == COMPLETE and incoming != COMPLETE:
+        raise RunSummaryImportError(
+            "refusing to downgrade {0} from COMPLETE to {1}".format(run_id, incoming or "unknown")
+        )
     conn.execute(
         text(
-            """
+            conflict_sql(
+                """
             INSERT INTO research_runs (
                 research_run_id,
                 strategy_id,
@@ -689,7 +982,10 @@ def apply_run_summary(conn, payload: dict[str, Any]) -> None:
                 completed_count = EXCLUDED.completed_count,
                 failed_count = EXCLUDED.failed_count,
                 skipped_count = EXCLUDED.skipped_count,
-                run_status = EXCLUDED.run_status,
+                run_status = CASE
+                    WHEN research_runs.run_status = 'COMPLETE' THEN research_runs.run_status
+                    ELSE EXCLUDED.run_status
+                END,
                 parent_research_run_id = COALESCE(
                     EXCLUDED.parent_research_run_id,
                     research_runs.parent_research_run_id
@@ -702,7 +998,9 @@ def apply_run_summary(conn, payload: dict[str, Any]) -> None:
                     EXCLUDED.orchestrator_summary_json,
                     research_runs.orchestrator_summary_json
                 )
-            """
+            """,
+                sealed=is_sealed_results_run(run_id),
+            )
         ),
         {
             "research_run_id": run_id,
@@ -769,6 +1067,21 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
             row_statuses=by_run.get(run_id) or [],
             orchestrator_summary=summary if isinstance(summary, dict) else {},
         )
+        progress["run_status"] = pin_terminal_run_status(
+            meta.get("run_status"), progress["run_status"]
+        )
+        from qc_research.contracts.sealed_results import is_sealed_results_run, official_stage1_pin
+
+        if official_stage1_pin(str(run_id)) or is_sealed_results_run(str(run_id)):
+            updated.append(
+                {
+                    "research_run_id": run_id,
+                    "sealed": True,
+                    "run_status": meta.get("run_status"),
+                    "expected_experiment_count": meta.get("expected_experiment_count"),
+                }
+            )
+            continue
         conn.execute(
             text(
                 """
@@ -792,7 +1105,6 @@ def refresh_research_run_progress(conn, strategy_id: str) -> list[dict[str, Any]
 
 
 STAGE1_RESULTS_RELATIVE = "stage1_results"
-STAGE1_RESULTS_OUTPUTS_RELATIVE = "outputs/stage1_results"
 
 
 def repo_root() -> Path:
@@ -811,18 +1123,17 @@ def discover_run_summary_paths(root: Path | None = None) -> list[Path]:
     base = Path(root) if root is not None else repo_root()
     found: list[Path] = []
     seen: set[Path] = set()
-    for relative in (STAGE1_RESULTS_RELATIVE, STAGE1_RESULTS_OUTPUTS_RELATIVE):
-        directory = base / relative
-        if not directory.is_dir():
+    directory = base / STAGE1_RESULTS_RELATIVE
+    if not directory.is_dir():
+        return found
+    for path in sorted(directory.rglob("run_summary.json")):
+        if not path.is_file():
             continue
-        for path in sorted(directory.rglob("run_summary.json")):
-            if not path.is_file():
-                continue
-            resolved = path.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            found.append(path)
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        found.append(path)
     return found
 
 

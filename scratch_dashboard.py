@@ -21,10 +21,14 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
 import config
 import data_loader
+from db.dashboard_engine import load_streamlit_env
+from qc_research.ui_boundary import (
+    ensure_streamlit_cache_dir,
+    streamlit_filesystem_write_allowed,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -117,12 +121,20 @@ class HoldingRecord:
 # Config / session
 # ---------------------------------------------------------------------------
 def fmp_api_key() -> str:
-    load_dotenv(config.PROJECT_ROOT / ".env")
+    load_streamlit_env(config.PROJECT_ROOT / ".env")
     return (os.getenv("FMP_API_KEY") or "").strip()
+
+
+def _provider_fetch_allowed() -> bool:
+    from qc_research.ui_boundary import provider_fetch_allowed
+
+    return provider_fetch_allowed()
 
 
 def fmp_session() -> Any:
     global _FMP_SESSION
+    if not _provider_fetch_allowed():
+        return None
     if _FMP_SESSION is None:
         _FMP_SESSION = data_loader.create_http_session()
     return _FMP_SESSION
@@ -298,7 +310,7 @@ def validate_weights(
 # Price fetch & cache
 # ---------------------------------------------------------------------------
 def _yahoo_cache_path(ticker: str) -> Any:
-    YAHOO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_streamlit_cache_dir(YAHOO_CACHE_DIR)
     return YAHOO_CACHE_DIR / f"{clean_ticker(ticker)}.parquet"
 
 
@@ -314,7 +326,7 @@ def _read_yahoo_cache(ticker: str) -> pd.DataFrame:
 
 
 def _write_yahoo_cache(ticker: str, series: pd.Series) -> None:
-    if series.empty:
+    if series.empty or not streamlit_filesystem_write_allowed():
         return
     df = pd.DataFrame({"date": series.index, "close": _as_1d_array(series.values)})
     df.to_parquet(_yahoo_cache_path(ticker), index=False)
@@ -388,6 +400,17 @@ def filter_series_window(series: pd.Series, date_from: date, date_to: date) -> p
     return s[(s.index >= d0) & (s.index <= d1)]
 
 
+def _cached_fmp_price_history(
+    ticker: str, date_from: date, date_to: date
+) -> pd.Series:
+    """Read on-disk FMP price parquet/CSV without opening a provider session."""
+    cached = data_loader._read_price_cache(clean_ticker(ticker))
+    if cached is None or cached.empty:
+        return pd.Series(dtype=float)
+    windowed = data_loader._filter_price_history_window(cached, date_from, date_to)
+    return _df_to_price_series(windowed)
+
+
 def fetch_fmp_price_history(
     ticker: str,
     date_from: date,
@@ -398,6 +421,11 @@ def fetch_fmp_price_history(
     sym = clean_ticker(ticker)
     if not sym:
         return pd.Series(dtype=float), "empty ticker"
+    if not _provider_fetch_allowed():
+        s = _cached_fmp_price_history(sym, date_from, date_to)
+        if len(s) < 5:
+            return pd.Series(dtype=float), "FMP: provider fetch disabled"
+        return s, ""
     api_key = fmp_api_key()
     if not api_key:
         return pd.Series(dtype=float), "FMP API key not set"
@@ -425,12 +453,14 @@ def fetch_yahoo_price_history(
     if not sym:
         return pd.Series(dtype=float), "empty ticker"
 
-    if not force_refresh:
+    if not force_refresh or not _provider_fetch_allowed():
         cached = _read_yahoo_cache(sym)
         s = _df_to_price_series(cached)
         s = filter_series_window(s, date_from, date_to)
         if len(s) >= 5:
             return s, ""
+    if not _provider_fetch_allowed():
+        return pd.Series(dtype=float), "Yahoo: provider fetch disabled"
 
     try:
         import yfinance as yf
@@ -870,7 +900,7 @@ def load_all_holdings(
 
 
 def _underlying_cache_path(ticker: str) -> Path:
-    UNDERLYING_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ensure_streamlit_cache_dir(UNDERLYING_CACHE_DIR)
     return UNDERLYING_CACHE_DIR / f"{clean_ticker(ticker)}.parquet"
 
 
@@ -885,7 +915,7 @@ def _read_underlying_cache(ticker: str) -> pd.DataFrame:
 
 
 def _write_underlying_cache(ticker: str, df: pd.DataFrame) -> None:
-    if df.empty:
+    if df.empty or not streamlit_filesystem_write_allowed():
         return
     df.to_parquet(_underlying_cache_path(ticker), index=False)
 
@@ -919,6 +949,8 @@ def _parse_fmp_etf_holdings(raw: Any) -> pd.DataFrame:
 
 
 def _parse_yahoo_fund_holdings(ticker: str) -> pd.DataFrame:
+    if not _provider_fetch_allowed():
+        return pd.DataFrame(columns=["underlying", "name", "weight_pct"])
     try:
         import yfinance as yf
     except ImportError:
@@ -959,6 +991,8 @@ def _parse_yahoo_fund_holdings(ticker: str) -> pd.DataFrame:
 
 
 def fetch_fmp_underlying_holdings(ticker: str) -> tuple[pd.DataFrame, str]:
+    if not _provider_fetch_allowed():
+        return pd.DataFrame(), "FMP: provider fetch disabled"
     sym = clean_ticker(ticker)
     api_key = fmp_api_key()
     if not api_key:
@@ -994,12 +1028,14 @@ def fetch_underlying_holdings(
     if not sym:
         return pd.DataFrame(), SOURCE_MISSING, "empty ticker"
 
-    if not force_refresh:
+    if not force_refresh or not _provider_fetch_allowed():
         cached = _read_underlying_cache(sym)
         if not cached.empty:
             out = cached.drop(columns=["source"], errors="ignore")
             src = str(cached["source"].iloc[0]) if "source" in cached.columns else SOURCE_FMP
             return out, src, ""
+    if not _provider_fetch_allowed():
+        return pd.DataFrame(), SOURCE_MISSING, "provider fetch disabled"
 
     fmp_df, fmp_err = fetch_fmp_underlying_holdings(sym)
     if not fmp_df.empty:
@@ -1116,11 +1152,31 @@ def build_underlying_allocation(
 # ---------------------------------------------------------------------------
 # Sector allocation
 # ---------------------------------------------------------------------------
+def _cached_profile_snapshot(ticker: str) -> dict[str, Any]:
+    path = data_loader._fundamentals_cache_path(f"{clean_ticker(ticker)}__profile")
+    if not path.is_file():
+        return {}
+    try:
+        import json
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 def fetch_ticker_sector(ticker: str, *, force_refresh: bool = False) -> str:
     """GICS sector from FMP company profile (cached on disk)."""
     sym = clean_ticker(ticker)
     if not sym:
         return "Unknown"
+    if not _provider_fetch_allowed():
+        prof = _cached_profile_snapshot(sym)
+        sector = str(prof.get("sector") or "").strip()
+        if sector:
+            return sector
+        industry = str(prof.get("industry") or "").strip()
+        return industry or "Unknown"
     api_key = fmp_api_key()
     if not api_key:
         return "Unknown"

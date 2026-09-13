@@ -17,6 +17,7 @@ from market_intelligence.nulls import strict_dumps
 from market_intelligence.overview import build_session_changes, build_what_changed
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
+from market_intelligence.surface_status import worst_surface_status
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.ui import (
     age_text,
@@ -83,14 +84,7 @@ def _transform_text(entry: dict[str, Any] | None) -> str:
 
 
 def _worst_freshness(health: list[dict[str, Any]]) -> str | None:
-    statuses = [str(row.get("freshness_status") or "").upper() for row in health]
-    if "STALE" in statuses:
-        return "STALE"
-    if "UNKNOWN" in statuses or not statuses:
-        return "UNKNOWN"
-    if "FRESH" in statuses:
-        return "FRESH"
-    return statuses[0] if statuses else None
+    return worst_surface_status(health)
 
 
 def _material_warning(health: list[dict[str, Any]], extra: list[str] | None = None) -> str | None:
@@ -705,6 +699,41 @@ def render_data_health() -> None:
                 st.dataframe(pd.DataFrame(quarantine), use_container_width=True, hide_index=True)
             if finra_quarantine:
                 st.dataframe(pd.DataFrame(finra_quarantine), use_container_width=True, hide_index=True)
+
+    ops = load_or_stop("ops_status")
+    if ops:
+        with st.expander("Platform ops summary"):
+            st.caption("Engineering detail stays on Data Health. Main pages show only current / delayed / stale / unavailable / blocked.")
+            st.write(
+                {
+                    "sources": ops.get("source_count"),
+                    "stale": ops.get("stale_count"),
+                    "failed_transport": ops.get("failed_transport_count"),
+                    "last_successful_refresh": ops.get("last_successful_refresh"),
+                    "research_runs": ops.get("research_run_count"),
+                    "latest_research_update": ops.get("latest_research_update"),
+                    "holdout_accessed_runs": ops.get("holdout_accessed_runs"),
+                    "migrations": ops.get("migration_count"),
+                    "migrations_missing_checksum": ops.get("migrations_missing_checksum"),
+                    "ibkr_oldest_heartbeat_age_seconds": ops.get("ibkr_oldest_heartbeat_age_seconds"),
+                    "ibkr_quote_count": ops.get("ibkr_quote_count"),
+                    "deploy_git_sha": ops.get("deploy_git_sha"),
+                    "dashboard_readonly_proven": ops.get("dashboard_readonly_proven"),
+                    "dashboard_streamlit_readonly": ops.get("dashboard_streamlit_readonly"),
+                    "systemd_still_git_pull": ops.get("systemd_still_git_pull"),
+                    "systemd_cutover_proven": ops.get("systemd_cutover_proven"),
+                    "immutable_current_present": ops.get("immutable_current_present"),
+                    "csfml_v1_label_integrity": ops.get("csfml_v1_label_integrity"),
+                    "csfml_v1_rerun_authorized": ops.get("csfml_v1_rerun_authorized"),
+                    "csfml_v1_live_present": ops.get("csfml_v1_live_present"),
+                    "csfml_v1_live_identity_ok": ops.get("csfml_v1_live_identity_ok"),
+                    "tlt_v0_live_present": ops.get("tlt_v0_live_present"),
+                    "tlt_v0_live_identity_ok": ops.get("tlt_v0_live_identity_ok"),
+                    "stage1_live_present": ops.get("stage1_live_present"),
+                    "stage1_live_identity_ok": ops.get("stage1_live_identity_ok"),
+                    "deploy_identity_recorded_at": ops.get("deploy_identity_recorded_at"),
+                }
+            )
 
     with st.expander("Ingestion diagnostics"):
         if runs:

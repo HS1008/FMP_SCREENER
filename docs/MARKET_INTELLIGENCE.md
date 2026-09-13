@@ -188,9 +188,9 @@ Prerequisites already present: `/root/FMP_SCREENER` checkout with `venv`, Postgr
    and without `--validate-only` to store. Page 17 labels provenance; `SYNTHETIC_TEST_ONLY` is never
    research evidence. Exit codes: 0 ok / unchanged, 2 rejected (recorded as a FAILED run), 3 config, 75 lock.
 9. Research artifact delivery (`ingest_platform_research.yml`): the hourly schedule pulls
-   `research/platform_smokes` from QS at `QS_ARTIFACT_SOURCE_REF`; that path does not exist on QS
-   `main` today, so until PR #26 merges (or the variable points at its branch) every scheduled run
-   re-ingests the committed FMP copies and reports `LAST_KNOWN_GOOD`, not a fresh delivery. Set the
+   `research/platform_smokes` from QS only when `QS_ARTIFACT_SOURCE_REF` (or an explicit dispatch
+   ref) is set. An unset scheduled ref does not float to the provider default branch; the run
+   re-ingests committed FMP copies and reports `LAST_KNOWN_GOOD`, not a fresh delivery. Set the
    repository variables `QS_ARTIFACT_SOURCE_REF` / `QS_ARTIFACT_SOURCE_PATH` to an already-published
    ref/path; never point them at a research branch to "repair" delivery.
 

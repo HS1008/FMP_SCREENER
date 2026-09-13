@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Mapping
 from typing import Any
 
 import pandas as pd
 import streamlit as st
 
+from qc_research.contracts.sealed_results import official_stage1_identity_blockers
 from qc_research.aggregation import (
     IN_PROGRESS,
     assess_stage1,
@@ -27,6 +30,8 @@ from qc_research.aggregation import (
 )
 from qc_research.holdout import classify_rows
 from qc_research.streamlit_tables import arrow_safe_frame
+
+logger = logging.getLogger(__name__)
 
 
 def fmt_num(value, decimals=2):
@@ -190,6 +195,7 @@ def render_stage1_section(
     load_equity,
     load_run_row,
     strategy_row=None,
+    engine=None,
 ):
     st.header("STAGE 1 RESEARCH RESULTS")
     st.caption(
@@ -237,7 +243,20 @@ def render_stage1_section(
     run_meta = runs[runs["research_run_id"].astype(str) == selected_run]
     run_row = run_meta.iloc[0] if not run_meta.empty else None
     db_run = load_run_row(selected_run) if load_run_row else None
-    summary = parse_orchestrator_summary(db_run if isinstance(db_run, dict) else None)
+    blockers = official_stage1_identity_blockers(
+        strategy_id=strategy_id,
+        research_run_id=selected_run,
+        row=db_run if isinstance(db_run, Mapping) else None,
+        engine=engine,
+    )
+    if blockers:
+        st.error(
+            "Official Stage 1 identity refused ({0}). "
+            "Stored metrics are not shown as official. "
+            "This is not an economic PASS/WATCH/FAIL.".format(", ".join(blockers))
+        )
+        st.stop()
+    summary = parse_orchestrator_summary(db_run if isinstance(db_run, Mapping) else None)
     run_df = attach_skipped_experiments(run_df, summary)
 
     git_commit = None
@@ -318,7 +337,11 @@ def render_stage1_section(
             research_lineage_id=(db_run or {}).get("research_lineage_id") or strategy_id,
         )
     except Exception:
-        pass
+        logger.exception("Stage 1 legacy holdout overlap check failed")
+        st.warning(
+            "Unable to classify holdout exposure across all backtests. "
+            "The Stage 1-only exposure line may omit legacy overlap."
+        )
     st.caption(
         "Holdout exposure (lineage): **{0}**  •  "
         "FINAL_HOLDOUT count: {1}  •  Legacy overlap: {2}  •  "

@@ -32,7 +32,12 @@ def _blocked_pull_report(tmp_path: Path) -> Path:
     original = pull.list_remote_json_paths
     pull.list_remote_json_paths = _raise
     try:
-        report = pull.pull_complete_artifacts(tmp_path / "incoming", repo="hs1008/quant-strategies", path="research/platform_smokes", ref="")
+        report = pull.pull_complete_artifacts(
+            tmp_path / "incoming",
+            repo="hs1008/quant-strategies",
+            path="research/platform_smokes",
+            ref="ef270841621933f5039680cb070559f43bd1e3c8",
+        )
     finally:
         pull.list_remote_json_paths = original
     out = tmp_path / "pull.json"
@@ -40,11 +45,34 @@ def _blocked_pull_report(tmp_path: Path) -> Path:
     return out
 
 
+def test_pull_refuses_branch_names_without_listing(tmp_path, monkeypatch):
+    def _boom(*_a, **_k):
+        raise AssertionError("listing must not run for a floating ref")
+
+    monkeypatch.setattr(pull, "list_remote_json_paths", _boom)
+    report = pull.pull_complete_artifacts(
+        tmp_path / "incoming",
+        repo="hs1008/quant-strategies",
+        path="research/platform_smokes",
+        ref="main",
+    )
+    assert report["blocked"] is True and report["pulled"] == 0
+    assert "SHA" in report["reason"]
+    empty = pull.pull_complete_artifacts(
+        tmp_path / "incoming",
+        repo="hs1008/quant-strategies",
+        path="research/platform_smokes",
+        ref="",
+    )
+    assert empty["blocked"] is True and "SOURCE_REF" in empty["reason"]
+
+
 def test_pull_reports_404_as_blocked_without_token_leak(tmp_path, monkeypatch):
     monkeypatch.setenv("QS_READ_TOKEN", "ghp_secret_value")
     report = json.loads(_blocked_pull_report(tmp_path).read_text())
     assert report["blocked"] is True and report["pulled"] == 0 and report["delivery_status"] == "BLOCKED"
-    assert "404" in report["reason"] and "research/platform_smokes" in report["reason"] and "default branch" in report["reason"]
+    assert "404" in report["reason"] and "research/platform_smokes" in report["reason"]
+    assert "ef270841621933f5039680cb070559f43bd1e3c8" in report["reason"]
     assert "ghp_secret_value" not in json.dumps(report)
     assert not list((tmp_path / "incoming").glob("*.json"))
 
@@ -113,11 +141,64 @@ def test_workflow_and_live_script_wire_explicit_ref_and_report():
     assert "qc_research.delivery_visibility build" in WORKFLOW
     assert "--report \"$DELIVERY_DIR/pull.json\"" in WORKFLOW
     assert "LAST_KNOWN_GOOD, not a new delivery" in WORKFLOW
+    assert "will not float to the provider default branch" in WORKFLOW
+    assert "[0-9a-fA-F]{40}" in WORKFLOW
+    assert "full 40-character git SHA" in WORKFLOW
+    assert "qc_research.contracts.digests" in LIVE_SCRIPT
     assert "qc_research.delivery_visibility record" in LIVE_SCRIPT
+    assert "--require-postgres" in LIVE_SCRIPT
+    record_block = LIVE_SCRIPT.split("delivery_visibility record", 1)[1]
+    assert "|| echo" not in record_block.split("else", 1)[0]
+    assert "WARN:" not in LIVE_SCRIPT
     # The fallback is preserved: committed artifacts still ingest when remote is blocked.
     assert 'TARGET="$LOCAL_ROOT"' in WORKFLOW and 'TARGET="$LOCAL_CANDIDATE"' in WORKFLOW
     # Triggers unchanged: no push trigger was introduced.
     assert "push:" not in WORKFLOW
+    query = LIVE_SCRIPT.split("verify_tlt_monitor --live", 1)[0]
+    assert "/etc/fmp/fmp-dashboard.env" in query
+    assert "unset DATABASE_URL" in query
+    assert "FMP_IDENTITY_ENV_ONLY=1" in query
+    assert query.rfind("source /etc/fmp/fmp-dashboard.env") > query.rfind("source \"$DROPLET_ENV\"")
+    assert "source /root/FMP_SCREENER/.env" not in LIVE_SCRIPT.split("verify_tlt_monitor --live", 1)[1]
+    assert "--allow-missing" not in LIVE_SCRIPT
+    assert "/var/lib/fmp/deploy/tlt_v0_live.json" in LIVE_SCRIPT
+    assert "DROPLET_ENV=/etc/fmp/fmp-writer.env" in LIVE_SCRIPT
+    assert LIVE_SCRIPT.index("DROPLET_ENV=/etc/fmp/fmp-writer.env") < LIVE_SCRIPT.index(
+        "DROPLET_ENV=/root/FMP_SCREENER/.env"
+    )
+    assert LIVE_SCRIPT.index('source "$DROPLET_ENV"') < LIVE_SCRIPT.index(
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
+    )
+    assert LIVE_SCRIPT.index(
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK"
+    ) < LIVE_SCRIPT.index("python -m qc_research.ingest_platform_artifacts")
+    assert "CODE_ROOT=" in LIVE_SCRIPT
+    assert 'IMMUTABLE_ROOT="/opt/fmp/current"' in LIVE_SCRIPT
+    assert 'GIT_CHECKOUT="/root/FMP_SCREENER"' in LIVE_SCRIPT
+    assert LIVE_SCRIPT.index('IMMUTABLE_ROOT="/opt/fmp/current"') < LIVE_SCRIPT.index(
+        'GIT_CHECKOUT="/root/FMP_SCREENER"'
+    )
+    assert LIVE_SCRIPT.index('if [ -d "$IMMUTABLE_ROOT" ]') < LIVE_SCRIPT.index(
+        'elif [ -d "$GIT_CHECKOUT" ]'
+    )
+    assert 'CODE_ROOT="$IMMUTABLE_ROOT"' in LIVE_SCRIPT
+    assert 'CODE_ROOT="$GIT_CHECKOUT"' in LIVE_SCRIPT
+    assert 'CODE_ROOT="$ROOT"' in LIVE_SCRIPT
+    assert 'source "$CODE_ROOT/venv/bin/activate"' in LIVE_SCRIPT
+    assert 'export PYTHONPATH="$CODE_ROOT"' in LIVE_SCRIPT
+    assert "python -m jobs.apply_migrations" not in LIVE_SCRIPT
+    assert "deployed ingest module missing" in LIVE_SCRIPT
+    assert 'if [ "$CANONICAL_ONLY" = "1" ]' in LIVE_SCRIPT
+    assert '[ -d "$TARGET" ] && [ "$CANONICAL_ONLY" = "1" ]' not in LIVE_SCRIPT
+    assert "/opt/fmp/current/scripts/ingest_platform_live.sh" in WORKFLOW
+    assert "/root/FMP_SCREENER/scripts/ingest_platform_live.sh" in WORKFLOW
+    assert WORKFLOW.index("/opt/fmp/current/scripts/ingest_platform_live.sh") < WORKFLOW.index(
+        "/root/FMP_SCREENER/scripts/ingest_platform_live.sh"
+    )
+    assert "ingest_platform_live.sh missing on droplet" in WORKFLOW
+    assert "bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh" not in WORKFLOW
+    assert "live PostgreSQL ingest is allowed only from refs/heads/main" in WORKFLOW
+    assert "github.ref == 'refs/heads/main'" in WORKFLOW
 
 
 # ---- PostgreSQL-backed: idempotent ingestion, invalid hash, preservation, recorded facts -----------------
@@ -196,3 +277,38 @@ def test_delivery_facts_recorded_in_market_intelligence_tables(mi_db, tmp_path):
     with mi_db.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_ingestion_runs WHERE source_id=:s"), {"s": dv.SOURCE_ID}).scalar() == 2
         assert conn.execute(text("SELECT transport_status FROM mi_data_freshness WHERE source_id=:s"), {"s": dv.SOURCE_ID}).scalar() == "OK"
+
+
+def test_record_require_postgres_fails_closed_without_writer(monkeypatch, tmp_path):
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("FMP_STREAMLIT_READONLY", raising=False)
+    missing = tmp_path / "missing.json"
+    assert dv.main(["record", "--report", str(missing), "--require-postgres"]) == 2
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"event": "schedule"}), encoding="utf-8")
+    assert dv.main(["record", "--report", str(report), "--require-postgres"]) == 2
+    assert dv.main(["record", "--report", str(missing)]) == 0
+
+
+def test_delivery_record_refuses_streamlit_readonly_even_with_database_url(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://writer:secret@127.0.0.1:5432/fmp")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("Streamlit identity must not create a writer engine")
+
+    monkeypatch.setattr("sqlalchemy.create_engine", _boom)
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"event": "schedule"}), encoding="utf-8")
+    assert dv.main(["record", "--report", str(report), "--require-postgres"]) == 4
+    assert dv.main(["record", "--report", str(report)]) == 4
+
+
+def test_delivery_record_missing_writer_is_not_streamlit_refuse(monkeypatch, tmp_path):
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    report = tmp_path / "report.json"
+    report.write_text(json.dumps({"event": "schedule"}), encoding="utf-8")
+    assert dv.main(["record", "--report", str(report), "--require-postgres"]) == 2

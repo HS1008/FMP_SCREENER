@@ -19,7 +19,6 @@ from typing import Any
 import numpy as np
 import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
 
 import config
 import data_loader
@@ -84,7 +83,9 @@ def load_watchlist() -> pd.DataFrame:
 
 
 def _load_api_key() -> str:
-    load_dotenv(config.PROJECT_ROOT / ".env")
+    from db.dashboard_engine import load_streamlit_env
+
+    load_streamlit_env(config.PROJECT_ROOT / ".env")
     key = (os.getenv("FMP_API_KEY") or "").strip()
     if not key:
         st.warning(
@@ -96,9 +97,15 @@ def _load_api_key() -> str:
 
 @st.cache_data(ttl=900, show_spinner="Fetching FMP prices…")
 def fetch_price_history(ticker: str, date_from: date, date_to: date) -> pd.Series:
-    load_dotenv(config.PROJECT_ROOT / ".env")
+    from db.dashboard_engine import load_streamlit_env
+
+    load_streamlit_env(config.PROJECT_ROOT / ".env")
     api_key = (os.getenv("FMP_API_KEY") or "").strip()
     if not api_key:
+        return pd.Series(dtype=float, name=ticker)
+    from qc_research.ui_boundary import provider_fetch_allowed
+
+    if not provider_fetch_allowed():
         return pd.Series(dtype=float, name=ticker)
     session = data_loader.create_http_session()
     try:
@@ -245,6 +252,13 @@ def load_hub_map() -> pd.DataFrame:
 def load_market_data(
     force_refresh: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, bool]:
+    from qc_research.ui_boundary import provider_fetch_allowed
+
+    if not provider_fetch_allowed():
+        cached = eia_wholesale.load_cached_only()
+        if cached is None:
+            return pd.DataFrame(), pd.DataFrame(), False
+        return cached
     return eia_wholesale.load_cached_or_fetch_eia_data(force_refresh=force_refresh)
 
 

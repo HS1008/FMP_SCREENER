@@ -1,0 +1,103 @@
+{
+  "schema_version": "migration_checksum_baseline_v1",
+  "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823",
+  "baseline_ref": "origin/main",
+  "note": "Trusted pre-checksum hashes for migrations that existed on production main before checksum enforcement. First upgrade backfills NULL sha256 only when filename+hash match this manifest. New migrations (020+) are not historical and must write their hash at apply time. Production deployed-SHA evidence was not available from Cursor; a human must confirm the live droplet files match these hashes before merging FMP #29.",
+  "migrations": [
+    {
+      "filename": "001_stage1_research.sql",
+      "sha256": "79488a8b2163a43b749f01860b7a8cdcad777dc6bc2ca002b98e47e5f256a5f6",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "002_research_project.sql",
+      "sha256": "4fc734eea1665e24a7850e0286df2c2f26ef7c56441892dbf4dda1e1514b6edd",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "003_stage2_ml_research.sql",
+      "sha256": "2aa3c5af23d04bd82ad1481eead6ca0dde3c119714e09d0b91e8de1ddff297df",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "004_stage2_artifact_transport.sql",
+      "sha256": "210dfb1a3fc2cd56c044abe736f5c5204dcdcffc06f8bba3eb6aea1acf7f2150",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "005_platform_research.sql",
+      "sha256": "e7bc06df2c551bb2715449b89aed289d69a34f42b3a10c01a3d1861d8ea33b8e",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "006_platform_lifecycle.sql",
+      "sha256": "cc6796da548996f30860257cf8043789bec8cb194c91038325bc40a081c215aa",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "007_platform_delivery.sql",
+      "sha256": "12df8549b81c3134ccdac7047a72af23c7ef607c7e3ae26965d9202e83aa76f4",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "008_market_intelligence_core.sql",
+      "sha256": "9b64ad14bb12dbbc6f5c4251f8582f4539c03b083510e4d9b853695b5e7015bd",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "009_market_intelligence_analytics.sql",
+      "sha256": "c3664e8f18e78a2da28432e192a085bd7090f18dd1792a9806535942e69a8090",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "010_research_ideas.sql",
+      "sha256": "fe62795b20609cc80a6b4fc35ff586e62121593a8417301b1ce96d82881120ea",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "011_bond_securities.sql",
+      "sha256": "a5ed6d9f5cf5c142102658fc4284b0b183bb6d71181f8d2a16db9f3c7e969736",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "012_market_intelligence_publication.sql",
+      "sha256": "f194ca9bd33d2eddda0c998edace37d40c00d6d81a20a4d1fe4bbe8c453da974",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "013_research_idea_completeness.sql",
+      "sha256": "91593d594d01ee143430417ddbf4e6843ace0dbe3b8ddedb4c5e80372439bcf3",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "014_pit_sector_internals.sql",
+      "sha256": "d58b6706ed10f438ad342dffe68d85bbd6e853a38b9a5f750935a83d288fdd12",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "015_metric_latest_skips_withdrawn.sql",
+      "sha256": "04d74109fc0d0164dd15873923925b969d918159a5a603c7592f7c51005a9bf1",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "016_ibkr_collector.sql",
+      "sha256": "7dd7d474523f698cdf0c4dcfd395a47463f78624ef053b6ca11d86c1074c9f1d",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "017_finra_order_flow.sql",
+      "sha256": "51f3318dfd1b7c771d0efa678d2e992d0194d4dab509ce3cc7cc17790ee34b57",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "018_ibkr_callback_freshness.sql",
+      "sha256": "c659070e99f29782064760a56f76e2d5fddba3e5f24397107e64d43f002786f0",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    },
+    {
+      "filename": "019_finra_identity_quarantine.sql",
+      "sha256": "849b556d6cc1c2f707933c05b774967cf8a6c92bca371daa40de71d8c1ec0b36",
+      "baseline_git_sha": "2ed4da99df28d06e7730e56601de440e870dc823"
+    }
+  ]
+}

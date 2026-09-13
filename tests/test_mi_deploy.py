@@ -92,10 +92,13 @@ def test_units_reference_real_entrypoints():
     assert (ROOT / "ai_context_api.py").exists() and "ai_context_api:app" in api
     assert "SuccessExitStatus=0 2 75" in refresh
     deploy_yml = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text()
     assert "deploy/market_intelligence" not in deploy_yml
-    assert "fmp-ibkr-ingest.service" in deploy_yml
-    assert "fmp_backups/checkout_preserve" in deploy_yml
-    assert "git checkout --" in deploy_yml
+    assert "fmp-ibkr-ingest.service" in host
+    assert "fmp_backups/checkout_preserve" in host
+    assert "git checkout --" in host
+    assert "git reset --hard" not in host
+    assert "git clean -" not in host
     assert "git reset --hard" not in deploy_yml
     assert "git clean -" not in deploy_yml
 
@@ -282,6 +285,75 @@ def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
     assert "latest_observation_date" not in verify.split("python - <<'PY'", 1)[-1].split("PY", 1)[0]
 
 
+def test_mi_research_workspace_identity_report_does_not_source_writer_checkout_env():
+    verify = (ROOT / ".github" / "workflows" / "mi_research_workspace_verify.yml").read_text()
+    prefix = verify.split("Re-AppTest and report sanitized source/identity status", 1)[1]
+    prefix = prefix.split("python - <<'PY'", 1)[0]
+    assert "/etc/fmp/market_intelligence.env" in prefix
+    assert "unset DATABASE_URL" in prefix
+    assert "MARKET_INTELLIGENCE_DATABASE_URL" in prefix
+    assert "source /root/FMP_SCREENER/.env" not in prefix
+    assert ". /root/FMP_SCREENER/.env" not in prefix
+    preflight = (ROOT / ".github" / "workflows" / "mi_host_preflight.yml").read_text()
+    assert "source /root/FMP_SCREENER/.env" in preflight
+
+
+def test_activate_verify_phase_does_not_source_writer_checkout_env():
+    text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
+    verify = text.split("phase_verify()", 1)[1].split("sanitize_unit_journal", 1)[0]
+    assert "load_writer_env" not in verify
+    assert 'source "$ENV_FILE"' in verify
+    assert "unset DATABASE_URL" in verify
+    assert "unset MARKET_INTELLIGENCE_DATABASE_URL" in verify or "MARKET_INTELLIGENCE_DATABASE_URL" in verify
+    assert "FMP_IDENTITY_ENV_ONLY=1" in verify
+    assert "verify_mi_dashboard" in verify
+    assert "verify_dashboard_identity.sh" in verify
+    ingest = text.split("phase_ingest_fred()", 1)[1].split("phase_ingest_finra()", 1)[0]
+    assert "load_writer_env" in ingest
+    mi_verify = (ROOT / "jobs" / "verify_mi_dashboard.py").read_text()
+    assert "load_streamlit_env" in mi_verify
+
+
+def test_activate_ingest_unsets_streamlit_identity_after_writer_env():
+    text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
+    block = text.split("load_writer_env() {", 1)[1].split("writer_db_meta()", 1)[0]
+    unset = (
+        "unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH "
+        "DASHBOARD_ALLOW_WRITER_FALLBACK"
+    )
+    assert unset in block
+    assert block.index('source "$DASHBOARD_ENV"') < block.index(unset)
+    assert block.index('source "$ENV_FILE"') < block.index(unset)
+    ingest = text.split("phase_ingest_fred()", 1)[1].split("phase_ingest_finra()", 1)[0]
+    assert "load_writer_env" in ingest
+    assert ingest.index("load_writer_env") < ingest.index("jobs.market_intelligence_refresh")
+
+
+def test_mi_writer_engine_refuses_streamlit_only_when_writer_url_present(monkeypatch):
+    from market_intelligence.writer_db import WriterConfigurationError, writer_engine
+    from qc_research.platform_ingest import StreamlitIngestRefused
+
+    monkeypatch.setenv("FMP_STREAMLIT_READONLY", "1")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://writer:secret@127.0.0.1:5432/fmp")
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("Streamlit identity must not create an MI writer engine")
+
+    monkeypatch.setattr("sqlalchemy.create_engine", _boom)
+    with pytest.raises(StreamlitIngestRefused, match="Streamlit read-only"):
+        writer_engine()
+    with pytest.raises(StreamlitIngestRefused, match="Streamlit read-only"):
+        writer_engine("postgresql://writer:secret@127.0.0.1:5432/fmp")
+
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    monkeypatch.delenv("MARKET_INTELLIGENCE_DATABASE_URL", raising=False)
+    monkeypatch.delenv("DB_HOST", raising=False)
+    monkeypatch.delenv("DB_NAME", raising=False)
+    monkeypatch.delenv("DB_USER", raising=False)
+    with pytest.raises(WriterConfigurationError, match="No writer database configured"):
+        writer_engine()
+
+
 def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     text = (ROOT / "scripts" / "activate_market_intelligence_host.sh").read_text()
     assert "MI_ADMIN_DATABASE_URL" in text
@@ -297,6 +369,8 @@ def test_activate_host_script_uses_admin_or_peer_for_role_sql():
     assert "materialize_ai_context_env.py" in text
     assert "materialize_mi_writer_url.py" in text
     assert "writer_url_source" in text
+    assert "scripts/provision_dashboard_readonly.sh" in text
+    assert "dashboard_readonly_pw_file=" in text
     assert "wait_for_local_api" in text
     assert "127.0.0.1:8765/health" in text
     assert '-f -' in text
@@ -363,6 +437,38 @@ def test_materialize_mi_writer_url_from_db_star_and_never_prints_secret(tmp_path
     url, source = resolve_writer_url({"MARKET_INTELLIGENCE_DATABASE_URL": "postgresql://writer:keep@127.0.0.1:5432/fmp"})
     assert source == "dedicated" and url.endswith("/fmp")
     assert resolve_writer_url({}) == ("", "missing")
+
+
+def test_update_protected_env_scrubs_streamlit_writer_keys_without_printing(tmp_path):
+    script = ROOT / "scripts" / "update_protected_env.py"
+    env_file = tmp_path / "fmp-dashboard.env"
+    env_file.write_text(
+        "FMP_API_KEY=keep-me\n"
+        "DATABASE_URL=postgresql://writer:secret@127.0.0.1/fmp\n"
+        "DB_USER=writer\n"
+        "STREAMLIT_ALLOW_PROVIDER_FETCH=1\n"
+        "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:x@127.0.0.1/fmp\n",
+        encoding="utf-8",
+    )
+    os.chmod(env_file, 0o600)
+    out = subprocess.run(
+        [sys.executable, str(script), "--env-file", str(env_file), "--scrub-streamlit-writer"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert out.returncode == 0, out.stderr
+    text = env_file.read_text(encoding="utf-8")
+    assert "FMP_API_KEY=keep-me" in text
+    assert "DASHBOARD_READONLY_URL=postgresql://dashboard_readonly:x@127.0.0.1/fmp" in text
+    assert "DATABASE_URL=" not in text
+    assert "DB_USER=" not in text
+    assert "STREAMLIT_ALLOW_PROVIDER_FETCH=" not in text
+    assert "FMP_STREAMLIT_READONLY=1" in text
+    assert "secret" not in out.stdout
+    assert "writer_keys_removed=" in out.stdout
+    assert "DATABASE_URL" in out.stdout
+    assert "STREAMLIT_ALLOW_PROVIDER_FETCH" in out.stdout
 
 
 def test_update_protected_env_preserves_other_keys_and_does_not_print_the_value(tmp_path):

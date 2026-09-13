@@ -12,6 +12,9 @@ from typing import Any, Iterable, Mapping
 
 from sqlalchemy import text
 
+from qc_research.contracts.kinds import reject_holdout_access, reject_synthetic_official
+from qc_research.contracts.label_integrity import refuse_impersonated_official_csfml_v1
+from qc_research.ingest.stage2_sql import conflict_sql as _conflict_sql
 from qc_research.object_store_sync import (
     PLATFORM_SCHEMA_VERSIONS,
     canonical_dumps,
@@ -24,6 +27,112 @@ from qc_research.object_store_sync import (
 
 class IngestEnvironmentError(RuntimeError):
     """Live PostgreSQL ingest is blocked until DATABASE_URL / DB_* are set."""
+
+
+class StreamlitIngestRefused(RuntimeError):
+    """Live ingest is refused while Streamlit read-only identity is active."""
+
+
+def streamlit_readonly_active() -> bool:
+    return (os.environ.get("FMP_STREAMLIT_READONLY") or "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def refuse_streamlit_ingest() -> None:
+    """Writer ingest must not run under Streamlit identity, even if DATABASE_URL is set."""
+    if streamlit_readonly_active():
+        raise StreamlitIngestRefused(
+            "platform ingest is refused in the Streamlit read-only process"
+        )
+
+
+_UNSAFE_INGEST_PARTS = frozenset({"outputs", ".git", "venv", "node_modules", "__pycache__"})
+
+
+def refuse_outputs_tree(path: Path) -> None:
+    """Gitignored outputs/ and interpreter trees are not live ingest roots."""
+    resolved = Path(path).resolve()
+    hit = next((part for part in resolved.parts if part in _UNSAFE_INGEST_PARTS), None)
+    if hit is not None:
+        raise ValueError(
+            "refusing to discover or ingest platform artifacts under {0}/: {1}".format(
+                hit, resolved
+            )
+        )
+
+
+def refuse_repository_root_scan(path: Path) -> None:
+    """Directory discover must not rglob a git checkout or copied Actions tree."""
+    resolved = Path(path).resolve()
+    if not resolved.is_dir():
+        return
+    if (resolved / ".git").exists() or (
+        resolved / "qc_research" / "ingest_platform_artifacts.py"
+    ).is_file():
+        raise ValueError(
+            "refusing to discover platform artifacts from a repository root: {0}".format(
+                resolved
+            )
+        )
+
+
+def refuse_tainted_source(record: Mapping[str, Any] | None) -> None:
+    """Refuse holdout-tainted or synthetic-official source JSON before wrapping.
+
+    Wrappers must not overwrite holdout_accessed=true to false.
+    """
+    payload = dict(record or {})
+    reject_synthetic_official(payload)
+    reject_holdout_access(payload)
+    refuse_impersonated_official_csfml_v1(payload)
+
+
+def refuse_unofficial_monitor_run(record: Mapping[str, Any] | None) -> None:
+    """Refuse a second Monitor identity for SPYTrend / CSFML / TLT."""
+    from qc_research.contracts.sealed_results import (
+        official_monitor_strategy_ids,
+        sealed_results_run_ids,
+    )
+
+    payload = dict(record or {})
+    nested = payload.get("identity") if isinstance(payload.get("identity"), dict) else {}
+    inner = payload.get("payload") if isinstance(payload.get("payload"), dict) else {}
+    strategy_id = str(
+        payload.get("strategy_id")
+        or nested.get("strategy_id")
+        or inner.get("strategy_id")
+        or ""
+    )
+    run_id = str(
+        payload.get("research_run_id")
+        or payload.get("run_id")
+        or nested.get("research_run_id")
+        or inner.get("research_run_id")
+        or ""
+    ).strip()
+    if strategy_id in official_monitor_strategy_ids() and run_id not in sealed_results_run_ids():
+        provenance = str(
+            payload.get("provenance")
+            or inner.get("provenance")
+            or nested.get("provenance")
+            or ""
+        )
+        if provenance == "SANITIZED_CONTRACT_FIXTURE":
+            return
+        raise ValueError(
+            "refusing unofficial identity {0} for official Monitor strategy {1}".format(
+                run_id or "<empty>", strategy_id
+            )
+        )
+    nested = payload.get("payload")
+    if isinstance(nested, dict):
+        reject_synthetic_official(nested)
+        reject_holdout_access(nested)
+        refuse_impersonated_official_csfml_v1(nested)
 
 
 def live_postgres_configured() -> bool:
@@ -39,6 +148,7 @@ def require_live_postgres_ingest() -> None:
             "DATABASE_URL / DB_* unset. Live Strategy Monitor ingest is a human environment gate. "
             "Do not invent a database. Unit tests may ingest through FakeConn."
         )
+    refuse_streamlit_ingest()
 
 
 UPSERT_TRIAL = """
@@ -154,17 +264,28 @@ def platform_run_identity(payload: dict[str, Any]) -> dict[str, Any]:
         "economic_gate": inner.get("economic_gate") or payload.get("economic_gate"),
         "delivery_status": inner.get("delivery_status") or payload.get("delivery_status") or "PENDING",
         "name": inner.get("display_name") or payload.get("display_name"),
+        "project_id": inner.get("project_id") or payload.get("project_id") or identity.get("project_id"),
+        "project_name": inner.get("project_name") or payload.get("project_name") or identity.get("project_name"),
     }
 
 
 def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None:
+    from qc_research.contracts.sealed_results import (
+        refuse_sealed_committed_mismatch,
+        research_run_exists,
+        sealed_results_run_ids,
+    )
+
+    refuse_sealed_committed_mismatch(payload)
+    refuse_unofficial_monitor_run(payload)
     inner = _inner(payload)
     run_id = str(payload.get("research_run_id") or inner.get("research_run_id") or "")
+    sealed = bool(run_id) and run_id in sealed_results_run_ids()
     if kind == "trials":
         selected = inner.get("selected_trial_id")
         for row in list(inner.get("candidates") or []) + list(inner.get("rejected") or []):
             conn.execute(
-                text(UPSERT_TRIAL),
+                text(_conflict_sql(UPSERT_TRIAL, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "trial_id": row.get("trial_id"),
@@ -179,7 +300,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
         pair = inner.get("pair") or []
         if len(pair) >= 2:
             conn.execute(
-                text(UPSERT_PAIR),
+                text(_conflict_sql(UPSERT_PAIR, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "pair_left": pair[0],
@@ -195,7 +316,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
     elif kind in {"fixed_income_risk", "fixed_income_diagnostics"}:
         for name, value in (inner.get("metrics") or {"gross_dv01": inner.get("gross_dv01")}).items():
             conn.execute(
-                text(UPSERT_FI),
+                text(_conflict_sql(UPSERT_FI, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "metric_name": name,
@@ -206,10 +327,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
             )
     elif kind == "oos_aggregate":
         windows = inner.get("windows") or []
-        for index, window in enumerate(windows):
-            conn.execute(
-                text(
-                    """
+        oos_sql = """
                     INSERT INTO research_oos_windows (
                         research_run_id, outer_window_id, oos_start, oos_end, metrics_json
                     ) VALUES (
@@ -221,7 +339,9 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
                         oos_end = EXCLUDED.oos_end,
                         metrics_json = EXCLUDED.metrics_json
                     """
-                ),
+        for index, window in enumerate(windows):
+            conn.execute(
+                text(_conflict_sql(oos_sql, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "outer_window_id": str(window.get("window_id") or window.get("kind") or index),
@@ -237,7 +357,7 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
         for index, item in enumerate(experiments):
             experiment_id = item if isinstance(item, str) else str((item or {}).get("experiment_id") or index)
             conn.execute(
-                text(UPSERT_EXPERIMENT),
+                text(_conflict_sql(UPSERT_EXPERIMENT, sealed=sealed)),
                 {
                     "research_run_id": run_id,
                     "experiment_id": experiment_id,
@@ -247,11 +367,25 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
     elif kind == "strategy_spec":
         spec = inner if inner.get("identity") else payload
         identity = spec.get("identity") or {}
+        spec_hash = str(
+            identity.get("config_fingerprint") or payload.get("config_fingerprint") or ""
+        )
+        strategy_id = str(identity.get("strategy_id") or payload.get("strategy_id") or "")
+        from qc_research.contracts.sealed_results import (
+            official_monitor_strategy_ids,
+            official_sealed_spec_hashes,
+        )
+
+        freeze = (
+            sealed
+            or strategy_id in official_monitor_strategy_ids()
+            or (spec_hash and spec_hash in official_sealed_spec_hashes())
+        )
         conn.execute(
-            text(UPSERT_SPEC),
+            text(_conflict_sql(UPSERT_SPEC, sealed=freeze)),
             {
-                "strategy_spec_hash": identity.get("config_fingerprint") or payload.get("config_fingerprint") or "",
-                "strategy_id": identity.get("strategy_id") or payload.get("strategy_id") or "",
+                "strategy_spec_hash": spec_hash,
+                "strategy_id": strategy_id,
                 "strategy_family_id": identity.get("strategy_family_id"),
                 "research_lineage_id": identity.get("research_lineage_id"),
                 "research_mode": identity.get("research_mode"),
@@ -263,8 +397,10 @@ def ingest_platform_payload(conn, *, kind: str, payload: dict[str, Any]) -> None
     if kind in {"run_summary", "run_manifest"} and run_id:
         identity = platform_run_identity(payload)
         if identity["strategy_id"]:
-            conn.execute(text(UPSERT_PLATFORM_RUN), identity)
-            register_platform_monitor_strategy(conn, identity)
+            if sealed and research_run_exists(conn, str(run_id)):
+                return
+            conn.execute(text(_conflict_sql(UPSERT_PLATFORM_RUN, sealed=sealed)), identity)
+            register_platform_monitor_strategy(conn, identity, sealed=sealed)
 
 
 SKIP_NO_DATABASE = (
@@ -338,9 +474,27 @@ ON CONFLICT (research_run_id) DO UPDATE SET
     strategy_family_id = COALESCE(EXCLUDED.strategy_family_id, research_runs.strategy_family_id),
     strategy_spec_hash = COALESCE(EXCLUDED.strategy_spec_hash, research_runs.strategy_spec_hash),
     research_lineage_id = COALESCE(EXCLUDED.research_lineage_id, research_runs.research_lineage_id),
-    run_status = COALESCE(EXCLUDED.run_status, research_runs.run_status),
+    run_status = CASE
+        WHEN research_runs.run_status IN ('COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE')
+            THEN research_runs.run_status
+        WHEN research_runs.run_status IN ('CLOUD_VALIDATED', 'DRY_RUN_COMPLETE')
+             AND COALESCE(EXCLUDED.run_status, '') NOT IN (
+                 'COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE',
+                 'CLOUD_VALIDATED', 'DRY_RUN_COMPLETE'
+             )
+            THEN research_runs.run_status
+        ELSE COALESCE(EXCLUDED.run_status, research_runs.run_status)
+    END,
     promotion_gate = COALESCE(EXCLUDED.promotion_gate, research_runs.promotion_gate),
-    holdout_status = COALESCE(EXCLUDED.holdout_status, research_runs.holdout_status),
+    holdout_status = CASE
+        WHEN UPPER(COALESCE(research_runs.holdout_status, '')) = 'ACCESSED'
+            THEN research_runs.holdout_status
+        WHEN UPPER(COALESCE(EXCLUDED.holdout_status, '')) = 'ACCESSED'
+            THEN EXCLUDED.holdout_status
+        ELSE COALESCE(EXCLUDED.holdout_status, research_runs.holdout_status)
+    END,
+    holdout_accessed = COALESCE(research_runs.holdout_accessed, FALSE)
+        OR COALESCE(EXCLUDED.holdout_accessed, FALSE),
     economic_gate = COALESCE(EXCLUDED.economic_gate, research_runs.economic_gate),
     delivery_status = COALESCE(EXCLUDED.delivery_status, research_runs.delivery_status)
 """
@@ -362,21 +516,31 @@ ON CONFLICT (strategy_id) DO UPDATE SET
 """
 
 
-def register_platform_monitor_strategy(conn, identity: Mapping[str, Any] | None = None) -> None:
+def register_platform_monitor_strategy(
+    conn,
+    identity: Mapping[str, Any] | None = None,
+    *,
+    sealed: bool = False,
+) -> None:
     """Idempotent research-only Strategy Monitor row from a canonical artifact."""
     row = dict(identity or {})
     strategy_id = str(row.get("strategy_id") or "")
     if not strategy_id:
         return
+    project_id = row.get("project_id") or row.get("qc_research_project_id")
+    project_name = row.get("project_name") or row.get("qc_research_project_name")
+    from qc_research.contracts.sealed_results import official_monitor_strategy_ids
+
+    freeze = sealed or strategy_id in official_monitor_strategy_ids()
     conn.execute(
-        text(REGISTER_STRATEGY_SQL),
+        text(_conflict_sql(REGISTER_STRATEGY_SQL, sealed=freeze)),
         {
             "strategy_id": strategy_id,
             "name": row.get("name") or strategy_id,
             "environment": "research",
             "status": row.get("run_status") or "COMPLETE",
-            "qc_research_project_id": str(row.get("project_id") or "36108691"),
-            "qc_research_project_name": row.get("project_name") or "PlatformResearch",
+            "qc_research_project_id": str(project_id).strip() if project_id not in (None, "") else None,
+            "qc_research_project_name": str(project_name).strip() if project_name not in (None, "") else None,
         },
     )
 
@@ -454,11 +618,13 @@ def wrap_smoke_record(record: dict[str, Any]) -> list[tuple[str, dict[str, Any]]
     """Turn a platform smoke runner JSON into hashed Monitor artifacts."""
     from qc_research.lifecycle import normalize_research_lifecycle
 
+    refuse_tainted_source(record)
     run_id = str(record.get("run_id") or record.get("research_run_id") or "")
     if not run_id:
         raise ValueError("smoke record is missing run_id")
     lifecycle = normalize_research_lifecycle(record)
     strategy_id = str(record.get("strategy_id") or run_id)
+    refuse_unofficial_monitor_run({"strategy_id": strategy_id, "research_run_id": run_id})
     provenance = str(record.get("provenance") or "REAL_QC")
     metrics = dict(record.get("metrics") or {})
     baseline_metrics = dict(record.get("baseline_metrics") or {})
@@ -558,12 +724,23 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
     strategy_id = str(record.get("strategy_id") or "")
     if not strategy_id:
         raise ValueError("canonical platform artifact is missing strategy_id")
+    refuse_tainted_source(record)
     lineage = str(record.get("research_lineage_id") or strategy_id)
-    run_id = str(
-        record.get("research_run_id")
-        or record.get("run_id")
-        or "PLATFORM_{0}_V0".format(strategy_id)
+    run_id = str(record.get("research_run_id") or record.get("run_id") or "").strip()
+    from qc_research.contracts.sealed_results import (
+        official_monitor_strategy_ids,
+        sealed_results_run_ids,
     )
+
+    if not run_id:
+        invented = "PLATFORM_{0}_V0".format(strategy_id)
+        if strategy_id in official_monitor_strategy_ids() or invented in sealed_results_run_ids():
+            raise ValueError(
+                "canonical platform artifact {0} is missing research_run_id; "
+                "refusing to invent official identity {1}".format(strategy_id, invented)
+            )
+        run_id = invented
+    refuse_unofficial_monitor_run({"strategy_id": strategy_id, "research_run_id": run_id})
     lifecycle = normalize_research_lifecycle(record)
     provenance = str(record.get("provenance") or "REAL_QC")
     aggregate = record.get("aggregate") if isinstance(record.get("aggregate"), dict) else {}
@@ -645,8 +822,8 @@ def wrap_canonical_platform_record(record: dict[str, Any]) -> list[tuple[str, di
         "ml_minus_baseline": delta_mean,
         "selected_model_stability": aggregate.get("selected_model_stability"),
         "robustness": aggregate.get("selected_model_stability") or record.get("robustness"),
-        "project_id": record.get("project_id") or 36108691,
-        "project_name": record.get("project_name") or "PlatformResearch",
+        "project_id": record.get("project_id"),
+        "project_name": record.get("project_name"),
         "provenance": provenance,
         "observation_provenance": record.get("observation_provenance") or "REAL_HISTORICAL_PRE_2025",
         "qc_creates_official": record.get("qc_creates_official") or record.get("qc_creates"),
@@ -759,11 +936,21 @@ def is_live_canonical_file(path: Path) -> bool:
 
 def discover_platform_files(root: Path | None = None, *, canonical_only: bool = False) -> list[Path]:
     base = Path(root) if root is not None else DEFAULT_ARTIFACT_ROOT
+    refuse_outputs_tree(base)
+    refuse_repository_root_scan(base)
     if base.is_file() and base.suffix == ".json":
+        if canonical_only and not is_live_canonical_file(base):
+            return []
         return [base]
     if not base.is_dir():
         return []
-    paths = sorted(path for path in base.rglob("*.json") if path.is_file() and path.name != "README.md")
+    paths = sorted(
+        path
+        for path in base.rglob("*.json")
+        if path.is_file()
+        and path.name != "README.md"
+        and not (_UNSAFE_INGEST_PARTS & set(path.parts))
+    )
     if not canonical_only:
         return paths
     return [path for path in paths if is_live_canonical_file(path)]
@@ -783,6 +970,7 @@ def normalize_platform_file(path: Path) -> list[tuple[str, dict[str, Any]]]:
     )
 
     payload = load_json_object(path)
+    refuse_tainted_source(payload)
     if is_tlt_duration_momentum_record(payload):
         wrapped = wrap_tlt_duration_momentum_record(payload)
         for kind, artifact in wrapped:
@@ -811,12 +999,20 @@ def ingest_platform_files(conn, paths: Iterable[Path], *, root: Path | None = No
     for raw in paths:
         path = Path(raw)
         try:
+            refuse_outputs_tree(path)
             items = normalize_platform_file(path)
         except Exception as exc:
             summary["errors"].append("{0}: {1}".format(path, exc))
             continue
         for kind, artifact in items:
-            run_id = str(artifact.get("research_run_id") or "")
+            run_id = str(artifact.get("research_run_id") or "").strip()
+            if not run_id:
+                summary["errors"].append(
+                    "{0}: refusing platform ingest without research_run_id (kind={1})".format(
+                        path, kind
+                    )
+                )
+                continue
             key = "platform_research/{0}/{1}".format(run_id, kind)
             if key in seen:
                 summary["skipped"] += 1

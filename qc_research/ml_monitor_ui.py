@@ -5,12 +5,10 @@ Reads PostgreSQL only. Does not train models. Does not call QuantConnect.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 import pandas as pd
 import streamlit as st
-from sqlalchemy import text
 
 from qc_research.metric_map import aggregation_label
 from qc_research.platform_presentation import (
@@ -42,52 +40,25 @@ from qc_research.ml_aggregation import (
     stage2_holdout_rows,
     stage2_research_rows,
 )
-
-
-def _read_sql(engine, sql: str, params: dict[str, Any] | None = None) -> pd.DataFrame:
-    if engine is None:
-        return pd.DataFrame()
-    try:
-        return pd.read_sql(text(sql), engine, params=params or {})
-    except Exception:
-        return pd.DataFrame()
-
-
-def _as_payload(value: Any) -> dict[str, Any] | None:
-    if value is None:
-        return None
-    if isinstance(value, dict):
-        return value
-    if isinstance(value, str):
-        try:
-            parsed = json.loads(value)
-        except ValueError:
-            return None
-        return parsed if isinstance(parsed, dict) else None
-    return None
-
+from qc_research.contracts.label_integrity import (
+    csfml_status_distinction,
+    csfml_v1_integrity_caption,
+    load_csfml_v1_label_integrity,
+)
+from qc_research.read_models.monitor_queries import (
+    PLATFORM_RUN_IDS_SQL,
+    as_payload as _as_payload,
+    load_platform_run_ids,
+    load_stage2_artifact_payload,
+    load_stage2_feature_diagnostics,
+    load_stage2_models,
+    load_stage2_run_ids,
+    load_stage2_signal_points,
+    load_stage2_trials,
+    read_sql as _read_sql,
+)
 
 UNAVAILABLE = "Unavailable / Not applicable"
-
-PLATFORM_RUN_IDS_SQL = """
-        SELECT DISTINCT a.research_run_id
-        FROM research_artifacts a
-        LEFT JOIN research_runs r ON r.research_run_id = a.research_run_id
-        WHERE COALESCE(r.research_kind, '') IS DISTINCT FROM 'stage2_ml'
-          AND (
-                r.strategy_id = :strategy_id
-             OR r.research_lineage_id = :strategy_id
-             OR r.research_lineage_id = :lineage
-             OR a.payload_json->>'strategy_id' = :strategy_id
-             OR a.payload_json->'payload'->>'strategy_id' = :strategy_id
-             OR a.payload_json->'identity'->>'strategy_id' = :strategy_id
-             OR a.payload_json->'payload'->'identity'->>'strategy_id' = :strategy_id
-             OR a.payload_json->>'research_lineage_id' = :strategy_id
-             OR a.payload_json->'payload'->>'research_lineage_id' = :strategy_id
-             OR a.research_run_id LIKE :run_prefix
-          )
-        ORDER BY 1
-        """
 
 
 def economic_pass_from_gate(gate: Any) -> bool | None:
@@ -247,40 +218,6 @@ def infer_research_labels(
         "provenance_kind": classify_monitor_provenance(provenance),
         "delivery_status": str(lifecycle.get("delivery_status") or summary.get("delivery_status") or ""),
     }
-
-
-def load_platform_run_ids(engine, strategy_id: str) -> list[str]:
-    if not strategy_id:
-        return []
-    lineage_rows = _read_sql(
-        engine,
-        """
-        SELECT research_lineage_id
-        FROM research_runs
-        WHERE strategy_id = :strategy_id
-          AND research_kind = 'platform_research'
-        ORDER BY last_seen_at DESC NULLS LAST
-        LIMIT 1
-        """,
-        {"strategy_id": strategy_id},
-    )
-    lineage = strategy_id
-    if lineage_rows is not None and not lineage_rows.empty:
-        value = lineage_rows.iloc[0].get("research_lineage_id")
-        if value:
-            lineage = str(value)
-    rows = _read_sql(
-        engine,
-        PLATFORM_RUN_IDS_SQL,
-        {
-            "strategy_id": strategy_id,
-            "lineage": lineage,
-            "run_prefix": "PLATFORM_{0}_%".format(strategy_id),
-        },
-    )
-    if rows is None or rows.empty:
-        return []
-    return [str(value) for value in rows["research_run_id"].dropna().astype(str).tolist() if value]
 
 
 def build_platform_monitor_view(
@@ -645,6 +582,20 @@ def render_platform_view(view: dict[str, Any]) -> None:
             promotion_gate=view.get("promotion_gate"),
             holdout_status=view.get("holdout_status"),
             delivery_status=view.get("delivery_status"),
+            label_integrity=(
+                load_csfml_v1_label_integrity()["historical_v1_impact"]
+                if csfml_v1_integrity_caption(
+                    str(view.get("strategy_id") or ""),
+                    view.get("research_run_id"),
+                )
+                else None
+            ),
+            engineering_completion=(
+                (csfml_status_distinction(
+                    str(view.get("strategy_id") or ""),
+                    view.get("research_run_id"),
+                ) or {}).get("engineering_completion")
+            ),
         )
     )
     _chip_row(
@@ -937,6 +888,20 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     )
     if not selected_run:
         return
+    from qc_research.tlt_duration_momentum import official_tlt_v0_identity_blockers
+
+    tlt_blockers = official_tlt_v0_identity_blockers(
+        strategy_id=strategy_id,
+        research_run_id=selected_run,
+        engine=engine,
+    )
+    if tlt_blockers:
+        st.error(
+            "Official TLT V0 identity refused ({0}). "
+            "Stored metrics are not shown as official. "
+            "This is not an economic PASS/WATCH/FAIL.".format(", ".join(tlt_blockers))
+        )
+        st.stop()
     run_summary = load_stage2_artifact_payload(engine, selected_run, "run_summary")
     assessment = load_stage2_artifact_payload(engine, selected_run, "assessment")
     oos = load_stage2_artifact_payload(engine, selected_run, "oos_aggregate")
@@ -968,102 +933,6 @@ def render_platform_section(strategy_id: str, *, engine=None) -> None:
     if view is None:
         return
     render_platform_view(view)
-
-
-def load_stage2_trials(engine, research_run_id: str) -> pd.DataFrame:
-    return _read_sql(
-        engine,
-        """
-        SELECT *
-        FROM ml_trials
-        WHERE research_run_id = :research_run_id
-        ORDER BY outer_window_id, trial_id
-        """,
-        {"research_run_id": research_run_id},
-    )
-
-
-def load_stage2_models(engine, research_run_id: str) -> pd.DataFrame:
-    return _read_sql(
-        engine,
-        """
-        SELECT *
-        FROM ml_models
-        WHERE research_run_id = :research_run_id
-        ORDER BY outer_window_id
-        """,
-        {"research_run_id": research_run_id},
-    )
-
-
-def load_stage2_feature_diagnostics(engine, research_run_id: str) -> pd.DataFrame:
-    return _read_sql(
-        engine,
-        """
-        SELECT *
-        FROM ml_feature_diagnostics
-        WHERE research_run_id = :research_run_id
-        ORDER BY outer_window_id, coefficient_rank NULLS LAST
-        """,
-        {"research_run_id": research_run_id},
-    )
-
-
-def load_stage2_signal_points(engine, research_run_id: str) -> pd.DataFrame:
-    return _read_sql(
-        engine,
-        """
-        SELECT *
-        FROM ml_signal_points
-        WHERE research_run_id = :research_run_id
-        ORDER BY timestamp
-        """,
-        {"research_run_id": research_run_id},
-    )
-
-
-def load_stage2_run_ids(engine, strategy_id: str) -> list[str]:
-    if engine is None:
-        return []
-    rows = _read_sql(
-        engine,
-        """
-        SELECT DISTINCT research_run_id
-        FROM research_runs
-        WHERE research_kind = 'stage2_ml'
-          AND strategy_id = :strategy_id
-        UNION
-        SELECT DISTINCT research_run_id
-        FROM research_artifacts
-        WHERE research_run_id LIKE :prefix
-        ORDER BY 1
-        """,
-        {
-            "strategy_id": strategy_id,
-            "prefix": "STAGE2_{0}_%".format(strategy_id),
-        },
-    )
-    if rows is None or rows.empty:
-        return []
-    return [str(value) for value in rows["research_run_id"].dropna().astype(str).tolist() if value]
-
-
-def load_stage2_artifact_payload(engine, research_run_id: str, artifact_type: str) -> dict[str, Any] | None:
-    rows = _read_sql(
-        engine,
-        """
-        SELECT payload_json
-        FROM research_artifacts
-        WHERE research_run_id = :research_run_id
-          AND artifact_type = :artifact_type
-        ORDER BY synced_at DESC NULLS LAST
-        LIMIT 1
-        """,
-        {"research_run_id": research_run_id, "artifact_type": artifact_type},
-    )
-    if rows is None or rows.empty:
-        return None
-    return _as_payload(rows.iloc[0].get("payload_json"))
 
 
 def window_comparison_frame(aggregate: dict[str, Any] | None) -> pd.DataFrame:
@@ -1320,6 +1189,37 @@ def render_stage2_section(
         "Holdout rows are displayed separately and never change PASS/WATCH/FAIL. "
         "Economic PASS/WATCH/FAIL is applied only when Stage 2 thresholds are defined."
     )
+    integrity_caption = csfml_v1_integrity_caption(strategy_id, selected_run)
+    if integrity_caption:
+        from qc_research.verify_csfml_v1 import official_csfml_v1_identity_blockers
+
+        blockers = official_csfml_v1_identity_blockers(
+            strategy_id=strategy_id,
+            research_run_id=selected_run,
+            engine=engine,
+        )
+        if blockers:
+            st.error(
+                "Official CSFML V1 identity refused ({0}). "
+                "Stored metrics are not shown as official. "
+                "This is not an economic PASS/WATCH/FAIL.".format(", ".join(blockers))
+            )
+            st.stop()
+        distinction = csfml_status_distinction(strategy_id, selected_run) or {}
+        st.write("Artifact provenance: **{0}**".format(distinction.get("artifact_provenance") or "VERIFIED"))
+        st.write("Historical label integrity: **{0}**".format(distinction.get("historical_integrity") or "CANNOT_RULE_OUT"))
+        st.write("Corrected engineering: **{0}**".format(distinction.get("corrected_engineering") or "IMPLEMENTED_TESTED"))
+        st.write("Historical rerun: **{0}**".format(distinction.get("historical_rerun") or "NOT_AUTHORIZED_HUMAN_DECISION_PENDING"))
+        st.write("Economic gate: **{0}**".format(distinction.get("economic_approval") or "NOT_DEFINED"))
+        st.write("Promotion: **{0}**".format(distinction.get("promotion") or "HUMAN_REVIEW_REQUIRED"))
+        st.write("Holdout: **{0}**".format(distinction.get("holdout") or "LOCKED"))
+        st.caption(integrity_caption)
+        if distinction.get("engineering_completion"):
+            st.caption(distinction["engineering_completion"])
+        st.caption(
+            "These statuses are separate. Engineering completion is not an economic PASS "
+            "and does not clear historical V1. economic_gate=NOT_DEFINED is not a failure."
+        )
     accounting = view.get("create_accounting") or {}
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Original suite QC creates", accounting.get("original_suite_qc_creates") if accounting.get("original_suite_qc_creates") is not None else "—")

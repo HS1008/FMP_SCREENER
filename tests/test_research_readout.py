@@ -24,6 +24,28 @@ def test_plain_status_does_not_treat_review_or_undefined_as_fail():
     assert "FAIL" not in line
     assert "approved" not in line.lower()
     assert "passed validation" not in line.lower()
+    bounded = plain_status_line(
+        research_status="COMPLETE",
+        economic_gate="NOT_DEFINED",
+        promotion_gate="HUMAN_REVIEW_REQUIRED",
+        holdout_status="LOCKED",
+        label_integrity="CANNOT_RULE_OUT",
+    )
+    assert bounded.endswith("Historical label integrity CANNOT_RULE_OUT")
+    assert "Economic criteria not defined" in bounded
+    assert "FAIL" not in bounded
+    distinguished = plain_status_line(
+        research_status="COMPLETE",
+        economic_gate="NOT_DEFINED",
+        promotion_gate="HUMAN_REVIEW_REQUIRED",
+        holdout_status="LOCKED",
+        label_integrity="CANNOT_RULE_OUT",
+        engineering_completion="Engineering completion does not clear historical V1",
+    )
+    assert "Historical label integrity CANNOT_RULE_OUT" in distinguished
+    assert "Engineering completion does not clear historical V1" in distinguished
+    assert "Economic criteria not defined" in distinguished
+    assert "approved" not in distinguished.lower()
 
 
 def test_readout_counts_comparable_windows_and_does_not_zero_fill_missing():
@@ -94,6 +116,7 @@ def test_default_run_is_latest_completed_not_highest_performing():
             {"research_run_id": "old_complete", "run_status": "COMPLETE", "holdout_status": "LOCKED", "last_seen_at": "2024-01-01", "research_kind": "platform_research"},
             {"research_run_id": "new_complete", "run_status": "COMPLETE", "holdout_status": "LOCKED", "last_seen_at": "2026-01-01", "research_kind": "platform_research"},
             {"research_run_id": "holdout", "run_status": "COMPLETE", "holdout_status": "ACCESSED", "last_seen_at": "2026-06-01", "research_kind": "platform_research"},
+            {"research_run_id": "holdout_flag", "run_status": "COMPLETE", "holdout_status": "LOCKED", "holdout_accessed": True, "last_seen_at": "2026-07-01", "research_kind": "platform_research"},
             {"research_run_id": "failed_new", "run_status": "FAILED", "holdout_status": "LOCKED", "last_seen_at": "2026-08-01", "research_kind": "platform_research"},
         ]
     )

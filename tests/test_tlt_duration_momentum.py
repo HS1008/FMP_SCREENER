@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+import pytest
 
 from qc_research.ingest_platform_artifacts import main as ingest_main
 from qc_research.ml_monitor_ui import build_platform_monitor_view, infer_research_labels
@@ -22,6 +25,8 @@ from qc_research.tlt_duration_momentum import (
     STRATEGY_ID,
     WINDOW_IDS,
     is_tlt_duration_momentum_record,
+    official_tlt_qc_backtest_ids,
+    official_tlt_v0_identity_blockers,
     platform_oos_window_frame,
     verify_tlt_monitor_view,
     wrap_tlt_duration_momentum_record,
@@ -40,6 +45,24 @@ def _tlt_path():
     path = DEFAULT_ARTIFACT_ROOT / "tlt_duration_momentum.json"
     assert path.is_file()
     return path
+
+
+def test_official_tlt_v0_identity_blockers_are_run_scoped():
+    assert official_tlt_v0_identity_blockers(
+        strategy_id=STRATEGY_ID,
+        research_run_id="PLATFORM_OTHER",
+        engine=None,
+    ) == []
+    assert official_tlt_v0_identity_blockers(
+        strategy_id=STRATEGY_ID,
+        research_run_id=RUN_ID,
+        engine=None,
+    ) == ["identity_query_failed"]
+    assert official_tlt_v0_identity_blockers(
+        strategy_id="SPYTrend",
+        research_run_id=RUN_ID,
+        engine=object(),
+    ) == ["strategy_id_mismatch"]
 
 
 def test_official_tlt_artifact_wraps_ten_windows_and_identity():
@@ -92,6 +115,21 @@ def test_official_tlt_artifact_wraps_ten_windows_and_identity():
     frame = platform_oos_window_frame(view["oos_windows"])
     assert list(frame["window_id"]) == list(WINDOW_IDS)
     assert "2025" not in "".join(frame["oos_end"].astype(str))
+    assert len(official_tlt_qc_backtest_ids()) == 30
+    assert "42444d596c9116f1320203e896fbf0fe" in official_tlt_qc_backtest_ids()
+
+
+def test_tlt_query_back_selects_official_run_id_only():
+    source = (
+        DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "tlt_duration_momentum.py"
+    ).read_text(encoding="utf-8")
+    query = source.split("def query_tlt_identity", 1)[1].split("def query_tlt_windows", 1)[0]
+    assert "WHERE research_run_id = :run_id" in query
+    assert "strategy_id = :strategy_id" not in query
+    assert "ORDER BY last_seen_at" not in query
+    pin = source.split("def assert_tlt_identity", 1)[1].split("def query_tlt_identity", 1)[0]
+    assert "research_run_id" in pin
+    assert "RUN_ID" in pin
 
 
 def test_tlt_ingest_is_idempotent_and_registers_monitor_strategy():
@@ -127,6 +165,23 @@ def test_tlt_ingest_is_idempotent_and_registers_monitor_strategy():
     )
 
 
+def test_register_tlt_monitor_strategy_inserts_once():
+    from qc_research.tlt_duration_momentum import register_tlt_monitor_strategy
+
+    statements = []
+
+    class _Conn:
+        def execute(self, statement, params=None):
+            statements.append(str(statement))
+
+    register_tlt_monitor_strategy(_Conn())
+    assert statements
+    sql = statements[0]
+    conflict = sql.split("ON CONFLICT", 1)[1]
+    assert "DO NOTHING" in conflict
+    assert "DO UPDATE" not in conflict
+
+
 def test_tlt_labels_and_cli_dry_run(monkeypatch):
     labels = infer_research_labels(strategy_id=STRATEGY_ID, run_summary={})
     assert labels["research_mode"] == "ML_DISCOVERY"
@@ -154,6 +209,16 @@ def test_tlt_labels_and_cli_dry_run(monkeypatch):
 
     assert verify_main(["--dry-run", "--root", str(_tlt_path())]) == 0
     assert verify_main(["--dry-run", "--apptest-preview", "--root", str(_tlt_path())]) == 0
+    monkeypatch.setenv("DATABASE_URL", "postgresql://writer:secret@127.0.0.1/fmp")
+    monkeypatch.delenv("DASHBOARD_READONLY_URL", raising=False)
+    monkeypatch.delenv("DASHBOARD_ALLOW_WRITER_FALLBACK", raising=False)
+    from db.dashboard_engine import reset_dashboard_engine_for_tests
+
+    reset_dashboard_engine_for_tests()
+    assert verify_main(["--live", "--root", str(_tlt_path())]) == 1
+    monkeypatch.setenv("DASHBOARD_ALLOW_WRITER_FALLBACK", "1")
+    reset_dashboard_engine_for_tests()
+    assert verify_main(["--live", "--root", str(_tlt_path())]) == 4
     from qc_research.verify_tlt_monitor import find_selectbox
 
     class _Box:
@@ -181,6 +246,19 @@ def test_generic_smoke_wrap_is_unchanged():
     wrapped = wrap_smoke_record(smoke)
     assert [kind for kind, _ in wrapped] == ["run_summary", "oos_aggregate"]
     assert len(wrapped[1][1]["payload"]["windows"]) == 2
+
+
+def test_tlt_wrap_refuses_holdout_instead_of_overwriting():
+    from qc_research.contracts.kinds import ArtifactContractError
+
+    with pytest.raises(ArtifactContractError, match="holdout_accessed"):
+        wrap_tlt_duration_momentum_record(
+            {
+                "strategy_id": STRATEGY_ID,
+                "research_lineage_id": LINEAGE_ID,
+                "holdout_accessed": True,
+            }
+        )
 
 
 def test_generic_canonical_artifact_needs_no_tlt_ui():
@@ -321,17 +399,93 @@ def test_generic_ingest_workflow_is_event_driven():
     assert "platform-research-ingest" in workflow
     assert "repository_dispatch" in workflow
     assert "ingest_platform_live.sh" in workflow
+    assert "/opt/fmp/current/scripts/ingest_platform_live.sh" in workflow
+    assert "/root/FMP_SCREENER/scripts/ingest_platform_live.sh" in workflow
+    assert workflow.index("/opt/fmp/current/scripts/ingest_platform_live.sh") < workflow.index(
+        "/root/FMP_SCREENER/scripts/ingest_platform_live.sh"
+    )
+    assert "ingest_platform_live.sh missing on droplet" in workflow
+    assert "bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh" not in workflow
+    assert "live PostgreSQL ingest is allowed only from refs/heads/main" in workflow
     assert "DO_SSH_KEY" in workflow
     assert "push:" not in tlt
     assert "superseded" in tlt.lower()
+    assert "/opt/fmp/current/scripts/ingest_platform_live.sh" in tlt
+    assert "/root/FMP_SCREENER/scripts/ingest_platform_live.sh" in tlt
+    assert tlt.index("/opt/fmp/current/scripts/ingest_platform_live.sh") < tlt.index(
+        "/root/FMP_SCREENER/scripts/ingest_platform_live.sh"
+    )
+    assert "ingest_platform_live.sh missing on droplet" in tlt
+    assert "bash /tmp/fmp-platform-ingest/scripts/ingest_platform_live.sh" not in tlt
+    assert "live PostgreSQL ingest is allowed only from refs/heads/main" in tlt
     verify = (
         DEFAULT_ARTIFACT_ROOT.parent.parent / ".github" / "workflows" / "platform_research_verify.yml"
     ).read_text(encoding="utf-8")
     assert "verify_tlt_monitor --live" in verify
+    assert "--allow-missing" not in verify
+    assert "/var/lib/fmp/deploy/tlt_v0_live.json" in verify
+    assert "/var/lib/fmp/deploy/csfml_v1_live.json" in verify
+    assert "postgres_engine" not in Path(
+        DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
+    ).read_text(encoding="utf-8")
+    assert "dashboard_engine" in Path(
+        DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
+    ).read_text(encoding="utf-8")
+    assert "load_streamlit_env()" in Path(
+        DEFAULT_ARTIFACT_ROOT.parent.parent / "qc_research" / "verify_tlt_monitor.py"
+    ).read_text(encoding="utf-8")
     assert "Does not create QuantConnect jobs" in verify
+    assert "jobs.audit_host_dashboard" in verify
+    assert "verify_dashboard_identity.sh" in verify
+    assert "--require-readonly" in verify
     assert "DO_SSH_KEY" in verify
+    assert "CODE_ROOT=/opt/fmp/current" in verify
+    assert "CODE_ROOT=/root/FMP_SCREENER" in verify
+    assert verify.index("CODE_ROOT=/opt/fmp/current") < verify.index("CODE_ROOT=/root/FMP_SCREENER")
+    assert "live code root missing on droplet" in verify
+    assert "source /root/FMP_SCREENER/.env" not in verify
+    assert ". /root/FMP_SCREENER/.env" not in verify
+    assert "--dry-run" in verify
+    assert "/etc/fmp/fmp-dashboard.env" in verify
+    assert "unset DATABASE_URL" in verify
     from qc_research.fetch_remote_artifact import github_raw_url
 
-    assert github_raw_url("hs1008/quant-strategies", "abc", "research/platform_smokes/x.json").endswith(
+    sha = "ef270841621933f5039680cb070559f43bd1e3c8"
+    assert github_raw_url("hs1008/quant-strategies", sha, "research/platform_smokes/x.json").endswith(
         "research/platform_smokes/x.json"
     )
+
+
+def test_tlt_live_evaluate_records_missing_without_changing_economics(tmp_path):
+    from qc_research.tlt_duration_momentum import ECONOMIC_GATE, RUN_ID, evaluate_tlt_v0
+    from qc_research.verify_tlt_monitor import verify_exit_code, write_live_report
+
+    class _Missing:
+        def execute(self, *args, **kwargs):
+            class _Result:
+                def mappings(self):
+                    class _Mappings:
+                        def first(self):
+                            return None
+
+                    return _Mappings()
+
+            return _Result()
+
+    report = evaluate_tlt_v0(_Missing())
+    assert report["present"] is False
+    assert report["identity_ok"] is False
+    assert report["blockers"] == ["official_run_missing"]
+    assert report["research_run_id"] == RUN_ID
+    assert report["economic_gate"] == ECONOMIC_GATE
+    assert verify_exit_code(report, require_present=False) == 0
+    assert verify_exit_code(report, require_present=True) == 3
+    out = tmp_path / "tlt_v0_live.json"
+    write_live_report(report, str(out), code_root="/opt/fmp/current")
+    payload = json.loads(out.read_text(encoding="utf-8"))
+    assert payload["present"] is False
+    assert payload["identity_ok"] is False
+    assert payload["blockers"] == ["official_run_missing"]
+    assert payload["code_root"] == "/opt/fmp/current"
+    assert payload["economic_gate"] == ECONOMIC_GATE
+    assert "postgresql://" not in out.read_text(encoding="utf-8")

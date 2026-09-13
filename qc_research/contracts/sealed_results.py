@@ -1,0 +1,595 @@
+"""Official results trees that PostgreSQL must not overwrite.
+
+Mirrors producer sealed_results_run_ids. Does not change economics or
+authorize a QuantConnect rerun.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Any, Mapping
+
+from qc_research.contracts.hashing import payload_for_hash, sha256_payload
+from qc_research.contracts.kinds import ArtifactContractError
+
+
+SNAPSHOT = Path(__file__).resolve().parent / "sealed_results.json"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+# JSON cannot unseal these. Live ingest must not reopen official rows if
+# sealed_results.json on a copied Actions tree is emptied.
+MINIMUM_SEALED_RESULTS_RUN_IDS = frozenset(
+    {
+        "STAGE1_SPYTrend_c04553d8",
+        "STAGE2_CrossSectionalFactorML_54a5543f",
+        "STAGE2_CrossSectionalFactorML_437cdbdc",
+        "STAGE2_CrossSectionalFactorML_e7b24642",
+        "STAGE2_CrossSectionalFactorML_ebe7d1a4",
+        "PLATFORM_TLTDurationMomentum_V0",
+    }
+)
+MINIMUM_STAGE1_PINS = {
+    "STAGE1_SPYTrend_c04553d8": {
+        "strategy_id": "SPYTrend",
+        "git_commit": "f04dbfb1a936c753a42a1389d9181f7c22f551a3",
+        "run_status": "COMPLETE",
+        "expected_experiment_count": 81,
+        "completed_count": 81,
+        "failed_count": 0,
+        "skipped_count": 0,
+    }
+}
+
+
+class SealedResultsError(ArtifactContractError):
+    """Sealed official results would be mutated."""
+
+
+def load_sealed_results() -> dict[str, Any]:
+    return json.loads(SNAPSHOT.read_text(encoding="utf-8"))
+
+
+def sealed_results_run_ids() -> frozenset[str]:
+    data = load_sealed_results()
+    found = {str(item) for item in (data.get("run_ids") or []) if item}
+    return frozenset(found | set(MINIMUM_SEALED_RESULTS_RUN_IDS))
+
+
+def sealed_without_tree_run_ids() -> frozenset[str]:
+    data = load_sealed_results()
+    return frozenset(str(item) for item in (data.get("sealed_without_tree") or []) if item)
+
+
+def is_sealed_results_run(run_id: str | None) -> bool:
+    key = str(run_id or "").strip()
+    return bool(key) and key in sealed_results_run_ids()
+
+
+def official_monitor_strategy_ids() -> frozenset[str]:
+    """Library strategy_id values that must not be rewritten by a later unsealed ingest."""
+    return frozenset(
+        {
+            "SPYTrend",
+            "CrossSectionalFactorML",
+            "TLTDurationMomentum",
+        }
+    )
+
+
+_QC_BACKTEST_ID_KEYS = frozenset(
+    {
+        "backtest_id",
+        "qc_backtest_id",
+        "train_backtest_id",
+        "winner_backtest_id",
+        "baseline_backtest_id",
+    }
+)
+_SEALED_QC_BACKTEST_IDS: frozenset[str] | None = None
+_SEALED_MODEL_IDS: frozenset[str] | None = None
+_SEALED_SPEC_HASHES: frozenset[str] | None = None
+_SPEC_HASH_KEYS = frozenset({"config_fingerprint", "fingerprint", "strategy_spec_hash"})
+
+
+def _collect_qc_backtest_ids(value: Any, found: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _QC_BACKTEST_ID_KEYS:
+                text = str(item or "").strip()
+                if text:
+                    found.add(text)
+            _collect_qc_backtest_ids(item, found)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_qc_backtest_ids(item, found)
+
+
+def _collect_model_ids(value: Any, found: set[str]) -> None:
+    if isinstance(value, dict):
+        text = str(value.get("model_id") or "").strip()
+        if text:
+            found.add(text)
+        for item in value.values():
+            _collect_model_ids(item, found)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_model_ids(item, found)
+
+
+def _collect_spec_hashes(value: Any, found: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in _SPEC_HASH_KEYS:
+                text = str(item or "").strip()
+                if text:
+                    found.add(text)
+            _collect_spec_hashes(item, found)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _collect_spec_hashes(item, found)
+
+
+def committed_tree_digest(rel: str) -> str:
+    """SHA-256 of a sealed committed file or of its sorted JSON children."""
+    path = REPO_ROOT / str(rel)
+    digest = hashlib.sha256()
+    if path.is_file():
+        digest.update(path.read_bytes())
+        return digest.hexdigest()
+    if not path.is_dir():
+        raise SealedResultsError("Sealed committed tree is missing: {0}".format(rel))
+    files = sorted(
+        candidate for candidate in path.rglob("*.json") if candidate.is_file()
+    )
+    if not files:
+        raise SealedResultsError("Sealed committed tree has no JSON: {0}".format(rel))
+    for json_path in files:
+        relative = json_path.relative_to(path).as_posix().encode("utf-8")
+        digest.update(relative)
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(json_path.read_bytes()).digest())
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def json_declared_run_ids(payload: Mapping[str, Any] | None = None) -> set[str]:
+    """Run ids sealed_results.json claims. Empty JSON yields an empty set."""
+    data = dict(payload) if payload is not None else load_sealed_results()
+    found = {str(item) for item in (data.get("run_ids") or []) if item}
+    found.update(str(key) for key in (data.get("committed_trees") or {}) if key)
+    found.update(str(item) for item in (data.get("sealed_without_tree") or []) if item)
+    found.update(str(key) for key in (data.get("stage1_pins") or {}) if key)
+    found.update(str(key) for key in (data.get("committed_tree_digests") or {}) if key)
+    return found
+
+
+def refuse_json_run_ids_outside_minimum(payload: Mapping[str, Any] | None = None) -> None:
+    """JSON cannot declare an official run that is not hardcoded in this module."""
+    extra = sorted(json_declared_run_ids(payload) - set(MINIMUM_SEALED_RESULTS_RUN_IDS))
+    if extra:
+        raise SealedResultsError(
+            "sealed_results.json run ids not in MINIMUM_SEALED_RESULTS_RUN_IDS: {0}".format(
+                ", ".join(extra)
+            )
+        )
+
+
+def verify_committed_tree_digests(payload: Mapping[str, Any] | None = None) -> dict[str, str]:
+    """Refuse sealed tree edits that are not pinned in sealed_results.json."""
+    data = dict(payload) if payload is not None else load_sealed_results()
+    refuse_json_run_ids_outside_minimum(data)
+    pinned = dict(data.get("committed_tree_digests") or {})
+    trees = dict(data.get("committed_trees") or {})
+    if not trees:
+        raise SealedResultsError("sealed_results.json has no committed_trees")
+    if set(pinned) != set(trees):
+        raise SealedResultsError(
+            "committed_tree_digests keys must match committed_trees; "
+            "update sealed_results.json in the same change"
+        )
+    checked: dict[str, str] = {}
+    for run_id, rel in trees.items():
+        actual = committed_tree_digest(str(rel))
+        expected = str(pinned.get(run_id) or "")
+        if actual != expected:
+            raise SealedResultsError(
+                "Sealed committed tree digest mismatch for {0}: expected {1}, got {2}. "
+                "Update sealed_results.json in the same change.".format(
+                    run_id, expected, actual
+                )
+            )
+        checked[str(run_id)] = actual
+    return checked
+
+
+def _ensure_sealed_tree_ids() -> None:
+    """Load published QC backtest ids, model ids, and spec hashes from pinned trees."""
+    global _SEALED_QC_BACKTEST_IDS, _SEALED_MODEL_IDS, _SEALED_SPEC_HASHES
+    if (
+        _SEALED_QC_BACKTEST_IDS is not None
+        and _SEALED_MODEL_IDS is not None
+        and _SEALED_SPEC_HASHES is not None
+    ):
+        return
+    verify_committed_tree_digests()
+    found: set[str] = set()
+    models: set[str] = set()
+    hashes: set[str] = set()
+    from qc_research.tlt_duration_momentum import official_tlt_qc_backtest_ids
+
+    found.update(official_tlt_qc_backtest_ids())
+    for rel in (load_sealed_results().get("committed_trees") or {}).values():
+        path = REPO_ROOT / str(rel)
+        if path.is_file():
+            files = [path]
+        elif path.is_dir():
+            files = [candidate for candidate in path.rglob("*.json") if candidate.is_file()]
+        else:
+            continue
+        for json_path in files:
+            try:
+                payload = json.loads(json_path.read_text(encoding="utf-8"))
+            except (OSError, TypeError, ValueError):
+                continue
+            _collect_qc_backtest_ids(payload, found)
+            _collect_model_ids(payload, models)
+            _collect_spec_hashes(payload, hashes)
+    _SEALED_QC_BACKTEST_IDS = frozenset(found)
+    _SEALED_MODEL_IDS = frozenset(models)
+    _SEALED_SPEC_HASHES = frozenset(hashes)
+
+
+def official_sealed_qc_backtest_ids() -> frozenset[str]:
+    """Published QuantConnect IDs in sealed committed trees plus official TLT windows.
+
+    Cloud sync must not first-INSERT these even when the QC name omits the
+    sealed run id. Does not invent unpublished ML_TRAIN or e7b24642 IDs.
+    """
+    _ensure_sealed_tree_ids()
+    return _SEALED_QC_BACKTEST_IDS or frozenset()
+
+
+def official_sealed_model_ids() -> frozenset[str]:
+    """Published model_id values in sealed committed trees.
+
+    Does not invent unpublished ML_TRAIN or e7b24642 model ids.
+    """
+    _ensure_sealed_tree_ids()
+    return _SEALED_MODEL_IDS or frozenset()
+
+
+def official_sealed_spec_hashes() -> frozenset[str]:
+    """Published config fingerprints in sealed committed trees.
+
+    Includes TLT ``fingerprint`` and CSFML/Stage 1 ``config_fingerprint``.
+    Does not invent unpublished hashes.
+    """
+    _ensure_sealed_tree_ids()
+    return _SEALED_SPEC_HASHES or frozenset()
+
+
+def _run_id(payload: Mapping[str, Any] | None) -> str:
+    record = dict(payload or {})
+    nested = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+    return str(
+        record.get("research_run_id")
+        or record.get("run_id")
+        or nested.get("research_run_id")
+        or nested.get("run_id")
+        or ""
+    ).strip()
+
+
+def _pin_value_matches(incoming: Any, expected: Any) -> bool:
+    if incoming == expected:
+        return True
+    if isinstance(expected, bool):
+        if expected:
+            return incoming in {True, 1, "true", "t"}
+        return incoming in {False, 0, "false", "f", None, ""}
+    if isinstance(expected, int) and not isinstance(expected, bool):
+        try:
+            return int(incoming) == expected
+        except (TypeError, ValueError):
+            return False
+    return str(incoming or "") == str(expected or "")
+
+
+def official_stage1_pin(run_id: str | None) -> dict[str, Any] | None:
+    """Pinned official Stage 1 identity, or None when the run is not sealed.
+
+    Code-level pins win on overlapping keys so emptied or weakened JSON cannot
+    drop the official Stage 1 Monitor identity check.
+    """
+    key = str(run_id or "").strip()
+    if not key:
+        return None
+    pinned = dict(MINIMUM_STAGE1_PINS.get(key) or {})
+    data = (load_sealed_results().get("stage1_pins") or {}).get(key)
+    if isinstance(data, dict):
+        merged = dict(data)
+        merged.update(pinned)
+        return merged or None
+    return pinned or None
+
+
+def official_stage1_identity_blockers(
+    *,
+    strategy_id: str | None,
+    research_run_id: str | None,
+    row: Mapping[str, Any] | None = None,
+    engine: Any = None,
+) -> list[str]:
+    """Blockers when the selected run is official Stage 1. Empty otherwise.
+
+    Query failures fail closed. This is not an economic PASS/WATCH/FAIL.
+    """
+    run_id = str(research_run_id or "").strip()
+    pin = official_stage1_pin(run_id)
+    if not pin:
+        return []
+    if strategy_id and str(strategy_id) != str(pin.get("strategy_id") or ""):
+        return ["strategy_id_mismatch"]
+    record: Mapping[str, Any] | None = row
+    if record is None:
+        if engine is None:
+            return ["identity_query_failed"]
+        try:
+            from qc_research.read_models.monitor_queries import load_research_run_row
+
+            record = load_research_run_row(engine, run_id)
+        except Exception:
+            return ["identity_query_failed"]
+    if not record:
+        return ["official_run_missing"]
+    blockers: list[str] = []
+    for key, expected in pin.items():
+        if not _pin_value_matches(record.get(key), expected):
+            blockers.append(key)
+    if record.get("holdout_accessed") in {True, 1, "true", "t"}:
+        blockers.append("holdout_accessed")
+    try:
+        if int(record.get("holdout_access_count") or 0) != 0:
+            blockers.append("holdout_access_count")
+    except (TypeError, ValueError):
+        blockers.append("holdout_access_count")
+    return blockers
+
+
+def refuse_sealed_stage1_summary(payload: Mapping[str, Any] | None) -> None:
+    """Refuse official Stage 1 summaries that do not match the pin."""
+    record = dict(payload or {})
+    run_id = _run_id(record)
+    pin = official_stage1_pin(run_id)
+    if not pin:
+        return
+    for key, expected in pin.items():
+        incoming = record.get(key)
+        if incoming != expected:
+            raise SealedResultsError(
+                "refusing sealed {0} {1}={2!r}; pin requires {3!r}".format(
+                    run_id, key, incoming, expected
+                )
+            )
+
+
+def committed_official_file(run_id: str, logical_path: str | None) -> Path | None:
+    rel = (load_sealed_results().get("committed_trees") or {}).get(run_id)
+    if not rel:
+        return None
+    tree = REPO_ROOT / rel
+    if not tree.is_dir():
+        return None
+    logical = str(logical_path or "").replace("\\", "/").lstrip("/")
+    if not logical:
+        return None
+    marker = "{0}/".format(run_id)
+    if marker in logical:
+        relative = logical.split(marker, 1)[1]
+    else:
+        relative = Path(logical).name
+    candidate = tree / relative
+    return candidate if candidate.is_file() else None
+
+
+def _committed_tree(run_id: str) -> Path | None:
+    rel = (load_sealed_results().get("committed_trees") or {}).get(run_id)
+    if not rel:
+        return None
+    tree = REPO_ROOT / rel
+    return tree if tree.is_dir() else None
+
+
+def _committed_official_path(run_id: str) -> Path | None:
+    rel = (load_sealed_results().get("committed_trees") or {}).get(run_id)
+    if not rel:
+        return None
+    path = REPO_ROOT / rel
+    return path if path.exists() else None
+
+
+def _hashes_from_official_file(path: Path) -> set[str]:
+    official = json.loads(path.read_text(encoding="utf-8"))
+    hashes = {sha256_payload(payload_for_hash(official))}
+    from qc_research.tlt_duration_momentum import (
+        is_tlt_duration_momentum_record,
+        wrap_tlt_duration_momentum_record,
+    )
+
+    if is_tlt_duration_momentum_record(official):
+        for _kind, artifact in wrap_tlt_duration_momentum_record(official):
+            hashes.add(sha256_payload(payload_for_hash(artifact)))
+    return hashes
+
+
+def refuse_sealed_committed_mismatch(
+    payload: Mapping[str, Any] | None,
+    *,
+    logical_path: str | None = None,
+) -> None:
+    """Refuse sealed payloads that do not match the committed official tree.
+
+    Sealed run ids without a committed tree or file are refused on first
+    insert. Identical official re-ingest is allowed.
+    """
+    record = dict(payload or {})
+    run_id = _run_id(record)
+    if run_id not in sealed_results_run_ids():
+        return
+    incoming = sha256_payload(payload_for_hash(record))
+    committed = committed_official_file(run_id, logical_path)
+    if committed is not None:
+        official = json.loads(committed.read_text(encoding="utf-8"))
+        if incoming != sha256_payload(payload_for_hash(official)):
+            raise SealedResultsError(
+                "refusing sealed {0} mutation of {1}".format(run_id, committed.name)
+            )
+        return
+    path = _committed_official_path(run_id)
+    if path is None:
+        raise SealedResultsError(
+            "refusing sealed {0} ingest; no committed official tree".format(run_id)
+        )
+    if path.is_file():
+        if incoming in _hashes_from_official_file(path):
+            return
+        raise SealedResultsError(
+            "refusing sealed {0} payload that is not in the committed official file".format(
+                run_id
+            )
+        )
+    tree = path if path.is_dir() else None
+    if tree is None:
+        raise SealedResultsError(
+            "refusing sealed {0} ingest; no committed official tree".format(run_id)
+        )
+    window = str(record.get("window_id") or "")
+    roots = [tree / window] if window and (tree / window).is_dir() else [tree]
+    for folder in roots:
+        for candidate in folder.rglob("*.json"):
+            if not candidate.is_file():
+                continue
+            official = json.loads(candidate.read_text(encoding="utf-8"))
+            if incoming == sha256_payload(payload_for_hash(official)):
+                return
+    raise SealedResultsError(
+        "refusing sealed {0} payload that is not in the committed official tree".format(run_id)
+    )
+
+
+def existing_artifact_sha(conn, key: str) -> str | None:
+    from sqlalchemy import text
+
+    result = conn.execute(
+        text("SELECT sha256 FROM research_artifacts WHERE artifact_key = :key"),
+        {"key": key},
+    )
+    if result is None:
+        return None
+    mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return None
+    row = mappings().first()
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return str(row.get("sha256") or "") or None
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return str(mapping.get("sha256") or "") or None
+    return None
+
+
+def existing_artifact_run_id(conn, key: str) -> str | None:
+    from sqlalchemy import text
+
+    result = conn.execute(
+        text("SELECT research_run_id FROM research_artifacts WHERE artifact_key = :key"),
+        {"key": key},
+    )
+    if result is None:
+        return None
+    mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return None
+    row = mappings().first()
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return str(row.get("research_run_id") or "") or None
+    mapping = getattr(row, "_mapping", None)
+    if mapping is not None:
+        return str(mapping.get("research_run_id") or "") or None
+    return None
+
+
+def sealed_run_id_in_path(path: str | None) -> str | None:
+    """Return a sealed run id that appears as a path component, if any."""
+    parts = str(path or "").replace("\\", "/").split("/")
+    ids = sealed_results_run_ids()
+    found = [part for part in parts if part in ids]
+    return found[-1] if found else None
+
+
+def refuse_sealed_path_run_mismatch(
+    *,
+    key: str,
+    logical_path: str | None,
+    run_id: str,
+) -> None:
+    """Refuse a payload whose run id does not match a sealed path component."""
+    incoming = str(run_id or "")
+    for candidate in (key, logical_path):
+        path_run = sealed_run_id_in_path(candidate)
+        if path_run and incoming != path_run:
+            raise SealedResultsError(
+                "refusing payload run_id {0} under sealed path {1}".format(
+                    incoming or "<empty>", path_run
+                )
+            )
+
+
+def research_run_exists(conn, run_id: str) -> bool:
+    """True when research_runs already has this id. Missing lookup is False."""
+    from sqlalchemy import text
+
+    key = str(run_id or "").strip()
+    if not key:
+        return False
+    result = conn.execute(
+        text("SELECT 1 FROM research_runs WHERE research_run_id = :rid"),
+        {"rid": key},
+    )
+    if result is None:
+        return False
+    fetchone = getattr(result, "fetchone", None)
+    if fetchone is not None:
+        return fetchone() is not None
+    mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return False
+    return mappings().first() is not None
+
+
+def refuse_sealed_artifact_overwrite(conn, *, key: str, run_id: str, incoming_sha: str) -> None:
+    path_run = sealed_run_id_in_path(key)
+    existing_run = existing_artifact_run_id(conn, key)
+    freeze = bool(
+        run_id in sealed_results_run_ids()
+        or path_run
+        or (existing_run and existing_run in sealed_results_run_ids())
+    )
+    if not freeze:
+        return
+    existing = existing_artifact_sha(conn, key)
+    if existing and existing != incoming_sha:
+        raise SealedResultsError(
+            "refusing sealed {0} overwrite of {1}".format(
+                path_run or existing_run or run_id, key
+            )
+        )

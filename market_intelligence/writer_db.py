@@ -3,6 +3,8 @@
 Resolution order: ``MARKET_INTELLIGENCE_DATABASE_URL`` (dedicated writer), then
 ``DATABASE_URL``, then ``DB_*`` (the existing FMP writer identity used by
 ``jobs.apply_migrations``). Streamlit pages and the API never use this module.
+A resolved writer URL plus ``FMP_STREAMLIT_READONLY`` is refused; missing URL
+still raises ``WriterConfigurationError``.
 """
 
 from __future__ import annotations
@@ -33,11 +35,14 @@ def writer_url(env: dict[str, str] | None = None) -> str | None:
 def writer_engine(url: str | None = None):
     from sqlalchemy import create_engine
 
+    from qc_research.platform_ingest import refuse_streamlit_ingest
+
     resolved = url or writer_url()
     if not resolved:
         raise WriterConfigurationError(
             "No writer database configured (MARKET_INTELLIGENCE_DATABASE_URL, DATABASE_URL, or DB_*)."
         )
+    refuse_streamlit_ingest()
     return create_engine(resolved, pool_pre_ping=True, future=True)
 
 

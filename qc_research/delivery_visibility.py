@@ -309,6 +309,11 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--summary", default=None, help="Append markdown to this file (e.g. $GITHUB_STEP_SUMMARY)")
     r = sub.add_parser("record", help="Record a built report into PostgreSQL (authorized host only)")
     r.add_argument("--report", required=True)
+    r.add_argument(
+        "--require-postgres",
+        action="store_true",
+        help="Fail closed when the writer engine is missing or the report is unreadable",
+    )
     ns = parser.parse_args(argv)
 
     if ns.command == "build":
@@ -335,15 +340,22 @@ def main(argv: list[str] | None = None) -> int:
 
     report = _load_json(ns.report)
     if report is None:
-        print("delivery report missing; nothing recorded")
-        return 0
-    from qc_research.platform_ingest import IngestEnvironmentError, postgres_engine
+        print("delivery report missing or unreadable; nothing recorded")
+        return 2 if ns.require_postgres else 0
+    from qc_research.platform_ingest import (
+        IngestEnvironmentError,
+        StreamlitIngestRefused,
+        postgres_engine,
+    )
 
     try:
         engine = postgres_engine()
+    except StreamlitIngestRefused as exc:
+        print("FAIL: delivery record is not a Streamlit path ({0})".format(exc))
+        return 4
     except IngestEnvironmentError as exc:
         print("PostgreSQL not configured; delivery report not recorded ({0})".format(exc.__class__.__name__))
-        return 0
+        return 2 if ns.require_postgres else 0
     result = record_to_postgres(engine, report)
     print(json.dumps(result))
     return 0

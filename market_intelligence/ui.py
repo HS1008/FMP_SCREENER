@@ -158,7 +158,17 @@ def fmt_signed(value: Any, units: str | None) -> str:
 
 
 def freshness_chip(status: str | None) -> str:
-    return {"FRESH": "🟢 Fresh", "STALE": "🟠 Stale", "UNKNOWN": "⚪ Unknown"}.get(str(status or "").upper(), "⚪ {0}".format(status or "n/a"))
+    key = str(status or "").upper()
+    surface = {
+        "CURRENT": "🟢 Current",
+        "DELAYED": "🟡 Delayed",
+        "STALE": "🟠 Stale",
+        "UNAVAILABLE": "⚪ Unavailable",
+        "BLOCKED": "🔴 Blocked",
+        "FRESH": "🟢 Current",
+        "UNKNOWN": "⚪ Unavailable",
+    }
+    return surface.get(key, "⚪ {0}".format(status or "unavailable"))
 
 
 def transport_chip(status: str | None) -> str:
