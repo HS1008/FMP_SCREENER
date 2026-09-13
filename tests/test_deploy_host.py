@@ -58,6 +58,14 @@ def test_deploy_host_migrates_once_from_staged_sha():
     assert "refusing to mutate the shared checkout venv first" in host
 
 
+def test_first_deploy_absent_current_is_not_a_pointer_move():
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    assert "resolved_existing_path()" in host
+    assert 'CURRENT_BEFORE="$(resolved_existing_path "$CURRENT_LINK")"' in host
+    assert "GNU readlink -f prints a canonical path for a missing last component" in host
+    assert host.count('readlink -f "$CURRENT_LINK"') == 0
+
+
 def test_first_deploy_legacy_filename_only_state(tmp_path):
     engine = create_engine("sqlite:///{0}".format(tmp_path / "oldprod.db"))
     staged = tmp_path / "migrations"
