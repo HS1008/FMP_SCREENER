@@ -82,7 +82,13 @@ writer_db_meta() {
 import os
 import urllib.parse
 
-raw = (os.environ.get("DATABASE_URL") or os.environ.get("ADMIN_DATABASE_URL") or os.environ.get("MI_ADMIN_DATABASE_URL") or "").strip()
+raw = (
+    os.environ.get("DATABASE_URL")
+    or os.environ.get("ADMIN_DATABASE_URL")
+    or os.environ.get("MI_ADMIN_DATABASE_URL")
+    or os.environ.get("MARKET_INTELLIGENCE_DATABASE_URL")
+    or ""
+).strip()
 if raw:
     parts = urllib.parse.urlsplit(raw)
     db = (parts.path or "/fmp").lstrip("/") or "fmp"
@@ -192,6 +198,7 @@ raw = (
     os.environ.get("DATABASE_URL")
     or os.environ.get("ADMIN_DATABASE_URL")
     or os.environ.get("MI_ADMIN_DATABASE_URL")
+    or os.environ.get("MARKET_INTELLIGENCE_DATABASE_URL")
     or ""
 ).strip()
 if raw:

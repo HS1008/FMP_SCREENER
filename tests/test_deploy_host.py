@@ -66,6 +66,16 @@ def test_first_deploy_absent_current_is_not_a_pointer_move():
     assert host.count('readlink -f "$CURRENT_LINK"') == 0
 
 
+def test_deploy_host_loads_writer_env_before_provision():
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    provision = host.index("provision_dashboard_readonly.sh")
+    writer_reload = host.index("Staged --root has no checkout .env")
+    assert writer_reload < provision
+    assert host.index('. "$ROOT/.env"', writer_reload) < provision
+    script = (ROOT / "scripts" / "provision_dashboard_readonly.sh").read_text(encoding="utf-8")
+    assert "MARKET_INTELLIGENCE_DATABASE_URL" in script
+
+
 def test_first_deploy_legacy_filename_only_state(tmp_path):
     engine = create_engine("sqlite:///{0}".format(tmp_path / "oldprod.db"))
     staged = tmp_path / "migrations"
