@@ -179,6 +179,21 @@ echo "Applying database migrations ONCE from the staged SHA..."
   "$PYTHON_BIN" -m jobs.apply_migrations
 )
 
+# Staged --root has no checkout .env. Reuse the same writer identity as
+# migrations so CREATE ROLE targets quant_monitor, not the 'fmp' default.
+if [ -f "$WRITER_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$WRITER_ENV"
+  set +a
+elif [ -f "$ROOT/.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$ROOT/.env"
+  set +a
+fi
+unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+
 echo "Provisioning dashboard_readonly (password file required)..."
 bash "$CODE_ROOT/scripts/provision_dashboard_readonly.sh" --require --root "$CODE_ROOT"
 
