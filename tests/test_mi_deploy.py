@@ -282,6 +282,8 @@ def test_mi_host_workflows_are_not_pull_request_and_do_not_print_secrets():
     assert "refresh_journal_sanitized" in verify
     assert "refresh_env_writer_url" in verify
     assert "activate_market_intelligence_host.sh" in verify
+    assert "lib_post_deploy_lock.sh" in verify
+    assert ". /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh" in verify
     assert "market_intelligence.env" in verify
     assert "stale_source=" in verify
     assert "failed_source=" in verify
@@ -391,9 +393,13 @@ def test_post_deploy_workflows_serialize_on_shared_host_group():
     )
     for name in names:
         text = (ROOT / ".github" / "workflows" / name).read_text()
-        assert "group: fmp-post-deploy-host" in text
+        assert "group: fmp-post-deploy-${{ github.workflow }}" in text
+        assert "group: fmp-post-deploy-host" not in text
         assert "cancel-in-progress: false" in text
         assert "mi-research-workspace-verify" not in text
+    mi = (ROOT / ".github" / "workflows" / "mi_research_workspace_verify.yml").read_text()
+    assert "lib_post_deploy_lock.sh" in mi
+    assert "timeout-minutes: 150" in mi
 
 
 def test_activate_host_script_uses_admin_or_peer_for_role_sql():

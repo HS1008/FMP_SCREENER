@@ -9,8 +9,8 @@
 # The official already-ingested TLTDurationMomentum V0 record is the
 # production fixture. This is not a per-strategy workflow.
 #
-# Shares fmp-post-deploy-host with Stage 1 and Market Intelligence production
-# verify (cancel-in-progress: false) so post-deploy host jobs cannot overlap.
+# GitHub concurrency is per-workflow (cancel-in-progress: false). This job is
+# read-only against PostgreSQL and does not take the shared post-deploy host flock.
 
 name: Platform Research Production Verification
 
@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: fmp-post-deploy-host
+  group: fmp-post-deploy-${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:

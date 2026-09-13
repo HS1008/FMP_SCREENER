@@ -2,8 +2,9 @@
 # Runs after Deploy FMP Dashboard succeeds on main (GitHub App tokens
 # cannot workflow_dispatch). Never prints secrets, observation values,
 # or restricted credit figures.
-# Shares fmp-post-deploy-host with Stage 1 and Platform Research production
-# verify (cancel-in-progress: false) so host/database mutations cannot overlap.
+# GitHub concurrency is per-workflow (cancel-in-progress: false) so a sibling
+# post-deploy job is not cancelled. Mutating host/database steps share
+# /var/lock/fmp-post-deploy.lock with Stage 1 production verify.
 name: Market Intelligence research workspace verify
 
 on:
@@ -20,7 +21,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: fmp-post-deploy-host
+  group: fmp-post-deploy-${{ github.workflow }}
   cancel-in-progress: false
 
 jobs:
@@ -30,7 +31,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     name: Host SHA, grants, AppTest, scheduled refresh
     runs-on: ubuntu-latest
-    timeout-minutes: 70
+    timeout-minutes: 150
     env:
       DO_HOST: ${{ secrets.DO_HOST }}
       DO_USER: ${{ secrets.DO_USER }}
@@ -57,13 +58,16 @@ jobs:
       - name: Install fixed activator without adding untracked checkout files
         run: |
           scp -q scripts/activate_market_intelligence_host.sh \
-            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh"
-          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh'
+            scripts/lib_post_deploy_lock.sh \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh'
 
       - name: Confirm deployed SHA and apply 019 if objects are missing
         run: |
           ssh "$DO_USER@$DO_HOST" << 'EOF'
           set -euo pipefail
+          # shellcheck disable=SC1091
+          . /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh
           cd /root/FMP_SCREENER
           echo "deployed_head=$(git rev-parse HEAD)"
           echo "deployed_oneline=$(git log -1 --oneline)"
@@ -97,13 +101,21 @@ jobs:
 
       - name: Refresh mi_readonly grants
         run: |
-          ssh "$DO_USER@$DO_HOST" \
-            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase provision'
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh
+          /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase provision
+          EOF
 
       - name: AppTest Market Intelligence pages
         run: |
-          ssh "$DO_USER@$DO_HOST" \
-            '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase verify'
+          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          set -euo pipefail
+          # shellcheck disable=SC1091
+          . /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh
+          /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase verify
+          EOF
 
       - name: Confirm private API, timer, and collector independence
         run: |
@@ -136,6 +148,8 @@ jobs:
         run: |
           ssh "$DO_USER@$DO_HOST" << 'EOF'
           set -euo pipefail
+          # shellcheck disable=SC1091
+          . /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh
           python3 - <<'PY'
           from pathlib import Path
           text = Path("/etc/fmp/market_intelligence.env").read_text(encoding="utf-8")
@@ -170,6 +184,8 @@ jobs:
         run: |
           ssh "$DO_USER@$DO_HOST" << 'EOF'
           set -euo pipefail
+          # shellcheck disable=SC1091
+          . /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh
           cd /root/FMP_SCREENER
           /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase verify
           source venv/bin/activate

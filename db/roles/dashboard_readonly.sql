@@ -87,7 +87,8 @@ BEGIN
         'live_snapshots',
         'positions',
         'orders',
-        'trades'
+        'trades',
+        'schema_migrations'
     ]
     LOOP
         IF EXISTS (

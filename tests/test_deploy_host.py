@@ -174,8 +174,28 @@ def test_post_deploy_workflows_share_host_serialization():
     )
     for name in names:
         text = (ROOT / ".github" / "workflows" / name).read_text(encoding="utf-8")
-        assert "group: fmp-post-deploy-host" in text, name
+        assert "group: fmp-post-deploy-${{ github.workflow }}" in text, name
+        assert "group: fmp-post-deploy-host" not in text, name
         assert "cancel-in-progress: false" in text, name
+    stage1 = (ROOT / ".github" / "workflows" / "stage1_verify.yml").read_text(
+        encoding="utf-8"
+    )
+    mi = (ROOT / ".github" / "workflows" / "mi_research_workspace_verify.yml").read_text(
+        encoding="utf-8"
+    )
+    platform = (ROOT / ".github" / "workflows" / "platform_research_verify.yml").read_text(
+        encoding="utf-8"
+    )
+    platform_code = "\n".join(
+        line for line in platform.splitlines() if not line.lstrip().startswith("#")
+    )
+    lock = (ROOT / "scripts" / "lib_post_deploy_lock.sh").read_text(encoding="utf-8")
+    assert "/var/lock/fmp-post-deploy.lock" in lock
+    assert "flock -w" in lock
+    assert "lib_post_deploy_lock.sh" in stage1
+    assert "lib_post_deploy_lock.sh" in mi
+    assert "lib_post_deploy_lock.sh" not in platform_code
+    assert "/var/lock/fmp-post-deploy.lock" not in platform_code
     deploy = (ROOT / ".github" / "workflows" / "deploy.yml").read_text(encoding="utf-8")
     assert "group: fmp-deploy-main" in deploy
     assert "fmp-post-deploy-host" not in deploy
@@ -192,3 +212,5 @@ def test_release_docs_describe_auto_deploy():
     assert "prepare → validate → activate" in docs or "prepare/validate/activate" in docs.lower() or "Prepare:" in docs
     assert "last_verified.sha" in docs
     assert "deploy_release.sh --rollback" in docs
+    assert "/var/lock/fmp-post-deploy.lock" in docs
+    assert "per-workflow" in docs.lower()
