@@ -34,6 +34,10 @@ OPTIONAL_SELECTS = (
     "SELECT COUNT(*) FROM ml_signal_points",
     "SELECT COUNT(*) FROM research_trials",
     "SELECT COUNT(*) FROM research_oos_windows",
+    "SELECT COUNT(*) FROM mi_v_options_latest",
+    "SELECT COUNT(*) FROM mi_v_options_contracts_latest",
+    "SELECT COUNT(*) FROM mi_v_vix_curve_latest",
+    "SELECT COUNT(*) FROM mi_v_openbb_last_attempt",
 )
 
 CORE_MUTATION_PROBES = (
@@ -167,6 +171,16 @@ OPTIONAL_MUTATION_PROBES = (
         "UPDATE_OOS_WINDOWS",
     ),
     ("DELETE FROM research_oos_windows WHERE FALSE", "DELETE_OOS_WINDOWS"),
+    (
+        "INSERT INTO mi_openbb_snapshots (snapshot_id, source_id, dataset, underlying, observation_precision, collected_at, content_hash, normalization_version, provider, publication_status, export_scope) "
+        "VALUES ('x', 'OPENBB_CBOE_OPTIONS', 'options_chain', 'SPY', 'unknown', NOW(), 'x', 'x', 'cboe', 'FAILED', 'INTERNAL_ONLY')",
+        "INSERT_OPENBB_SNAPSHOTS",
+    ),
+    ("UPDATE mi_openbb_snapshots SET is_current = is_current WHERE FALSE", "UPDATE_OPENBB_SNAPSHOTS"),
+    ("DELETE FROM mi_openbb_snapshots WHERE FALSE", "DELETE_OPENBB_SNAPSHOTS"),
+    ("INSERT INTO mi_openbb_option_contracts (snapshot_id, contract_symbol) VALUES ('x', 'x')", "INSERT_OPENBB_CONTRACTS"),
+    ("UPDATE mi_openbb_option_contracts SET strike = strike WHERE FALSE", "UPDATE_OPENBB_CONTRACTS"),
+    ("DELETE FROM mi_openbb_option_contracts WHERE FALSE", "DELETE_OPENBB_CONTRACTS"),
 )
 
 DENIED_SQLSTATES = frozenset({"42501", "25006"})

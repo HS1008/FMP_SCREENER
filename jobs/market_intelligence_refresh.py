@@ -128,6 +128,35 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "reason": equity_adapter.reason,
             }
         )
+    from market_intelligence.openbb_provider.config import (
+        OPENBB_OPTIONS_SOURCE_ID,
+        OPENBB_VIX_SOURCE_ID,
+        probe_openbb,
+    )
+
+    openbb_probe = probe_openbb(env)
+    if getattr(args, "options", False) or want_all:
+        options_ok = openbb_probe.options.enabled and openbb_probe.options.access_status == "CONFIGURED"
+        steps.append(
+            {
+                "step": "options",
+                "source_id": OPENBB_OPTIONS_SOURCE_ID,
+                "configured": options_ok,
+                "action": "ingest" if options_ok else ("skip_unconfigured" if want_all else "fail_unconfigured"),
+                "reason": openbb_probe.options.reason,
+            }
+        )
+    if getattr(args, "vix", False) or want_all:
+        vix_ok = openbb_probe.vix.enabled and openbb_probe.vix.access_status == "CONFIGURED"
+        steps.append(
+            {
+                "step": "vix",
+                "source_id": OPENBB_VIX_SOURCE_ID,
+                "configured": vix_ok,
+                "action": "ingest" if vix_ok else ("skip_unconfigured" if want_all else "fail_unconfigured"),
+                "reason": openbb_probe.vix.reason,
+            }
+        )
     if args.build_analytics or want_all:
         steps.append({"step": "build_analytics", "action": "compute"})
     if args.build_morning or want_all:
@@ -158,6 +187,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
     parser.add_argument("--equity", action="store_true", help="Ingest independent equity/ETF daily bars")
+    parser.add_argument("--options", action="store_true", help="Ingest OpenBB/Cboe delayed options chains (fails if not configured)")
+    parser.add_argument("--vix", action="store_true", help="Ingest OpenBB/Cboe VX_EOD curve (fails if not configured)")
     parser.add_argument("--build-analytics", action="store_true", help="Recompute versioned analytics")
     parser.add_argument("--build-morning", action="store_true", help="Build and publish a morning context snapshot")
     parser.add_argument("--all-configured", action="store_true", help="Run every configured step; disabled sources are explicit skips")
@@ -177,8 +208,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--build-analytics/--build-morning/--all-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.options, args.vix, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--options/--vix/--build-analytics/--build-morning/--all-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -260,10 +291,16 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
     from market_intelligence.adapters import IBKR_SOURCE_ID, probe_all
 
     adapter_status = probe_all(env)
+    from market_intelligence.openbb_provider.config import OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID
+
     for source_id, probe in adapter_status.items():
         if source_id == IBKR_SOURCE_ID:
             continue  # Windows collector owns this row; FRED refresh must not clobber it
         if source_id in {FINRA_QUERY_SOURCE_ID, FINRA_TRACE_SOURCE_ID}:
+            continue
+        if source_id in {OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID}:
+            enabled[source_id] = bool(probe.enabled)
+            access[source_id] = probe.access_status
             continue
         enabled[source_id] = False
         access[source_id] = probe.access_status
@@ -330,6 +367,20 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 # and never rebuilds snapshots from OPEN/unfinalized raw bars.
 
                 report = ingest_equity_eod(engine, parent_run_id=parent_run_id, today=as_of, env=env)
+                status["results"][name] = report.as_dict()
+                if report.failed:
+                    failures += 1
+            elif name == "options":
+                from market_intelligence.openbb_provider.ingest import ingest_openbb
+
+                report = ingest_openbb(engine, parent_run_id=parent_run_id, today=as_of, env=env, include_options=True, include_vix=False)
+                status["results"][name] = report.as_dict()
+                if report.failed:
+                    failures += 1
+            elif name == "vix":
+                from market_intelligence.openbb_provider.ingest import ingest_openbb
+
+                report = ingest_openbb(engine, parent_run_id=parent_run_id, today=as_of, env=env, include_options=False, include_vix=True)
                 status["results"][name] = report.as_dict()
                 if report.failed:
                     failures += 1

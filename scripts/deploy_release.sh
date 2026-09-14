@@ -145,6 +145,16 @@ if [ ! -x "$target/venv/bin/streamlit" ]; then
     "$target/venv/bin/pip" install -r "$target/requirements.txt"
   fi
 fi
+if [ "${MI_OPENBB_INSTALL_EXTRA:-0}" = "1" ]; then
+  if [ ! -f "$target/requirements-openbb.txt" ]; then
+    echo "FAIL: MI_OPENBB_INSTALL_EXTRA=1 but release tree is missing requirements-openbb.txt"
+    exit 3
+  fi
+  echo "Installing optional OpenBB ingestion extra (MI_OPENBB_INSTALL_EXTRA=1)"
+  "$target/venv/bin/pip" install -r "$target/requirements-openbb.txt"
+else
+  echo "openbb_extra=skipped_dormant"
+fi
 if [ "$SKIP_IDENTITY" != 1 ] && [ "$STAGE_ONLY" != 1 ] && [ ! -x "$target/venv/bin/streamlit" ]; then
   echo "FAIL: release venv is missing streamlit at $target/venv/bin/streamlit"
   exit 3

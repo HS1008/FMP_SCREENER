@@ -72,6 +72,13 @@ VALUE_KEYS = {
     "total_volume", "total_trades", "total_transactions", "volume_change", "trade_count_change",
     "customer_net_volume", "customer_buy_volume", "customer_sell_volume", "total_volume_quantity",
     "total_trade_count",
+    "iv", "iv_30d", "iv_decimal", "iv_percent", "atm_iv", "implied_volatility", "gamma", "delta", "theta", "vega", "rho",
+    "gex", "gross_unsigned", "signed_net", "call_unsigned", "put_unsigned", "zero_dte_signed",
+    "strike", "strikes", "term_structure", "atm_term_structure", "skew", "skew_25d", "selected_skew_25d",
+    "skew_25d_vol_points", "put_call", "oi_put_call", "volume_put_call", "expected_move",
+    "curve_points", "points", "m1", "m2", "m1_m2_ratio", "m2_minus_m1_points", "m1_to_m2_slope_pct",
+    "front_shape", "largest_gamma_concentration", "by_strike", "top_strikes_oi", "top_expiries_oi",
+    "concentrations", "zero_dte", "oi_share", "volume_share", "spot",
 }
 IDENTITY_KEYS = {
     "series_id", "metric_id", "label", "title", "bucket", "as_of", "observation_date", "units", "category",

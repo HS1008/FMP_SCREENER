@@ -53,11 +53,12 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-openbb.txt
 
       - name: Install requirements
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements.txt -r requirements-dev.txt -r requirements-openbb.txt
 
       - name: Assert no database URL is configured for this job
         run: |
@@ -103,11 +104,12 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
+            requirements-openbb.txt
 
       - name: Install requirements and psql client (role tests run db/roles/*.sql through psql)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt -r requirements-dev.txt
+          pip install -r requirements.txt -r requirements-dev.txt -r requirements-openbb.txt
           sudo apt-get update -qq
           sudo apt-get install -y -qq postgresql-client
           psql --version

@@ -68,6 +68,7 @@ write endpoint, or writes from an AI actor.
 | FRED live validation (manual): bounded real FRED requests on disposable PostgreSQL, `secrets.FRED_API_KEY` received explicitly, export contract checked | IMPLEMENTED_AND_TESTED (workflow + script; live run is a human dispatch) | `.github/workflows/fred_validation.yml`, `jobs.validate_fred_live` | GitHub cannot dispatch a brand-new workflow until it exists on `main`. Merge the minimal workflow PR first; do not merge this full PR only to make the workflow runnable. |
 | DigitalOcean secret provisioning (env file only; no activation) | IMPLEMENTED_AND_TESTED (script dry-run / apply on a temp file) | `scripts/provision_digitalocean_mi_secrets.sh`, `deploy/market_intelligence/DIGITALOCEAN_SECRETS.md` | operator `--apply` writes `FRED_API_KEY`; timers stay off |
 | Research artifact delivery: remote fetch, otherwise committed copy labelled `LAST_KNOWN_GOOD` | IMPLEMENTED_AND_TESTED | `qc_research/delivery_visibility.py`, `ingest_platform_research.yml` | repo vars `QS_ARTIFACT_SOURCE_REF`, `QS_ARTIFACT_SOURCE_PATH` (see below) |
+| OpenBB / Cboe delayed options chains + VX_EOD (`OPENBB_CBOE_OPTIONS`, `OPENBB_CBOE_VIX`) | IMPLEMENTED_AND_TESTED (disposable PG + bounded live Cboe; production collection off) | `market_intelligence/openbb_provider/`, migration `033_openbb_options_vix.sql`, `jobs.market_intelligence_refresh --options/--vix` | Recurring fetch stays off until `MI_OPENBB_OPTIONS_ENABLED` / `MI_OPENBB_VIX_ENABLED` **and** `MI_OPENBB_CBOE_RIGHTS_ACK=1`. Optional extra `requirements-openbb.txt`. Streamlit / AI / MCP only read stored snapshots. Export `INTERNAL_ONLY`. Live query-back is not production enablement |
 | QC activation on 2025+ data, ML_FINAL_HOLDOUT, paper/live, AI writes | DISABLED_BY_POLICY | QS `ActivationGate`, FMP `queue --execute` | never automated |
 
 Access statuses written to `mi_source_registry.access_status` and shown on Data Health:
@@ -123,6 +124,10 @@ Access statuses written to `mi_source_registry.access_status` and shown on Data 
 * Legacy FMP constituent/sector analytics and QC-derived sector aggregates (`INTERNAL_ONLY`): no
   redistribution decision has been taken for FMP-derived or QC-derived data. Change requires a
   documented policy decision and, for FMP, a licence review. Internal DB-only pages show everything.
+* OpenBB / Cboe delayed options and VX_EOD (`INTERNAL_ONLY`): delayed / EOD public endpoints, not
+  OPRA, not official settlement. Recurring host storage requires a recorded Cboe rights decision.
+  Remote AI values stay redacted unless a human adds the source id to
+  `AI_GATEWAY_REMOTE_VALUE_SOURCES` after that decision. Change is ENTITLEMENT_REQUIRED.
 
 ## Operator steps (production host; every step is a human action)
 
@@ -284,3 +289,7 @@ without deleting `mi_market_quotes` / `mi_collector_status`.
   in this milestone activates QC.
 * Bond tables have no ingestion source; `jobs.bond_analytics` reports every bond as a skip.
 * Holiday calendar covers US federal holidays only.
+* OpenBB / Cboe collection is implemented, fixture-tested, and query-backed on disposable
+  PostgreSQL with a bounded live Cboe fetch. Production flags stay `0`. Deploy does **not**
+  pip-install `requirements-openbb.txt` unless `MI_OPENBB_INSTALL_EXTRA=1`. Do not treat a
+  merge as activation.
