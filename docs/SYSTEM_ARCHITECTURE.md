@@ -49,7 +49,7 @@ backtests, never trains models, and never writes market data.
 
 ## Streamlit navigation
 
-Overview, Markets (Sectors, Rates, Credit, Order Flow, Fixed Income), Economy (Macro),
+Overview, Markets (Sectors, Rates, Credit, Order Flow, Fixed Income, Commodities), Economy (Macro),
 Research (Strategy Monitor, Power Producers), System (Data Health, Morning Brief, Methodology).
 
 Fixed Income tabs: Overview, Corporates/TRACE, Municipals, Relative value calculator, Ladder builder.

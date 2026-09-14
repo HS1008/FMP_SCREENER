@@ -25,6 +25,16 @@ def test_aggregate_weights_and_missing_duration():
     assert out["weighted_duration"] == pytest.approx(2.0)
     assert out["missing_durations"] == 1
     assert out["estimated_coupon_income"] == pytest.approx(50_000 * 0.04 + 50_000 * 0.042)
+    assert out["weighted_average_maturity"] == pytest.approx(2028.5)
+
+
+def test_weighted_average_maturity_uses_principal():
+    bonds = [
+        LadderBond("A", "treasury", 2026, 10_000, 4.0, 4.0),
+        LadderBond("B", "treasury", 2030, 90_000, 4.0, 4.0),
+    ]
+    out = aggregate_ladder(bonds)
+    assert out["weighted_average_maturity"] == pytest.approx((10_000 * 2026 + 90_000 * 2030) / 100_000)
 
 
 def test_ladder_after_tax_and_call_share():

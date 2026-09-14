@@ -81,6 +81,15 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         file_path="pages/19_Fixed_Income.py",
     ),
     PageSpec(
+        "commodities",
+        "Commodities",
+        "Markets",
+        "Commodities",
+        render_name="render_commodities",
+        legacy_path="pages/20_Commodities.py",
+        file_path="pages/20_Commodities.py",
+    ),
+    PageSpec(
         "macro",
         "Macro",
         "Economy",

@@ -128,7 +128,6 @@ def aggregate_ladder(bonds: list[LadderBond], assumptions: TaxAssumptions | None
     after_tax_income = None
     if tax_rows and all(row.after_tax_yield_pct is not None for row in tax_rows):
         after_tax_income = sum(bond.principal * float(row.after_tax_yield_pct) / 100.0 for bond, row in zip(bonds, tax_rows))
-    years = [bond.maturity_year for bond in bonds]
     return {
         "method_version": METHOD_VERSION,
         "analytical_only": True,
@@ -139,7 +138,7 @@ def aggregate_ladder(bonds: list[LadderBond], assumptions: TaxAssumptions | None
         "weighted_average_yield_pct": _weighted(pretax_yields),
         "weighted_average_after_tax_yield_pct": _weighted(after_tax) if after_tax else None,
         "weighted_average_coupon_pct": _weighted(coupons),
-        "weighted_average_maturity": (sum(years) / len(years)) if years else None,
+        "weighted_average_maturity": _weighted((bond.principal, float(bond.maturity_year)) for bond in bonds),
         "weighted_duration": _weighted(durations),
         "estimated_coupon_income": coupon_income,
         "estimated_after_tax_income": after_tax_income,

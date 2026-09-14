@@ -324,6 +324,7 @@ def test_activate_verify_phase_does_not_source_writer_checkout_env():
     mi_verify = (ROOT / "jobs" / "verify_mi_dashboard.py").read_text()
     assert "load_streamlit_env" in mi_verify
     assert "19_Fixed_Income.py" in mi_verify
+    assert "20_Commodities.py" in mi_verify
 
 
 def test_activate_ingest_unsets_streamlit_identity_after_writer_env():
