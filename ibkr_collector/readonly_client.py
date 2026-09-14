@@ -19,6 +19,17 @@ class OrderMethodBlocked(RuntimeError):
     """Raised if any order, account, position, or execution API is invoked."""
 
 
+OPTION_COMPUTATION_RANK = (13, 83, 12, 82, 11, 81, 10, 80)
+
+
+def _preferred_option_computation(ranked: dict[int, dict[str, Any]]) -> dict[str, Any] | None:
+    for tick_id in OPTION_COMPUTATION_RANK:
+        row = ranked.get(tick_id)
+        if row and (row.get("implied_vol") is not None or row.get("delta") is not None):
+            return row
+    return None
+
+
 def _block(method_name: str) -> Callable[..., Any]:
     def _blocked(self, *args: Any, **kwargs: Any) -> None:
         raise OrderMethodBlocked("blocked IBKR API method: {0}".format(method_name))
@@ -54,6 +65,8 @@ class _ReadOnlyCallbacks:
         self.historical_bars: dict[int, list[dict[str, Any]]] = {}
         self.historical_done: dict[int, threading.Event] = {}
         self.historical_pending: set[int] = set()
+        self.opt_params: dict[int, list[dict[str, Any]]] = {}
+        self.opt_params_done: dict[int, threading.Event] = {}
         self._req_seq = 1000
 
     def mark_historical(self, req_id: int) -> threading.Event:
@@ -211,6 +224,95 @@ class _ReadOnlyCallbacks:
             bucket = self.ticks.setdefault(reqId, {})
             bucket[field] = value or None
             self._note_callback(reqId)
+
+    def tickGeneric(self, reqId: int, tickType: int, value: float) -> None:
+        from ibkr_collector.values import GENERIC_TICKS
+
+        field = GENERIC_TICKS.get(int(tickType))
+        if not field:
+            return
+        with self._lock:
+            bucket = self.ticks.setdefault(reqId, {})
+            bucket[field] = finite_or_none(value)
+            self._note_callback(reqId)
+
+    def tickOptionComputation(
+        self,
+        reqId: int,
+        tickType: int,
+        tickAttrib: float | int | None = None,
+        impliedVol: float | None = None,
+        delta: float | None = None,
+        optPrice: float | None = None,
+        pvDividend: float | None = None,
+        gamma: float | None = None,
+        vega: float | None = None,
+        theta: float | None = None,
+        undPrice: float | None = None,
+    ) -> None:
+        """Accept current (tickAttrib) and older 10-argument ibapi signatures."""
+        tick_id = int(tickType)
+        # Older ibapi: (reqId, tickType, impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice)
+        if undPrice is None and theta is not None and vega is not None:
+            undPrice = theta
+            theta = vega
+            vega = gamma
+            gamma = pvDividend
+            pvDividend = optPrice
+            optPrice = delta
+            delta = impliedVol
+            impliedVol = tickAttrib
+        greeks = {
+            "implied_vol": finite_or_none(impliedVol),
+            "delta": finite_or_none(delta),
+            "gamma": finite_or_none(gamma),
+            "vega": finite_or_none(vega),
+            "theta": finite_or_none(theta),
+            "opt_price": finite_or_none(optPrice),
+            "und_price": finite_or_none(undPrice),
+            "tick_type": tick_id,
+        }
+        with self._lock:
+            bucket = self.ticks.setdefault(reqId, {})
+            ranked = bucket.setdefault("option_computations", {})
+            ranked[tick_id] = greeks
+            preferred = _preferred_option_computation(ranked)
+            if preferred:
+                bucket["implied_volatility"] = preferred.get("implied_vol")
+                bucket["delta"] = preferred.get("delta")
+                bucket["gamma"] = preferred.get("gamma")
+                bucket["vega"] = preferred.get("vega")
+                bucket["theta"] = preferred.get("theta")
+                bucket["theoretical_price"] = preferred.get("opt_price")
+                if preferred.get("und_price") is not None:
+                    bucket["underlying_price"] = preferred.get("und_price")
+            if tick_id >= 66:
+                bucket["delayed_ticks"] = True
+            self._note_callback(reqId)
+
+    def securityDefinitionOptionParameter(
+        self,
+        reqId: int,
+        exchange: str,
+        underlyingConId: int,
+        tradingClass: str,
+        multiplier: str,
+        expirations,
+        strikes,
+    ) -> None:
+        row = {
+            "exchange": exchange,
+            "underlying_con_id": int(underlyingConId) if underlyingConId is not None else None,
+            "trading_class": tradingClass,
+            "multiplier": multiplier,
+            "expirations": sorted(str(item) for item in (expirations or [])),
+            "strikes": sorted(float(item) for item in (strikes or [])),
+        }
+        with self._lock:
+            self.opt_params.setdefault(reqId, []).append(row)
+
+    def securityDefinitionOptionParameterEnd(self, reqId: int) -> None:
+        self.wait_event(reqId, self.opt_params_done).set()
 
     def tickSnapshotEnd(self, reqId: int) -> None:
         with self._lock:

@@ -38,6 +38,8 @@ def test_order_methods_are_on_the_block_list():
     assert "reqExecutions" in BLOCKED_ECLIENT_METHODS
     assert "reqMktData" not in BLOCKED_ECLIENT_METHODS
     assert "reqHistoricalData" not in BLOCKED_ECLIENT_METHODS
+    assert "reqSecDefOptParams" not in BLOCKED_ECLIENT_METHODS
+    assert "exerciseOptions" in BLOCKED_ECLIENT_METHODS
     assert classify_error(420) == "pacing"
     assert classify_error(354) == "entitlement"
 
