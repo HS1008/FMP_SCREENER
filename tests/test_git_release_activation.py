@@ -149,6 +149,41 @@ git -C "{live}" rev-list --max-count=2 HEAD >/dev/null
     assert _git("log", "-1", "--format=%H", cwd=live).stdout.strip() == ancestry_repos["child"]
 
 
+def test_activate_live_checkout_discards_leftover_tracked_dirt(tmp_path: Path):
+    if shutil.which("git") is None or shutil.which("bash") is None:
+        pytest.skip("git and bash are required for checkout activation tests")
+    origin = tmp_path / "origin"
+    origin.mkdir()
+    _git("init", cwd=origin)
+    _git("config", "user.email", "fmp-test@example.com", cwd=origin)
+    _git("config", "user.name", "fmp-test", cwd=origin)
+    (origin / "stable.txt").write_text("canonical\n", encoding="utf-8")
+    _git("add", "stable.txt", cwd=origin)
+    _git("commit", "-m", "stable", cwd=origin)
+    sha = _git("rev-parse", "HEAD", cwd=origin).stdout.strip()
+    live = tmp_path / "live"
+    _git("clone", _file_url(origin), str(live))
+    (live / "stable.txt").write_text("host dirt\n", encoding="utf-8")
+    dirty = _git("status", "--porcelain", "--untracked-files=no", cwd=live)
+    assert "stable.txt" in dirty.stdout
+    script = """
+set -euo pipefail
+. "{lib}"
+activate_live_checkout "{live}" "{sha}" "{origin}"
+test "$(git -C "{live}" status --porcelain --untracked-files=no)" = ""
+grep -qx canonical "{live}/stable.txt"
+""".format(
+        lib=_posix(LIB),
+        live=_posix(live),
+        sha=sha,
+        origin=_file_url(origin),
+    )
+    result = _bash(script, check=False)
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert (live / "stable.txt").read_text(encoding="utf-8") == "canonical\n"
+    assert _git("status", "--porcelain", "--untracked-files=no", cwd=live).stdout == ""
+
+
 def test_assert_commit_graph_rejects_missing_parent(ancestry_repos):
     result = _bash(
         'set -euo pipefail; . "{lib}"; assert_commit_graph "{live}" "{child}"'.format(

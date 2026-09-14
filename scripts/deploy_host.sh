@@ -64,7 +64,7 @@ echo "Preserving host-modified activation scripts outside the checkout (not secr
 preserve_dir=/root/fmp_backups/checkout_preserve
 install -d -m 0700 "$preserve_dir"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-for rel in scripts/activate_market_intelligence_host.sh scripts/materialize_ai_context_env.py scripts/install_market_intelligence_timers.sh; do
+for rel in scripts/activate_market_intelligence_host.sh scripts/materialize_ai_context_env.py scripts/install_market_intelligence_timers.sh scripts/lib_post_deploy_lock.sh; do
   if [ ! -e "$rel" ]; then
     continue
   fi
