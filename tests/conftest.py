@@ -83,6 +83,11 @@ def pg_engine(pg_database):
 
 
 MI_TABLES_TRUNCATE = (
+    "mi_openbb_option_contracts",
+    "mi_openbb_options_metrics",
+    "mi_openbb_vix_points",
+    "mi_openbb_vix_metrics",
+    "mi_openbb_snapshots",
     "mi_pit_sector_internals",
     "mi_pit_sector_artifacts",
     "mi_macro_observation_quarantine",

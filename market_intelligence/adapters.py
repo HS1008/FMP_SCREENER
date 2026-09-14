@@ -198,7 +198,36 @@ class EdgarAdapter:
         return self._get_json("/api/xbrl/companyfacts/CIK{0}.json".format(self.normalize_cik(cik)), env=env)
 
 
-ADAPTERS = (IBKRMarketDataAdapter(), TraceAdapter(), EdgarAdapter())
+class OpenBBCboeOptionsAdapter:
+    """Probe-only surface. Fetch lives in ``openbb_provider`` and is never imported here."""
+
+    source_id = "OPENBB_CBOE_OPTIONS"
+    CAPABILITIES = {
+        "chains": "Cboe delayed-quote JSON via OpenBB; SPY/QQQ/IWM configurable",
+        "coverage": "not consolidated OPRA",
+        "export": "INTERNAL_ONLY until a human records Cboe redistribution rights",
+    }
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        from market_intelligence.openbb_provider.config import probe_openbb
+
+        return probe_openbb(env).options
+
+
+class OpenBBCboeVixAdapter:
+    source_id = "OPENBB_CBOE_VIX"
+    CAPABILITIES = {
+        "curve": "Cboe VX_EOD 4 p.m. ET levels via OpenBB",
+        "labels": "not official settlement; not live quotes",
+    }
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        from market_intelligence.openbb_provider.config import probe_openbb
+
+        return probe_openbb(env).vix
+
+
+ADAPTERS = (IBKRMarketDataAdapter(), TraceAdapter(), EdgarAdapter(), OpenBBCboeOptionsAdapter(), OpenBBCboeVixAdapter())
 
 
 def probe_all(env: Mapping[str, str]) -> dict[str, AdapterStatus]:
@@ -218,6 +247,8 @@ __all__ = [
     "AdapterStatus",
     "EdgarAdapter",
     "IBKRMarketDataAdapter",
+    "OpenBBCboeOptionsAdapter",
+    "OpenBBCboeVixAdapter",
     "TraceAdapter",
     "probe_all",
 ]

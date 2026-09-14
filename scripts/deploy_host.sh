@@ -138,6 +138,16 @@ if [ ! -x "$STAGED/venv/bin/python" ]; then
   echo "Creating release venv at $STAGED/venv"
   python3 -m venv "$STAGED/venv"
   "$STAGED/venv/bin/pip" install -r "$STAGED/requirements.txt"
+  if [ -f "$STAGED/requirements-openbb.txt" ]; then
+    echo "Installing optional OpenBB ingestion extra"
+    "$STAGED/venv/bin/pip" install -r "$STAGED/requirements-openbb.txt"
+  fi
+fi
+if [ -x "$STAGED/venv/bin/python" ] && [ -f "$STAGED/requirements-openbb.txt" ]; then
+  if ! "$STAGED/venv/bin/python" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('openbb_cboe') else 1)"; then
+    echo "Installing optional OpenBB ingestion extra into existing staged venv"
+    "$STAGED/venv/bin/pip" install -r "$STAGED/requirements-openbb.txt"
+  fi
 fi
 if [ ! -x "$STAGED/venv/bin/streamlit" ]; then
   echo "FAIL: staged release venv is missing streamlit"

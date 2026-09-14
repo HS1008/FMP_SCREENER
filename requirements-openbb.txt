@@ -1,0 +1,12 @@
+# Optional ingestion extra for Cboe delayed options chains and VX_EOD via OpenBB.
+# Install into the ingestion/runtime venv only:
+#   pip install -r requirements.txt -r requirements-dev.txt -r requirements-openbb.txt
+#
+# Pins are the supported versions for this branch. Do not depend on C:\OpenBB,
+# Documents\OpenBB, or any editable/path checkout of the OpenBB repository.
+# Streamlit / read models / the AI gateway must not import these packages.
+#
+# Companion versions resolved from these pins (openbb meta-package):
+#   openbb-core==1.6.13  openbb-derivatives==1.6.2  openbb-yfinance==1.6.3
+openbb==4.7.2
+openbb-cboe==1.6.1

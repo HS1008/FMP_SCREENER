@@ -15,6 +15,7 @@ from typing import Any
 from sqlalchemy import text
 
 from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CURVE_SLOPES, CURVE_TENORS, EXPORT_ATTRIBUTION_REQUIRED, EXPORT_INTERNAL_ONLY, FRED_ATTRIBUTION, CREDIT_SERIES
+from market_intelligence.openbb_provider.config import CBOE_ATTRIBUTION, CBOE_TERMS_NOTES
 from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness
 from market_intelligence.nulls import normalize_payload
 
@@ -74,8 +75,13 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
             transport_status=row.get("transport_status"),
         )
         row["stored_freshness_status"] = row.get("freshness_status")
-        if str(row.get("access_status") or "") in {"RETIRED_OPTIONAL", "RETIRED"}:
+        access = str(row.get("access_status") or "")
+        if access in {"RETIRED_OPTIONAL", "RETIRED"}:
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
+            row["retired_optional"] = True
+        elif access in {"DISABLED", "ENTITLEMENT_REQUIRED"} and str(row.get("source_id") or "").startswith("OPENBB_"):
+            row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
+            row["optional_disabled"] = True
             row["retired_optional"] = True
         else:
             row["freshness_status"] = assessment.status if latest_d is not None else (row.get("freshness_status") or "MISSING")
@@ -823,6 +829,104 @@ def order_flow_overview(conn, *, today: date | None = None) -> dict[str, Any]:
     return order_flow_context(conn, today=today, include_history=False)
 
 
+def options_volatility_context(conn) -> dict[str, Any]:
+    """Stored options / VIX analytics only. Never calls OpenBB."""
+    if not _view_exists(conn, "mi_v_options_latest"):
+        return {
+            "status": "UNAVAILABLE",
+            "reason": "options schema is not applied",
+            "export_scope": EXPORT_INTERNAL_ONLY,
+            "source_id": "OPENBB_CBOE_OPTIONS",
+            "attribution": CBOE_ATTRIBUTION,
+        }
+    chains = _rows(conn, "SELECT * FROM mi_v_options_latest ORDER BY underlying_symbol")
+    attempts = _rows(conn, "SELECT * FROM mi_v_openbb_last_attempt ORDER BY source_id, symbol") if _view_exists(conn, "mi_v_openbb_last_attempt") else []
+    vix_rows = _rows(conn, "SELECT * FROM mi_v_vix_curve_latest LIMIT 1") if _view_exists(conn, "mi_v_vix_curve_latest") else []
+    symbols = []
+    for row in chains:
+        metrics = row.get("metrics_json") or {}
+        iv30 = metrics.get("iv_30d") or {}
+        gex = metrics.get("gex") or {}
+        selected_skew = metrics.get("selected_skew_25d") or {}
+        put_call = metrics.get("put_call") or {}
+        symbols.append(
+            {
+                "underlying_symbol": row.get("underlying_symbol"),
+                "snapshot_id": row.get("snapshot_id"),
+                "observation_time": row.get("observation_time"),
+                "observation_date": row.get("observation_date"),
+                "observation_precision": row.get("observation_precision"),
+                "session_date": row.get("session_date"),
+                "delay_label": row.get("delay_label"),
+                "permitted_use": row.get("permitted_use"),
+                "contract_count": row.get("contract_count"),
+                "export_scope": EXPORT_INTERNAL_ONLY,
+                "source_id": row.get("source_id") or "OPENBB_CBOE_OPTIONS",
+                "iv_30d": iv30.get("iv_percent"),
+                "iv_30d_decimal": iv30.get("iv_decimal"),
+                "selected_skew_25d": selected_skew.get("skew_25d_vol_points"),
+                "oi_put_call": put_call.get("oi_put_call"),
+                "volume_put_call": put_call.get("volume_put_call"),
+                "gex": gex,
+                "atm_term_structure": metrics.get("atm_term_structure") or [],
+                "expected_move": metrics.get("expected_move") or {},
+                "zero_dte": metrics.get("zero_dte") or {},
+                "concentrations": metrics.get("concentrations") or {},
+                "method_version": row.get("method_version"),
+                "payload_hash": row.get("payload_hash"),
+            }
+        )
+    vix = None
+    if vix_rows:
+        metrics = vix_rows[0].get("metrics_json") or {}
+        vix = {
+            "snapshot_id": vix_rows[0].get("snapshot_id"),
+            "observation_date": vix_rows[0].get("observation_date"),
+            "observation_precision": vix_rows[0].get("observation_precision"),
+            "level_type": vix_rows[0].get("level_type"),
+            "delay_label": vix_rows[0].get("delay_label"),
+            "export_scope": EXPORT_INTERNAL_ONLY,
+            "source_id": vix_rows[0].get("source_id") or "OPENBB_CBOE_VIX",
+            "m1": metrics.get("m1"),
+            "m2": metrics.get("m2"),
+            "m1_m2_ratio": metrics.get("m1_m2_ratio"),
+            "m2_minus_m1_points": metrics.get("m2_minus_m1_points"),
+            "m1_to_m2_slope_pct": metrics.get("m1_to_m2_slope_pct"),
+            "front_shape": metrics.get("front_shape"),
+            "points": metrics.get("points") or [],
+            "not_official_settlement": True,
+            "not_live_quotes": True,
+        }
+    status = "OK" if symbols or vix else "UNAVAILABLE"
+    return {
+        "status": status,
+        "reason": None if status == "OK" else "No published OpenBB/Cboe snapshots. Source stays optional and is not a platform outage.",
+        "export_scope": EXPORT_INTERNAL_ONLY,
+        "source_id": "OPENBB_CBOE_OPTIONS",
+        "attribution": CBOE_ATTRIBUTION,
+        "terms_notes": CBOE_TERMS_NOTES,
+        "symbols": symbols,
+        "vix": vix,
+        "last_attempts": attempts,
+    }
+
+
+def options_chain_details(conn, symbol: str, *, limit: int = 80) -> list[dict[str, Any]]:
+    """Bounded contract detail for one published snapshot. Pages must not load the whole chain by default."""
+    if not _view_exists(conn, "mi_v_options_contracts_latest"):
+        return []
+    return _rows(
+        conn,
+        """
+        SELECT * FROM mi_v_options_contracts_latest
+        WHERE underlying_symbol = :s
+        ORDER BY expiration NULLS LAST, strike NULLS LAST, call_put
+        LIMIT :lim
+        """,
+        {"s": symbol.upper(), "lim": max(1, min(int(limit), 200))},
+    )
+
+
 def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
     health = source_health(conn, today=today)
     quarantine = _rows(conn, "SELECT * FROM mi_v_macro_quarantine_summary ORDER BY series_id, reason") if _view_exists(conn, "mi_v_macro_quarantine_summary") else []
@@ -842,6 +946,7 @@ def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
         ],
         "quarantine": quarantine,
         "finra_quarantine": finra_quarantine,
+        "options_volatility": options_volatility_context(conn),
         "export_scope": "INTERNAL_SUMMARY",
     }
 

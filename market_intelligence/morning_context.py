@@ -38,6 +38,7 @@ from market_intelligence.read_models import (
     ibkr_quotes_latest,
     industries_context,
     macro_context,
+    options_volatility_context,
     order_flow_context,
     rates_context,
     sectors_context,
@@ -56,6 +57,7 @@ SECTION_ORDER = (
     "order_flow",
     "sectors",
     "industries",
+    "options_volatility",
     "strategy_monitor_summary",
 )
 
@@ -450,6 +452,37 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
     health = data_health_context(conn, today=capture_date)
     strategies = strategies_context(conn)
     order_flow = order_flow_context(conn, today=capture_date, include_history=False)
+    options_vol = options_volatility_context(conn)
+    compact_options = None
+    if options_vol.get("symbols") or options_vol.get("vix"):
+        compact_options = {
+            "status": options_vol.get("status"),
+            "attribution": options_vol.get("attribution"),
+            "export_scope": "INTERNAL_ONLY",
+            "source_id": "OPENBB_CBOE_OPTIONS",
+            "delay_note": "Cboe delayed / VX_EOD. Not OPRA. Not official VIX settlement.",
+            "symbols": [
+                {
+                    "underlying_symbol": row.get("underlying_symbol"),
+                    "session_date": row.get("session_date"),
+                    "observation_time": row.get("observation_time"),
+                    "delay_label": row.get("delay_label"),
+                    "export_scope": "INTERNAL_ONLY",
+                    "source_id": row.get("source_id"),
+                    "iv_30d": row.get("iv_30d"),
+                    "selected_skew_25d": row.get("selected_skew_25d"),
+                    "oi_put_call": row.get("oi_put_call"),
+                    "gex": {
+                        "signed_net": (row.get("gex") or {}).get("signed_net"),
+                        "gross_unsigned": (row.get("gex") or {}).get("gross_unsigned"),
+                        "largest_gamma_concentration": (row.get("gex") or {}).get("largest_gamma_concentration"),
+                        "method": (row.get("gex") or {}).get("method"),
+                    },
+                }
+                for row in (options_vol.get("symbols") or [])
+            ],
+            "vix": options_vol.get("vix"),
+        }
     compact_flow = None
     if order_flow:
         capped = order_flow.get("capped_volume") or {}
@@ -504,14 +537,15 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
         "order_flow": section_status("order_flow", compact_flow, required=["coverage"], capture_date=capture_date, empty_reason="No FINRA capability coverage stored.", presence="registry"),
         "sectors": section_status("sectors", sectors if sectors.get("datasets") else None, required=["datasets"], capture_date=capture_date, empty_reason="No sector snapshots stored (legacy bridge not run)."),
         "industries": section_status("industries", industries if industries.get("datasets") else None, required=["datasets"], capture_date=capture_date, empty_reason="No industry snapshots stored."),
+        "options_volatility": section_status("options_volatility", compact_options, required=["symbols"], capture_date=capture_date, empty_reason="No published OpenBB/Cboe snapshots (optional source; not a platform outage).", presence="registry"),
         "strategy_monitor_summary": section_status("strategy_monitor_summary", strategies if strategies.get("strategies") else None, required=["strategies"], capture_date=capture_date, empty_reason="No research runs in PostgreSQL.", presence="registry"),
     }
     _status_keys = ("status", "reason", "required_missing", "latest_observation_date", "captured_freshness", "required_inputs", "stale_required", "missing_required")
     sections_status = {name: {k: sec[k] for k in _status_keys} for name, sec in sections.items()}
-    statuses = [s["status"] for s in sections.values()]
-    if all(s == SECTION_OK for s in statuses):
+    required_for_completeness = [s["status"] for name, s in sections.items() if name != "options_volatility"]
+    if all(s == SECTION_OK for s in required_for_completeness):
         completeness = COMPLETENESS_COMPLETE
-    elif all(s == SECTION_UNAVAILABLE for s in statuses):
+    elif all(s == SECTION_UNAVAILABLE for s in required_for_completeness):
         completeness = COMPLETENESS_EMPTY
     else:
         completeness = COMPLETENESS_PARTIAL

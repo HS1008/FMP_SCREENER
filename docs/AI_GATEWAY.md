@@ -86,8 +86,11 @@ Every envelope records `export_mode`, `owner_session`, `remote_value_sources`,
 `restricted_entries`, and `export_sha256` over the delivered JSON.
 
 Current remote posture with the shipped registry: Treasury and public FRED series carry
-values; equity-EOD derived sector/industry/subgroup values, ICE BofA credit values and FINRA
-aggregates are identity/date/status only until an entitlement decision is recorded.
+values; equity-EOD derived sector/industry/subgroup values, ICE BofA credit values, FINRA
+aggregates, and OpenBB / Cboe options + VX_EOD (`OPENBB_CBOE_OPTIONS`, `OPENBB_CBOE_VIX`)
+are identity/date/status only until an entitlement decision is recorded. Cboe is **not**
+listed in the example `AI_GATEWAY_REMOTE_VALUE_SOURCES` allowlist. IV, GEX, strikes, skew,
+and curve points are `VALUE_KEYS` and redact under `external`.
 
 ## Holdout fail-closed (defense in depth)
 

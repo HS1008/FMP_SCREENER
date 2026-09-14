@@ -358,7 +358,9 @@ def test_settlement_skips_weekends():
 
 def test_adapters_are_disabled_or_configuration_required_and_refuse_to_fetch():
     statuses = adapters.probe_all({})
-    assert set(statuses) == {"IBKR_MARKET_DATA", "FINRA_TRACE", "SEC_EDGAR"}
+    assert set(statuses) == {"IBKR_MARKET_DATA", "FINRA_TRACE", "SEC_EDGAR", "OPENBB_CBOE_OPTIONS", "OPENBB_CBOE_VIX"}
+    assert statuses["OPENBB_CBOE_OPTIONS"].access_status == adapters.ACCESS_DISABLED
+    assert statuses["OPENBB_CBOE_VIX"].access_status == adapters.ACCESS_DISABLED
     assert statuses["IBKR_MARKET_DATA"].access_status == adapters.ACCESS_DISABLED
     assert statuses["FINRA_TRACE"].access_status == adapters.ACCESS_DISABLED
     assert statuses["SEC_EDGAR"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED

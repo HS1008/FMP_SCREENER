@@ -119,6 +119,60 @@ def open_registered_page(route_id: str, label: str) -> None:
 
 # ---- Overview ---------------------------------------------------------------------------
 
+def _fmt_or_dash(value: Any, units: str | None = None) -> str:
+    if value is None:
+        return "—"
+    return fmt(value, units)
+
+
+def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
+    st.subheader("Options and volatility")
+    st.caption("Cboe delayed chains / VX_EOD via stored PostgreSQL snapshots. Not OPRA. Not a live quote. GEX is an OI-derived gamma-exposure proxy (estimated, CALL_PLUS_PUT_MINUS_V1), not observed dealer inventory.")
+    if not ctx or (not ctx.get("symbols") and not ctx.get("vix")):
+        st.info(ctx.get("reason") if ctx else "Options schema is not available. This optional source is not a platform outage.")
+        return
+    symbols = ctx.get("symbols") or []
+    if symbols:
+        frame = pd.DataFrame(
+            [
+                {
+                    "Underlying": row.get("underlying_symbol"),
+                    "Session": row.get("session_date") or "unknown",
+                    "As-of": str(row.get("observation_time") or row.get("observation_date") or "unknown"),
+                    "Delay": row.get("delay_label") or "—",
+                    "30D ATM IV": _fmt_or_dash(row.get("iv_30d"), "pct") if row.get("iv_30d") is not None else "—",
+                    "25Δ skew (vol pts)": _fmt_or_dash(row.get("selected_skew_25d"), None) if row.get("selected_skew_25d") is not None else "—",
+                    "P/C OI": _fmt_or_dash(row.get("oi_put_call"), None) if row.get("oi_put_call") is not None else "—",
+                    "Estimated GEX proxy (signed)": _fmt_or_dash((row.get("gex") or {}).get("signed_net"), None),
+                    "Largest gamma conc.": ((row.get("gex") or {}).get("largest_gamma_concentration") or {}).get("strike") or "—",
+                }
+                for row in symbols
+            ]
+        )
+        st.dataframe(frame, use_container_width=True, hide_index=True)
+        with st.expander("Term structure and methodology"):
+            for row in symbols:
+                st.caption("{0} session {1} · {2}".format(row.get("underlying_symbol"), row.get("session_date") or "unknown", row.get("delay_label")))
+                term = row.get("atm_term_structure") or []
+                if term:
+                    st.dataframe(pd.DataFrame([{"Expiry": p.get("expiration"), "DTE (session)": p.get("dte_session"), "Spot ATM IV": p.get("atm_iv"), "One-sided": p.get("one_sided")} for p in term]), use_container_width=True, hide_index=True)
+                details = load_or_stop("options_chain_details", row.get("underlying_symbol"), limit=40)
+                if details:
+                    st.caption("Bounded chain sample (not the full chain).")
+                    st.dataframe(pd.DataFrame([{"Contract": d.get("contract_symbol"), "Exp": d.get("expiration"), "K": d.get("strike"), "CP": d.get("call_put"), "OI": d.get("open_interest"), "IV": d.get("implied_volatility")} for d in details]), use_container_width=True, hide_index=True)
+    vix = ctx.get("vix")
+    if vix:
+        cols = st.columns(4)
+        cols[0].metric("VX M1", _fmt_or_dash((vix.get("m1") or {}).get("price"), None), (vix.get("m1") or {}).get("expiration"))
+        cols[1].metric("VX M2", _fmt_or_dash((vix.get("m2") or {}).get("price"), None), (vix.get("m2") or {}).get("expiration"))
+        cols[2].metric("M2−M1", _fmt_or_dash(vix.get("m2_minus_m1_points"), None))
+        cols[3].metric("Front shape", str(vix.get("front_shape") or "—"))
+        st.caption("VX_EOD 4 p.m. ET levels on {0}. Not official settlement. Not live quotes. Front-curve shape only.".format(vix.get("observation_date") or "unknown date"))
+        points = vix.get("points") or []
+        if points:
+            st.dataframe(pd.DataFrame([{"Expiry": p.get("expiration"), "Precision": p.get("precision"), "Price": p.get("price")} for p in points]), use_container_width=True, hide_index=True)
+
+
 def render_market_pulse() -> None:
     health = load_or_stop("source_health")
     rates = load_or_stop("rates_context")
@@ -180,6 +234,9 @@ def render_market_pulse() -> None:
     breadth = next((row for row in ((order_flow.get("breadth") or {}).get("rows") or []) if (row.get("product_category") or "").lower() == "all securities"), None)
     if breadth:
         headline_cols[3].metric("Bond activity (volume)", fmt(breadth.get("total_volume"), None), fmt_signed(breadth.get("volume_change"), None) if breadth.get("volume_change") is not None else None)
+
+    options_vol = load_or_stop("options_volatility_context")
+    _render_volatility_panel(options_vol)
 
     st.subheader("Sector leadership and weakness")
     if rs_rows:
@@ -724,6 +781,33 @@ def render_data_health() -> None:
     elif collectors:
         st.caption("Collector registered, but no quotes have been persisted yet.")
 
+    options_health = ctx.get("options_volatility") or load_or_stop("options_volatility_context")
+    with st.expander("OpenBB / Cboe options and VX_EOD"):
+        st.caption("Optional delayed/EOD source. Disabled or rights-gated is not a platform outage.")
+        if options_health.get("symbols") or options_health.get("vix"):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Symbol": row.get("underlying_symbol"),
+                            "Session": row.get("session_date") or "unknown",
+                            "Delay": row.get("delay_label"),
+                            "Contracts": row.get("contract_count"),
+                            "Snapshot": row.get("snapshot_id"),
+                        }
+                        for row in (options_health.get("symbols") or [])
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            attempts = options_health.get("last_attempts") or []
+            if attempts:
+                st.caption("Latest acquisition attempts (including failures). Last valid snapshot is unchanged by a failed attempt.")
+                st.dataframe(pd.DataFrame(attempts), use_container_width=True, hide_index=True)
+        else:
+            st.info(options_health.get("reason") or "No published options/VIX snapshots.")
+
     quarantine = ctx.get("quarantine") or []
     finra_quarantine = ctx.get("finra_quarantine") or []
     if quarantine or finra_quarantine:
@@ -854,6 +938,32 @@ def render_morning_context() -> None:
     if credit.get("buckets"):
         st.subheader("Credit")
         st.dataframe(pd.DataFrame([{"Bucket": row["label"], "As of": row["as_of"], "OAS (bps)": fmt(row["oas_bps"], None, digits=0), "1D": fmt_signed(row["change_1d_bps"], "bps")} for row in credit["buckets"] if row.get("bucket") in {"ig_broad", "hy_broad"} or row.get("oas_bps") is not None][:8]), use_container_width=True, hide_index=True)
+    options_section = (sections.get("options_volatility") or {}).get("data") or {}
+    if options_section:
+        st.subheader("Options and volatility")
+        st.caption(options_section.get("delay_note") or "Cboe delayed / EOD stored snapshot.")
+        rows = options_section.get("symbols") or []
+        if rows:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Underlying": row.get("underlying_symbol"),
+                            "Session": row.get("session_date") or "unknown",
+                            "30D ATM IV": row.get("iv_30d"),
+                            "25Δ skew": row.get("selected_skew_25d"),
+                            "P/C OI": row.get("oi_put_call"),
+                            "Estimated GEX proxy": (row.get("gex") or {}).get("signed_net"),
+                        }
+                        for row in rows
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        vix = options_section.get("vix") or {}
+        if vix:
+            st.caption("VX front {0} on {1}".format(vix.get("front_shape") or "—", vix.get("observation_date") or "unknown"))
     flow = (sections.get("order_flow") or {}).get("data") or {}
     if flow:
         st.subheader("Order Flow")

@@ -143,6 +143,16 @@ if [ ! -x "$target/venv/bin/streamlit" ]; then
     echo "Creating release venv at $target/venv"
     python3 -m venv "$target/venv"
     "$target/venv/bin/pip" install -r "$target/requirements.txt"
+    if [ -f "$target/requirements-openbb.txt" ]; then
+      echo "Installing optional OpenBB ingestion extra"
+      "$target/venv/bin/pip" install -r "$target/requirements-openbb.txt"
+    fi
+  fi
+fi
+if [ -x "$target/venv/bin/python" ] && [ -f "$target/requirements-openbb.txt" ]; then
+  if ! "$target/venv/bin/python" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('openbb_cboe') else 1)"; then
+    echo "Installing optional OpenBB ingestion extra into existing release venv"
+    "$target/venv/bin/pip" install -r "$target/requirements-openbb.txt"
   fi
 fi
 if [ "$SKIP_IDENTITY" != 1 ] && [ "$STAGE_ONLY" != 1 ] && [ ! -x "$target/venv/bin/streamlit" ]; then

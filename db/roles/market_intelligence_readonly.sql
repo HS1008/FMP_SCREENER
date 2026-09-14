@@ -86,6 +86,14 @@ GRANT SELECT ON mi_v_finra_aggregate_quarantine TO mi_readonly;
 GRANT SELECT ON mi_v_ops_status TO mi_readonly;
 GRANT SELECT ON mi_v_provider_observations_current TO mi_readonly;
 
+SELECT EXISTS (SELECT 1 FROM information_schema.views WHERE table_name = 'mi_v_options_latest') AS has_openbb_options \gset
+\if :has_openbb_options
+GRANT SELECT ON mi_v_options_latest TO mi_readonly;
+GRANT SELECT ON mi_v_options_contracts_latest TO mi_readonly;
+GRANT SELECT ON mi_v_vix_curve_latest TO mi_readonly;
+GRANT SELECT ON mi_v_openbb_last_attempt TO mi_readonly;
+\endif
+
 SELECT EXISTS (SELECT 1 FROM information_schema.views WHERE table_name = 'mi_v_equity_eod_coverage') AS has_equity_eod_coverage \gset
 \if :has_equity_eod_coverage
 GRANT SELECT ON mi_v_equity_eod_coverage TO mi_readonly;

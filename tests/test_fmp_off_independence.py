@@ -38,6 +38,8 @@ def test_refresh_skips_legacy_in_fmp_free(monkeypatch):
         legacy_sector=False,
         treasury=False,
         equity=False,
+        options=False,
+        vix=False,
         build_analytics=False,
         build_morning=False,
         all_configured=True,
