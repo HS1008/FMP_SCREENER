@@ -164,6 +164,9 @@ def test_deploy_host_activates_from_origin_with_commit_graph_assertion():
     assert "--depth 1" not in lib
     assert "--refetch" in lib
     assert "refusing to copy an incomplete commit" in lib
+    assert "checkout --force --detach" in lib
+    assert "tracked working tree is dirty after activation" in lib
+    assert "scripts/lib_post_deploy_lock.sh" in host
 
 
 def test_post_deploy_workflows_share_host_serialization():

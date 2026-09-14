@@ -172,6 +172,11 @@ activate_live_checkout() {
   local url="$3"
   local staged="${4:-}"
   fetch_commit_with_ancestry "$dir" "$sha" "$url" "$staged" || return
-  _git -C "$dir" checkout --detach "$sha" || return
-  assert_commit_graph "$dir" "$sha"
+  _git -C "$dir" checkout --force --detach "$sha" || return
+  assert_commit_graph "$dir" "$sha" || return
+  if [ -n "$(_git -C "$dir" status --porcelain --untracked-files=no)" ]; then
+    echo "FAIL: tracked working tree is dirty after activation"
+    _git -C "$dir" status --porcelain --untracked-files=no || true
+    return 3
+  fi
 }
