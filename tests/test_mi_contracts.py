@@ -360,6 +360,7 @@ def test_catalog_contains_required_series_and_flags_ice_as_restricted():
         "DFF", "SOFR", "DGS3MO", "DGS6MO", "DGS1", "DGS2", "DGS3", "DGS5", "DGS7", "DGS10", "DGS20", "DGS30",
         "DFII5", "DFII10", "DFII20", "DFII30", "T5YIE", "T10YIE", "T5YIFR", "WALCL", "RRPONTSYD", "WTREGEN", "WRESBAL", "M2SL",
         "BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLC0A1CAAA", "BAMLC0A2CAA", "BAMLC0A3CA", "BAMLC0A4CBBB", "BAMLH0A1HYBB", "BAMLH0A2HYB", "BAMLH0A3HYC",
+        "DCOILWTICO", "DHHNGSP", "PCOPPUSDM",
     }
     assert required <= ids
     for spec in catalog.CATALOG:

@@ -12,7 +12,7 @@ from ibkr_collector.values import BLOCKED_ECLIENT_METHODS, classify_error, finit
 logger = logging.getLogger("ibkr_collector.client")
 
 MAX_ERRORS = 200
-MAX_RAW_TICKS = 100
+MAX_RAW_TICKS = 500
 
 
 class OrderMethodBlocked(RuntimeError):
@@ -68,6 +68,7 @@ class _ReadOnlyCallbacks:
         self.opt_params: dict[int, list[dict[str, Any]]] = {}
         self.opt_params_done: dict[int, threading.Event] = {}
         self._req_seq = 1000
+        self.managed_accounts: list[str] = []
 
     def mark_historical(self, req_id: int) -> threading.Event:
         with self._lock:
@@ -100,7 +101,8 @@ class _ReadOnlyCallbacks:
         logger.info("tws socket accepted API connectAck")
 
     def managedAccounts(self, accountsList: str) -> None:
-        return
+        parts = [part.strip() for part in str(accountsList or "").split(",") if part.strip()]
+        self.managed_accounts = parts
 
     def currentTime(self, time: int) -> None:
         self.server_time_unix = int(time)
@@ -169,6 +171,12 @@ class _ReadOnlyCallbacks:
             self.symbol_samples[reqId] = rows
         self.wait_event(reqId, self.symbol_samples_done).set()
 
+    def _count_tick(self, reqId: int, kind: str, tick_id: int) -> None:
+        bucket = self.ticks.setdefault(reqId, {})
+        counts = bucket.setdefault("tick_type_counts", {})
+        key = "{0}:{1}".format(kind, tick_id)
+        counts[key] = int(counts.get(key) or 0) + 1
+
     def _note_callback(self, reqId: int) -> None:
         from ibkr_collector.values import utcnow
 
@@ -192,6 +200,8 @@ class _ReadOnlyCallbacks:
             self.raw_ticks.append({"req_id": reqId, "kind": "price", "tick_type": tick_id, "price": finite_or_none(price)})
             if len(self.raw_ticks) > MAX_RAW_TICKS:
                 self.raw_ticks = self.raw_ticks[-MAX_RAW_TICKS:]
+            if isinstance(tick_id, int):
+                self._count_tick(reqId, "price", tick_id)
             self._note_callback(reqId)
         field = PRICE_TICKS.get(tick_id) if isinstance(tick_id, int) else None
         if not field:
@@ -206,10 +216,12 @@ class _ReadOnlyCallbacks:
         from ibkr_collector.values import SIZE_TICKS
 
         field = SIZE_TICKS.get(int(tickType))
-        if not field:
-            return
         value = finite_or_none(size)
         with self._lock:
+            self._count_tick(reqId, "size", int(tickType))
+            if not field:
+                self._note_callback(reqId)
+                return
             bucket = self.ticks.setdefault(reqId, {})
             bucket[field] = value
             self._note_callback(reqId)
@@ -218,9 +230,11 @@ class _ReadOnlyCallbacks:
         from ibkr_collector.values import TIMESTAMP_TICKS
 
         field = TIMESTAMP_TICKS.get(int(tickType))
-        if not field:
-            return
         with self._lock:
+            self._count_tick(reqId, "string", int(tickType))
+            if not field:
+                self._note_callback(reqId)
+                return
             bucket = self.ticks.setdefault(reqId, {})
             bucket[field] = value or None
             self._note_callback(reqId)
@@ -229,9 +243,11 @@ class _ReadOnlyCallbacks:
         from ibkr_collector.values import GENERIC_TICKS
 
         field = GENERIC_TICKS.get(int(tickType))
-        if not field:
-            return
         with self._lock:
+            self._count_tick(reqId, "generic", int(tickType))
+            if not field:
+                self._note_callback(reqId)
+                return
             bucket = self.ticks.setdefault(reqId, {})
             bucket[field] = finite_or_none(value)
             self._note_callback(reqId)
@@ -274,6 +290,7 @@ class _ReadOnlyCallbacks:
         }
         with self._lock:
             bucket = self.ticks.setdefault(reqId, {})
+            self._count_tick(reqId, "option_computation", tick_id)
             ranked = bucket.setdefault("option_computations", {})
             ranked[tick_id] = greeks
             preferred = _preferred_option_computation(ranked)

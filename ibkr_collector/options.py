@@ -32,14 +32,20 @@ FILL_FIELDS = (
     "bid",
     "ask",
     "last",
+    "close",
+    "bid_size",
+    "ask_size",
+    "last_size",
     "volume",
     "open_interest",
+    "underlying_price",
     "implied_volatility",
     "delta",
     "gamma",
     "theta",
     "vega",
 )
+MARKET_DATA_TYPE_SETTLE_SEC = 1.0
 HANDSHAKE_WAIT_SEC = 20.0
 CONTRACT_WAIT_SEC = 10.0
 PARAMS_WAIT_SEC = 15.0
@@ -248,6 +254,8 @@ def _quote_from_ticks(spec: OptionSpec, ticks: Mapping[str, Any], md_code: int |
         "theoretical_price": ticks.get("theoretical_price"),
         "underlying_price": ticks.get("underlying_price"),
         "last_timestamp": ticks.get("last_timestamp"),
+        "con_id": ticks.get("con_id"),
+        "exchange": ticks.get("exchange") or spec.exchange,
         "market_data_type": md_label,
         "market_data_type_code": md_code,
         "entitlement_error": bool(ticks.get("entitlement_error")),
@@ -267,6 +275,11 @@ def collect_bounded_chain(
     atm_strikes_each_side: int = ATM_STRIKES_EACH_SIDE,
     max_concurrent: int = MAX_CONCURRENT_LINES,
     quote_wait_sec: float = QUOTE_WAIT_SEC,
+    generic_ticks: str | None = None,
+    snapshot: bool = False,
+    keep_underlying: bool = True,
+    force_exchange: str | None = None,
+    market_data_type: int = MARKET_DATA_TYPE_DELAYED,
     sleeper: Callable[[float], None] = time.sleep,
     clock: Callable[[], datetime] | None = None,
 ) -> BoundedChainResult:
@@ -275,7 +288,8 @@ def collect_bounded_chain(
     session_day = as_of or now.date()
     symbol = symbol.upper()
     error_origin = len(client.errors)
-    client.reqMarketDataType(MARKET_DATA_TYPE_DELAYED)
+    client.reqMarketDataType(int(market_data_type))
+    sleeper(MARKET_DATA_TYPE_SETTLE_SEC)
 
     stock_req = client.next_req_id()
     client.wait_event(stock_req, client.contract_details_done)
@@ -311,14 +325,18 @@ def collect_bounded_chain(
             break
         sleeper(0.2)
     under_ticks = dict(client.ticks.get(under_req) or {})
-    try:
-        client.cancelMktData(under_req)
-    except Exception:
-        logger.debug("cancel underlying mkt data failed", exc_info=True)
+    if not keep_underlying:
+        try:
+            client.cancelMktData(under_req)
+        except Exception:
+            logger.debug("cancel underlying mkt data failed", exc_info=True)
     if spot is None:
         spot = _spot_from_ticks(under_ticks)
     under_md = client.market_data_types.get(under_req, under_ticks.get("market_data_type"))
-    option_generic = _generic_ticks_for(under_md if isinstance(under_md, int) else None)
+    if generic_ticks is None:
+        option_generic = _generic_ticks_for(under_md if isinstance(under_md, int) else None)
+    else:
+        option_generic = generic_ticks
 
     param_req = client.next_req_id()
     client.wait_event(param_req, client.opt_params_done)
@@ -345,7 +363,7 @@ def collect_bounded_chain(
             detail_map[det_req] = spec
             client.wait_event(det_req, client.contract_details_done)
             client.reqContractDetails(det_req, _option_contract(spec))
-        sleeper(min(CONTRACT_WAIT_SEC, quote_wait_sec))
+        sleeper(min(CONTRACT_WAIT_SEC, quote_wait_sec if quote_wait_sec > 0 else CONTRACT_WAIT_SEC))
         for det_req, spec in detail_map.items():
             client.contract_details_done.get(det_req, threading.Event()).wait(0.01)
             rows = list(client.contract_details.get(det_req) or [])
@@ -361,15 +379,21 @@ def collect_bounded_chain(
         for spec, payload in batch:
             req_id = client.next_req_id()
             req_map[req_id] = (spec, payload)
-            client.reqMktData(req_id, _option_contract_from_details(spec, payload), option_generic, False, False, [])
+            contract = _option_contract_from_details(spec, payload)
+            if force_exchange:
+                contract.exchange = force_exchange
+            client.reqMktData(req_id, contract, option_generic, bool(snapshot), False, [])
         sleeper(quote_wait_sec)
         for req_id, (spec, payload) in req_map.items():
             ticks = dict(client.ticks.get(req_id) or {})
-            observed_tick_keys.update(key for key in ticks if key != "last_callback_at")
+            observed_tick_keys.update(key for key in ticks if key not in {"last_callback_at", "tick_type_counts", "option_computations"})
+            ticks["con_id"] = payload.get("con_id")
+            ticks["exchange"] = payload.get("exchange") or spec.exchange
             if not ticks.get("local_symbol"):
                 ticks["local_symbol"] = payload.get("local_symbol")
             md_code = client.market_data_types.get(req_id, ticks.get("market_data_type"))
             quote = _quote_from_ticks(spec, ticks, md_code if isinstance(md_code, int) else None)
+            quote["tick_type_counts"] = dict(ticks.get("tick_type_counts") or {})
             quotes.append(quote)
             md_labels.append(quote["market_data_type"])
             try:
@@ -378,17 +402,41 @@ def collect_bounded_chain(
                 logger.debug("cancel option mkt data failed req=%s", req_id, exc_info=True)
         sleeper(0.25)
 
+    if keep_underlying:
+        try:
+            client.cancelMktData(under_req)
+        except Exception:
+            logger.debug("cancel underlying mkt data failed", exc_info=True)
+
     new_errors = _errors_since(client, error_origin)
     entitlement = [e for e in new_errors if e.get("kind") == "entitlement"]
     line_limit = [e for e in new_errors if e.get("kind") == "line_limit"]
     invalid = [e for e in new_errors if e.get("kind") == "invalid_contract"]
     quoted = [row for row in quotes if any(row.get(k) is not None for k in ("bid", "ask", "last", "implied_volatility"))]
     error_code_counts: dict[str, int] = {}
+    error_samples: list[dict[str, Any]] = []
+    seen_err: set[tuple[Any, ...]] = set()
     for err in new_errors:
-        if err.get("kind") == "info":
-            continue
         key = str(err.get("error_code"))
         error_code_counts[key] = error_code_counts.get(key, 0) + 1
+        sample_key = (err.get("error_code"), err.get("kind"), str(err.get("error_string") or "")[:80])
+        if sample_key in seen_err:
+            continue
+        seen_err.add(sample_key)
+        error_samples.append(
+            {
+                "error_code": err.get("error_code"),
+                "kind": err.get("kind"),
+                "req_id": err.get("req_id"),
+                "error_string": str(err.get("error_string") or "")[:240],
+            }
+        )
+    tick_type_counts: dict[str, int] = {}
+    for row in quotes:
+        for key, count in (row.get("tick_type_counts") or {}).items():
+            tick_type_counts[key] = tick_type_counts.get(key, 0) + int(count)
+    for key, count in (under_ticks.get("tick_type_counts") or {}).items():
+        tick_type_counts["underlying:{0}".format(key)] = int(count)
     field_fills = {name: sum(1 for row in quotes if row.get(name) is not None) for name in FILL_FIELDS}
     selected_param = None
     if param:
@@ -406,6 +454,8 @@ def collect_bounded_chain(
             "spot": spot,
             "ticks": {k: under_ticks.get(k) for k in ("bid", "ask", "last", "close", "option_implied_volatility")},
             "market_data_type": market_data_type_label(under_md if isinstance(under_md, int) else None),
+            "market_data_type_code": under_md if isinstance(under_md, int) else None,
+            "tick_type_counts": dict(under_ticks.get("tick_type_counts") or {}),
         },
         param_exchanges=[{"exchange": r.get("exchange"), "trading_class": r.get("trading_class"), "expirations": len(r.get("expirations") or []), "strikes": len(r.get("strikes") or [])} for r in param_rows],
         selected=[spec.__dict__ for spec in specs],
@@ -420,12 +470,18 @@ def collect_bounded_chain(
             "quoted": len(quoted),
             "max_concurrent": max_lines,
             "generic_ticks": option_generic,
+            "snapshot": bool(snapshot),
+            "keep_underlying": bool(keep_underlying),
+            "force_exchange": force_exchange,
+            "req_market_data_type": int(market_data_type),
             "export_scope": EXPORT_SCOPE,
             "field_fills": field_fills,
             "error_code_counts": error_code_counts,
+            "error_samples": error_samples,
             "invalid_contract_count": len(invalid),
             "selected_param": selected_param,
             "tick_field_keys": sorted(observed_tick_keys),
+            "tick_type_counts": tick_type_counts,
         },
     )
 
@@ -455,24 +511,53 @@ def connect_options_session(
     return client, None
 
 
-def result_summary(result: BoundedChainResult) -> dict[str, Any]:
-    """Counts and entitlement only. Does not dump the full chain."""
-    return {
+def result_summary(result: BoundedChainResult, *, include_quotes: bool = False) -> dict[str, Any]:
+    """Counts, errors, and optional per-contract field proof. Not a production dump."""
+    payload: dict[str, Any] = {
         "symbol": result.symbol,
         "collected_at": result.collected_at,
         "underlying_spot": (result.underlying or {}).get("spot"),
         "underlying_market_data_type": (result.underlying or {}).get("market_data_type"),
+        "underlying_market_data_type_code": (result.underlying or {}).get("market_data_type_code"),
+        "underlying_ticks": (result.underlying or {}).get("ticks"),
+        "underlying_tick_type_counts": (result.underlying or {}).get("tick_type_counts") or {},
         "param_exchange_count": len(result.param_exchanges),
         "selected_param": (result.quality or {}).get("selected_param"),
         "selected_count": len(result.selected),
         "qualified_count": (result.quality or {}).get("qualified"),
         "quoted_count": result.quality.get("quoted"),
         "market_data_types": result.market_data_types,
+        "req_market_data_type": (result.quality or {}).get("req_market_data_type"),
+        "generic_ticks": (result.quality or {}).get("generic_ticks"),
+        "keep_underlying": (result.quality or {}).get("keep_underlying"),
+        "snapshot": (result.quality or {}).get("snapshot"),
         "entitlement_error_count": len(result.entitlement_errors),
         "line_limit_error_count": len(result.line_limit_errors),
         "field_fills": (result.quality or {}).get("field_fills") or {},
         "error_code_counts": (result.quality or {}).get("error_code_counts") or {},
+        "error_samples": (result.quality or {}).get("error_samples") or [],
+        "tick_type_counts": (result.quality or {}).get("tick_type_counts") or {},
         "export_scope": EXPORT_SCOPE,
         "source_id": SOURCE_ID,
         "quality": result.quality,
     }
+    if include_quotes:
+        payload["quote_proof"] = [
+            {
+                "local_symbol": row.get("local_symbol"),
+                "con_id": row.get("con_id"),
+                "expiration": row.get("expiration"),
+                "strike": row.get("strike"),
+                "right": row.get("right"),
+                "exchange": row.get("exchange"),
+                "trading_class": row.get("trading_class"),
+                "multiplier": row.get("multiplier"),
+                "market_data_type": row.get("market_data_type"),
+                "market_data_type_code": row.get("market_data_type_code"),
+                "entitlement_error": row.get("entitlement_error"),
+                "tick_type_counts": row.get("tick_type_counts") or {},
+                "fields": {name: row.get(name) for name in FILL_FIELDS},
+            }
+            for row in result.quotes
+        ]
+    return payload

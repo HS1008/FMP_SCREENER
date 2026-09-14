@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import date
 from typing import Any
 
 from ibkr_collector import DEFAULT_OPTIONS_CLIENT_ID
@@ -40,14 +41,37 @@ def run_fetch_options(args: Any) -> int:
             }
             if args.quote_wait is not None:
                 kwargs["quote_wait_sec"] = args.quote_wait
+            if args.generic_ticks is not None:
+                ticks = str(args.generic_ticks)
+                if ticks.lower() in {"", "none", "off", "-"}:
+                    ticks = ""
+                kwargs["generic_ticks"] = ticks
+            if args.snapshot:
+                kwargs["snapshot"] = True
+            if args.as_of:
+                kwargs["as_of"] = date.fromisoformat(str(args.as_of))
+            if args.market_data_type is not None:
+                kwargs["market_data_type"] = args.market_data_type
             result = collect_bounded_chain(client, symbol, **kwargs)
-            reports.append(result_summary(result))
+            reports.append(result_summary(result, include_quotes=bool(args.prove)))
     finally:
         try:
             if client.isConnected():
                 client.disconnect()
         except Exception:
             pass
-    payload = {"ok": True, "posted": False, "production_enabled": False, "results": reports}
+    payload = {
+        "ok": True,
+        "posted": False,
+        "production_enabled": False,
+        "session": {
+            "client_id": client_id,
+            "host": host,
+            "port": port,
+            "managed_account_count": len(getattr(client, "managed_accounts", []) or []),
+            "managed_account_suffixes": [str(item)[-4:] for item in (getattr(client, "managed_accounts", []) or [])],
+        },
+        "results": reports,
+    }
     sys.stdout.write(json.dumps(payload, sort_keys=True) + "\n")
     return 0 if all(row.get("quality", {}).get("status") == "OK" for row in reports) else 1

@@ -268,6 +268,9 @@ def synthetic_fred_data(end: date = date(2024, 12, 31)) -> dict[str, list[tuple[
     data["WTREGEN"] = [(d, "{0:.1f}".format(700000 + (i % 9) * 10000)) for i, d in enumerate(weekly_days)]
     data["WRESBAL"] = [(d, "{0:.1f}".format(3300000 - 2000 * i)) for i, d in enumerate(weekly_days)]
     data["RRPONTSYD"] = daily_series(end, 400, 500.0, -0.5)
+    data["DCOILWTICO"] = daily_series(end, 400, 75.0, 0.02)
+    data["DHHNGSP"] = daily_series(end, 400, 2.50, 0.002)
+    data["PCOPPUSDM"] = monthly_index(date(end.year, end.month, 1), 40, 8500.0, 0.004)
     return data
 
 

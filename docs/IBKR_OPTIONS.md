@@ -2,8 +2,22 @@
 
 Reviewed 2026-09-14. Collector exists. Recurring production collection is **off**.
 Export scope: `INTERNAL_ONLY`. Not on `AI_GATEWAY_REMOTE_VALUE_SOURCES`.
+Data Health: `IBKR_OPTIONS = PROVIDER_SUPPORT_REQUIRED`. `IBKR_OPTIONS_STORAGE = RIGHTS_PENDING`.
 
-## Live TWS probe (2026-09-14, client id 73, `127.0.0.1:7496`)
+## Post-OPRA API probe (2026-09-14 after 16:00 ET, client 73)
+
+Client Portal: OPRA Top of Book (L1) Active, API acknowledgement signed, TWS restarted.
+Qualified SMART contract: `SPY 260915C00761000` conId `922515140`.
+
+| reqMarketDataType | marketDataType callback | bid/ask/last | volume/OI | model IV/Greeks | Errors |
+|---|---|---|---|---|---|
+| 1 live | none | none | none | none | 354, 10091, 2186 on underlying |
+| 2 frozen | **2** | **none** | none | none | **354**, 10091 (`SPY ARCA/TOP`) |
+| 3 delayed | 3 on single SMART/IBUSOPT | **none** (no ticks 66–68) | none | intermittent 80–83 | 10167, 10091 |
+
+Frozen Type 2 after the close is **Case B**: OPRA entitlement is not reaching the TWS socket API. Do not buy another package. Open an IBKR ticket with this table if Client Portal still shows Active. Do not enable collection.
+
+## Earlier live TWS probe (2026-09-14, client id 73, `127.0.0.1:7496`)
 
 Bounded `fetch-options` against this username, market hours, SPY/QQQ/IWM. **Did not POST. Did not subscribe OPRA. Did not enable production collection.**
 
@@ -72,7 +86,7 @@ Default max is **100 simultaneous top-of-book lines**, shared with TWS windows a
 
 ## Schema reuse
 
-Quotes map to `NormalizedChain` via `market_intelligence.ibkr_options.normalize_ibkr_chain` (`source_id=IBKR_OPTIONS`, `provider=ibkr`). Market Pulse analytics (`compute_options_metrics`) can consume that object. PostgreSQL `mi_openbb_*` tables can store it later, but `mi_v_options_latest` still hardcodes `CBOE_DELAYED` — do not publish until that label is generalized and a storage-rights review is recorded. Catalog row is `DISABLED`.
+Quotes map to `NormalizedChain` via `market_intelligence.ibkr_options.normalize_ibkr_chain` (`source_id=IBKR_OPTIONS`, `provider=ibkr`). Market Pulse analytics (`compute_options_metrics`) can consume that object. Views `mi_v_options_latest` / `mi_v_options_contracts_latest` read `quality_json.delay_label` (migration 034); OpenBB defaults to `CBOE_DELAYED`. Do not persist IBKR snapshots until storage rights are explicit. Catalog row is `PROVIDER_SUPPORT_REQUIRED`.
 
 ## How to probe (Windows, TWS logged in)
 

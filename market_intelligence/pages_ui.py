@@ -12,6 +12,9 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from market_intelligence.bond_ladder import LadderBond, aggregate_ladder, theoretical_rungs
+from market_intelligence.bond_tax import ASSET_CORPORATE, ASSET_MUNI, ASSET_TREASURY, BondTaxInputs, TaxAssumptions, compare_three, muni_treasury_ratio
+from market_intelligence.bonds import interpolate_par_yield
 from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.overview import build_session_changes, build_what_changed
@@ -43,6 +46,7 @@ CATEGORY_TITLES = {
     "rates": "Rates",
     "liquidity": "Liquidity",
     "credit": "Credit",
+    "commodities": "Commodities",
 }
 PRIMARY_MACRO = ("growth", "labor", "inflation", "liquidity")
 TRANSFORM_LABELS = {
@@ -126,9 +130,42 @@ def _fmt_or_dash(value: Any, units: str | None = None) -> str:
     return fmt(value, units)
 
 
+def _curve_yield_map(curve_rows: list[dict[str, Any]]) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for row in curve_rows:
+        tenor = row.get("tenor")
+        series_id = CURVE_TENORS.get(str(tenor)) if tenor is not None else None
+        if series_id and row.get("yield_pct") is not None:
+            out[series_id] = float(row["yield_pct"])
+    return out
+
+
+def _render_commodities_panel(cats: dict[str, Any], *, heading: str = "Commodities") -> None:
+    blocks = cats.get("commodities") or []
+    if not blocks:
+        return
+    st.subheader(heading)
+    st.caption("FRED/EIA and IMF levels. Missing observations stay missing. Not a futures curve.")
+    rows = []
+    for block in blocks:
+        transforms = block.get("transforms") or {}
+        headline = transforms.get("chg_prev") or transforms.get("mom_pct") or transforms.get("yoy_pct")
+        rows.append(
+            {
+                "Series": block.get("label") or block.get("series_id"),
+                "Latest": fmt(block["latest"].get("value"), None),
+                "Units": block["latest"].get("units") or block.get("catalog_units"),
+                "Change": _transform_text(headline),
+                "Observation": block["latest"].get("observation_date"),
+                "Source": "FRED",
+            }
+        )
+    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
 def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
     st.subheader("Options and volatility")
-    st.caption("Cboe delayed chains / VX_EOD via stored PostgreSQL snapshots. Not OPRA. Not a live quote. GEX is an OI-derived gamma-exposure proxy (estimated, CALL_PLUS_PUT_MINUS_V1), not observed dealer inventory.")
+    st.caption("Stored PostgreSQL option snapshots only. Delay label is provider-specific (not hardcoded Cboe). Not a live quote. GEX is an OI-derived gamma-exposure proxy (estimated, CALL_PLUS_PUT_MINUS_V1), not observed dealer inventory. IBKR OPRA is gated until the TWS API delivers NBBO.")
     if not ctx or (not ctx.get("symbols") and not ctx.get("vix")):
         st.info(ctx.get("reason") if ctx else "Options schema is not available. This optional source is not a platform outage.")
         return
@@ -302,6 +339,8 @@ def render_market_pulse() -> None:
     else:
         st.info("No macro observations stored.")
 
+    _render_commodities_panel(cats)
+
     st.subheader("Bond trading activity")
     if breadth:
         st.caption("Reported TRACE activity, not a live order book.")
@@ -313,8 +352,10 @@ def render_market_pulse() -> None:
         if not capped.get("headline_eligible"):
             st.caption(capped.get("identity_note") or "Capped-volume figures are withheld from headlines until reporting-period identity is validated.")
         open_registered_page("order_flow", "Open Order Flow")
+        open_registered_page("fixed_income", "Open Fixed Income")
     else:
         st.info("No corporate-bond activity aggregates stored.")
+        open_registered_page("fixed_income", "Open Fixed Income")
 
 
 # ---- Macro ---------------------------------------------------------------------------
@@ -361,6 +402,8 @@ def render_macro_overview() -> None:
             st.caption("Balances differ in dating and scale. Display conversions keep provider units in storage; no composite liquidity score is computed.")
         if cat == "inflation":
             st.caption("YoY = 100·(I_t/I_{t−12} − 1); 3M annualized = 100·((I_t/I_{t−3})⁴ − 1). Exact calendar alignment, no forward fill.")
+
+    _render_commodities_panel(cats, heading="Commodities")
 
     with st.expander("Policy rates and Treasury catalog"):
         extra_rows = []
@@ -854,6 +897,44 @@ def render_data_health() -> None:
         else:
             st.info(options_health.get("reason") or "No published options/VIX snapshots.")
 
+    with st.expander("IBKR options and storage rights"):
+        st.caption("OPRA L1 in Client Portal is not treated as TWS API entitlement. Frozen Type 2 on 2026-09-14 still returned 354 / no NBBO.")
+        st.info("IBKR_OPTIONS = PROVIDER_SUPPORT_REQUIRED. IBKR_OPTIONS_STORAGE = RIGHTS_PENDING. Collection remains off.")
+
+    with st.expander("Fixed-income source gates"):
+        st.caption("Treasury, FINRA aggregates, credit OAS, munis, and IBKR bonds are independent. A blocked muni feed is not a failed fixed-income workspace.")
+        fi_ids = {
+            "TREASURY",
+            "FRED",
+            "FINRA_QUERY",
+            "FINRA_TRACE",
+            "IBKR_CORPORATE_BONDS",
+            "IBKR_MUNICIPAL_BONDS",
+            "MSRB_EMMA",
+            "CFTC_COT",
+            "EIA_ENERGY",
+        }
+        fi_rows = [row for row in health if str(row.get("source_id") or "") in fi_ids]
+        if fi_rows:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Source": row.get("source_id"),
+                            "State": row.get("policy_status") or row.get("access_status") or "—",
+                            "Freshness": row.get("freshness_status") or "—",
+                            "Latest observation": row.get("latest_observation_date") or "—",
+                            "Why": exception_note(row),
+                        }
+                        for row in fi_rows
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.caption("Registry rows appear after the next refresh upsert.")
+
     quarantine = ctx.get("quarantine") or []
     finra_quarantine = ctx.get("finra_quarantine") or []
     if quarantine or finra_quarantine:
@@ -1189,11 +1270,303 @@ def render_order_flow() -> None:
             st.caption(notes[0])
 
 
+def _tax_assumptions_from_ui(prefix: str) -> TaxAssumptions:
+    st.caption("Tax calculations are estimates. Actual treatment depends on jurisdiction and facts. Not tax or legal advice.")
+    cols = st.columns(5)
+    federal = cols[0].number_input("Federal rate", min_value=0.0, max_value=0.99, value=0.24, step=0.01, format="%.3f", key=prefix + "_fed")
+    state = cols[1].number_input("State rate", min_value=0.0, max_value=0.99, value=0.05, step=0.01, format="%.3f", key=prefix + "_state")
+    local = cols[2].number_input("Local rate", min_value=0.0, max_value=0.99, value=0.00, step=0.01, format="%.3f", key=prefix + "_local")
+    niit = cols[3].number_input("NIIT rate", min_value=0.0, max_value=0.99, value=0.038, step=0.001, format="%.3f", key=prefix + "_niit")
+    override_on = cols[4].checkbox("Use combined override", value=False, key=prefix + "_ov_on")
+    override = st.number_input("Combined ordinary override", min_value=0.0, max_value=0.99, value=0.35, step=0.01, format="%.3f", key=prefix + "_ov") if override_on else None
+    flags = st.columns(4)
+    in_state = flags[0].checkbox("Muni is in-state", value=True, key=prefix + "_instate")
+    amt = flags[1].checkbox("AMT / private-activity", value=False, key=prefix + "_amt")
+    residence = flags[2].text_input("Residence state", value="", key=prefix + "_res")
+    issuer = flags[3].text_input("Muni issuer state", value="", key=prefix + "_iss")
+    return TaxAssumptions(
+        federal_rate=federal,
+        state_rate=state,
+        local_rate=local,
+        niit_rate=niit,
+        combined_override=override,
+        muni_in_state=in_state,
+        muni_amt_or_pab=amt,
+        residence_state=residence or None,
+        issuer_state=issuer or None,
+    )
+
+
+def render_fixed_income() -> None:
+    rates = load_or_stop("rates_context")
+    credit = load_or_stop("credit_context")
+    order_flow = load_or_stop("order_flow_overview")
+    health = load_or_stop("source_health")
+    page_header(
+        "Fixed Income",
+        "Treasuries, credit, TRACE activity, tax-aware comparison, and an analytical ladder. Streamlit does not place orders or fetch live brokers.",
+        as_of=compact_as_of([row.get("observation_date") for row in (rates.get("curve") or [])])[0],
+    )
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {"Rule": "Yield is not guaranteed total return", "Applies": "all comparisons"},
+                {"Rule": "Missing tax inputs or yields stay missing", "Applies": "after-tax / TEY figures"},
+                {"Rule": "Callable comparisons prefer YTW when provided", "Applies": "muni / corporate"},
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    fi_ids = {
+        "TREASURY",
+        "FRED",
+        "FINRA_QUERY",
+        "FINRA_TRACE",
+        "IBKR_CORPORATE_BONDS",
+        "IBKR_MUNICIPAL_BONDS",
+        "MSRB_EMMA",
+    }
+    fi_health = [row for row in health if str(row.get("source_id") or "") in fi_ids]
+    if fi_health:
+        st.caption("Fixed-income source states are independent. A blocked muni feed does not fail Treasuries or TRACE aggregates.")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Source": row.get("source_id"),
+                        "State": row.get("policy_status") or row.get("access_status") or "—",
+                        "Freshness": row.get("freshness_status") or "—",
+                        "Latest observation": row.get("latest_observation_date") or "—",
+                        "Why": exception_note(row),
+                    }
+                    for row in fi_health
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    tab_overview, tab_corporates, tab_munis, tab_rv, tab_ladder = st.tabs(["Overview", "Corporates / TRACE", "Municipals", "Relative value", "Ladder builder"])
+    curve = [row for row in (rates.get("curve") or []) if row.get("yield_pct") is not None]
+    buckets = credit.get("buckets") or []
+    with tab_overview:
+        st.subheader("Treasury curve")
+        if curve:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Tenor": row.get("tenor"),
+                            "Yield (%)": fmt(row.get("yield_pct"), "pct"),
+                            "vs prior (bps)": fmt_signed(row.get("chg_prev_bps"), "bps"),
+                            "Source": row.get("source_id"),
+                        }
+                        for row in curve
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            open_registered_page("rates", "Open Rates")
+        else:
+            st.info("No Treasury curve is stored.")
+        st.subheader("Credit spreads")
+        if buckets:
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"Bucket": row.get("label"), "OAS (bps)": fmt(row.get("oas_bps"), None, digits=0), "1D": fmt_signed(row.get("change_1d_bps"), "bps")}
+                        for row in buckets
+                        if row.get("bucket") in {"ig_broad", "hy_broad", "aaa", "bbb"}
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            open_registered_page("credit", "Open Credit")
+        else:
+            st.info("No ICE BofA OAS snapshots are stored.")
+        st.subheader("Muni / Treasury ratios")
+        st.caption("Market-level ratios require a municipal curve. None is configured, so this panel stays empty rather than using a single bond.")
+        st.info("MSRB/EMMA municipal curve is NOT_CONFIGURED. Ratios are not computed from a random CUSIP.")
+        activity = (order_flow.get("breadth") or {}).get("rows") or []
+        if activity:
+            st.subheader("Corporate market activity")
+            st.caption("FINRA Query aggregates, not individual TRACE prints.")
+            st.dataframe(pd.DataFrame(activity), use_container_width=True, hide_index=True)
+            open_registered_page("order_flow", "Open Order Flow")
+    with tab_corporates:
+        st.caption("Primary transaction data is FINRA Query API aggregates. Individual TRACE prints remain ENTITLEMENT_REQUIRED. IBKR corporate quotes are NOT_CONFIGURED.")
+        activity_corp = (order_flow.get("breadth") or {}).get("rows") or []
+        if activity_corp:
+            st.dataframe(pd.DataFrame(activity_corp), use_container_width=True, hide_index=True)
+        else:
+            st.info("No FINRA aggregates stored.")
+        open_registered_page("order_flow", "Open Order Flow")
+        st.subheader("Individual corporates")
+        st.info("No canonical individual corporate inventory is ingested. Use Relative value for manual comparison.")
+    with tab_munis:
+        st.caption("Municipal TRACE-style data is a different system from FINRA TRACE. MSRB/EMMA is NOT_CONFIGURED. Do not infer liquidity.")
+        st.info("Browse/screener filters stay hidden until a municipal security source is configured.")
+        st.markdown(
+            "\n".join(
+                [
+                    "- Issuer, state, CUSIP, coupon, maturity, YTM/YTW, call, rating, AMT/PAB, and trades stay **missing** until a permitted source exists.",
+                    "- Manual entry on Relative value still works.",
+                ]
+            )
+        )
+    with tab_rv:
+        assumptions = _tax_assumptions_from_ui("rv")
+        ten_row = next((row for row in curve if row.get("tenor") == "10Y"), None)
+        treasury_default = float(ten_row["yield_pct"]) if ten_row and ten_row.get("yield_pct") is not None else 4.0
+        ig = next((row for row in buckets if row.get("bucket") == "ig_broad"), None)
+        if ig is not None and ig.get("oas_bps") is not None:
+            corp_default = treasury_default + float(ig["oas_bps"]) / 100.0
+        else:
+            corp_default = 5.0
+        amount = st.number_input("Investment amount", min_value=0.0, value=100000.0, step=1000.0, key="rv_amount")
+        mat_cols = st.columns(2)
+        muni_mat = mat_cols[0].number_input("Muni / corporate maturity (years)", min_value=0.0, max_value=40.0, value=10.0, step=0.5, key="rv_mat")
+        matched = interpolate_par_yield(_curve_yield_map(curve), float(muni_mat)) if curve else None
+        if matched is not None:
+            treasury_default = float(matched)
+            st.caption("Treasury yield default is the interpolated par curve at {0:.1f}y.".format(float(muni_mat)))
+        else:
+            st.caption("No interpolated Treasury at that maturity. Using the stored 10Y or a labelled 4% default.")
+        cols = st.columns(3)
+        muni_y = cols[0].number_input("Muni yield %", min_value=-10.0, max_value=50.0, value=3.50, step=0.05, key="rv_muni_y")
+        treas_y = cols[1].number_input("Treasury yield %", min_value=-10.0, max_value=50.0, value=float(treasury_default), step=0.05, key="rv_treas_y")
+        corp_y = cols[2].number_input("Corporate yield %", min_value=-10.0, max_value=50.0, value=float(corp_default), step=0.05, key="rv_corp_y")
+        more = st.columns(6)
+        muni_d = more[0].number_input("Muni duration", min_value=0.0, value=7.0, step=0.1, key="rv_muni_d")
+        treas_d = more[1].number_input("Treasury duration", min_value=0.0, value=7.0, step=0.1, key="rv_treas_d")
+        corp_d = more[2].number_input("Corporate duration", min_value=0.0, value=7.0, step=0.1, key="rv_corp_d")
+        muni_call = more[3].checkbox("Muni callable", value=False, key="rv_muni_call")
+        muni_ytw = more[4].number_input("Muni YTW %", min_value=-10.0, max_value=50.0, value=3.20, step=0.05, key="rv_muni_ytw")
+        corp_rating = more[5].text_input("Corporate rating", value="BBB", key="rv_corp_rating")
+        comparison = compare_three(
+            BondTaxInputs(ASSET_MUNI, muni_y, ytw_pct=muni_ytw if muni_call else None, callable=muni_call, duration=muni_d or None, maturity_years=muni_mat or None),
+            BondTaxInputs(ASSET_TREASURY, treas_y, duration=treas_d or None, maturity_years=muni_mat or None),
+            BondTaxInputs(ASSET_CORPORATE, corp_y, duration=corp_d or None, rating=corp_rating or None, maturity_years=muni_mat or None),
+            assumptions,
+            investment_amount=amount,
+        )
+        results = comparison["results"]
+        pretax_muni_spread = _fmt_or_dash((muni_y - treas_y) if muni_y is not None else None, None)
+        pretax_corp_spread = _fmt_or_dash((corp_y - treas_y) if corp_y is not None else None, None)
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        " ": "Pretax yield",
+                        "Muni": _fmt_or_dash(results["muni"]["pretax_yield_pct"], "pct"),
+                        "Treasury": _fmt_or_dash(results["treasury"]["pretax_yield_pct"], "pct"),
+                        "Corporate": _fmt_or_dash(results["corporate"]["pretax_yield_pct"], "pct"),
+                    },
+                    {
+                        " ": "After-tax yield",
+                        "Muni": _fmt_or_dash(results["muni"]["after_tax_yield_pct"], "pct"),
+                        "Treasury": _fmt_or_dash(results["treasury"]["after_tax_yield_pct"], "pct"),
+                        "Corporate": _fmt_or_dash(results["corporate"]["after_tax_yield_pct"], "pct"),
+                    },
+                    {
+                        " ": "Taxable-equivalent vs corporate",
+                        "Muni": _fmt_or_dash(results["muni"]["taxable_equivalent_yield_pct"], "pct"),
+                        "Treasury": "—",
+                        "Corporate": _fmt_or_dash(results["corporate"]["pretax_yield_pct"], "pct"),
+                    },
+                    {
+                        " ": "Gross interest",
+                        "Muni": _fmt_or_dash(comparison["income"]["muni"]["gross_interest"], None),
+                        "Treasury": _fmt_or_dash(comparison["income"]["treasury"]["gross_interest"], None),
+                        "Corporate": _fmt_or_dash(comparison["income"]["corporate"]["gross_interest"], None),
+                    },
+                    {
+                        " ": "Federal tax (ex-NIIT)",
+                        "Muni": _fmt_or_dash(comparison["income"]["muni"]["federal_tax"], None),
+                        "Treasury": _fmt_or_dash(comparison["income"]["treasury"]["federal_tax"], None),
+                        "Corporate": _fmt_or_dash(comparison["income"]["corporate"]["federal_tax"], None),
+                    },
+                    {
+                        " ": "State / local tax",
+                        "Muni": _fmt_or_dash(comparison["income"]["muni"]["state_local_tax"], None),
+                        "Treasury": _fmt_or_dash(comparison["income"]["treasury"]["state_local_tax"], None),
+                        "Corporate": _fmt_or_dash(comparison["income"]["corporate"]["state_local_tax"], None),
+                    },
+                    {
+                        " ": "After-tax income",
+                        "Muni": _fmt_or_dash(comparison["income"]["muni"]["after_tax_income"], None),
+                        "Treasury": _fmt_or_dash(comparison["income"]["treasury"]["after_tax_income"], None),
+                        "Corporate": _fmt_or_dash(comparison["income"]["corporate"]["after_tax_income"], None),
+                    },
+                    {
+                        " ": "After-tax yield / duration",
+                        "Muni": _fmt_or_dash(comparison["risk_context"]["muni_after_tax_per_duration"], None),
+                        "Treasury": _fmt_or_dash(comparison["risk_context"]["treasury_after_tax_per_duration"], None),
+                        "Corporate": _fmt_or_dash(comparison["risk_context"]["corporate_after_tax_per_duration"], None),
+                    },
+                    {
+                        " ": "After-tax spread vs Treasury",
+                        "Muni": _fmt_or_dash(comparison["spreads"]["muni_minus_treasury_after_tax"], None),
+                        "Treasury": "—",
+                        "Corporate": _fmt_or_dash(comparison["spreads"]["corporate_minus_treasury_after_tax"], None),
+                    },
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+        st.caption("Break-even Treasury yield for the muni: {0}".format(_fmt_or_dash(results["muni"]["break_even_treasury_yield_pct"], "pct")))
+        st.caption("Pretax nominal spreads vs the Treasury input: muni {0}, corporate {1}.".format(pretax_muni_spread, pretax_corp_spread))
+        ratio = muni_treasury_ratio(muni_y, treas_y)
+        st.caption("This pair's muni/Treasury ratio is {0}. That is a pair ratio, not a market curve ratio.".format(_fmt_or_dash(ratio, None)))
+        for note in comparison["disclaimer"]:
+            st.caption(note)
+    with tab_ladder:
+        st.caption("Analytical only. Does not place orders or rebalance accounts.")
+        assumptions = _tax_assumptions_from_ui("ladder")
+        cols = st.columns(5)
+        total = cols[0].number_input("Total investment", min_value=0.0, value=300000.0, step=10000.0, key="ladder_total")
+        start_y = cols[1].number_input("First rung (years)", min_value=1, max_value=40, value=1, key="ladder_start")
+        end_y = cols[2].number_input("Last rung (years)", min_value=1, max_value=40, value=10, key="ladder_end")
+        step_y = cols[3].number_input("Interval (years)", min_value=1, max_value=10, value=1, key="ladder_step")
+        klass = cols[4].selectbox("Asset class", ["treasury", "muni", "corporate"], key="ladder_klass")
+        yld = st.number_input("Assumed rung yield %", min_value=-10.0, max_value=50.0, value=4.0, step=0.05, key="ladder_yld")
+        if st.checkbox("Build theoretical ladder", value=False, key="ladder_go") and total > 0 and end_y >= start_y:
+            rungs = theoretical_rungs(
+                total_investment=total,
+                start_year=int(start_y),
+                end_year=int(end_y),
+                interval_years=int(step_y),
+                yield_pct=yld,
+                asset_class=klass,
+            )
+            out = aggregate_ladder(rungs, assumptions)
+            st.dataframe(pd.DataFrame(out["maturity_schedule"]), use_container_width=True, hide_index=True)
+            metrics = st.columns(4)
+            metrics[0].metric("Wtd pretax yield", _fmt_or_dash(out.get("weighted_average_yield_pct"), "pct"))
+            metrics[1].metric("Wtd after-tax yield", _fmt_or_dash(out.get("weighted_average_after_tax_yield_pct"), "pct"))
+            metrics[2].metric("Est. coupon income", _fmt_or_dash(out.get("estimated_coupon_income"), None))
+            metrics[3].metric("Est. after-tax income", _fmt_or_dash(out.get("estimated_after_tax_income"), None))
+            st.caption("This theoretical ladder assumes equal principal and a single yield. Real CUSIPs, calls, and credit differ.")
+        st.subheader("Optional held-bond list")
+        st.caption("Paste is not supported. Add rows for a concentration check.")
+        extra = []
+        if st.checkbox("Include one sample callable muni rung", value=False):
+            extra.append(LadderBond("Sample muni", "muni", 2030, 25000, 3.2, 3.2, ytw_pct=2.8, callable=True, rating="AA", state="NY", issuer="Sample"))
+        if extra:
+            mixed = extra
+            mixed_out = aggregate_ladder(mixed, assumptions)
+            st.write({"call_exposure_share": mixed_out.get("call_exposure_share"), "issuer_concentration": mixed_out.get("issuer_concentration")})
+
+
 __all__ = [
     "display_cell",
     "order_flow_coverage_frame",
     "render_credit_overview",
     "render_data_health",
+    "render_fixed_income",
     "render_macro_overview",
     "render_market_pulse",
     "render_morning_context",

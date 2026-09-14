@@ -80,16 +80,35 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
             row["retired_optional"] = True
             row["policy_status"] = "RETIRED"
-        elif access in {"DISABLED", "ENTITLEMENT_REQUIRED", "AGREEMENT_REQUIRED"} and str(row.get("source_id") or "").startswith("OPENBB_"):
+        elif access in {
+            "DISABLED",
+            "ENTITLEMENT_REQUIRED",
+            "AGREEMENT_REQUIRED",
+            "PROVIDER_SUPPORT_REQUIRED",
+            "RIGHTS_PENDING",
+            "NOT_CONFIGURED",
+            "CONFIGURATION_REQUIRED",
+        } and (
+            str(row.get("source_id") or "").startswith("OPENBB_")
+            or str(row.get("source_id") or "")
+            in {
+                "IBKR_OPTIONS",
+                "IBKR_OPTIONS_STORAGE",
+                "MSRB_EMMA",
+                "IBKR_MUNICIPAL_BONDS",
+                "IBKR_CORPORATE_BONDS",
+                "CFTC_COT",
+                "EIA_ENERGY",
+                "FINRA_TRACE",
+            }
+        ):
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
             row["optional_disabled"] = True
             row["retired_optional"] = True
             if access == "ENTITLEMENT_REQUIRED":
                 row["policy_status"] = "RIGHTS_PENDING"
-            elif access == "AGREEMENT_REQUIRED":
-                row["policy_status"] = "AGREEMENT_REQUIRED"
             else:
-                row["policy_status"] = "DISABLED"
+                row["policy_status"] = access
         else:
             row["freshness_status"] = assessment.status if latest_d is not None else (row.get("freshness_status") or "MISSING")
             row["policy_status"] = access or "UNKNOWN"

@@ -524,7 +524,7 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
             "export_scope": "INTERNAL_ONLY",
         }
 
-    macro_categories = {k: v for k, v in (macro.get("categories") or {}).items() if k in {"growth", "labor", "inflation", "policy"}}
+    macro_categories = {k: v for k, v in (macro.get("categories") or {}).items() if k in {"growth", "labor", "inflation", "policy", "commodities"}}
     macro_data = {"categories": macro_categories, "series_without_data": macro.get("series_without_data"), "quarantined_series": _quarantined_series(macro), "attribution": macro.get("attribution")} if macro_categories else None
     rates_data = rates if any(c.get("yield_pct") is not None for c in rates.get("curve", [])) else None
     sections = {

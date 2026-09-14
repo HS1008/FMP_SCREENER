@@ -19,10 +19,13 @@ from typing import Any, Mapping
 
 ACCESS_DISABLED = "DISABLED"
 ACCESS_CONFIGURATION_REQUIRED = "CONFIGURATION_REQUIRED"
+ACCESS_NOT_CONFIGURED = "NOT_CONFIGURED"
 ACCESS_CONFIGURED = "CONFIGURED"
 ACCESS_AVAILABLE = "AVAILABLE"
 ACCESS_ENTITLEMENT_REQUIRED = "ENTITLEMENT_REQUIRED"
 ACCESS_AGREEMENT_REQUIRED = "AGREEMENT_REQUIRED"
+ACCESS_PROVIDER_SUPPORT_REQUIRED = "PROVIDER_SUPPORT_REQUIRED"
+ACCESS_RIGHTS_PENDING = "RIGHTS_PENDING"
 ACCESS_TEMPORARILY_UNAVAILABLE = "TEMPORARILY_UNAVAILABLE"
 
 IBKR_SOURCE_ID = "IBKR_MARKET_DATA"
@@ -229,7 +232,148 @@ class OpenBBCboeVixAdapter:
         return probe_openbb(env).vix
 
 
-ADAPTERS = (IBKRMarketDataAdapter(), TraceAdapter(), EdgarAdapter(), OpenBBCboeOptionsAdapter(), OpenBBCboeVixAdapter())
+class IBKROptionsAdapter:
+    """Probe-only. Collection stays off until API OPRA and storage rights are both proven."""
+
+    source_id = "IBKR_OPTIONS"
+    ENABLE_FLAG = "MI_IBKR_OPTIONS_ENABLED"
+    CAPABILITIES = {
+        "geometry": "reqSecDefOptParams + reqContractDetails",
+        "nbbo": "not observed on TWS socket API client 73 after OPRA L1 + freeze test",
+        "export": "INTERNAL_ONLY; storage rights not confirmed",
+    }
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        if _flag(env, self.ENABLE_FLAG):
+            return AdapterStatus(
+                self.source_id,
+                ACCESS_PROVIDER_SUPPORT_REQUIRED,
+                False,
+                "MI_IBKR_OPTIONS_ENABLED is set but API OPRA NBBO is not proven. Collection stays off.",
+                (self.ENABLE_FLAG,),
+                dict(self.CAPABILITIES),
+            )
+        return AdapterStatus(
+            self.source_id,
+            ACCESS_PROVIDER_SUPPORT_REQUIRED,
+            False,
+            "Client Portal OPRA L1 is active, but TWS API client 73 still returns 354 with no bid/ask on live, frozen, and delayed. Collection off. INTERNAL_ONLY storage rights are separately pending.",
+            (self.ENABLE_FLAG,),
+            dict(self.CAPABILITIES),
+        )
+
+
+class IBKROptionsStorageAdapter:
+    source_id = "IBKR_OPTIONS_STORAGE"
+    CAPABILITIES = {"persistence": "blocked until IBKR/OPRA non-display snapshot rights are explicit"}
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        return AdapterStatus(
+            self.source_id,
+            ACCESS_RIGHTS_PENDING,
+            False,
+            "Paid OPRA L1 display is not treated as unlimited PostgreSQL archival. Ask IBKR whether non-pro OPRA allows private non-display snapshots.",
+            (),
+            dict(self.CAPABILITIES),
+        )
+
+
+class MsrbEmmaAdapter:
+    source_id = "MSRB_EMMA"
+    ENABLE_FLAG = "MI_MSRB_ENABLED"
+    CREDENTIAL_ENV = ("MSRB_API_KEY", "EMMA_API_KEY")
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        has_key = any(str(env.get(name) or "").strip() for name in self.CREDENTIAL_ENV)
+        if not has_key:
+            return AdapterStatus(
+                self.source_id,
+                ACCESS_NOT_CONFIGURED,
+                False,
+                "No MSRB/EMMA credentials. Municipal TRACE-style prints are not assumed. Do not scrape EMMA.",
+                self.CREDENTIAL_ENV + (self.ENABLE_FLAG,),
+                {"trades": "not configured", "curves": "not configured"},
+            )
+        if not _flag(env, self.ENABLE_FLAG):
+            return AdapterStatus(
+                self.source_id,
+                ACCESS_DISABLED,
+                False,
+                "MSRB/EMMA credentials are present but MI_MSRB_ENABLED is off.",
+                self.CREDENTIAL_ENV + (self.ENABLE_FLAG,),
+                {"trades": "disabled"},
+            )
+        return AdapterStatus(self.source_id, ACCESS_ENTITLEMENT_REQUIRED, False, "MSRB/EMMA terms must be reviewed before ingest.", self.CREDENTIAL_ENV + (self.ENABLE_FLAG,), {"trades": "rights review required"})
+
+
+class IBKRMunicipalBondsAdapter:
+    source_id = "IBKR_MUNICIPAL_BONDS"
+    ENABLE_FLAG = "MI_IBKR_MUNI_ENABLED"
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        return AdapterStatus(
+            self.source_id,
+            ACCESS_NOT_CONFIGURED,
+            False,
+            "IBKR municipal discovery/quotes are not enabled. No production muni ingest.",
+            (self.ENABLE_FLAG,),
+            {"discovery": "not configured", "quotes": "entitlement dependent"},
+        )
+
+
+class IBKRCorporateBondsAdapter:
+    source_id = "IBKR_CORPORATE_BONDS"
+    ENABLE_FLAG = "MI_IBKR_CORP_BONDS_ENABLED"
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        return AdapterStatus(
+            self.source_id,
+            ACCESS_NOT_CONFIGURED,
+            False,
+            "IBKR corporate bond quotes are supplementary to FINRA Query aggregates and are not enabled.",
+            (self.ENABLE_FLAG,),
+            {"quotes": "not configured"},
+        )
+
+
+class CftcCotAdapter:
+    source_id = "CFTC_COT"
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        return AdapterStatus(
+            self.source_id,
+            ACCESS_NOT_CONFIGURED,
+            False,
+            "CFTC positioning is not ingested. Public COT remains available for a later adapter.",
+            (),
+            {"positioning": "not configured"},
+        )
+
+
+class EiaEnergyAdapter:
+    source_id = "EIA_ENERGY"
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        has_key = bool(str(env.get("EIA_API_KEY") or "").strip())
+        if not has_key:
+            return AdapterStatus(self.source_id, ACCESS_NOT_CONFIGURED, False, "EIA_API_KEY is absent from Market Intelligence ingest. Power Producers may still use a local EIA cache.", ("EIA_API_KEY",), {"petroleum": "not configured"})
+        return AdapterStatus(self.source_id, ACCESS_DISABLED, False, "EIA key is present but MI energy ingest is not scheduled.", ("EIA_API_KEY",), {"petroleum": "disabled"})
+
+
+ADAPTERS = (
+    IBKRMarketDataAdapter(),
+    TraceAdapter(),
+    EdgarAdapter(),
+    OpenBBCboeOptionsAdapter(),
+    OpenBBCboeVixAdapter(),
+    IBKROptionsAdapter(),
+    IBKROptionsStorageAdapter(),
+    MsrbEmmaAdapter(),
+    IBKRMunicipalBondsAdapter(),
+    IBKRCorporateBondsAdapter(),
+    CftcCotAdapter(),
+    EiaEnergyAdapter(),
+)
 
 
 def probe_all(env: Mapping[str, str]) -> dict[str, AdapterStatus]:
@@ -244,12 +388,22 @@ __all__ = [
     "ACCESS_AGREEMENT_REQUIRED",
     "ACCESS_DISABLED",
     "ACCESS_ENTITLEMENT_REQUIRED",
+    "ACCESS_NOT_CONFIGURED",
+    "ACCESS_PROVIDER_SUPPORT_REQUIRED",
+    "ACCESS_RIGHTS_PENDING",
     "ACCESS_TEMPORARILY_UNAVAILABLE",
     "ADAPTERS",
     "AdapterDisabled",
     "AdapterStatus",
+    "CftcCotAdapter",
     "EdgarAdapter",
+    "EiaEnergyAdapter",
+    "IBKRCorporateBondsAdapter",
     "IBKRMarketDataAdapter",
+    "IBKRMunicipalBondsAdapter",
+    "IBKROptionsAdapter",
+    "IBKROptionsStorageAdapter",
+    "MsrbEmmaAdapter",
     "OpenBBCboeOptionsAdapter",
     "OpenBBCboeVixAdapter",
     "TraceAdapter",

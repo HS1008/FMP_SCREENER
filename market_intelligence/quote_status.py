@@ -244,11 +244,27 @@ def exception_note(row: dict[str, Any]) -> str:
     if "TRACE" in joined and ("INDIVIDUAL" in joined or "ENTITLEMENT" in joined or transport in {"FAILED", "METADATA_REJECTED"}):
         return "Individual TRACE is an entitlement/capability limit. Aggregate Query API rows are a different dataset."
     policy = str(row.get("policy_status") or "")
-    if row.get("optional_disabled") or policy in {"DISABLED", "AWAITING_RIGHTS_ACK", "RIGHTS_PENDING", "AGREEMENT_REQUIRED"}:
+    if row.get("optional_disabled") or policy in {
+        "DISABLED",
+        "AWAITING_RIGHTS_ACK",
+        "RIGHTS_PENDING",
+        "AGREEMENT_REQUIRED",
+        "PROVIDER_SUPPORT_REQUIRED",
+        "NOT_CONFIGURED",
+        "CONFIGURATION_REQUIRED",
+    }:
+        if access == "PROVIDER_SUPPORT_REQUIRED" or policy == "PROVIDER_SUPPORT_REQUIRED" or source == "IBKR_OPTIONS":
+            return "PROVIDER_SUPPORT_REQUIRED. Client Portal OPRA L1 is active, but TWS API client 73 still returns 354 / no NBBO on live, frozen, and delayed. Collection is off. Not a platform outage."
+        if source == "IBKR_OPTIONS_STORAGE" or access == "RIGHTS_PENDING" or policy == "RIGHTS_PENDING":
+            if source.startswith("OPENBB_"):
+                return "RIGHTS_PENDING. Cboe website Terms require written consent before storing delayed-quotes JSON. Not a platform outage."
+            return "RIGHTS_PENDING. Paid OPRA display is not treated as PostgreSQL archival rights. Not a platform outage."
         if access == "AGREEMENT_REQUIRED" or policy == "AGREEMENT_REQUIRED":
             return "AGREEMENT_REQUIRED. CFE delayed VX data needs a Cboe Data Agreement. Collection is off. Not a platform outage."
-        if access == "ENTITLEMENT_REQUIRED" or policy in {"RIGHTS_PENDING", "AWAITING_RIGHTS_ACK"}:
+        if access == "ENTITLEMENT_REQUIRED" or policy in {"AWAITING_RIGHTS_ACK"}:
             return "RIGHTS_PENDING. Cboe website Terms require written consent before storing delayed-quotes JSON. MI_OPENBB_OPTIONS_RIGHTS_ACK is unset. Not a platform outage."
+        if access in {"NOT_CONFIGURED", "CONFIGURATION_REQUIRED"} or policy in {"NOT_CONFIGURED", "CONFIGURATION_REQUIRED"}:
+            return "NOT_CONFIGURED. Credentials or a scheduled ingest are absent. Not a platform outage."
         return "DISABLED by policy. Recurring collection is off. Not a platform outage."
     if source == "IBKR_MARKET_DATA" or "IBKR" in source:
         return "Windows collector / TWS path. CONNECTED is not proof of fresh quotes; FRED and FINRA do not depend on this laptop."

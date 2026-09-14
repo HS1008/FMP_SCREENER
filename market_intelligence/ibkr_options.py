@@ -79,6 +79,12 @@ def normalize_ibkr_chain(result: Any, *, clock: datetime | None = None) -> Any:
         extra={"export_scope": EXPORT_INTERNAL_ONLY, "source_id": IBKR_OPTIONS_SOURCE_ID},
         fetched_at=fetched,
     )
+    md_types = list(getattr(result, "market_data_types", None) or [])
+    md_label = None
+    if md_types:
+        md_label = str(md_types[0])
+    elif isinstance(underlying, dict):
+        md_label = underlying.get("market_data_type")
     return normalize_chain(
         raw,
         clock=fetched,
@@ -86,4 +92,6 @@ def normalize_ibkr_chain(result: Any, *, clock: datetime | None = None) -> Any:
         source_id=IBKR_OPTIONS_SOURCE_ID,
         coverage_note=IBKR_OPTIONS_COVERAGE,
         endpoint=IBKR_OPTIONS_ENDPOINT,
+        delay_label="IBKR_{0}".format(md_label) if md_label else None,
+        market_data_type=md_label,
     )
