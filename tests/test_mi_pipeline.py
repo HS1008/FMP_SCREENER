@@ -44,7 +44,11 @@ GENERATED_AT = datetime(2025, 1, 2, 11, 30, tzinfo=timezone.utc)
 # so the module pins that clock to GENERATED_AT (a test seam on a private function, not a
 # production knob); clock-advancement tests move it forward explicitly.
 CAPTURE_CLOCK = {"now": GENERATED_AT}
-MI_PAGES = sorted(p for p in PAGES.glob("1[0-9]_*.py"))
+MI_PAGES = sorted(
+    p
+    for p in PAGES.glob("*.py")
+    if p.stem[:2].isdigit() and int(p.stem.split("_", 1)[0]) >= 10
+)
 
 
 def _boom(*_a, **_k):
@@ -836,6 +840,9 @@ def test_pages_render_populated_state_db_only(consumer, page):
     if page.stem == "19_Fixed_Income":
         assert "Fixed Income" in text_out
         assert "not tax or legal advice" in text_out.lower() or "Yield is not guaranteed" in text_out
+    if page.stem == "20_Commodities":
+        assert "Commodities" in text_out
+        assert "no substitute is invented" in text_out.lower() or "removed from FRED" in text_out
 
 
 def test_dashboard_entry_point_overview_links_use_registry(consumer):
@@ -854,6 +861,7 @@ def test_dashboard_entry_point_overview_links_use_registry(consumer):
         ("macro", "Macro"),
         ("order_flow", "Order Flow"),
         ("fixed_income", "Fixed Income"),
+        ("commodities", "Commodities"),
     )
     for route_id, title in journeys:
         spec = PAGE_BY_ROUTE[route_id]

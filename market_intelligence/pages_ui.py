@@ -144,7 +144,8 @@ def _render_commodities_panel(cats: dict[str, Any], *, heading: str = "Commoditi
     blocks = cats.get("commodities") or []
     if not blocks:
         return
-    st.subheader(heading)
+    if heading:
+        st.subheader(heading)
     st.caption("FRED/EIA and IMF levels. Missing observations stay missing. Not a futures curve.")
     rows = []
     for block in blocks:
@@ -340,6 +341,7 @@ def render_market_pulse() -> None:
         st.info("No macro observations stored.")
 
     _render_commodities_panel(cats)
+    open_registered_page("commodities", "Open Commodities")
 
     st.subheader("Bond trading activity")
     if breadth:
@@ -404,6 +406,7 @@ def render_macro_overview() -> None:
             st.caption("YoY = 100·(I_t/I_{t−12} − 1); 3M annualized = 100·((I_t/I_{t−3})⁴ − 1). Exact calendar alignment, no forward fill.")
 
     _render_commodities_panel(cats, heading="Commodities")
+    open_registered_page("commodities", "Open Commodities")
 
     with st.expander("Policy rates and Treasury catalog"):
         extra_rows = []
@@ -1561,9 +1564,63 @@ def render_fixed_income() -> None:
             st.write({"call_exposure_share": mixed_out.get("call_exposure_share"), "issuer_concentration": mixed_out.get("issuer_concentration")})
 
 
+def render_commodities() -> None:
+    macro = load_or_stop("macro_context")
+    health = load_or_stop("source_health")
+    cats = macro.get("categories") or {}
+    blocks = cats.get("commodities") or []
+    dates = [block.get("latest", {}).get("observation_date") for block in blocks]
+    page_header(
+        "Commodities",
+        "Stored energy and metal levels from PostgreSQL. Not a futures curve and not a live quote.",
+        as_of=compact_as_of(dates)[0],
+    )
+    st.caption("Gold (LBMA daily) was removed from FRED in 2022. No substitute gold price is invented.")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {"Coverage": "WTI spot", "Source": "FRED / EIA (DCOILWTICO)", "Notes": "daily dollars per barrel"},
+                {"Coverage": "Henry Hub natural gas", "Source": "FRED / EIA (DHHNGSP)", "Notes": "daily dollars per MMBtu"},
+                {"Coverage": "Global copper", "Source": "FRED / IMF (PCOPPUSDM)", "Notes": "monthly USD per metric ton"},
+                {"Coverage": "Gold spot", "Source": "FRED LBMA daily", "Notes": "unavailable — IBA/LBMA series were removed from FRED in 2022; no substitute is invented"},
+                {"Coverage": "EIA inventories / production", "Source": "EIA_ENERGY", "Notes": "NOT_CONFIGURED until a scheduled MI EIA ingest exists"},
+                {"Coverage": "CFTC positioning", "Source": "CFTC_COT", "Notes": "NOT_CONFIGURED — public COT is not ingested"},
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    _render_commodities_panel(cats, heading="Stored levels")
+    if not blocks:
+        st.info("No commodity observations stored.")
+    gate_ids = {"CFTC_COT", "EIA_ENERGY", "FRED"}
+    gate_rows = [row for row in health if str(row.get("source_id") or "") in gate_ids]
+    if gate_rows:
+        st.subheader("Source gates")
+        st.caption("A blocked EIA or CFTC feed does not fail the FRED energy/metal series that are already stored.")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Source": row.get("source_id"),
+                        "State": row.get("policy_status") or row.get("access_status") or "—",
+                        "Freshness": row.get("freshness_status") or "—",
+                        "Latest observation": row.get("latest_observation_date") or "—",
+                        "Why": exception_note(row),
+                    }
+                    for row in gate_rows
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    open_registered_page("macro", "Open Macro")
+
+
 __all__ = [
     "display_cell",
     "order_flow_coverage_frame",
+    "render_commodities",
     "render_credit_overview",
     "render_data_health",
     "render_fixed_income",
