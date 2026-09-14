@@ -783,7 +783,7 @@ def render_data_health() -> None:
                         "Collection": "on" if row.get("enabled") else "off",
                         "Export": row.get("usage_scope") or "—",
                         "Cadence": row.get("dataset_cadence") or row.get("expected_cadence") or "—",
-                        "Stale after (days)": row.get("tolerance_days") if row.get("tolerance_days") is not None else "—",
+                        "Stale after (days)": display_cell(row.get("tolerance_days")),
                         "Last attempt": age_text(row.get("last_attempt_at")),
                         "Last success": age_text(row.get("last_success_at")),
                         "Latest observation": row.get("latest_observation_date") or "—",
@@ -852,7 +852,7 @@ def render_data_health() -> None:
                     {
                         "Collector": row.get("collector_id"),
                         "Observed": row.get("observed_state"),
-                        "Heartbeat age (s)": row.get("heartbeat_age_seconds"),
+                        "Heartbeat age (s)": display_cell(row.get("heartbeat_age_seconds")),
                         "Last quote": age_text(row.get("last_quote_at")),
                         "Last ingest": age_text(row.get("last_ingest_ok_at")),
                         "Delivery error": (row.get("last_delivery_error_redacted") or "")[:80] or "—",
@@ -990,7 +990,7 @@ def render_data_health() -> None:
                     "Transport": transport_chip(row.get("transport_status")),
                     "Metadata": row.get("metadata_status") or "—",
                     "Cadence": row.get("dataset_cadence") or "—",
-                    "Age (d)": row.get("age_days"),
+                    "Age (d)": display_cell(row.get("age_days")),
                     "Error": (row.get("last_error_redacted") or "")[:80],
                 }
                 for row in health
