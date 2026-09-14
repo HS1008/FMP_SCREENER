@@ -359,8 +359,10 @@ def test_settlement_skips_weekends():
 def test_adapters_are_disabled_or_configuration_required_and_refuse_to_fetch():
     statuses = adapters.probe_all({})
     assert set(statuses) == {"IBKR_MARKET_DATA", "FINRA_TRACE", "SEC_EDGAR", "OPENBB_CBOE_OPTIONS", "OPENBB_CBOE_VIX"}
-    assert statuses["OPENBB_CBOE_OPTIONS"].access_status == adapters.ACCESS_DISABLED
-    assert statuses["OPENBB_CBOE_VIX"].access_status == adapters.ACCESS_DISABLED
+    assert statuses["OPENBB_CBOE_OPTIONS"].access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert statuses["OPENBB_CBOE_VIX"].access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert statuses["OPENBB_CBOE_OPTIONS"].enabled is False
+    assert statuses["OPENBB_CBOE_VIX"].enabled is False
     assert statuses["IBKR_MARKET_DATA"].access_status == adapters.ACCESS_DISABLED
     assert statuses["FINRA_TRACE"].access_status == adapters.ACCESS_DISABLED
     assert statuses["SEC_EDGAR"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
@@ -415,6 +417,8 @@ def test_refresh_plan_reports_external_adapter_status_without_db(capsys):
     external = payload["plan"]["external_adapters"]
     assert external["IBKR_MARKET_DATA"]["access_status"] == "DISABLED"
     assert external["SEC_EDGAR"]["access_status"] == "CONFIGURATION_REQUIRED"
+    assert external["OPENBB_CBOE_OPTIONS"]["access_status"] == "ENTITLEMENT_REQUIRED"
+    assert external["OPENBB_CBOE_VIX"]["access_status"] == "AGREEMENT_REQUIRED"
     assert not any(v["enabled"] for v in external.values())
 
 

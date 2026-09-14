@@ -68,7 +68,8 @@ def test_live_ingest_job_path_then_skips_same_session(mi_db):
     env = {
         "MI_OPENBB_OPTIONS_ENABLED": "1",
         "MI_OPENBB_VIX_ENABLED": "1",
-        "MI_OPENBB_CBOE_RIGHTS_ACK": "1",
+        "MI_OPENBB_OPTIONS_RIGHTS_ACK": "1",
+        "MI_OPENBB_VIX_RIGHTS_ACK": "1",
         "MI_OPENBB_OPTIONS_SYMBOLS": "SPY",
     }
     now = datetime.now(timezone.utc)

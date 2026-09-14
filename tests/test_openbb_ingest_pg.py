@@ -24,7 +24,8 @@ def _enabled():
     return {
         "MI_OPENBB_OPTIONS_ENABLED": "1",
         "MI_OPENBB_VIX_ENABLED": "1",
-        "MI_OPENBB_CBOE_RIGHTS_ACK": "1",
+        "MI_OPENBB_OPTIONS_RIGHTS_ACK": "1",
+        "MI_OPENBB_VIX_RIGHTS_ACK": "1",
         "MI_OPENBB_OPTIONS_SYMBOLS": "SPY",
     }
 
@@ -278,7 +279,7 @@ def test_sibling_registry_rows_stay_independent(mi_db):
     )
     env = {
         "MI_OPENBB_OPTIONS_ENABLED": "1",
-        "MI_OPENBB_CBOE_RIGHTS_ACK": "1",
+        "MI_OPENBB_OPTIONS_RIGHTS_ACK": "1",
         "MI_OPENBB_OPTIONS_SYMBOLS": "SPY",
     }
     ingest_openbb(mi_db, client, env=env, include_vix=True, force=True, clock=lambda: datetime(2026, 9, 11, 16, 10, tzinfo=NY))
@@ -288,7 +289,7 @@ def test_sibling_registry_rows_stay_independent(mi_db):
             for r in conn.execute(text("SELECT source_id, enabled, access_status FROM mi_source_registry WHERE source_id LIKE 'OPENBB%'"))
         }
     assert rows["OPENBB_CBOE_VIX"]["enabled"] is False
-    assert rows["OPENBB_CBOE_VIX"]["access"] == "DISABLED"
+    assert rows["OPENBB_CBOE_VIX"]["access"] == "AGREEMENT_REQUIRED"
     if openbb_installed():
         assert rows["OPENBB_CBOE_OPTIONS"]["enabled"] is True
         assert rows["OPENBB_CBOE_OPTIONS"]["access"] == "CONFIGURED"
@@ -307,13 +308,17 @@ def test_disabled_openbb_sources_are_policy_not_failures(mi_db):
     with mi_db.connect() as conn:
         rows = [r for r in source_health(conn) if str(r.get("source_id") or "").startswith("OPENBB_")]
     assert {r["source_id"] for r in rows} >= {"OPENBB_CBOE_OPTIONS", "OPENBB_CBOE_VIX"}
-    for row in rows:
+    by_id = {row["source_id"]: row for row in rows}
+    options = by_id["OPENBB_CBOE_OPTIONS"]
+    vix = by_id["OPENBB_CBOE_VIX"]
+    for row in (options, vix):
         assert row.get("optional_disabled") or row.get("retired_optional")
-        assert row["policy_status"] == "DISABLED"
-        assert row["access_status"] == "DISABLED"
-        note = exception_note(row)
-        assert "AWAITING RIGHTS ACK" not in note or "DISABLED" in note
-        assert "outage" in note.lower()
+        assert "outage" in exception_note(row).lower()
         assert "BROKEN" not in str(row.get("freshness_status") or "").upper()
+        assert str(row.get("freshness_status") or "").upper() != "FAILED"
+    assert options["access_status"] == "ENTITLEMENT_REQUIRED"
+    assert options["policy_status"] == "RIGHTS_PENDING"
+    assert vix["access_status"] == "AGREEMENT_REQUIRED"
+    assert vix["policy_status"] == "AGREEMENT_REQUIRED"
 
 

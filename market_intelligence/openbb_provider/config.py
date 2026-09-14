@@ -14,7 +14,11 @@ OPENBB_VIX_SOURCE_ID = "OPENBB_CBOE_VIX"
 ENABLE_FLAG = "MI_OPENBB_ENABLED"
 OPTIONS_ENABLE_FLAG = "MI_OPENBB_OPTIONS_ENABLED"
 VIX_ENABLE_FLAG = "MI_OPENBB_VIX_ENABLED"
-RIGHTS_ACK_FLAG = "MI_OPENBB_CBOE_RIGHTS_ACK"
+OPTIONS_RIGHTS_ACK_FLAG = "MI_OPENBB_OPTIONS_RIGHTS_ACK"
+VIX_RIGHTS_ACK_FLAG = "MI_OPENBB_VIX_RIGHTS_ACK"
+# Legacy umbrella. Does not authorize OPTIONS or VIX. Kept so old env files fail closed.
+LEGACY_RIGHTS_ACK_FLAG = "MI_OPENBB_CBOE_RIGHTS_ACK"
+RIGHTS_ACK_FLAG = LEGACY_RIGHTS_ACK_FLAG
 SYMBOLS_ENV = "MI_OPENBB_OPTIONS_SYMBOLS"
 TIMEOUT_ENV = "MI_OPENBB_TIMEOUT_SEC"
 TIMEOUT_ENV_ALIASES = ("MI_OPENBB_TIMEOUT_S",)
@@ -60,10 +64,12 @@ ATTRIBUTION = (
 )
 CBOE_ATTRIBUTION = ATTRIBUTION
 TERMS_NOTES = (
-    "Cboe website terms (https://www.cboe.com/en/terms/) permit viewing and downloading "
-    "materials for personal use and restrict other copying, electronic storage, transmission, "
-    "redistribution, and derived-product creation without written permission. Recurring host "
-    "collection requires MI_OPENBB_CBOE_RIGHTS_ACK=1 plus the dataset enable flag. No API key "
+    "Cboe website Terms (https://www.cboe.com/en/terms/, last updated 2022-11-16) allow viewing "
+    "and downloading one copy for personal non-commercial use. They prohibit storing Materials in "
+    "an electronic retrieval system and creating derivative works without prior written consent via "
+    "https://www.cboe.com/en/use-of-content/ (permissions@cboe.com). Project governance is not a "
+    "Cboe licence. OPTIONS collection requires MI_OPENBB_OPTIONS_RIGHTS_ACK after Cboe consent; "
+    "VIX/CFE collection requires MI_OPENBB_VIX_RIGHTS_ACK after a CFE Data Agreement. No API key "
     "does not make this PUBLIC."
 )
 CBOE_TERMS_NOTES = TERMS_NOTES
@@ -91,31 +97,51 @@ def _env(env: Mapping[str, str] | None) -> Mapping[str, str]:
     return os.environ if env is None else env
 
 
+def options_rights_acked(env: Mapping[str, str] | None = None) -> bool:
+    """Product-specific OPTIONS consent only. The legacy Cboe umbrella does not count."""
+    return _truthy(_env(env).get(OPTIONS_RIGHTS_ACK_FLAG))
+
+
+def vix_rights_acked(env: Mapping[str, str] | None = None) -> bool:
+    """Product-specific CFE/VIX agreement only. OPTIONS consent does not count."""
+    return _truthy(_env(env).get(VIX_RIGHTS_ACK_FLAG))
+
+
 def rights_acked(env: Mapping[str, str] | None = None) -> bool:
-    return _truthy(_env(env).get(RIGHTS_ACK_FLAG))
+    """Deprecated. The umbrella flag never authorizes a dataset."""
+    _ = env
+    return False
 
 
 def enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
-    """Umbrella flag only. Dataset flags are independent and must not enable a sibling."""
-    return _truthy(_env(env).get(ENABLE_FLAG)) and rights_acked(env)
+    """True only when the umbrella collection flag is on and BOTH product rights exist.
+
+    Prefer the dataset flags. This must not enable one sibling from the other.
+    """
+    environ = _env(env)
+    return _truthy(environ.get(ENABLE_FLAG)) and options_rights_acked(environ) and vix_rights_acked(environ)
 
 
 def options_enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
     environ = _env(env)
+    if not options_rights_acked(environ):
+        return False
     if _truthy(environ.get(OPTIONS_ENABLE_FLAG)):
-        return rights_acked(environ)
+        return True
     if _truthy(environ.get(VIX_ENABLE_FLAG)):
         return False
-    return enabled_from_env(environ)
+    return _truthy(environ.get(ENABLE_FLAG))
 
 
 def vix_enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
     environ = _env(env)
+    if not vix_rights_acked(environ):
+        return False
     if _truthy(environ.get(VIX_ENABLE_FLAG)):
-        return rights_acked(environ)
+        return True
     if _truthy(environ.get(OPTIONS_ENABLE_FLAG)):
         return False
-    return enabled_from_env(environ)
+    return _truthy(environ.get(ENABLE_FLAG))
 
 
 def options_symbols_from_env(env: Mapping[str, str] | None = None) -> tuple[str, ...]:
@@ -197,21 +223,31 @@ def _dataset_requested(env: Mapping[str, str], dataset_flag: str, sibling_flag: 
     return _truthy(env.get(ENABLE_FLAG))
 
 
-def _status(source_id: str, env: Mapping[str, str], *, dataset_flag: str, sibling_flag: str, capabilities: dict[str, str]):
+def _status(
+    source_id: str,
+    env: Mapping[str, str],
+    *,
+    dataset_flag: str,
+    sibling_flag: str,
+    rights_flag: str,
+    rights_ok: bool,
+    missing_access: str,
+    missing_reason: str,
+    capabilities: dict[str, str],
+):
     from market_intelligence.adapters import (
         ACCESS_CONFIGURATION_REQUIRED,
         ACCESS_CONFIGURED,
         ACCESS_DISABLED,
-        ACCESS_ENTITLEMENT_REQUIRED,
         AdapterStatus,
     )
 
     dataset_on = _dataset_requested(env, dataset_flag, sibling_flag)
-    required = (dataset_flag, RIGHTS_ACK_FLAG, "requirements-openbb.txt")
+    required = (dataset_flag, rights_flag, "requirements-openbb.txt")
+    if not rights_ok:
+        return AdapterStatus(source_id, missing_access, False, missing_reason, required, capabilities)
     if not dataset_on:
-        return AdapterStatus(source_id, ACCESS_DISABLED, False, "{0} is off (default). Recurring Cboe collection stays disabled.".format(dataset_flag), required, capabilities)
-    if not rights_acked(env):
-        return AdapterStatus(source_id, ACCESS_ENTITLEMENT_REQUIRED, False, "{0} is not set. Cboe website terms do not authorize recurring host storage/export without a recorded right.".format(RIGHTS_ACK_FLAG), required, capabilities)
+        return AdapterStatus(source_id, ACCESS_DISABLED, False, "{0} is off. Product rights are recorded; recurring collection stays disabled.".format(dataset_flag), required, capabilities)
     if not openbb_installed():
         return AdapterStatus(source_id, ACCESS_CONFIGURATION_REQUIRED, False, "OpenBB is not installed. Install requirements-openbb.txt in the ingestion runtime.", required, capabilities)
     return AdapterStatus(source_id, ACCESS_CONFIGURED, True, "OpenBB present, rights ack recorded, {0}=1. Delayed Cboe data; INTERNAL_ONLY export.".format(dataset_flag), required, capabilities)
@@ -231,6 +267,14 @@ def probe_openbb(env: Mapping[str, str] | None = None) -> OpenBBProbe:
             environ,
             dataset_flag=OPTIONS_ENABLE_FLAG,
             sibling_flag=VIX_ENABLE_FLAG,
+            rights_flag=OPTIONS_RIGHTS_ACK_FLAG,
+            rights_ok=options_rights_acked(environ),
+            missing_access="ENTITLEMENT_REQUIRED",
+            missing_reason=(
+                "{0} is not set. Cboe website Terms require prior written consent before storing "
+                "delayed-quotes JSON in PostgreSQL or creating derived analytics. Project governance "
+                "is not that consent."
+            ).format(OPTIONS_RIGHTS_ACK_FLAG),
             capabilities={"options_chains": "cboe delayed quotes", "export": "INTERNAL_ONLY"},
         ),
         vix=_status(
@@ -238,6 +282,13 @@ def probe_openbb(env: Mapping[str, str] | None = None) -> OpenBBProbe:
             environ,
             dataset_flag=VIX_ENABLE_FLAG,
             sibling_flag=OPTIONS_ENABLE_FLAG,
+            rights_flag=VIX_RIGHTS_ACK_FLAG,
+            rights_ok=vix_rights_acked(environ),
+            missing_access="AGREEMENT_REQUIRED",
+            missing_reason=(
+                "{0} is not set. CFE delayed data requires a Cboe Data Agreement before collection. "
+                "OPTIONS consent and project governance do not cover VIX futures."
+            ).format(VIX_RIGHTS_ACK_FLAG),
             capabilities={"vix_curve": "cboe VX_EOD", "export": "INTERNAL_ONLY"},
         ),
     )
@@ -259,5 +310,7 @@ vix_enabled = vix_enabled_from_env
 rights_acknowledged = rights_acked
 OPTIONS_ENABLE_ENV = OPTIONS_ENABLE_FLAG
 VIX_ENABLE_ENV = VIX_ENABLE_FLAG
+OPTIONS_RIGHTS_ACK_ENV = OPTIONS_RIGHTS_ACK_FLAG
+VIX_RIGHTS_ACK_ENV = VIX_RIGHTS_ACK_FLAG
 RIGHTS_ACK_ENV = RIGHTS_ACK_FLAG
 configured_symbols = options_symbols_from_env

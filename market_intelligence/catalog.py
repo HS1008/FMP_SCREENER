@@ -406,7 +406,7 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "expected_cadence": "D",
         "usage_scope": EXPORT_INTERNAL_ONLY,
         "attribution": "Cboe delayed quotes via OpenBB. Delayed / EOD. Not OPRA consolidated.",
-        "terms_notes": "Cboe website terms distinguish limited personal use from storage/transmission. Recurring collection stays off until MI_OPENBB_CBOE_RIGHTS_ACK=1.",
+        "terms_notes": "Cboe website Terms (updated 2022-11-16) allow one personal copy; storage and derived analytics need written consent via permissions@cboe.com. Collection stays off until MI_OPENBB_OPTIONS_RIGHTS_ACK=1 after that consent. The legacy MI_OPENBB_CBOE_RIGHTS_ACK umbrella does not authorize this product.",
         "units_metadata": {"implied_volatility": "decimal", "greeks": "decimal"},
     },
     {
@@ -417,7 +417,7 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "expected_cadence": "D",
         "usage_scope": EXPORT_INTERNAL_ONLY,
         "attribution": "Cboe VX_EOD via OpenBB (4 p.m. ET levels; not labelled official settlement).",
-        "terms_notes": "Same Cboe delayed-quote terms. Recurring collection stays off until MI_OPENBB_CBOE_RIGHTS_ACK=1.",
+        "terms_notes": "VX_EOD uses CFE delayed quotes. Cboe North American Data Policies require a Data Agreement for CFE. Collection stays off until MI_OPENBB_VIX_RIGHTS_ACK=1 after that agreement. OPTIONS consent does not cover VIX.",
         "units_metadata": {"price": "index_points", "expiration": "month"},
     },
 )

@@ -88,9 +88,10 @@ Every envelope records `export_mode`, `owner_session`, `remote_value_sources`,
 Current remote posture with the shipped registry: Treasury and public FRED series carry
 values; equity-EOD derived sector/industry/subgroup values, ICE BofA credit values, FINRA
 aggregates, and OpenBB / Cboe options + VX_EOD (`OPENBB_CBOE_OPTIONS`, `OPENBB_CBOE_VIX`)
-are identity/date/status only until an entitlement decision is recorded. Cboe is **not**
+are identity/date/status only. Project governance and Cboe website/CFE rights do **not**
+authorize remote raw chains, strikes, IV, quotes, or VIX curve values. Cboe is **not**
 listed in the example `AI_GATEWAY_REMOTE_VALUE_SOURCES` allowlist. IV, GEX, strikes, skew,
-and curve points are `VALUE_KEYS` and redact under `external`.
+and curve points are `VALUE_KEYS` and redact under `external`. See `docs/OPENBB_CBOE_RIGHTS.md`.
 
 ## Holdout fail-closed (defense in depth)
 

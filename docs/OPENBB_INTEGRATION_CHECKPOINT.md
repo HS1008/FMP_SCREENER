@@ -51,7 +51,7 @@ Do not depend on `C:\OpenBB`, `Documents\OpenBB`, or an editable OpenBB checkout
 ## Design choices (as shipped)
 
 - Source ids `OPENBB_CBOE_OPTIONS` and `OPENBB_CBOE_VIX`. Export scope `INTERNAL_ONLY`. Not on `AI_GATEWAY_REMOTE_VALUE_SOURCES`.
-- Recurring fetch requires a dataset enable flag **and** `MI_OPENBB_CBOE_RIGHTS_ACK=1`. `--all-configured` skips when off.
+- Recurring fetch requires a dataset enable flag **and** the matching product rights flag (`MI_OPENBB_OPTIONS_RIGHTS_ACK` or `MI_OPENBB_VIX_RIGHTS_ACK`). The legacy `MI_OPENBB_CBOE_RIGHTS_ACK` umbrella is ignored. `--all-configured` skips when off. See `docs/OPENBB_CBOE_RIGHTS.md`.
 - Optional install: `requirements-openbb.txt`. Deploy/CI install the extra when the file is present; that does **not** enable fetching.
 - No OpenBB import on Streamlit / dry-run / read-model / planning paths.
 - Migration: `033_openbb_options_vix.sql`.
@@ -69,4 +69,4 @@ Do not depend on `C:\OpenBB`, `Documents\OpenBB`, or an editable OpenBB checkout
 
 - Human Cboe rights decision before production flags.
 - GitHub-authenticated Stage 1 Production Verification dispatch against `43f45273` (blocked here).
-- Do not merge as activation. Do not set `MI_OPENBB_CBOE_RIGHTS_ACK=1` in production from this PR.
+- Do not merge as activation. Do not set product rights acks or `MI_OPENBB_INSTALL_EXTRA=1` in production from implementation PRs.
