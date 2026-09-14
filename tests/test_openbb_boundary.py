@@ -24,12 +24,15 @@ def test_package_import_does_not_load_openbb():
     assert "options_volatility" in morning_context.SECTION_ORDER
 
 
-def test_probe_default_is_disabled():
+def test_probe_default_is_rights_gated():
     probe = probe_openbb({})
-    assert probe.options.access_status == adapters.ACCESS_DISABLED
-    assert probe.vix.access_status == adapters.ACCESS_DISABLED
+    assert probe.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert probe.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert probe.options.enabled is False
+    assert probe.vix.enabled is False
     rights = probe_openbb({"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_VIX_ENABLED": "1"})
     assert rights.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert rights.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
 
 
 def test_dry_run_and_probe_config_do_not_fetch():
@@ -178,42 +181,56 @@ def test_pinned_openbb_extra_imports_when_installed():
 
 def test_options_and_vix_probes_are_independent():
     both_off = probe_openbb({})
-    assert both_off.options.access_status == adapters.ACCESS_DISABLED
-    assert both_off.vix.access_status == adapters.ACCESS_DISABLED
+    assert both_off.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert both_off.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
     assert both_off.options.enabled is False
     assert both_off.vix.enabled is False
 
     opt_only = probe_openbb({"MI_OPENBB_OPTIONS_ENABLED": "1"})
     assert opt_only.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert opt_only.vix.access_status == adapters.ACCESS_DISABLED
+    assert opt_only.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
     assert opt_only.vix.enabled is False
 
     vix_only = probe_openbb({"MI_OPENBB_VIX_ENABLED": "1"})
-    assert vix_only.options.access_status == adapters.ACCESS_DISABLED
-    assert vix_only.vix.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert vix_only.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert vix_only.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
     assert vix_only.options.enabled is False
 
     from market_intelligence.openbb_provider.config import options_enabled_from_env, vix_enabled_from_env
 
-    ack_opt = {"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_CBOE_RIGHTS_ACK": "1"}
+    legacy = {"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_VIX_ENABLED": "1", "MI_OPENBB_CBOE_RIGHTS_ACK": "1"}
+    assert options_enabled_from_env(legacy) is False
+    assert vix_enabled_from_env(legacy) is False
+
+    ack_opt = {"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_OPTIONS_RIGHTS_ACK": "1"}
     assert options_enabled_from_env(ack_opt) is True
     assert vix_enabled_from_env(ack_opt) is False
-    ack_vix = {"MI_OPENBB_VIX_ENABLED": "1", "MI_OPENBB_CBOE_RIGHTS_ACK": "1"}
+    ack_vix = {"MI_OPENBB_VIX_ENABLED": "1", "MI_OPENBB_VIX_RIGHTS_ACK": "1"}
     assert options_enabled_from_env(ack_vix) is False
     assert vix_enabled_from_env(ack_vix) is True
 
     both_on = probe_openbb({"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_VIX_ENABLED": "1"})
     assert both_on.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert both_on.vix.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert both_on.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
 
-    umbrella = probe_openbb({"MI_OPENBB_ENABLED": "1"})
+    umbrella = probe_openbb({"MI_OPENBB_ENABLED": "1", "MI_OPENBB_CBOE_RIGHTS_ACK": "1"})
     assert umbrella.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert umbrella.vix.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert umbrella.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert umbrella.options.enabled is False
+    assert umbrella.vix.enabled is False
 
     mixed = probe_openbb({"MI_OPENBB_ENABLED": "1", "MI_OPENBB_OPTIONS_ENABLED": "1"})
     assert mixed.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert mixed.vix.access_status == adapters.ACCESS_DISABLED
+    assert mixed.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
     assert mixed.vix.enabled is False
+
+    opt_rights_collection_off = probe_openbb({"MI_OPENBB_OPTIONS_RIGHTS_ACK": "1"})
+    assert opt_rights_collection_off.options.access_status == adapters.ACCESS_DISABLED
+    assert opt_rights_collection_off.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+
+    vix_rights_collection_off = probe_openbb({"MI_OPENBB_VIX_RIGHTS_ACK": "1"})
+    assert vix_rights_collection_off.vix.access_status == adapters.ACCESS_DISABLED
+    assert vix_rights_collection_off.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
 
 
 def test_disabled_openbb_exception_note_is_not_broken():
@@ -231,14 +248,24 @@ def test_disabled_openbb_exception_note_is_not_broken():
     assert "outage" in disabled.lower()
     waiting = exception_note(
         {
-            "source_id": "OPENBB_CBOE_VIX",
+            "source_id": "OPENBB_CBOE_OPTIONS",
             "access_status": "ENTITLEMENT_REQUIRED",
             "optional_disabled": True,
-            "policy_status": "AWAITING_RIGHTS_ACK",
+            "policy_status": "RIGHTS_PENDING",
         }
     )
-    assert "AWAITING RIGHTS ACK" in waiting
+    assert "RIGHTS_PENDING" in waiting
     assert "outage" in waiting.lower()
+    agreement = exception_note(
+        {
+            "source_id": "OPENBB_CBOE_VIX",
+            "access_status": "AGREEMENT_REQUIRED",
+            "optional_disabled": True,
+            "policy_status": "AGREEMENT_REQUIRED",
+        }
+    )
+    assert "AGREEMENT_REQUIRED" in agreement
+    assert "outage" in agreement.lower()
 
 
 def test_intraday_flag_allows_additional_option_snapshots_not_vix():

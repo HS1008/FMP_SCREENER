@@ -22,6 +22,7 @@ ACCESS_CONFIGURATION_REQUIRED = "CONFIGURATION_REQUIRED"
 ACCESS_CONFIGURED = "CONFIGURED"
 ACCESS_AVAILABLE = "AVAILABLE"
 ACCESS_ENTITLEMENT_REQUIRED = "ENTITLEMENT_REQUIRED"
+ACCESS_AGREEMENT_REQUIRED = "AGREEMENT_REQUIRED"
 ACCESS_TEMPORARILY_UNAVAILABLE = "TEMPORARILY_UNAVAILABLE"
 
 IBKR_SOURCE_ID = "IBKR_MARKET_DATA"
@@ -205,7 +206,7 @@ class OpenBBCboeOptionsAdapter:
     CAPABILITIES = {
         "chains": "Cboe delayed-quote JSON via OpenBB; SPY/QQQ/IWM configurable",
         "coverage": "not consolidated OPRA",
-        "export": "INTERNAL_ONLY until a human records Cboe redistribution rights",
+        "export": "INTERNAL_ONLY; website storage needs Cboe written consent, not project governance alone",
     }
 
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
@@ -217,8 +218,9 @@ class OpenBBCboeOptionsAdapter:
 class OpenBBCboeVixAdapter:
     source_id = "OPENBB_CBOE_VIX"
     CAPABILITIES = {
-        "curve": "Cboe VX_EOD 4 p.m. ET levels via OpenBB",
+        "curve": "Cboe VX_EOD 4 p.m. ET levels via OpenBB (CFE delayed quotes)",
         "labels": "not official settlement; not live quotes",
+        "export": "INTERNAL_ONLY; CFE Data Agreement required before collection",
     }
 
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
@@ -239,6 +241,7 @@ __all__ = [
     "ACCESS_AVAILABLE",
     "ACCESS_CONFIGURATION_REQUIRED",
     "ACCESS_CONFIGURED",
+    "ACCESS_AGREEMENT_REQUIRED",
     "ACCESS_DISABLED",
     "ACCESS_ENTITLEMENT_REQUIRED",
     "ACCESS_TEMPORARILY_UNAVAILABLE",

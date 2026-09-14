@@ -726,15 +726,25 @@ def render_data_health() -> None:
     if not health:
         st.info("No sources registered yet.")
     if gated:
-        st.subheader("Disabled by policy")
-        st.caption("These sources are off by configuration or rights gate. They are not platform outages.")
+        st.subheader("Disabled or rights-gated")
+        st.caption("Licensing and configuration gates are not platform outages. RIGHTS_PENDING / AGREEMENT_REQUIRED are not FAILED.")
         st.dataframe(
             pd.DataFrame(
                 [
                     {
                         "Source": row.get("source_id"),
+                        "Provider": row.get("provider") or "—",
+                        "Product": row.get("dataset") or row.get("freshness_dataset") or "—",
                         "State": row.get("policy_status") or row.get("access_status") or "DISABLED",
-                        "Access": row.get("access_status") or "—",
+                        "Rights / access": row.get("access_status") or "—",
+                        "Collection": "on" if row.get("enabled") else "off",
+                        "Export": row.get("usage_scope") or "—",
+                        "Cadence": row.get("dataset_cadence") or row.get("expected_cadence") or "—",
+                        "Stale after (days)": row.get("tolerance_days") if row.get("tolerance_days") is not None else "—",
+                        "Last attempt": age_text(row.get("last_attempt_at")),
+                        "Last success": age_text(row.get("last_success_at")),
+                        "Latest observation": row.get("latest_observation_date") or "—",
+                        "Latest failure": (row.get("last_error_redacted") or "—"),
                         "Why": exception_note(row),
                     }
                     for row in gated

@@ -10,7 +10,7 @@ This file records evidence, not activation. Production flags stay off.
 ## Verdict
 
 **DONE for the gated vertical slice, clean extra install, disposable PostgreSQL ingest, bounded live Cboe query-back, and read-only consumer proof.**
-**NOT a production enablement.** Collection flags remain `0`. `MI_OPENBB_CBOE_RIGHTS_ACK` stays unset in production.
+**NOT a production enablement.** Collection flags remain `0`. Product-specific rights acks stay unset. The legacy `MI_OPENBB_CBOE_RIGHTS_ACK` umbrella does not authorize either product.
 **Stage 1 production-verification dispatch was blocked** (no GitHub CLI / MCP auth in this session).
 **OUT_OF_SCOPE:** production enablement, FMP cancellation, QC/research methodology, IBKR setting changes, 2025+ / FINAL_HOLDOUT.
 
@@ -21,7 +21,7 @@ This file records evidence, not activation. Production flags stay off.
 | A. Isolated worktree; dirty `FMP_SCREENER` / quant trees untouched | DONE | Implementation is in `FMP_SCREENER_OPENBB` only |
 | B. Clean reproducible OpenBB extra | DONE | Worktree `.venv` (Python 3.14.4 locally; CI/deploy is 3.12) installed from `requirements.txt` + `requirements-dev.txt` + `requirements-openbb.txt`. Pins: `openbb==4.7.2`, `openbb-cboe==1.6.1` (companions `openbb-core==1.6.13`, `openbb-derivatives==1.6.2`, `openbb-yfinance==1.6.3`). No editable/path dependency on `C:\OpenBB` or `Documents\OpenBB`. `OpenBBClient` imports from this interpreter. |
 | C. Optional extra + lazy import | DONE | `requirements-openbb.txt`; package import does not load `openbb`; CI/deploy install the extra; fetch stays flag-gated |
-| D. Dual source ids, INTERNAL_ONLY, rights ack | DONE | `OPENBB_CBOE_OPTIONS` / `OPENBB_CBOE_VIX`; `MI_OPENBB_CBOE_RIGHTS_ACK`; not on remote allowlist |
+| D. Dual source ids, INTERNAL_ONLY, rights ack | DONE | `OPENBB_CBOE_OPTIONS` / `OPENBB_CBOE_VIX`; product-specific `MI_OPENBB_OPTIONS_RIGHTS_ACK` / `MI_OPENBB_VIX_RIGHTS_ACK`; legacy umbrella ignored; not on remote allowlist |
 | E. Migration 033 + readonly grants | DONE | `db/migrations/033_openbb_options_vix.sql`; applied twice on disposable PG (second pass skipped/idempotent); conditional GRANTs on four `mi_v_*` views |
 | F. Normalize / analytics (session DTE, IV decimal, GEX proxy, VX month labels) | DONE | Fixture tests: Friday-as-Friday, adjusted OCC, IV decimal, ATM / 30D interpolation, GEX 1000/sign cancel, VIX month precision |
 | G. Refresh / read models / UI / morning / export | DONE | `--options` / `--vix`; `--all-configured` skips when off; Market Pulse + Data Health + Morning Brief read stored snapshots; options section excluded from morning completeness |
@@ -38,12 +38,7 @@ Treasury Daily XML, FINRA Query, IBKR collector / equity EOD, FRED, and QC resea
 
 ## Recurring collection gate
 
-Both of these are required before any scheduled fetch:
-
-1. `MI_OPENBB_OPTIONS_ENABLED=1` and/or `MI_OPENBB_VIX_ENABLED=1`
-2. `MI_OPENBB_CBOE_RIGHTS_ACK=1`
-
-`--all-configured` skips when either is missing. Explicit `--options` / `--vix` fail closed.
+Scheduled fetch requires the matching enable flag **and** the matching product rights flag. See `docs/OPENBB_CBOE_RIGHTS.md`. The legacy umbrella is ignored. `--all-configured` skips when off. Explicit `--options` / `--vix` fail closed.
 
 ## OpenBB venv leftover (not used by this branch)
 

@@ -80,11 +80,16 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
             row["retired_optional"] = True
             row["policy_status"] = "RETIRED"
-        elif access in {"DISABLED", "ENTITLEMENT_REQUIRED"} and str(row.get("source_id") or "").startswith("OPENBB_"):
+        elif access in {"DISABLED", "ENTITLEMENT_REQUIRED", "AGREEMENT_REQUIRED"} and str(row.get("source_id") or "").startswith("OPENBB_"):
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
             row["optional_disabled"] = True
             row["retired_optional"] = True
-            row["policy_status"] = "AWAITING_RIGHTS_ACK" if access == "ENTITLEMENT_REQUIRED" else "DISABLED"
+            if access == "ENTITLEMENT_REQUIRED":
+                row["policy_status"] = "RIGHTS_PENDING"
+            elif access == "AGREEMENT_REQUIRED":
+                row["policy_status"] = "AGREEMENT_REQUIRED"
+            else:
+                row["policy_status"] = "DISABLED"
         else:
             row["freshness_status"] = assessment.status if latest_d is not None else (row.get("freshness_status") or "MISSING")
             row["policy_status"] = access or "UNKNOWN"
