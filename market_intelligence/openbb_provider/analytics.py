@@ -358,7 +358,7 @@ def compute_options_metrics(chain: NormalizedChain) -> dict[str, Any]:
         "observation_time_utc": chain.observation_time_utc.isoformat() if chain.observation_time_utc else None,
         "observation_precision": chain.observation_precision,
         "spot": spot,
-        "delay_label": "Cboe delayed quotes",
+        "delay_label": chain.delay_label or chain.quality.get("delay_label") or "unspecified",
         "eod_label": None,
         "input_content_hash": chain.content_hash,
         "atm_iv_30d": iv30,

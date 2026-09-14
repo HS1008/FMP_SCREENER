@@ -70,6 +70,8 @@ st.title("Strategy Monitor")
 st.caption(
     "Read-only research library and backtest results from PostgreSQL. "
     "This page does not launch backtests, train models, approve strategies, or place orders. "
+    "Stage 1 remains 81 planned experiments and 0 final-holdout experiments. "
+    "Stage 2 research OOS ends 2024; 2025+ is sealed. "
     "Live monitor data updates automatically as new synchronized results become available."
 )
 if engine is None:

@@ -44,7 +44,12 @@ def build_parser() -> argparse.ArgumentParser:
     options.add_argument("--max-expirations", type=int, default=None)
     options.add_argument("--atm-strikes", type=int, default=None, help="Strikes each side of ATM")
     options.add_argument("--max-lines", type=int, default=None, help="Concurrent reqMktData lines (default 20)")
-    options.add_argument("--quote-wait", type=float, default=None, help="Seconds to wait per option batch (default 6)")
+    options.add_argument("--quote-wait", type=float, default=None, help="Seconds to wait per option batch (default 12)")
+    options.add_argument("--generic-ticks", default=None, help="Override generic tick list; empty string requests none")
+    options.add_argument("--snapshot", action="store_true", help="Use reqMktData snapshot instead of a short stream")
+    options.add_argument("--prove", action="store_true", help="Include per-contract field values for a local API proof (INTERNAL_ONLY, no POST)")
+    options.add_argument("--as-of", dest="as_of", default=None, help="YYYY-MM-DD; expirations before this date are skipped")
+    options.add_argument("--market-data-type", dest="market_data_type", type=int, default=None, help="1 live, 3 delayed, 4 delayed-frozen")
     return parser
 
 

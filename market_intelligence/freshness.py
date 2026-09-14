@@ -130,6 +130,9 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
     "GDPC1": _fred_macro_quarterly(),
     "ICSA": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(8, 30), overdue_sessions=2, stale_sessions=14, notes="Weekly claims, typically Thursday."),
     "CCSA": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(8, 30), overdue_sessions=2, stale_sessions=14),
+    "DCOILWTICO": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="D", overdue_sessions=2, stale_sessions=6, notes="EIA WTI spot via FRED. Weekends and holidays are missing, not zero."),
+    "DHHNGSP": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="D", overdue_sessions=2, stale_sessions=6, notes="EIA Henry Hub spot via FRED. Weekends and holidays are missing, not zero."),
+    "PCOPPUSDM": _fred_macro_monthly(lag_days=25),
 }
 
 SOURCE_DEFAULT_CALENDAR = {
@@ -142,6 +145,12 @@ SOURCE_DEFAULT_CALENDAR = {
     "OPENBB_CBOE_OPTIONS": CAL_NYSE,
     "OPENBB_CBOE_VIX": CAL_NYSE,
     "IBKR_OPTIONS": CAL_NYSE,
+    "IBKR_OPTIONS_STORAGE": CAL_NYSE,
+    "MSRB_EMMA": CAL_US_FEDERAL,
+    "IBKR_MUNICIPAL_BONDS": CAL_NYSE,
+    "IBKR_CORPORATE_BONDS": CAL_NYSE,
+    "CFTC_COT": CAL_US_FEDERAL,
+    "EIA_ENERGY": CAL_US_FEDERAL,
 }
 
 

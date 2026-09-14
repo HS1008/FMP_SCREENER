@@ -72,6 +72,15 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         file_path="pages/18_Order_Flow.py",
     ),
     PageSpec(
+        "fixed_income",
+        "Fixed Income",
+        "Markets",
+        "Fixed_Income",
+        render_name="render_fixed_income",
+        legacy_path="pages/19_Fixed_Income.py",
+        file_path="pages/19_Fixed_Income.py",
+    ),
+    PageSpec(
         "macro",
         "Macro",
         "Economy",

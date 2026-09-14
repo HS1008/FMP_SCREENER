@@ -238,11 +238,25 @@ class NormalizedChain:
     content_hash: str
     openbb_version: str | None
     normalization_version: str = NORMALIZATION_VERSION
+    delay_label: str | None = None
+    market_data_type: str | None = None
+    provider: str | None = None
+    source_id: str | None = None
 
     @property
     def complete(self) -> bool:
         # Dropped OCC/field mismatches are coverage, not a reason to hide the kept chain.
         return bool(self.contracts) and int(self.quality.get("duplicate_identities", 0) or 0) == 0
+
+
+def _default_delay_label(source_id: str | None, market_data_type: str | None) -> str:
+    if source_id == OPENBB_OPTIONS_SOURCE_ID:
+        return "CBOE_DELAYED"
+    if source_id == "IBKR_OPTIONS":
+        if market_data_type:
+            return "IBKR_{0}".format(str(market_data_type).upper())
+        return "IBKR_UNAVAILABLE"
+    return str(source_id or "UNSPECIFIED")
 
 
 def _row_get(row: MappingLike, *names: str) -> Any:
@@ -263,6 +277,8 @@ def normalize_chain(
     source_id: str = OPENBB_OPTIONS_SOURCE_ID,
     coverage_note: str = COVERAGE_NOTE,
     endpoint: str | None = None,
+    delay_label: str | None = None,
+    market_data_type: str | None = None,
 ) -> NormalizedChain:
     collected = clock or raw.fetched_at or datetime.now(timezone.utc)
     if collected.tzinfo is None:
@@ -409,6 +425,9 @@ def normalize_chain(
         "coverage_note": coverage_note,
         "endpoint": endpoint if endpoint is not None else CHAIN_ENDPOINT.format(symbol=raw.symbol),
         "source_id": source_id,
+        "provider": provider,
+        "delay_label": delay_label or _default_delay_label(source_id, market_data_type),
+        "market_data_type": market_data_type,
     }
     return NormalizedChain(
         underlying=raw.symbol,
@@ -425,6 +444,10 @@ def normalize_chain(
         quality=quality,
         content_hash=canonical_sha256(payload),
         openbb_version=raw.openbb_version,
+        delay_label=delay_label or _default_delay_label(source_id, market_data_type),
+        market_data_type=market_data_type,
+        provider=provider,
+        source_id=source_id,
     )
 
 
@@ -550,7 +573,7 @@ def normalize_options_envelope(envelope: dict[str, Any], *, clock=None):
         normalization_version=NORMALIZATION_VERSION,
         openbb_version=chain.openbb_version,
         endpoint=CHAIN_ENDPOINT.format(symbol=chain.underlying),
-        delay_label="CBOE_DELAYED",
+        delay_label=chain.delay_label or "CBOE_DELAYED",
         permitted_use="INTERNAL_ONLY",
         quality=quality,
         provenance={"provider": "cboe", "openbb_version": chain.openbb_version},

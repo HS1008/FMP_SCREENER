@@ -133,6 +133,17 @@
       "units": "Index 1982-1984=100",
       "units_short": "Index 1982-1984=100"
     },
+    "DCOILWTICO": {
+      "frequency": "Daily",
+      "frequency_short": "D",
+      "id": "DCOILWTICO",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/DCOILWTICO",
+      "title": "Crude Oil Prices: West Texas Intermediate (WTI) - Cushing, Oklahoma",
+      "units": "Dollars per Barrel",
+      "units_short": "$/bbl"
+    },
     "DFF": {
       "frequency": "Daily, 7-Day",
       "frequency_short": "D",
@@ -298,6 +309,17 @@
       "units": "Percent",
       "units_short": "%"
     },
+    "DHHNGSP": {
+      "frequency": "Daily",
+      "frequency_short": "D",
+      "id": "DHHNGSP",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/DHHNGSP",
+      "title": "Henry Hub Natural Gas Spot Price",
+      "units": "Dollars per Million BTU",
+      "units_short": "$/Mil. BTU"
+    },
     "GDPC1": {
       "frequency": "Quarterly",
       "frequency_short": "Q",
@@ -374,6 +396,17 @@
       "title": "Personal Consumption Expenditures Excluding Food and Energy (Chain-Type Price Index)",
       "units": "Index 2017=100",
       "units_short": "Index 2017=100"
+    },
+    "PCOPPUSDM": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "PCOPPUSDM",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/PCOPPUSDM",
+      "title": "Global price of Copper",
+      "units": "U.S. Dollars per Metric Ton",
+      "units_short": "U.S. $ per Metric Ton"
     },
     "RRPONTSYD": {
       "frequency": "Daily",

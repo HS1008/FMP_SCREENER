@@ -33,7 +33,7 @@ def test_registry_covers_required_routes_and_sections():
     assert required <= set(PAGE_BY_ROUTE)
     grouped = specs_by_section()
     assert [spec.title for spec in grouped["Overview"]] == ["Overview"]
-    assert {spec.title for spec in grouped["Markets"]} == {"Sectors", "Rates", "Credit", "Order Flow"}
+    assert {spec.title for spec in grouped["Markets"]} == {"Sectors", "Rates", "Credit", "Order Flow", "Fixed Income"}
     assert any(spec.default for spec in PAGE_SPECS)
     urls = [spec.url_path for spec in PAGE_SPECS]
     assert len(urls) == len(set(urls))
@@ -59,6 +59,7 @@ def test_overview_drilldowns_use_registry_not_wrapper_paths():
     assert 'open_registered_page("credit", "Open Credit")' in source
     assert 'open_registered_page("macro", "Open Macro")' in source
     assert 'open_registered_page("order_flow", "Open Order Flow")' in source
+    assert 'open_registered_page("fixed_income", "Open Fixed Income")' in source
     assert "pages/14_Sector_Rotation_V2.py" not in source
     assert "pages/12_Rates_Curve.py" not in source
     opener = source.split("def open_registered_page", 1)[1].split("\n\n", 1)[0]
