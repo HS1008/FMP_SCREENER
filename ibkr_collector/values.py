@@ -32,9 +32,19 @@ SIZE_TICKS = {
     0: "bid_size",
     3: "ask_size",
     5: "last_size",
+    8: "volume",
+    27: "call_open_interest",
+    28: "put_open_interest",
+    29: "call_volume",
+    30: "put_volume",
     69: "bid_size",
     70: "ask_size",
     71: "last_size",
+    74: "volume",
+}
+GENERIC_TICKS = {
+    23: "option_historical_volatility",
+    24: "option_implied_volatility",
 }
 TIMESTAMP_TICKS = {45: "last_timestamp", 88: "last_timestamp"}
 DELAYED_TICK_IDS = frozenset({66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 88})
@@ -52,11 +62,14 @@ INFORMATIONAL_ERROR_CODES = frozenset(
         2174,
         2100,
         2188,  # up-to-the-second historical bars need a streaming subscription; EOD bars may still follow
+        2187,  # generic ticks unavailable on delayed market-data fallback
+        300,  # cancelMktData for a ticker that never subscribed
     }
 )
-ENTITLEMENT_ERROR_CODES = frozenset({354, 10089, 10167, 10168, 10197, 10225, 2186})
+ENTITLEMENT_ERROR_CODES = frozenset({354, 10089, 10091, 10167, 10168, 10197, 10225, 2186})
 CONNECTIVITY_ERROR_CODES = frozenset({502, 504, 1100, 1300, 2110, 326, 507, 1101, 1102})
 PACING_ERROR_CODES = frozenset({420})
+LINE_LIMIT_ERROR_CODES = frozenset({101})
 HISTORICAL_ERROR_CODES = frozenset({162, 165, 366})
 INVALID_CONTRACT_ERROR_CODES = frozenset({200, 321})
 
@@ -90,6 +103,7 @@ BLOCKED_ECLIENT_METHODS = (
     "reqNewsBulletins",
     "reqMktDepth",
     "reqMktDepthExchanges",
+    "exerciseOptions",
 )
 
 
@@ -139,6 +153,8 @@ def classify_error(code: int) -> str:
         return "connectivity"
     if code in PACING_ERROR_CODES:
         return "pacing"
+    if code in LINE_LIMIT_ERROR_CODES:
+        return "line_limit"
     if code in HISTORICAL_ERROR_CODES:
         return "historical"
     if code in INVALID_CONTRACT_ERROR_CODES:

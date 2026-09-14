@@ -33,6 +33,18 @@ def build_parser() -> argparse.ArgumentParser:
     eod.add_argument("--host", default=None)
     eod.add_argument("--port", type=int, default=None)
     eod.add_argument("--dry-run", action="store_true", help="Fetch and print coverage counts; do not POST bars")
+    options = sub.add_parser(
+        "fetch-options",
+        help="Bounded read-only SPY/QQQ/IWM option snapshot via reqSecDefOptParams + reqMktData. Does not POST or enable production collection.",
+    )
+    options.add_argument("--symbols", default="SPY", help="Comma-separated underlyings; default SPY")
+    options.add_argument("--client-id", type=int, default=None, help="TWS API client id (default 73)")
+    options.add_argument("--host", default=None)
+    options.add_argument("--port", type=int, default=None)
+    options.add_argument("--max-expirations", type=int, default=None)
+    options.add_argument("--atm-strikes", type=int, default=None, help="Strikes each side of ATM")
+    options.add_argument("--max-lines", type=int, default=None, help="Concurrent reqMktData lines (default 20)")
+    options.add_argument("--quote-wait", type=float, default=None, help="Seconds to wait per option batch (default 6)")
     return parser
 
 
@@ -60,6 +72,10 @@ def main(argv: list[str] | None = None) -> int:
         from ibkr_collector.eod_cli import run_fetch_eod
 
         return run_fetch_eod(args)
+    if args.command == "fetch-options":
+        from ibkr_collector.options_cli import run_fetch_options
+
+        return run_fetch_options(args)
     if args.command in {"start", "stop", "status", "install", "uninstall", "provision-token"}:
         from ibkr_collector.service_windows import dispatch
 

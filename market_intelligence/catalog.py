@@ -420,4 +420,17 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "terms_notes": "VX_EOD uses CFE delayed quotes. Cboe North American Data Policies require a Data Agreement for CFE. Collection stays off until MI_OPENBB_VIX_RIGHTS_ACK=1 after that agreement. OPTIONS consent does not cover VIX.",
         "units_metadata": {"price": "index_points", "expiration": "month"},
     },
+    {
+        "source_id": "IBKR_OPTIONS",
+        "provider": "Interactive Brokers TWS",
+        "dataset": "ibkr_bounded_option_chains",
+        "source_url": "https://interactivebrokers.github.io/tws-api/options.html",
+        "expected_cadence": "D",
+        "usage_scope": EXPORT_INTERNAL_ONLY,
+        "enabled": False,
+        "access_status": "DISABLED",
+        "attribution": "IBKR TWS option quotes via reqSecDefOptParams + bounded reqMktData. Delayed OPRA unless this username has live OPRA. Not Cboe website JSON.",
+        "terms_notes": "INTERNAL_ONLY. Recurring collection stays off until an entitlement and storage-rights review. Do not publish into mi_v_options_latest until delay_label is generalized. Not on the remote AI allowlist.",
+        "units_metadata": {"implied_volatility": "decimal", "greeks": "decimal"},
+    },
 )

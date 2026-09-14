@@ -255,7 +255,15 @@ def _row_get(row: MappingLike, *names: str) -> Any:
 MappingLike = dict[str, Any]
 
 
-def normalize_chain(raw: RawChainFetch, *, clock: datetime | None = None) -> NormalizedChain:
+def normalize_chain(
+    raw: RawChainFetch,
+    *,
+    clock: datetime | None = None,
+    provider: str = PROVIDER_ID,
+    source_id: str = OPENBB_OPTIONS_SOURCE_ID,
+    coverage_note: str = COVERAGE_NOTE,
+    endpoint: str | None = None,
+) -> NormalizedChain:
     collected = clock or raw.fetched_at or datetime.now(timezone.utc)
     if collected.tzinfo is None:
         collected = collected.replace(tzinfo=timezone.utc)
@@ -388,7 +396,7 @@ def normalize_chain(raw: RawChainFetch, *, clock: datetime | None = None) -> Nor
         "source_timestamp_utc": source_ts.isoformat() if source_ts else None,
         "contracts": [item.market_record() for item in sorted(contracts, key=lambda c: (c.expiration or date.min, c.strike or Decimal(0), c.option_type or ""))],
         "normalization_version": NORMALIZATION_VERSION,
-        "provider": PROVIDER_ID,
+        "provider": provider,
     }
     quality = {
         "contracts_in": len(raw.contracts),
@@ -398,9 +406,9 @@ def normalize_chain(raw: RawChainFetch, *, clock: datetime | None = None) -> Nor
         "duplicate_identities": duplicate_identities,
         "source_timestamp_known": source_ts is not None,
         "session_basis": session_basis,
-        "coverage_note": COVERAGE_NOTE,
-        "endpoint": CHAIN_ENDPOINT.format(symbol=raw.symbol),
-        "source_id": OPENBB_OPTIONS_SOURCE_ID,
+        "coverage_note": coverage_note,
+        "endpoint": endpoint if endpoint is not None else CHAIN_ENDPOINT.format(symbol=raw.symbol),
+        "source_id": source_id,
     }
     return NormalizedChain(
         underlying=raw.symbol,
