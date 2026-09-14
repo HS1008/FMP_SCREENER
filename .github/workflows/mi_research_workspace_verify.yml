@@ -58,9 +58,8 @@ jobs:
       - name: Install fixed activator without adding untracked checkout files
         run: |
           scp -q scripts/activate_market_intelligence_host.sh \
-            scripts/lib_post_deploy_lock.sh \
-            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/"
-          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh /root/FMP_SCREENER/scripts/lib_post_deploy_lock.sh'
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh"
+          ssh "$DO_USER@$DO_HOST" 'chmod 0755 /root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh'
 
       - name: Confirm deployed SHA and apply 019 if objects are missing
         run: |
