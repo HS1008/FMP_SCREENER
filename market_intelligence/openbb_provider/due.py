@@ -31,17 +31,33 @@ def options_due(
     last_attempt_status: str | None,
     now: datetime,
     env: Mapping[str, str] | None = None,
+    wanted: date | None = None,
 ) -> dict[str, Any]:
-    wanted = target_session(now)
-    if last_published_session == wanted and not intraday_snapshots_enabled(env):
-        return {"due": False, "reason": "already_published_for_session", "session_date": wanted.isoformat()}
-    if last_published_session == wanted and last_attempt_status in {"SUCCEEDED", "UNCHANGED"}:
-        return {"due": False, "reason": "already_published_for_session", "session_date": wanted.isoformat()}
-    return {"due": True, "reason": "catch_up_or_first", "session_date": wanted.isoformat()}
+    session = wanted or target_session(now)
+    if last_published_session == session:
+        if intraday_snapshots_enabled(env):
+            return {
+                "due": True,
+                "reason": "intraday_additional_snapshot",
+                "session_date": session.isoformat(),
+            }
+        return {
+            "due": False,
+            "reason": "already_published_for_session",
+            "session_date": session.isoformat(),
+        }
+    _ = last_attempt_status
+    return {"due": True, "reason": "catch_up_or_first", "session_date": session.isoformat()}
 
 
-def vix_due(*, last_published_date: date | None, now: datetime) -> dict[str, Any]:
-    wanted = target_session(now)
-    if last_published_date == wanted:
-        return {"due": False, "reason": "already_published_for_session", "session_date": wanted.isoformat()}
-    return {"due": True, "reason": "catch_up_or_first", "session_date": wanted.isoformat()}
+def vix_due(
+    *,
+    last_published_date: date | None,
+    now: datetime,
+    wanted: date | None = None,
+) -> dict[str, Any]:
+    """VX_EOD is one 4 p.m. ET snapshot per session. Intraday flag does not apply."""
+    session = wanted or target_session(now)
+    if last_published_date == session:
+        return {"due": False, "reason": "already_published_for_session", "session_date": session.isoformat()}
+    return {"due": True, "reason": "catch_up_or_first", "session_date": session.isoformat()}

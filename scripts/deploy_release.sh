@@ -143,17 +143,17 @@ if [ ! -x "$target/venv/bin/streamlit" ]; then
     echo "Creating release venv at $target/venv"
     python3 -m venv "$target/venv"
     "$target/venv/bin/pip" install -r "$target/requirements.txt"
-    if [ -f "$target/requirements-openbb.txt" ]; then
-      echo "Installing optional OpenBB ingestion extra"
-      "$target/venv/bin/pip" install -r "$target/requirements-openbb.txt"
-    fi
   fi
 fi
-if [ -x "$target/venv/bin/python" ] && [ -f "$target/requirements-openbb.txt" ]; then
-  if ! "$target/venv/bin/python" -c "import importlib.util,sys; sys.exit(0 if importlib.util.find_spec('openbb_cboe') else 1)"; then
-    echo "Installing optional OpenBB ingestion extra into existing release venv"
-    "$target/venv/bin/pip" install -r "$target/requirements-openbb.txt"
+if [ "${MI_OPENBB_INSTALL_EXTRA:-0}" = "1" ]; then
+  if [ ! -f "$target/requirements-openbb.txt" ]; then
+    echo "FAIL: MI_OPENBB_INSTALL_EXTRA=1 but release tree is missing requirements-openbb.txt"
+    exit 3
   fi
+  echo "Installing optional OpenBB ingestion extra (MI_OPENBB_INSTALL_EXTRA=1)"
+  "$target/venv/bin/pip" install -r "$target/requirements-openbb.txt"
+else
+  echo "openbb_extra=skipped_dormant"
 fi
 if [ "$SKIP_IDENTITY" != 1 ] && [ "$STAGE_ONLY" != 1 ] && [ ! -x "$target/venv/bin/streamlit" ]; then
   echo "FAIL: release venv is missing streamlit at $target/venv/bin/streamlit"

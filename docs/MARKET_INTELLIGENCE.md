@@ -290,5 +290,6 @@ without deleting `mi_market_quotes` / `mi_collector_status`.
 * Bond tables have no ingestion source; `jobs.bond_analytics` reports every bond as a skip.
 * Holiday calendar covers US federal holidays only.
 * OpenBB / Cboe collection is implemented, fixture-tested, and query-backed on disposable
-  PostgreSQL with a bounded live Cboe fetch. Production flags stay `0`. Do not treat a merge
-  as activation.
+  PostgreSQL with a bounded live Cboe fetch. Production flags stay `0`. Deploy does **not**
+  pip-install `requirements-openbb.txt` unless `MI_OPENBB_INSTALL_EXTRA=1`. Do not treat a
+  merge as activation.

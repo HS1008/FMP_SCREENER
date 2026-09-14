@@ -18,6 +18,7 @@ from market_intelligence.openbb_provider.config import (
     OPENBB_OPTIONS_SOURCE_ID,
     OPENBB_VIX_SOURCE_ID,
     VIX_ANALYTICS_VERSION,
+    probe_openbb,
 )
 from market_intelligence.openbb_provider.normalize import NormalizedChain, NormalizedContract
 from market_intelligence.openbb_provider.vix import NormalizedCurve, front_curve_metrics
@@ -43,14 +44,32 @@ def _sid(dataset: str) -> str:
     return OPENBB_VIX_SOURCE_ID if dataset == "vix_eod_curve" else OPENBB_OPTIONS_SOURCE_ID
 
 
-def ensure_source(conn, *, enabled: bool, access: str) -> None:
-    entries = [entry for entry in SOURCE_REGISTRY_DEFAULTS if entry["source_id"] in {OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID}]
+def sync_registry(conn, env: Mapping[str, str] | None = None) -> None:
+    """Write independent OPTIONS / VIX registry rows from the current probe."""
+    probe = probe_openbb(env)
+    entries = [
+        entry
+        for entry in SOURCE_REGISTRY_DEFAULTS
+        if entry["source_id"] in {OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID}
+    ]
     upsert_source_registry(
         conn,
         entries,
-        enabled={OPENBB_OPTIONS_SOURCE_ID: enabled, OPENBB_VIX_SOURCE_ID: enabled},
-        access={OPENBB_OPTIONS_SOURCE_ID: access, OPENBB_VIX_SOURCE_ID: access},
+        enabled={
+            OPENBB_OPTIONS_SOURCE_ID: bool(probe.options.enabled),
+            OPENBB_VIX_SOURCE_ID: bool(probe.vix.enabled),
+        },
+        access={
+            OPENBB_OPTIONS_SOURCE_ID: probe.options.access_status,
+            OPENBB_VIX_SOURCE_ID: probe.vix.access_status,
+        },
     )
+
+
+def ensure_source(conn, *, enabled: bool, access: str) -> None:
+    """Deprecated wrapper. Prefer :func:`sync_registry` so siblings stay independent."""
+    _ = (enabled, access)
+    sync_registry(conn)
 
 
 def current_complete_snapshot(conn, *, dataset: str, underlying: str) -> dict[str, Any] | None:

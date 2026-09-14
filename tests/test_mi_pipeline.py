@@ -513,6 +513,10 @@ def test_morning_snapshot_empty_db_is_explicit(pg_engine, populated):
         "UPDATE mi_pit_sector_internals SET is_current = FALSE",
         "SELECT COUNT(*) FROM research_runs",
         "INSERT INTO research_runs (research_run_id, strategy_id) VALUES ('x','y')",
+        "SELECT COUNT(*) FROM mi_openbb_snapshots",
+        "INSERT INTO mi_openbb_snapshots (snapshot_id, source_id, dataset, underlying, observation_precision, collected_at, content_hash, normalization_version, provider, publication_status, export_scope) VALUES ('x','OPENBB_CBOE_OPTIONS','options_chain','SPY','unknown', NOW(), 'x', 'x', 'cboe', 'FAILED', 'INTERNAL_ONLY')",
+        "UPDATE mi_openbb_snapshots SET is_current = FALSE",
+        "DELETE FROM mi_openbb_snapshots",
     ],
 )
 def test_readonly_role_denies_writes_and_raw_tables(ro_engine, populated, sql):
@@ -527,7 +531,7 @@ def test_readonly_role_can_select_curated_views(ro_engine, populated):
     with ro_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_v_macro_latest")).scalar() > 40
         assert conn.execute(text("SELECT COUNT(*) FROM mi_v_strategy_research_summary WHERE strategy_id='FIXTURE_STRATEGY'")).scalar() == 1
-        for view in readonly_db.REQUIRED_VIEWS + ("mi_v_macro_quarantine_summary", "mi_v_metric_history", "mi_v_industry_latest", "mi_v_research_ideas", "mi_v_pit_sector_artifacts", "mi_v_pit_sector_internals_current", "mi_v_pit_sector_internals_latest"):
+        for view in readonly_db.REQUIRED_VIEWS + ("mi_v_macro_quarantine_summary", "mi_v_metric_history", "mi_v_industry_latest", "mi_v_research_ideas", "mi_v_pit_sector_artifacts", "mi_v_pit_sector_internals_current", "mi_v_pit_sector_internals_latest", "mi_v_options_latest", "mi_v_options_contracts_latest", "mi_v_vix_curve_latest", "mi_v_openbb_last_attempt"):
             conn.execute(text("SELECT * FROM {0} LIMIT 1".format(view)))
 
 

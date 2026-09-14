@@ -345,6 +345,10 @@ def test_dashboard_readonly_role_selects_and_denies_writes(dashboard_ro_engine):
         assert conn.execute(text("SELECT COUNT(*) FROM backtests")).scalar() >= 0
         assert conn.execute(text("SELECT COUNT(*) FROM research_artifacts")).scalar() >= 0
         assert conn.execute(text("SELECT COUNT(*) FROM ml_trials")).scalar() >= 0
+        assert conn.execute(text("SELECT COUNT(*) FROM mi_v_options_latest")).scalar() >= 0
+        assert conn.execute(text("SELECT COUNT(*) FROM mi_v_vix_curve_latest")).scalar() >= 0
+        assert conn.execute(text("SELECT COUNT(*) FROM mi_v_options_contracts_latest")).scalar() >= 0
+        assert conn.execute(text("SELECT COUNT(*) FROM mi_v_openbb_last_attempt")).scalar() >= 0
     for sql, _label in CORE_MUTATION_PROBES:
         with pytest.raises(Exception) as excinfo:
             with engine.begin() as conn:

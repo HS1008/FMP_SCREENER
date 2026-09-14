@@ -79,12 +79,15 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
         if access in {"RETIRED_OPTIONAL", "RETIRED"}:
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
             row["retired_optional"] = True
+            row["policy_status"] = "RETIRED"
         elif access in {"DISABLED", "ENTITLEMENT_REQUIRED"} and str(row.get("source_id") or "").startswith("OPENBB_"):
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
             row["optional_disabled"] = True
             row["retired_optional"] = True
+            row["policy_status"] = "AWAITING_RIGHTS_ACK" if access == "ENTITLEMENT_REQUIRED" else "DISABLED"
         else:
             row["freshness_status"] = assessment.status if latest_d is not None else (row.get("freshness_status") or "MISSING")
+            row["policy_status"] = access or "UNKNOWN"
         row["age_days"] = assessment.age_days
         row["tolerance_days"] = assessment.tolerance_days if assessment.tolerance_days is not None else row.get("tolerance_days")
         row.pop("expected_next_release", None)  # pre-012 view column name; never an official release date
@@ -829,6 +832,44 @@ def order_flow_overview(conn, *, today: date | None = None) -> dict[str, Any]:
     return order_flow_context(conn, today=today, include_history=False)
 
 
+def term_structure_display_rows(points: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
+    """Flatten stored ATM term points for Streamlit / contract tests.
+
+    Producer stores nested ``atm`` objects. Consumers must read these keys:
+    expiration, dte_session, atm_iv, one_sided, call_iv, put_iv, combined_iv.
+    """
+    rows: list[dict[str, Any]] = []
+    for point in points or []:
+        atm = point.get("atm") if isinstance(point.get("atm"), dict) else {}
+        sided = point.get("sided") if point.get("sided") is not None else atm.get("sided")
+        one_sided = point.get("one_sided")
+        if one_sided is None:
+            one_sided = bool(sided) and sided != "both"
+        atm_iv = point.get("atm_iv")
+        if atm_iv is None:
+            atm_iv = atm.get("iv_percent")
+        call_iv = point.get("call_iv")
+        if call_iv is None:
+            call_iv = atm.get("call_iv_percent")
+        put_iv = point.get("put_iv")
+        if put_iv is None:
+            put_iv = atm.get("put_iv_percent")
+        rows.append(
+            {
+                "expiration": point.get("expiration"),
+                "dte_session": point.get("dte_session"),
+                "atm_iv": atm_iv,
+                "one_sided": one_sided,
+                "sided": sided,
+                "call_iv": call_iv,
+                "put_iv": put_iv,
+                "combined_iv": atm_iv,
+                "status": point.get("status") or atm.get("status"),
+            }
+        )
+    return rows
+
+
 def options_volatility_context(conn) -> dict[str, Any]:
     """Stored options / VIX analytics only. Never calls OpenBB."""
     if not _view_exists(conn, "mi_v_options_latest"):
@@ -868,10 +909,8 @@ def options_volatility_context(conn) -> dict[str, Any]:
                 "oi_put_call": put_call.get("oi_put_call"),
                 "volume_put_call": put_call.get("volume_put_call"),
                 "gex": gex,
-                "atm_term_structure": metrics.get("atm_term_structure") or [],
+                "atm_term_structure": term_structure_display_rows(metrics.get("atm_term_structure") or metrics.get("term_structure") or []),
                 "expected_move": metrics.get("expected_move") or {},
-                "zero_dte": metrics.get("zero_dte") or {},
-                "concentrations": metrics.get("concentrations") or {},
                 "method_version": row.get("method_version"),
                 "payload_hash": row.get("payload_hash"),
             }
@@ -944,6 +983,7 @@ def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
             for h in health
             if h.get("coverage_status") in ("PARTIAL", "EMPTY") and not h.get("retired_optional")
         ],
+        "gated": [h for h in health if h.get("retired_optional") or h.get("optional_disabled")],
         "quarantine": quarantine,
         "finra_quarantine": finra_quarantine,
         "options_volatility": options_volatility_context(conn),
@@ -1008,4 +1048,5 @@ __all__ = [
     "source_health",
     "strategies_context",
     "strategy_summary",
+    "term_structure_display_rows",
 ]

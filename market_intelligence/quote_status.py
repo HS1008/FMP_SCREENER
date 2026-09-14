@@ -243,6 +243,10 @@ def exception_note(row: dict[str, Any]) -> str:
 
     if "TRACE" in joined and ("INDIVIDUAL" in joined or "ENTITLEMENT" in joined or transport in {"FAILED", "METADATA_REJECTED"}):
         return "Individual TRACE is an entitlement/capability limit. Aggregate Query API rows are a different dataset."
+    if row.get("optional_disabled") or str(row.get("policy_status") or "") in {"DISABLED", "AWAITING_RIGHTS_ACK"}:
+        if access == "ENTITLEMENT_REQUIRED" or str(row.get("policy_status") or "") == "AWAITING_RIGHTS_ACK":
+            return "DISABLED / AWAITING RIGHTS ACK. Recurring Cboe collection is off until a human records MI_OPENBB_CBOE_RIGHTS_ACK. Not a platform outage."
+        return "DISABLED by policy. Recurring collection is off. Not a platform outage."
     if source == "IBKR_MARKET_DATA" or "IBKR" in source:
         return "Windows collector / TWS path. CONNECTED is not proof of fresh quotes; FRED and FINRA do not depend on this laptop."
     if transport in {"FAILED", "METADATA_REJECTED"} and "403" in error:

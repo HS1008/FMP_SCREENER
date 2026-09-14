@@ -175,3 +175,102 @@ def test_pinned_openbb_extra_imports_when_installed():
     assert version("openbb") == "4.7.2"
     assert version("openbb-cboe") == "1.6.1"
 
+
+def test_options_and_vix_probes_are_independent():
+    both_off = probe_openbb({})
+    assert both_off.options.access_status == adapters.ACCESS_DISABLED
+    assert both_off.vix.access_status == adapters.ACCESS_DISABLED
+    assert both_off.options.enabled is False
+    assert both_off.vix.enabled is False
+
+    opt_only = probe_openbb({"MI_OPENBB_OPTIONS_ENABLED": "1"})
+    assert opt_only.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert opt_only.vix.access_status == adapters.ACCESS_DISABLED
+    assert opt_only.vix.enabled is False
+
+    vix_only = probe_openbb({"MI_OPENBB_VIX_ENABLED": "1"})
+    assert vix_only.options.access_status == adapters.ACCESS_DISABLED
+    assert vix_only.vix.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert vix_only.options.enabled is False
+
+    from market_intelligence.openbb_provider.config import options_enabled_from_env, vix_enabled_from_env
+
+    ack_opt = {"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_CBOE_RIGHTS_ACK": "1"}
+    assert options_enabled_from_env(ack_opt) is True
+    assert vix_enabled_from_env(ack_opt) is False
+    ack_vix = {"MI_OPENBB_VIX_ENABLED": "1", "MI_OPENBB_CBOE_RIGHTS_ACK": "1"}
+    assert options_enabled_from_env(ack_vix) is False
+    assert vix_enabled_from_env(ack_vix) is True
+
+    both_on = probe_openbb({"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_VIX_ENABLED": "1"})
+    assert both_on.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert both_on.vix.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+
+    umbrella = probe_openbb({"MI_OPENBB_ENABLED": "1"})
+    assert umbrella.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert umbrella.vix.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+
+    mixed = probe_openbb({"MI_OPENBB_ENABLED": "1", "MI_OPENBB_OPTIONS_ENABLED": "1"})
+    assert mixed.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert mixed.vix.access_status == adapters.ACCESS_DISABLED
+    assert mixed.vix.enabled is False
+
+
+def test_disabled_openbb_exception_note_is_not_broken():
+    from market_intelligence.quote_status import exception_note
+
+    disabled = exception_note(
+        {
+            "source_id": "OPENBB_CBOE_OPTIONS",
+            "access_status": "DISABLED",
+            "optional_disabled": True,
+            "policy_status": "DISABLED",
+        }
+    )
+    assert "DISABLED" in disabled
+    assert "outage" in disabled.lower()
+    waiting = exception_note(
+        {
+            "source_id": "OPENBB_CBOE_VIX",
+            "access_status": "ENTITLEMENT_REQUIRED",
+            "optional_disabled": True,
+            "policy_status": "AWAITING_RIGHTS_ACK",
+        }
+    )
+    assert "AWAITING RIGHTS ACK" in waiting
+    assert "outage" in waiting.lower()
+
+
+def test_intraday_flag_allows_additional_option_snapshots_not_vix():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from market_intelligence.openbb_provider.due import options_due, vix_due
+
+    ny = ZoneInfo("America/New_York")
+    now = datetime(2026, 9, 11, 16, 30, tzinfo=ny)
+    session = now.date()
+    blocked = options_due(last_published_session=session, last_attempt_status="SUCCEEDED", now=now, env={})
+    assert blocked["due"] is False
+    extra = options_due(
+        last_published_session=session,
+        last_attempt_status="SUCCEEDED",
+        now=now,
+        env={"MI_OPENBB_INTRADAY_SNAPSHOTS": "1"},
+    )
+    assert extra["due"] is True
+    assert extra["reason"] == "intraday_additional_snapshot"
+    vix = vix_due(last_published_date=session, now=now)
+    assert vix["due"] is False
+
+
+def test_deploy_does_not_install_openbb_extra_while_dormant():
+    root = Path(__file__).resolve().parents[1]
+    host = (root / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    release = (root / "scripts" / "deploy_release.sh").read_text(encoding="utf-8")
+    for text in (host, release):
+        assert "MI_OPENBB_INSTALL_EXTRA" in text
+        assert "openbb_extra=skipped_dormant" in text
+        assert "find_spec('openbb_cboe')" not in text
+
+

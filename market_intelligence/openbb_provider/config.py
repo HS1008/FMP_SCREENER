@@ -96,16 +96,16 @@ def rights_acked(env: Mapping[str, str] | None = None) -> bool:
 
 
 def enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
-    environ = _env(env)
-    if _truthy(environ.get(OPTIONS_ENABLE_FLAG)) or _truthy(environ.get(VIX_ENABLE_FLAG)):
-        return rights_acked(environ)
-    return _truthy(environ.get(ENABLE_FLAG)) and rights_acked(environ)
+    """Umbrella flag only. Dataset flags are independent and must not enable a sibling."""
+    return _truthy(_env(env).get(ENABLE_FLAG)) and rights_acked(env)
 
 
 def options_enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
     environ = _env(env)
     if _truthy(environ.get(OPTIONS_ENABLE_FLAG)):
         return rights_acked(environ)
+    if _truthy(environ.get(VIX_ENABLE_FLAG)):
+        return False
     return enabled_from_env(environ)
 
 
@@ -113,6 +113,8 @@ def vix_enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
     environ = _env(env)
     if _truthy(environ.get(VIX_ENABLE_FLAG)):
         return rights_acked(environ)
+    if _truthy(environ.get(OPTIONS_ENABLE_FLAG)):
+        return False
     return enabled_from_env(environ)
 
 
@@ -186,7 +188,16 @@ def openbb_importable() -> bool:
     return openbb_installed()
 
 
-def _status(source_id: str, env: Mapping[str, str], *, dataset_flag: str, capabilities: dict[str, str]):
+def _dataset_requested(env: Mapping[str, str], dataset_flag: str, sibling_flag: str) -> bool:
+    """Dataset flags are independent. An explicit sibling-only enable must not light this source."""
+    if _truthy(env.get(dataset_flag)):
+        return True
+    if _truthy(env.get(sibling_flag)):
+        return False
+    return _truthy(env.get(ENABLE_FLAG))
+
+
+def _status(source_id: str, env: Mapping[str, str], *, dataset_flag: str, sibling_flag: str, capabilities: dict[str, str]):
     from market_intelligence.adapters import (
         ACCESS_CONFIGURATION_REQUIRED,
         ACCESS_CONFIGURED,
@@ -195,7 +206,7 @@ def _status(source_id: str, env: Mapping[str, str], *, dataset_flag: str, capabi
         AdapterStatus,
     )
 
-    dataset_on = _truthy(env.get(dataset_flag)) or _truthy(env.get(ENABLE_FLAG))
+    dataset_on = _dataset_requested(env, dataset_flag, sibling_flag)
     required = (dataset_flag, RIGHTS_ACK_FLAG, "requirements-openbb.txt")
     if not dataset_on:
         return AdapterStatus(source_id, ACCESS_DISABLED, False, "{0} is off (default). Recurring Cboe collection stays disabled.".format(dataset_flag), required, capabilities)
@@ -215,8 +226,20 @@ class OpenBBProbe:
 def probe_openbb(env: Mapping[str, str] | None = None) -> OpenBBProbe:
     environ = _env(env)
     return OpenBBProbe(
-        options=_status(OPENBB_OPTIONS_SOURCE_ID, environ, dataset_flag=OPTIONS_ENABLE_FLAG, capabilities={"options_chains": "cboe delayed quotes", "export": "INTERNAL_ONLY"}),
-        vix=_status(OPENBB_VIX_SOURCE_ID, environ, dataset_flag=VIX_ENABLE_FLAG, capabilities={"vix_curve": "cboe VX_EOD", "export": "INTERNAL_ONLY"}),
+        options=_status(
+            OPENBB_OPTIONS_SOURCE_ID,
+            environ,
+            dataset_flag=OPTIONS_ENABLE_FLAG,
+            sibling_flag=VIX_ENABLE_FLAG,
+            capabilities={"options_chains": "cboe delayed quotes", "export": "INTERNAL_ONLY"},
+        ),
+        vix=_status(
+            OPENBB_VIX_SOURCE_ID,
+            environ,
+            dataset_flag=VIX_ENABLE_FLAG,
+            sibling_flag=OPTIONS_ENABLE_FLAG,
+            capabilities={"vix_curve": "cboe VX_EOD", "export": "INTERNAL_ONLY"},
+        ),
     )
 
 

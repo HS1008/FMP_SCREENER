@@ -210,3 +210,110 @@ def test_stale_snapshot_is_labelled_not_rewritten(mi_db):
     assert row["snapshot_id"]
 
 
+def test_stored_term_structure_is_flattened_for_ui(mi_db):
+    snap = normalize_chain(_raw([_row(), _row(contract_symbol="SPY260918P00500000", option_type="put", delta=-0.5)], fetched_at=datetime(2026, 9, 11, 16, 5, tzinfo=NY)))
+    with mi_db.begin() as conn:
+        publish_chain(conn, snap, run_id="run_term")
+    with mi_db.connect() as conn:
+        ctx = options_volatility_context(conn)
+    point = ctx["symbols"][0]["atm_term_structure"][0]
+    assert point["atm_iv"] is not None
+    assert "one_sided" in point
+    assert "call_iv" in point
+    assert "put_iv" in point
+    assert "expiration" in point
+    assert "dte_session" in point
+
+
+def test_unexpected_provider_exception_is_durable(mi_db):
+    def boom(symbol=None):
+        raise RuntimeError("kaboom")
+
+    client = OpenBBClient(chain_fn=boom, curve_fn=lambda: (_ for _ in ()).throw(AssertionError("vix")))
+    env = _enabled()
+    env["MI_OPENBB_VIX_ENABLED"] = "0"
+    report = ingest_openbb(mi_db, client, env=env, include_vix=False, force=True, clock=lambda: datetime(2026, 9, 11, 16, 10, tzinfo=NY))
+    assert report.failed is True
+    snapshot_id = report.symbols["SPY"]["snapshot_id"]
+    with mi_db.connect() as conn:
+        snap = conn.execute(
+            text("SELECT publication_status, quality_json, run_id FROM mi_openbb_snapshots WHERE snapshot_id = :id"),
+            {"id": snapshot_id},
+        ).mappings().one()
+        run = conn.execute(
+            text("SELECT status, details_json FROM mi_ingestion_runs WHERE run_id = :rid"),
+            {"rid": snap["run_id"]},
+        ).mappings().one()
+    assert snap["publication_status"] == "FAILED"
+    quality = snap["quality_json"] or {}
+    assert quality.get("exception_class") == "RuntimeError"
+    assert str(quality.get("error") or "") in {"UNKNOWN", "RuntimeError"}
+    assert "kaboom" not in str(quality).lower()
+    assert run is not None
+    assert "password" not in str(run["details_json"] or "").lower()
+    assert "kaboom" not in str(run["details_json"] or "").lower()
+    with mi_db.connect() as conn:
+        fresh = conn.execute(
+            text(
+                """
+                SELECT transport_status, last_error_redacted
+                FROM mi_data_freshness
+                WHERE source_id = 'OPENBB_CBOE_OPTIONS' AND dataset LIKE 'options_chain%'
+                ORDER BY updated_at DESC NULLS LAST
+                LIMIT 1
+                """
+            )
+        ).mappings().first()
+    assert fresh is not None
+    assert fresh["transport_status"] == "FAILED"
+    assert "kaboom" not in str(fresh["last_error_redacted"] or "").lower()
+
+
+def test_sibling_registry_rows_stay_independent(mi_db):
+    from market_intelligence.openbb_provider.config import openbb_installed
+
+    client = OpenBBClient(
+        chain_fn=lambda symbol=None: _raw([_row()], fetched_at=datetime(2026, 9, 11, 16, 5, tzinfo=NY)),
+        curve_fn=lambda: (_ for _ in ()).throw(AssertionError("vix must not fetch")),
+    )
+    env = {
+        "MI_OPENBB_OPTIONS_ENABLED": "1",
+        "MI_OPENBB_CBOE_RIGHTS_ACK": "1",
+        "MI_OPENBB_OPTIONS_SYMBOLS": "SPY",
+    }
+    ingest_openbb(mi_db, client, env=env, include_vix=True, force=True, clock=lambda: datetime(2026, 9, 11, 16, 10, tzinfo=NY))
+    with mi_db.connect() as conn:
+        rows = {
+            r[0]: {"enabled": r[1], "access": r[2]}
+            for r in conn.execute(text("SELECT source_id, enabled, access_status FROM mi_source_registry WHERE source_id LIKE 'OPENBB%'"))
+        }
+    assert rows["OPENBB_CBOE_VIX"]["enabled"] is False
+    assert rows["OPENBB_CBOE_VIX"]["access"] == "DISABLED"
+    if openbb_installed():
+        assert rows["OPENBB_CBOE_OPTIONS"]["enabled"] is True
+        assert rows["OPENBB_CBOE_OPTIONS"]["access"] == "CONFIGURED"
+    else:
+        assert rows["OPENBB_CBOE_OPTIONS"]["enabled"] is False
+        assert rows["OPENBB_CBOE_OPTIONS"]["access"] == "CONFIGURATION_REQUIRED"
+
+
+def test_disabled_openbb_sources_are_policy_not_failures(mi_db):
+    from market_intelligence.openbb_provider.store import sync_registry
+    from market_intelligence.quote_status import exception_note
+    from market_intelligence.read_models import source_health
+
+    with mi_db.begin() as conn:
+        sync_registry(conn, {})
+    with mi_db.connect() as conn:
+        rows = [r for r in source_health(conn) if str(r.get("source_id") or "").startswith("OPENBB_")]
+    assert {r["source_id"] for r in rows} >= {"OPENBB_CBOE_OPTIONS", "OPENBB_CBOE_VIX"}
+    for row in rows:
+        assert row.get("optional_disabled") or row.get("retired_optional")
+        assert row["policy_status"] == "DISABLED"
+        assert row["access_status"] == "DISABLED"
+        note = exception_note(row)
+        assert "AWAITING RIGHTS ACK" not in note or "DISABLED" in note
+        assert "outage" in note.lower()
+        assert "BROKEN" not in str(row.get("freshness_status") or "").upper()
+
+

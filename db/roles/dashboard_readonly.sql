@@ -101,7 +101,11 @@ BEGIN
     FOREACH obj IN ARRAY ARRAY[
         'mi_v_source_health',
         'mi_v_ops_status',
-        'mi_v_strategy_research_summary'
+        'mi_v_strategy_research_summary',
+        'mi_v_options_latest',
+        'mi_v_options_contracts_latest',
+        'mi_v_vix_curve_latest',
+        'mi_v_openbb_last_attempt'
     ]
     LOOP
         IF EXISTS (

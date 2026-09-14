@@ -17,6 +17,7 @@ from market_intelligence.nulls import strict_dumps
 from market_intelligence.overview import build_session_changes, build_what_changed
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
+from market_intelligence.read_models import term_structure_display_rows
 from market_intelligence.surface_status import worst_surface_status
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.ui import (
@@ -153,9 +154,25 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
         with st.expander("Term structure and methodology"):
             for row in symbols:
                 st.caption("{0} session {1} · {2}".format(row.get("underlying_symbol"), row.get("session_date") or "unknown", row.get("delay_label")))
-                term = row.get("atm_term_structure") or []
+                term = term_structure_display_rows(row.get("atm_term_structure") or [])
                 if term:
-                    st.dataframe(pd.DataFrame([{"Expiry": p.get("expiration"), "DTE (session)": p.get("dte_session"), "Spot ATM IV": p.get("atm_iv"), "One-sided": p.get("one_sided")} for p in term]), use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {
+                                    "Expiry": p.get("expiration"),
+                                    "DTE (session)": p.get("dte_session"),
+                                    "Spot ATM IV": _fmt_or_dash(p.get("atm_iv"), "pct") if p.get("atm_iv") is not None else "—",
+                                    "Call IV": _fmt_or_dash(p.get("call_iv"), "pct") if p.get("call_iv") is not None else "—",
+                                    "Put IV": _fmt_or_dash(p.get("put_iv"), "pct") if p.get("put_iv") is not None else "—",
+                                    "One-sided": "yes" if p.get("one_sided") else "no",
+                                }
+                                for p in term
+                            ]
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
                 details = load_or_stop("options_chain_details", row.get("underlying_symbol"), limit=40)
                 if details:
                     st.caption("Bounded chain sample (not the full chain).")
@@ -703,10 +720,29 @@ def render_data_health() -> None:
     runs = load_or_stop("recent_runs", 200)
     ctx = load_or_stop("data_health_context")
     page_header("Data Health", "Actionable exceptions first. Healthy sources are summarized compactly.", fred=False)
-    stale = [row for row in health if str(row.get("freshness_status") or "").upper() == "STALE"]
-    failed = [row for row in health if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED", "PARTIAL"}]
+    stale = [row for row in health if str(row.get("freshness_status") or "").upper() == "STALE" and not row.get("retired_optional")]
+    failed = [row for row in health if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED", "PARTIAL"} and not row.get("retired_optional")]
+    gated = [row for row in health if row.get("retired_optional") or row.get("optional_disabled")]
     if not health:
         st.info("No sources registered yet.")
+    if gated:
+        st.subheader("Disabled by policy")
+        st.caption("These sources are off by configuration or rights gate. They are not platform outages.")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Source": row.get("source_id"),
+                        "State": row.get("policy_status") or row.get("access_status") or "DISABLED",
+                        "Access": row.get("access_status") or "—",
+                        "Why": exception_note(row),
+                    }
+                    for row in gated
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
     if stale or failed:
         st.subheader("Needs attention")
         st.caption("Freshness thresholds are unchanged. A legitimate release lag, missing entitlement, or offline laptop collector is named rather than hidden.")
@@ -729,7 +765,7 @@ def render_data_health() -> None:
             use_container_width=True,
             hide_index=True,
         )
-    healthy = [row for row in health if row not in stale and row not in failed]
+    healthy = [row for row in health if row not in stale and row not in failed and row not in gated]
     if healthy:
         st.subheader("Healthy sources")
         st.dataframe(

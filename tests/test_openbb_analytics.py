@@ -70,6 +70,29 @@ def test_atm_prefers_paired_log_moneyness():
     out = atm_iv_for_expiry(contracts, Decimal("100"))
     assert out["strike"] == Decimal("99")
     assert out["sided"] == "both"
+    assert out["one_sided"] is False
+    assert out["call_iv_decimal"] == Decimal("0.20")
+    assert out["put_iv_decimal"] == Decimal("0.22")
+    assert out["combined_iv_percent"] == out["iv_percent"]
+
+
+def test_term_structure_contract_matches_streamlit_keys():
+    from market_intelligence.read_models import term_structure_display_rows
+
+    contracts = [
+        _c(contract_symbol="C99", strike=Decimal("99"), option_type="call", iv_decimal=Decimal("0.20"), delta=Decimal("0.55"), gamma=Decimal("0.01"), open_interest=1),
+        _c(contract_symbol="P99", strike=Decimal("99"), option_type="put", iv_decimal=Decimal("0.22"), delta=Decimal("-0.45"), gamma=Decimal("0.01"), open_interest=1),
+    ]
+    metrics = compute_options_metrics(_chain(contracts))
+    rows = term_structure_display_rows(metrics["atm_term_structure"])
+    assert rows
+    point = rows[0]
+    for key in ("expiration", "dte_session", "atm_iv", "one_sided", "call_iv", "put_iv", "combined_iv"):
+        assert key in point, key
+    assert point["atm_iv"] is not None
+    assert point["call_iv"] is not None
+    assert point["put_iv"] is not None
+    assert point["one_sided"] is False
 
 
 def test_variance_interpolation_and_no_extrapolation():
