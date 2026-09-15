@@ -163,11 +163,9 @@ jobs:
           PY
           # Cancelled Actions SSH sessions can leave orphaned MI writers holding the
           # PostgreSQL advisory lock; systemd then reports SuccessExitStatus=75 and skips work.
-          echo "clearing_orphaned_mi_writers"
-          pkill -f 'jobs.market_intelligence_refresh' 2>/dev/null || true
-          pkill -f 'jobs.build_morning_context' 2>/dev/null || true
-          pkill -f 'activate_market_intelligence_host.sh' 2>/dev/null || true
-          sleep 2
+          # Do not pkill live timer/activate jobs — only terminate idle/orphan backends that
+          # still hold the MI advisory lock.
+          echo "clearing_orphaned_mi_writer_locks"
           set -a
           # shellcheck disable=SC1091
           . /etc/fmp/market_intelligence.env
@@ -186,20 +184,29 @@ jobs:
               rows = conn.execute(
                   text(
                       """
-                      SELECT l.pid
+                      SELECT l.pid, a.state, left(coalesce(a.query, ''), 80) AS query_prefix
                       FROM pg_locks l
+                      JOIN pg_stat_activity a ON a.pid = l.pid
                       WHERE l.locktype = 'advisory'
                         AND l.granted
                         AND l.classid = ((:key::bigint) >> 32)::integer
                         AND l.objid = ((:key::bigint) & 4294967295)::integer
                         AND l.pid <> pg_backend_pid()
+                        AND (
+                          a.state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
+                          OR coalesce(a.query, '') ILIKE '%pg_advisory_lock%'
+                          OR coalesce(a.query, '') ILIKE '%market_intelligence_refresh%'
+                          OR coalesce(a.query, '') ILIKE '%build_analytics%'
+                          OR coalesce(a.query, '') ILIKE '%build_morning_context%'
+                        )
                       """
                   ),
                   {"key": int(LOCK_KEY)},
-              ).fetchall()
-              print("orphan_lock_pids={0}".format(",".join(str(r[0]) for r in rows) or "none"))
+              ).mappings().all()
+              print("orphan_lock_pids={0}".format(",".join(str(r["pid"]) for r in rows) or "none"))
               for row in rows:
-                  conn.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": int(row[0])})
+                  print("orphan_lock_state={0}".format(row.get("state")))
+                  conn.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": int(row["pid"])})
           print("orphan_lock_clear=done")
           PY
           unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL MARKET_INTELLIGENCE_DATABASE_URL
@@ -220,10 +227,15 @@ jobs:
             set +a
             source /root/FMP_SCREENER/venv/bin/activate
             set +e
-            python -m jobs.market_intelligence_refresh --all-configured --wait-lock --json
+            python -m jobs.market_intelligence_refresh --all-configured --wait-lock >/tmp/mi_refresh_retry.out 2>/tmp/mi_refresh_retry.err
             retry_rc=$?
             set -e
             echo "refresh_retry_rc=${retry_rc}"
+            # Sanitize: print only high-level status tokens, never full JSON payload.
+            grep -Ei 'status|FAILED|SUCCEEDED|SKIPPED|cftc|eia|lock|CONFIGURATION|exit' /tmp/mi_refresh_retry.err /tmp/mi_refresh_retry.out 2>/dev/null \
+              | grep -viE 'postgres(ql)?://|bearer |password=|api_key|token=|FINRA_CLIENT|FRED_API|DATABASE_URL|MARKET_INTELLIGENCE_DATABASE|value|bid|ask' \
+              | head -n 40 || true
+            rm -f /tmp/mi_refresh_retry.out /tmp/mi_refresh_retry.err
             unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL MARKET_INTELLIGENCE_DATABASE_URL
           fi
           echo "refresh_journal_sanitized:"
@@ -269,31 +281,30 @@ jobs:
               collectors = ibkr_collector_status(conn)
               quotes = ibkr_quotes_latest(conn)
               grant = conn.execute(text("SELECT has_table_privilege(current_user, 'mi_v_finra_aggregate_quarantine', 'SELECT')")).scalar()
-              cftc_table = conn.execute(text("SELECT to_regclass('public.mi_cftc_cot_observations') IS NOT NULL")).scalar()
+              # mi_readonly is granted views only — never SELECT raw mi_* observation tables here.
               cftc_view = conn.execute(text("SELECT to_regclass('public.mi_v_cftc_cot_current') IS NOT NULL")).scalar()
               cftc_obs = 0
               cftc_latest = None
               cftc_markets = []
-              if cftc_table:
-                  cftc_obs = int(conn.execute(text("SELECT COUNT(*) FROM mi_cftc_cot_observations")).scalar() or 0)
-                  cftc_latest = conn.execute(text("SELECT MAX(report_date)::text FROM mi_cftc_cot_observations")).scalar()
               if cftc_view:
+                  cftc_obs = int(conn.execute(text("SELECT COUNT(*) FROM mi_v_cftc_cot_current")).scalar() or 0)
+                  cftc_latest = conn.execute(text("SELECT MAX(report_date)::text FROM mi_v_cftc_cot_current")).scalar()
                   cftc_markets = [str(r[0]) for r in conn.execute(text("SELECT market FROM mi_v_cftc_cot_current ORDER BY market")).fetchall()]
-              eia_table = conn.execute(text("SELECT to_regclass('public.mi_eia_observations') IS NOT NULL")).scalar()
+              eia_view = conn.execute(text("SELECT to_regclass('public.mi_v_eia_latest') IS NOT NULL")).scalar()
               eia_obs = 0
               eia_latest = None
-              if eia_table:
-                  eia_obs = int(conn.execute(text("SELECT COUNT(*) FROM mi_eia_observations")).scalar() or 0)
-                  eia_latest = conn.execute(text("SELECT MAX(observation_date)::text FROM mi_eia_observations")).scalar()
+              if eia_view:
+                  eia_obs = int(conn.execute(text("SELECT COUNT(*) FROM mi_v_eia_latest")).scalar() or 0)
+                  eia_latest = conn.execute(text("SELECT MAX(observation_date)::text FROM mi_v_eia_latest")).scalar()
               eod_batch_id = None
               eod_state = None
               eod_bars = None
               eod_coverage = None
-              if conn.execute(text("SELECT to_regclass('public.mi_equity_eod_batches') IS NOT NULL")).scalar():
+              if conn.execute(text("SELECT to_regclass('public.mi_v_equity_eod_coverage') IS NOT NULL")).scalar():
                   eod_row = conn.execute(text(
                       """
-                      SELECT batch_id, state, bars_received, coverage_status, finalized_at
-                      FROM mi_equity_eod_batches
+                      SELECT batch_id, state, bars_received, coverage_status
+                      FROM mi_v_equity_eod_coverage
                       WHERE coverage_status = 'COMPLETE' OR state IN ('COMPLETE', 'FINALIZED', 'SUCCEEDED')
                       ORDER BY COALESCE(finalized_at, updated_at) DESC NULLS LAST
                       LIMIT 1
@@ -343,8 +354,8 @@ jobs:
           for row in (health.get("failed_transport") or []):
               print("failed_source={0} dataset={1} transport={2} access={3}".format(row.get("source_id"), row.get("freshness_dataset") or row.get("dataset"), row.get("transport_status"), row.get("access_status") or row.get("capability_status")))
           print("finra_quarantine_count={0}".format(len(health.get("finra_quarantine") or [])))
-          print("cftc_table={0} cftc_view={1} cftc_obs={2} cftc_latest={3} cftc_markets={4}".format(bool(cftc_table), bool(cftc_view), cftc_obs, cftc_latest, ",".join(cftc_markets)))
-          print("eia_table={0} eia_obs={1} eia_latest={2}".format(bool(eia_table), eia_obs, eia_latest))
+          print("cftc_view={0} cftc_current_rows={1} cftc_latest={2} cftc_markets={3}".format(bool(cftc_view), cftc_obs, cftc_latest, ",".join(cftc_markets)))
+          print("eia_view={0} eia_latest_rows={1} eia_latest={2}".format(bool(eia_view), eia_obs, eia_latest))
           print("eod_batch_id={0} eod_state={1} eod_bars={2} eod_coverage={3}".format(eod_batch_id, eod_state, eod_bars, eod_coverage))
           capped = flow.get("capped_volume") or {}
           print("capped_identity_validated={0}".format(bool(capped.get("identity_validated"))))
