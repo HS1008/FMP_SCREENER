@@ -123,7 +123,7 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
             row["retired_optional"] = True
             row["policy_status"] = "RETIRED"
         elif access in {"ON_DEMAND", "SOURCE_REF_NOT_CONFIGURED"}:
-            row["freshness_status"] = "ON_DEMAND" if latest_d is None or assessment.status in {"UNKNOWN", "MISSING"} else assessment.status
+            row["freshness_status"] = "ON_DEMAND" if latest_d is None or assessment.status in {"UNKNOWN", "MISSING", "INVALID_FUTURE"} else assessment.status
             row["policy_status"] = "ON_DEMAND"
         elif access in {
             "DISABLED",

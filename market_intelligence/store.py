@@ -511,7 +511,7 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
     no ingestion job runs. The ``expected_next_release`` column holds the stale-after bound implied by the
     tolerance, not an official release calendar date.
     """
-    today = today or ny_today()
+    today = today or utcnow().date()
     prior = conn.execute(
         text("SELECT latest_observation_date, last_success_at, latest_observation_retrieved_at FROM mi_data_freshness WHERE source_id = :s AND dataset = :d"),
         {"s": source_id, "d": dataset},
