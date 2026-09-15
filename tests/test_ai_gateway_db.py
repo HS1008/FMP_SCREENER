@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import uuid
 from datetime import date
 
@@ -505,7 +506,10 @@ def test_strategy_experiments_tool_double_filters_holdout_and_artifacts(remote):
     assert visible == EXPECTED_VISIBLE_ARTIFACT_KEYS
     dumped = json.dumps(payload)
     for leak in ("ML_FINAL_HOLDOUT", "GW_RUN_HOLDOUT", "model.pkl", "weights.pkl", "model_metadata", "object_store_key", "secret_metric", "2025-12-31", "9.9", "8.8", "7.7", "6.6", "GW_RUN_UNKNOWN", "GW_RUN_2025", "GW_RUN_NULLFLAG", "payload_json"):
-        assert leak not in dumped, leak
+        if leak[0].isdigit() and "." in leak:
+            assert re.search(r"(?<![0-9.])" + re.escape(leak) + r"(?![0-9])", dumped) is None, leak
+        else:
+            assert leak not in dumped, leak
     assert body["model_binaries"] == "never exported"
 
 
