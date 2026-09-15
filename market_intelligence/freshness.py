@@ -141,7 +141,7 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
     "WRESBAL": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(16, 30), overdue_sessions=8, stale_sessions=21, week_ending="WED", notes="H.4.1 week average ending Wednesday."),
     "M2SL": _fred_macro_monthly(lag_days=32),
     **{sid: _daily_treasury() for sid in ("T5YIE", "T10YIE", "T5YIFR", "RRPONTSYD")},
-    **{sid: FreshnessPolicy(calendar=CAL_US_TREASURY, cadence="D", typical_release=time(16, 0), overdue_sessions=2, stale_sessions=6, same_day_available=True, notes="ICE BofA OAS via FRED; often lags the cash session.") for sid in (
+    **{sid: FreshnessPolicy(calendar=CAL_US_TREASURY, cadence="D", typical_release=time(16, 0), overdue_sessions=2, stale_sessions=6, same_day_available=False, notes="ICE BofA OAS via FRED; often lags the cash session.") for sid in (
         "BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLC0A1CAAA", "BAMLC0A2CAA", "BAMLC0A3CA", "BAMLC0A4CBBB",
         "BAMLH0A1HYBB", "BAMLH0A2HYB", "BAMLH0A3HYC",
     )},
@@ -448,13 +448,9 @@ def _classify_with_upstream(
 ) -> str:
     """Separate publication lag from a failed ingest when the collector is current to the provider."""
     provider_latest = upstream_latest
-    if provider_latest is None and transport == "OK" and _recent_success(last_success_at, clock):
-        provider_latest = latest_observation
     if provider_latest is None:
-        if status in {STALE, INGESTION_OVERDUE} and transport == "OK" and _recent_success(last_success_at, clock):
-            return CURRENT_TO_SOURCE
-        if status == STALE and last_success_at is not None and not _recent_success(last_success_at, clock):
-            return STALE_INGESTION
+        # last_success alone does not prove the provider has nothing newer.
+        # Weekly/monthly publication lag is modeled in expected_latest_published.
         return status
     if latest_observation < provider_latest:
         return STALE_INGESTION

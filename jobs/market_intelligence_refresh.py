@@ -157,8 +157,16 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "reason": openbb_probe.vix.reason,
             }
         )
+    cftc_on = str(env.get("MI_CFTC_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
     if getattr(args, "cftc", False) or want_all:
-        steps.append({"step": "cftc", "source_id": "CFTC_COT", "configured": True, "action": "ingest"})
+        steps.append(
+            {
+                "step": "cftc",
+                "source_id": "CFTC_COT",
+                "configured": cftc_on,
+                "action": ("ingest" if cftc_on else "skip_unconfigured") if (want_all or cftc_on) else "fail_unconfigured",
+            }
+        )
     eia_configured = bool(str(env.get("EIA_API_KEY") or "").strip())
     if getattr(args, "eia", False) or want_all:
         steps.append(

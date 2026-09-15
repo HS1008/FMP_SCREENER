@@ -481,7 +481,7 @@ def test_data_health_uses_freshness_v2_vocabulary_and_separates_observation_from
     body = payload["body"]
     assert body["freshness_policy_version"] == "freshness_policy_v2"
     statuses = {row["freshness_status"] for row in body["sources"]}
-    assert statuses <= {"LATEST_AVAILABLE", "AWAITING_RELEASE", "INGESTION_OVERDUE", "STALE", "MISSING", "INVALID_FUTURE", "TRANSPORT_FAILURE", "UNKNOWN", None}
+    assert statuses <= {"LATEST_AVAILABLE", "AWAITING_RELEASE", "INGESTION_OVERDUE", "STALE", "STALE_INGESTION", "STALE_UPSTREAM", "CURRENT_TO_SOURCE", "ON_DEMAND", "MISSING", "INVALID_FUTURE", "TRANSPORT_FAILURE", "UNKNOWN", None}
     treasury = next(row for row in body["sources"] if row["source_id"] == "TREASURY")
     assert treasury["latest_observation"] == "2026-09-10"
     assert treasury["latest_successful_ingestion"] is not None

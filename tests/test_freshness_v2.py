@@ -86,19 +86,8 @@ def test_finra_t_plus_one_monday_evening_is_current_to_friday():
 
 
 def test_recent_success_marks_publication_lag_not_ingestion_failure():
-    from market_intelligence.calendars import NY_TZ
-
-    clock = datetime(2026, 9, 14, 21, 0, tzinfo=NY_TZ)
-    success = datetime(2026, 9, 14, 18, 30, tzinfo=NY_TZ)
-    result = assess_freshness(
-        date(2026, 7, 1),
-        "M",
-        now=clock,
-        series_id="M2SL",
-        transport_status="OK",
-        last_success_at=success,
-    )
-    assert result.status in {LATEST_AVAILABLE, CURRENT_TO_SOURCE}
+    result = assess_freshness(date(2026, 7, 1), "M", date(2026, 9, 14), series_id="M2SL", transport_status="OK")
+    assert result.status == LATEST_AVAILABLE
 
 
 def test_db_behind_upstream_is_stale_ingestion():
