@@ -163,7 +163,7 @@ jobs:
           ssh "$DO_USER@$DO_HOST" \
             '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-legacy'
 
-      - name: Analytics backfill from 2019
+      - name: Analytics incremental (opt-in full backfill via MI_ANALYTICS_BACKFILL_FROM)
         run: |
           ssh "$DO_USER@$DO_HOST" \
             '/root/FMP_SCREENER/scripts/activate_market_intelligence_host.sh --phase ingest-analytics'

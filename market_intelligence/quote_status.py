@@ -253,6 +253,17 @@ def exception_note(row: dict[str, Any]) -> str:
         "NOT_CONFIGURED",
         "CONFIGURATION_REQUIRED",
     }:
+        # Bond cash sources must beat the generic OPRA RIGHTS_PENDING caption.
+        if source == "IBKR_CORPORATE_BONDS":
+            return (
+                "CUSIP/ISIN contract resolution is proven on TWS. Live bond quotes need market-data entitlement; "
+                "PostgreSQL archival is RIGHTS_PENDING. FINRA Query aggregates remain available. Calculator remains available."
+            )
+        if source == "IBKR_MUNICIPAL_BONDS":
+            return (
+                "Municipal cash-bond quotes need an official CUSIP/ISIN (MSRB/EMMA developer key or issuer prospectus). "
+                "Calculator remains available. Persistence is RIGHTS_PENDING."
+            )
         if access == "PROVIDER_SUPPORT_REQUIRED" or policy == "PROVIDER_SUPPORT_REQUIRED" or source == "IBKR_OPTIONS":
             return "PROVIDER_SUPPORT_REQUIRED. Client Portal OPRA L1 is active, but TWS API client 73 still returns 354 / no NBBO on live, frozen, and delayed. Collection is off. Not a platform outage."
         if source == "IBKR_OPTIONS_STORAGE" or access == "RIGHTS_PENDING" or policy == "RIGHTS_PENDING":
@@ -268,8 +279,6 @@ def exception_note(row: dict[str, Any]) -> str:
                 return "CONFIGURATION_REQUIRED. Register a free EIA API key at https://www.eia.gov/opendata/ and set EIA_API_KEY on the writer host. FRED WTI/Henry Hub remain price fallbacks."
             if source == "MSRB_EMMA":
                 return "CONFIGURATION_REQUIRED. Create an MSRB developer account/API key at https://emma.msrb.org/AboutEMMA/Developers. Do not scrape EMMA HTML."
-            if source in {"IBKR_CORPORATE_BONDS", "IBKR_MUNICIPAL_BONDS"}:
-                return "TWS cash-bond matching returns name-only rows without conId/CUSIP. Persistence is off until an identifier and storage rights are confirmed. The calculator remains available."
             if source == "SEC_EDGAR":
                 return "CONFIGURATION_REQUIRED. Set SEC_USER_AGENT to 'Org Name contact@example.com'. A contact email cannot be invented."
             return "NOT_CONFIGURED. A user credential or signed agreement is missing. Not a platform outage."
@@ -280,7 +289,13 @@ def exception_note(row: dict[str, Any]) -> str:
         return "Last retrieval was rejected by the provider (entitlement or authorization). Stored values were not overwritten."
     if freshness == "CURRENT_TO_SOURCE" or row.get("health_label") == "HEALTHY_PUBLICATION_LAG":
         return "Collector is current to the provider. The observation is old because of expected publication lag, not a missed ingest."
-    if source == "QS_RESEARCH_DELIVERY" or access == "SOURCE_REF_NOT_CONFIGURED":
+    if source == "QS_RESEARCH_DELIVERY":
+        if transport == "FAILED" or freshness == "FAILED" or policy == "FAILED":
+            return "FAILED. Configured research delivery path failed and no usable last-known-good artifact remains."
+        if access == "SOURCE_REF_NOT_CONFIGURED":
+            return "ON_DEMAND. QS_ARTIFACT_SOURCE_REF is unset by policy; last-known-good local artifacts remain when present. Not a platform outage."
+        return "ON_DEMAND. Remote research artifact fetch may be blocked; last-known-good local artifacts remain when present. Not a platform outage."
+    if access == "SOURCE_REF_NOT_CONFIGURED":
         return "ON_DEMAND. Remote research artifact fetch is blocked by design when QS_ARTIFACT_SOURCE_REF is unset; last-known-good local artifacts remain. Not a platform outage."
     if freshness == "STALE_UPSTREAM":
         return "Provider has not published a newer observation. This is not an ingestion failure."

@@ -316,9 +316,14 @@ class IBKRMunicipalBondsAdapter:
             self.source_id,
             ACCESS_CONFIGURATION_REQUIRED,
             False,
-            "TWS reqMatchingSymbols for cash munis does not return a tradeable conId/CUSIP. The Fixed Income calculator stays usable. Persistence stays off until an identifier and storage rights are confirmed.",
-            (self.ENABLE_FLAG, "CUSIP or ISIN", "IBKR bond market-data entitlement"),
-            {"discovery": "name-only without conId", "quotes": "blocked without identifiable contract", "calculator": "available"},
+            "Municipal cash-bond quotes need an official CUSIP/ISIN (MSRB/EMMA developer key or issuer prospectus). reqMatchingSymbols alone is insufficient. Calculator remains usable. Quote persistence stays RIGHTS_PENDING.",
+            (self.ENABLE_FLAG, "CUSIP or ISIN", "IBKR bond market-data entitlement", "storage rights review"),
+            {
+                "discovery": "CUSIP/ISIN required; matching-symbols name-only is not enough",
+                "quotes": "blocked without identifiable contract",
+                "calculator": "available",
+                "storage": "RIGHTS_PENDING",
+            },
         )
 
 
@@ -327,13 +332,20 @@ class IBKRCorporateBondsAdapter:
     ENABLE_FLAG = "MI_IBKR_CORP_BONDS_ENABLED"
 
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        # Live proof (2026-09-15): Apple CUSIP 037833EY2 via symbol=CUSIP -> conId 782156293.
+        # Quotes returned 10167 delayed notice with null ticks; storage rights unconfirmed.
         return AdapterStatus(
             self.source_id,
-            ACCESS_CONFIGURATION_REQUIRED,
+            ACCESS_ENTITLEMENT_REQUIRED,
             False,
-            "TWS reqMatchingSymbols for cash corporates does not return a tradeable conId/CUSIP. FINRA Query aggregates remain the live corporate activity feed. Persistence stays off until an identifier and storage rights are confirmed.",
-            (self.ENABLE_FLAG, "CUSIP or ISIN", "IBKR bond market-data entitlement"),
-            {"discovery": "name-only without conId", "quotes": "blocked without identifiable contract", "aggregates": "FINRA Query"},
+            "Corporate CUSIP/ISIN resolves to a tradeable conId via TWS reqContractDetails (symbol=CUSIP). Live quotes still require bond market-data entitlement; PostgreSQL archival remains RIGHTS_PENDING. FINRA Query aggregates remain the live activity feed. Collection stays off.",
+            (self.ENABLE_FLAG, "IBKR bond market-data entitlement", "storage rights review"),
+            {
+                "discovery": "CUSIP/ISIN -> conId proven",
+                "quotes": "IDENTIFIER_RESOLVED_NO_QUOTE / entitlement",
+                "storage": "RIGHTS_PENDING",
+                "aggregates": "FINRA Query",
+            },
         )
 
 

@@ -387,8 +387,17 @@ phase_ingest_legacy() {
 phase_ingest_analytics() {
   echo "PHASE ingest-analytics"
   load_writer_env
-  run_with_heartbeat analytics_backfill python -m jobs.market_intelligence_refresh \
-    --build-analytics --backfill-analytics-from 2019-01-01 --wait-lock --json
+  # Full history backfill is opt-in. Re-running 2019→present on every activate held the
+  # writer lock for hours and blocked --all-configured (CFTC/FRED incremental) refresh.
+  if [ -n "${MI_ANALYTICS_BACKFILL_FROM:-}" ]; then
+    echo "analytics_mode=backfill_from=${MI_ANALYTICS_BACKFILL_FROM}"
+    run_with_heartbeat analytics_backfill python -m jobs.market_intelligence_refresh \
+      --build-analytics --backfill-analytics-from "${MI_ANALYTICS_BACKFILL_FROM}" --wait-lock --json
+  else
+    echo "analytics_mode=incremental"
+    run_with_heartbeat analytics_incremental python -m jobs.market_intelligence_refresh \
+      --build-analytics --wait-lock --json
+  fi
 }
 
 phase_ingest_morning() {

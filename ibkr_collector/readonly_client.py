@@ -392,10 +392,14 @@ def _contract_details_payload(contractDetails, *, bond: bool) -> dict[str, Any]:
         "valid_exchanges": getattr(contractDetails, "validExchanges", None),
     }
     if bond:
+        coupon_raw = getattr(contractDetails, "coupon", None)
+        coupon = finite_or_none(coupon_raw)
+        # IBKR sometimes returns 0.0 when coupon is absent; treat exact 0 with empty desc as missing.
+        desc = getattr(contractDetails, "descAppend", None) or None
         payload.update(
             {
                 "cusip": getattr(contractDetails, "cusip", None) or None,
-                "coupon": finite_or_none(getattr(contractDetails, "coupon", None)),
+                "coupon": coupon if coupon not in (0, 0.0) else (coupon if desc and "%" in str(desc) else None),
                 "maturity": getattr(contractDetails, "maturity", None) or None,
                 "issue_date": getattr(contractDetails, "issueDate", None) or None,
                 "ratings": getattr(contractDetails, "ratings", None) or None,
@@ -405,6 +409,10 @@ def _contract_details_payload(contractDetails, *, bond: bool) -> dict[str, Any]:
                 "next_option_type": getattr(contractDetails, "nextOptionType", None) or None,
                 "next_option_partial": getattr(contractDetails, "nextOptionPartial", None),
                 "notes": getattr(contractDetails, "notes", None) or None,
+                "desc_append": desc,
+                "contract_month": getattr(contractDetails, "contractMonth", None) or None,
+                "min_size": getattr(contractDetails, "minSize", None),
+                "under_comp": getattr(contractDetails, "underComp", None),
             }
         )
     return payload

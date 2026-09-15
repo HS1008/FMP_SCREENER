@@ -161,6 +161,55 @@ jobs:
                   placeholder = "CHANGE_ME" in value
           print("refresh_env_writer_url={0}".format("placeholder" if placeholder else ("present" if present else "absent")))
           PY
+          # Cancelled Actions SSH sessions can leave orphaned MI writers holding the
+          # PostgreSQL advisory lock; systemd then reports SuccessExitStatus=75 and skips work.
+          # Do not pkill live timer/activate jobs — only terminate idle/orphan backends that
+          # still hold the MI advisory lock.
+          echo "clearing_orphaned_mi_writer_locks"
+          set -a
+          # shellcheck disable=SC1091
+          . /etc/fmp/market_intelligence.env
+          set +a
+          source /root/FMP_SCREENER/venv/bin/activate
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          from market_intelligence.locking import LOCK_KEY
+          url = (os.environ.get("MARKET_INTELLIGENCE_DATABASE_URL") or "").strip()
+          if not url:
+              print("orphan_lock_clear=skipped_no_writer_url")
+              raise SystemExit(0)
+          engine = create_engine(url)
+          with engine.begin() as conn:
+              rows = conn.execute(
+                  text(
+                      """
+                      SELECT l.pid, a.state, left(coalesce(a.query, ''), 80) AS query_prefix
+                      FROM pg_locks l
+                      JOIN pg_stat_activity a ON a.pid = l.pid
+                      WHERE l.locktype = 'advisory'
+                        AND l.granted
+                        AND l.classid = ((:key::bigint) >> 32)::integer
+                        AND l.objid = ((:key::bigint) & 4294967295)::integer
+                        AND l.pid <> pg_backend_pid()
+                        AND (
+                          a.state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
+                          OR coalesce(a.query, '') ILIKE '%pg_advisory_lock%'
+                          OR coalesce(a.query, '') ILIKE '%market_intelligence_refresh%'
+                          OR coalesce(a.query, '') ILIKE '%build_analytics%'
+                          OR coalesce(a.query, '') ILIKE '%build_morning_context%'
+                        )
+                      """
+                  ),
+                  {"key": int(LOCK_KEY)},
+              ).mappings().all()
+              print("orphan_lock_pids={0}".format(",".join(str(r["pid"]) for r in rows) or "none"))
+              for row in rows:
+                  print("orphan_lock_state={0}".format(row.get("state")))
+                  conn.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": int(row["pid"])})
+          print("orphan_lock_clear=done")
+          PY
+          unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL MARKET_INTELLIGENCE_DATABASE_URL
           set +e
           systemctl start fmp-mi-refresh.service
           start_rc=$?
@@ -168,9 +217,30 @@ jobs:
           echo "refresh_start_rc=${start_rc}"
           echo "refresh_result=$(systemctl show fmp-mi-refresh.service -p Result --value || true)"
           echo "refresh_exec=$(systemctl show fmp-mi-refresh.service -p ExecMainStatus --value || true)"
+          # If contention persists, run one bounded wait-lock refresh so CFTC/FRED still move.
+          exec_status="$(systemctl show fmp-mi-refresh.service -p ExecMainStatus --value || true)"
+          if [ "${exec_status}" = "75" ]; then
+            echo "refresh_retry=wait_lock_all_configured"
+            set -a
+            # shellcheck disable=SC1091
+            . /etc/fmp/market_intelligence.env
+            set +a
+            source /root/FMP_SCREENER/venv/bin/activate
+            set +e
+            python -m jobs.market_intelligence_refresh --all-configured --wait-lock >/tmp/mi_refresh_retry.out 2>/tmp/mi_refresh_retry.err
+            retry_rc=$?
+            set -e
+            echo "refresh_retry_rc=${retry_rc}"
+            # Sanitize: print only high-level status tokens, never full JSON payload.
+            grep -Ei 'status|FAILED|SUCCEEDED|SKIPPED|cftc|eia|lock|CONFIGURATION|exit' /tmp/mi_refresh_retry.err /tmp/mi_refresh_retry.out 2>/dev/null \
+              | grep -viE 'postgres(ql)?://|bearer |password=|api_key|token=|FINRA_CLIENT|FRED_API|DATABASE_URL|MARKET_INTELLIGENCE_DATABASE|value|bid|ask' \
+              | head -n 40 || true
+            rm -f /tmp/mi_refresh_retry.out /tmp/mi_refresh_retry.err
+            unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL MARKET_INTELLIGENCE_DATABASE_URL
+          fi
           echo "refresh_journal_sanitized:"
           journalctl -u fmp-mi-refresh.service -n 60 --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'error|traceback|address already|permission|modulenotfound|importerror|failed|started|CONFIGURATION|writer|lock|exit' \
+            | grep -Ei 'error|traceback|address already|permission|modulenotfound|importerror|failed|started|CONFIGURATION|writer|lock|exit|cftc|eia' \
             | grep -viE 'postgres(ql)?://|bearer |password=|api_key|token=|FINRA_CLIENT|FRED_API|DATABASE_URL|MARKET_INTELLIGENCE_DATABASE' \
             || true
           if [ "$start_rc" -ne 0 ]; then
@@ -211,16 +281,67 @@ jobs:
               collectors = ibkr_collector_status(conn)
               quotes = ibkr_quotes_latest(conn)
               grant = conn.execute(text("SELECT has_table_privilege(current_user, 'mi_v_finra_aggregate_quarantine', 'SELECT')")).scalar()
+              # mi_readonly is granted views only — never SELECT raw mi_* observation tables here.
+              cftc_view = conn.execute(text("SELECT to_regclass('public.mi_v_cftc_cot_current') IS NOT NULL")).scalar()
+              cftc_obs = 0
+              cftc_latest = None
+              cftc_markets = []
+              if cftc_view:
+                  cftc_obs = int(conn.execute(text("SELECT COUNT(*) FROM mi_v_cftc_cot_current")).scalar() or 0)
+                  cftc_latest = conn.execute(text("SELECT MAX(report_date)::text FROM mi_v_cftc_cot_current")).scalar()
+                  cftc_markets = [str(r[0]) for r in conn.execute(text("SELECT market FROM mi_v_cftc_cot_current ORDER BY market")).fetchall()]
+              eia_view = conn.execute(text("SELECT to_regclass('public.mi_v_eia_latest') IS NOT NULL")).scalar()
+              eia_obs = 0
+              eia_latest = None
+              if eia_view:
+                  eia_obs = int(conn.execute(text("SELECT COUNT(*) FROM mi_v_eia_latest")).scalar() or 0)
+                  eia_latest = conn.execute(text("SELECT MAX(observation_date)::text FROM mi_v_eia_latest")).scalar()
+              eod_batch_id = None
+              eod_state = None
+              eod_bars = None
+              eod_coverage = None
+              if conn.execute(text("SELECT to_regclass('public.mi_v_equity_eod_coverage') IS NOT NULL")).scalar():
+                  eod_row = conn.execute(text(
+                      """
+                      SELECT batch_id, state, bars_received, coverage_status
+                      FROM mi_v_equity_eod_coverage
+                      WHERE coverage_status = 'COMPLETE' OR state IN ('COMPLETE', 'FINALIZED', 'SUCCEEDED')
+                      ORDER BY COALESCE(finalized_at, updated_at) DESC NULLS LAST
+                      LIMIT 1
+                      """
+                  )).mappings().first()
+                  if eod_row:
+                      eod_batch_id = eod_row.get("batch_id")
+                      eod_state = eod_row.get("state")
+                      eod_bars = eod_row.get("bars_received")
+                      eod_coverage = eod_row.get("coverage_status")
           print("readonly_quarantine_select={0}".format(bool(grant)))
           print("source_count={0}".format(len(health.get("sources") or [])))
           print("stale_count={0}".format(len(health.get("stale") or [])))
           print("failed_transport_count={0}".format(len(health.get("failed_transport") or [])))
           for row in (health.get("sources") or []):
+              sid = str(row.get("source_id") or "")
               acc = str(row.get("access_status") or "")
               fresh = str(row.get("freshness_status") or "")
               label = str(row.get("health_label") or "")
               transport = str(row.get("transport_status") or "")
+              provider_latest = row.get("provider_latest_observation_date")
+              db_latest = row.get("latest_observation_date")
               gated = bool(row.get("retired_optional") or row.get("optional_disabled"))
+              if sid in {"CFTC_COT", "EIA_ENERGY", "FRED", "FINRA_QUERY", "QS_RESEARCH_DELIVERY", "TREASURY_DIRECT", "IBKR_CORPORATE_BONDS", "IBKR_MUNICIPAL_BONDS", "MSRB_EMMA", "SEC_EDGAR"}:
+                  print(
+                      "source_status={0} dataset={1} access={2} freshness={3} label={4} transport={5} db_latest={6} provider_latest={7} gated={8}".format(
+                          sid,
+                          row.get("freshness_dataset") or row.get("dataset"),
+                          acc,
+                          fresh,
+                          label,
+                          transport,
+                          db_latest,
+                          provider_latest,
+                          gated,
+                      )
+                  )
               notable = (not gated) and (
                   fresh in {"STALE", "STALE_INGESTION", "FAILED", "UNKNOWN", "MISSING"}
                   or transport in {"FAILED", "METADATA_REJECTED"}
@@ -233,6 +354,9 @@ jobs:
           for row in (health.get("failed_transport") or []):
               print("failed_source={0} dataset={1} transport={2} access={3}".format(row.get("source_id"), row.get("freshness_dataset") or row.get("dataset"), row.get("transport_status"), row.get("access_status") or row.get("capability_status")))
           print("finra_quarantine_count={0}".format(len(health.get("finra_quarantine") or [])))
+          print("cftc_view={0} cftc_current_rows={1} cftc_latest={2} cftc_markets={3}".format(bool(cftc_view), cftc_obs, cftc_latest, ",".join(cftc_markets)))
+          print("eia_view={0} eia_latest_rows={1} eia_latest={2}".format(bool(eia_view), eia_obs, eia_latest))
+          print("eod_batch_id={0} eod_state={1} eod_bars={2} eod_coverage={3}".format(eod_batch_id, eod_state, eod_bars, eod_coverage))
           capped = flow.get("capped_volume") or {}
           print("capped_identity_validated={0}".format(bool(capped.get("identity_validated"))))
           print("capped_headline_eligible={0}".format(bool(capped.get("headline_eligible"))))

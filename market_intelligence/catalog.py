@@ -478,7 +478,7 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "enabled": False,
         "access_status": "CONFIGURATION_REQUIRED",
         "attribution": "IBKR municipal discovery/quotes if later entitled.",
-        "terms_notes": "TWS matching returns name-only rows without conId/CUSIP. Calculator remains available. Persistence off until CUSIP/ISIN and storage rights are confirmed. INTERNAL_ONLY.",
+        "terms_notes": "Cash-muni quotes need an official CUSIP/ISIN (MSRB developer key or issuer prospectus). reqMatchingSymbols name-only rows are insufficient. Calculator remains available. Quote persistence RIGHTS_PENDING. INTERNAL_ONLY.",
         "units_metadata": {},
     },
     {
@@ -489,9 +489,9 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "expected_cadence": "INTRADAY",
         "usage_scope": EXPORT_INTERNAL_ONLY,
         "enabled": False,
-        "access_status": "CONFIGURATION_REQUIRED",
+        "access_status": "ENTITLEMENT_REQUIRED",
         "attribution": "Supplementary to FINRA Query aggregates.",
-        "terms_notes": "TWS matching returns name-only rows without conId/CUSIP. FINRA Query aggregates remain the live corporate activity feed. Persistence off until CUSIP/ISIN and storage rights are confirmed. INTERNAL_ONLY.",
+        "terms_notes": "CUSIP/ISIN resolves to conId via TWS reqContractDetails (symbol=CUSIP proven 2026-09-15). Live quotes need bond market-data entitlement; PostgreSQL archival remains RIGHTS_PENDING. FINRA Query aggregates remain the live activity feed. Collection off. INTERNAL_ONLY.",
         "units_metadata": {},
     },
     {
