@@ -8,9 +8,10 @@ never mixed into the observation timestamp: a successful fetch does not refresh
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Mapping
+from typing import Any, Mapping
 
 from market_intelligence.calendars import (
     CAL_NYSE,
@@ -33,6 +34,8 @@ STALE = "STALE"
 CURRENT_TO_SOURCE = "CURRENT_TO_SOURCE"
 STALE_INGESTION = "STALE_INGESTION"
 STALE_UPSTREAM = "STALE_UPSTREAM"
+HEALTHY_CURRENT = "HEALTHY_CURRENT"
+HEALTHY_PUBLICATION_LAG = "HEALTHY_PUBLICATION_LAG"
 ON_DEMAND = "ON_DEMAND"
 MISSING = "MISSING"
 INVALID_FUTURE = "INVALID_FUTURE"
@@ -428,12 +431,16 @@ def assess_freshness(
     )
 
 
-def _recent_success(last_success_at: datetime | None, clock: datetime) -> bool:
+def recent_success(last_success_at: datetime | None, clock: datetime) -> bool:
     if last_success_at is None:
         return False
     success = last_success_at if last_success_at.tzinfo else last_success_at.replace(tzinfo=NY_TZ)
     now = clock if clock.tzinfo else clock.replace(tzinfo=NY_TZ)
     return (now - success).total_seconds() <= RECENT_SUCCESS_HOURS * 3600
+
+
+def _recent_success(last_success_at: datetime | None, clock: datetime) -> bool:
+    return recent_success(last_success_at, clock)
 
 
 def _classify_with_upstream(
@@ -463,8 +470,63 @@ def _classify_with_upstream(
     return status
 
 
+def provider_latest_from_coverage(coverage: Any) -> date | None:
+    """Read the provider's latest print from a freshness coverage payload."""
+    if coverage is None:
+        return None
+    payload = coverage
+    if isinstance(coverage, str):
+        try:
+            payload = json.loads(coverage)
+        except ValueError:
+            return None
+    if not isinstance(payload, Mapping):
+        return None
+    raw = payload.get("provider_latest_observation_date") or payload.get("upstream_latest")
+    if raw is None:
+        return None
+    text = str(raw).strip()[:10]
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def health_label(status: str | None) -> str:
+    """Data Health vocabulary that separates publication lag from a missed ingest."""
+    key = str(status or "").upper()
+    mapping = {
+        LATEST_AVAILABLE: HEALTHY_CURRENT,
+        FRESH: HEALTHY_CURRENT,
+        "CURRENT": HEALTHY_CURRENT,
+        "OK": HEALTHY_CURRENT,
+        CURRENT_TO_SOURCE: HEALTHY_PUBLICATION_LAG,
+        AWAITING_RELEASE: HEALTHY_PUBLICATION_LAG,
+        STALE_UPSTREAM: HEALTHY_PUBLICATION_LAG,
+        STALE_INGESTION: STALE_INGESTION,
+        INGESTION_OVERDUE: STALE_INGESTION,
+        STALE: STALE,
+        ON_DEMAND: ON_DEMAND,
+        TRANSPORT_FAILURE: "FAILED",
+        MISSING: MISSING,
+        UNKNOWN: UNKNOWN,
+    }
+    return mapping.get(key, key or UNKNOWN)
+
+
 def is_current_status(status: str | None) -> bool:
-    return str(status or "").upper() in {LATEST_AVAILABLE, FRESH, "CURRENT", "OK", AWAITING_RELEASE, CURRENT_TO_SOURCE, ON_DEMAND}
+    return str(status or "").upper() in {
+        LATEST_AVAILABLE,
+        FRESH,
+        "CURRENT",
+        "OK",
+        AWAITING_RELEASE,
+        CURRENT_TO_SOURCE,
+        ON_DEMAND,
+        HEALTHY_CURRENT,
+        HEALTHY_PUBLICATION_LAG,
+        STALE_UPSTREAM,
+    }
 
 
 __all__ = [
@@ -472,6 +534,8 @@ __all__ = [
     "CADENCE_TOLERANCE",
     "CURRENT_TO_SOURCE",
     "FRESH",
+    "HEALTHY_CURRENT",
+    "HEALTHY_PUBLICATION_LAG",
     "ON_DEMAND",
     "STALE_INGESTION",
     "STALE_UPSTREAM",
@@ -490,8 +554,11 @@ __all__ = [
     "assess_freshness",
     "business_days_between",
     "expected_latest_published",
+    "health_label",
     "is_business_day",
     "is_current_status",
     "policy_for",
+    "provider_latest_from_coverage",
+    "recent_success",
     "us_federal_holidays",
 ]

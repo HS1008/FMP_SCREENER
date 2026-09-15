@@ -819,7 +819,7 @@ def render_data_health() -> None:
         )
     if stale or failed:
         st.subheader("Needs attention")
-        st.caption("STALE_INGESTION means our pipeline is behind the provider. CURRENT_TO_SOURCE / publication lag means the provider has not published a newer print.")
+        st.caption("STALE_INGESTION means our pipeline is behind the provider. HEALTHY_PUBLICATION_LAG / CURRENT_TO_SOURCE means the provider has not published a newer print.")
         problem = stale + [row for row in failed if row not in stale]
         st.dataframe(
             pd.DataFrame(
@@ -827,9 +827,10 @@ def render_data_health() -> None:
                     {
                         "Source": row.get("provider") or row.get("source_id"),
                         "Dataset": row.get("freshness_dataset") or row.get("dataset"),
-                        "Freshness": row.get("freshness_status") or "—",
+                        "Freshness": row.get("health_label") or row.get("freshness_status") or "—",
                         "Transport": row.get("transport_status") or "—",
                         "Latest observation": row.get("latest_observation_date") or "—",
+                        "Provider latest": row.get("provider_latest_observation_date") or "—",
                         "Last success": age_text(row.get("last_success_at")),
                         "Why it looks like this": exception_note(row),
                     }
@@ -850,7 +851,7 @@ def render_data_health() -> None:
                         "Dataset": row.get("freshness_dataset") or row.get("dataset"),
                         "Latest observation": row.get("latest_observation_date") or "—",
                         "Last success": age_text(row.get("last_success_at")),
-                        "Freshness": freshness_chip(row.get("freshness_status")),
+                        "Freshness": freshness_chip(row.get("health_label") or row.get("freshness_status")),
                     }
                     for row in healthy
                 ]

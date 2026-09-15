@@ -10,7 +10,7 @@ from sqlalchemy import text
 
 from market_intelligence.cftc_client import CFTC_ATTRIBUTION, CftcClient
 from market_intelligence.nulls import canonical_sha256
-from market_intelligence.store import RUN_FAILED, RUN_SUCCEEDED, finish_run, record_freshness, start_run
+from market_intelligence.store import RUN_FAILED, RUN_SUCCEEDED, coverage_with_provider_latest, finish_run, record_freshness, start_run
 
 SOURCE_ID = "CFTC_COT"
 DATASET = "commitment_of_traders"
@@ -100,5 +100,5 @@ def ingest_cftc(engine, client: CftcClient | None = None, *, parent_run_id: str 
             if latest is None or obs > latest:
                 latest = obs
         finish_run(conn, run_id, status=RUN_SUCCEEDED, counts={"received": len(rows), "inserted": written}, details={"attribution": CFTC_ATTRIBUTION, "markets": sorted(markets)})
-        record_freshness(conn, source_id=SOURCE_ID, dataset=DATASET, cadence="W", transport_status="OK", latest_observation=latest, success=True, error_redacted=None, run_id=run_id, today=today)
+        record_freshness(conn, source_id=SOURCE_ID, dataset=DATASET, cadence="W", transport_status="OK", latest_observation=latest, success=True, error_redacted=None, run_id=run_id, today=today, coverage_json=coverage_with_provider_latest(latest, provider="CFTC"))
     return CftcIngestReport(status=RUN_SUCCEEDED, rows_written=written, latest_observation=latest, markets=sorted(markets))

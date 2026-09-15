@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Mapping
 
@@ -16,7 +16,8 @@ from sqlalchemy import text
 
 from market_intelligence import CODE_VERSION
 from market_intelligence.catalog import CATALOG_VERSION, SOURCE_REGISTRY_DEFAULTS, publishable
-from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness
+from market_intelligence.calendars import NY_TZ
+from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness, provider_latest_from_coverage
 from market_intelligence.nulls import MalformedValueError, normalize_numeric, strict_dumps
 
 RUN_ATTEMPTED = "ATTEMPTED"
@@ -32,6 +33,18 @@ TRANSPORT_SKIPPED = "SKIPPED"
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def ny_today() -> date:
+    return datetime.now(NY_TZ).date()
+
+
+def coverage_with_provider_latest(latest: date | None, *, provider: str, extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    payload = dict(extra or {})
+    payload["provider"] = provider
+    if latest is not None:
+        payload["provider_latest_observation_date"] = latest.isoformat() if hasattr(latest, "isoformat") else str(latest)
+    return payload
 
 
 def new_run_id(prefix: str = "run") -> str:
@@ -498,7 +511,7 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
     no ingestion job runs. The ``expected_next_release`` column holds the stale-after bound implied by the
     tolerance, not an official release calendar date.
     """
-    today = today or utcnow().date()
+    today = today or ny_today()
     prior = conn.execute(
         text("SELECT latest_observation_date, last_success_at, latest_observation_retrieved_at FROM mi_data_freshness WHERE source_id = :s AND dataset = :d"),
         {"s": source_id, "d": dataset},
@@ -520,6 +533,8 @@ def record_freshness(conn, *, source_id: str, dataset: str, cadence: str | None,
         series_id=series_id or (dataset.split("series:", 1)[1] if dataset and dataset.startswith("series:") else None),
         source_id=source_id,
         transport_status=transport_status,
+        now=datetime.combine(today, time(23, 59), tzinfo=NY_TZ),
+        upstream_latest=provider_latest_from_coverage(coverage_json),
     )
     conn.execute(
         text(
@@ -593,9 +608,11 @@ __all__ = [
     "TRANSPORT_SKIPPED",
     "UpsertCounts",
     "current_observations",
+    "coverage_with_provider_latest",
     "finish_run",
     "latest_observation_date",
     "new_run_id",
+    "ny_today",
     "record_freshness",
     "start_run",
     "upsert_macro_series",

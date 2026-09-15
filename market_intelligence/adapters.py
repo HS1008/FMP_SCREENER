@@ -289,7 +289,7 @@ class MsrbEmmaAdapter:
         if not has_key:
             return AdapterStatus(
                 self.source_id,
-                ACCESS_NOT_CONFIGURED,
+                ACCESS_CONFIGURATION_REQUIRED,
                 False,
                 "No free unauthenticated EMMA API. Create an MSRB developer account and API key at https://emma.msrb.org/AboutEMMA/Developers, then set MSRB_API_KEY. Do not scrape EMMA HTML.",
                 self.CREDENTIAL_ENV + (self.ENABLE_FLAG,),
@@ -314,9 +314,9 @@ class IBKRMunicipalBondsAdapter:
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
         return AdapterStatus(
             self.source_id,
-            ACCESS_NOT_CONFIGURED,
+            ACCESS_CONFIGURATION_REQUIRED,
             False,
-            "TWS reqMatchingSymbols for cash munis does not return a tradeable conId/CUSIP. The Fixed Income calculator stays usable. Persistence stays off until a CUSIP/ISIN and storage rights are confirmed.",
+            "TWS reqMatchingSymbols for cash munis does not return a tradeable conId/CUSIP. The Fixed Income calculator stays usable. Persistence stays off until an identifier and storage rights are confirmed.",
             (self.ENABLE_FLAG, "CUSIP or ISIN", "IBKR bond market-data entitlement"),
             {"discovery": "name-only without conId", "quotes": "blocked without identifiable contract", "calculator": "available"},
         )
@@ -329,9 +329,9 @@ class IBKRCorporateBondsAdapter:
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
         return AdapterStatus(
             self.source_id,
-            ACCESS_NOT_CONFIGURED,
+            ACCESS_CONFIGURATION_REQUIRED,
             False,
-            "TWS reqMatchingSymbols for cash corporates does not return a tradeable conId/CUSIP. FINRA Query aggregates remain the live corporate activity feed. Persistence stays off until a CUSIP/ISIN and storage rights are confirmed.",
+            "TWS reqMatchingSymbols for cash corporates does not return a tradeable conId/CUSIP. FINRA Query aggregates remain the live corporate activity feed. Persistence stays off until an identifier and storage rights are confirmed.",
             (self.ENABLE_FLAG, "CUSIP or ISIN", "IBKR bond market-data entitlement"),
             {"discovery": "name-only without conId", "quotes": "blocked without identifiable contract", "aggregates": "FINRA Query"},
         )
@@ -357,7 +357,7 @@ class EiaEnergyAdapter:
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
         has_key = bool(str(env.get("EIA_API_KEY") or "").strip())
         if not has_key:
-            return AdapterStatus(self.source_id, ACCESS_NOT_CONFIGURED, False, "EIA_API_KEY is absent. Register a free key at https://www.eia.gov/opendata/ and set EIA_API_KEY on the writer host. FRED WTI/Henry Hub remain price fallbacks.", ("EIA_API_KEY",), {"petroleum": "signup required"})
+            return AdapterStatus(self.source_id, ACCESS_CONFIGURATION_REQUIRED, False, "EIA_API_KEY is absent. Register a free key at https://www.eia.gov/opendata/ and set EIA_API_KEY on the writer host. FRED WTI/Henry Hub remain price fallbacks.", ("EIA_API_KEY",), {"petroleum": "signup required"})
         return AdapterStatus(self.source_id, ACCESS_AVAILABLE, True, "EIA v2 key present; weekly petroleum stocks and working-gas storage ingest is enabled.", ("EIA_API_KEY",), {"petroleum": "configured"})
 
 

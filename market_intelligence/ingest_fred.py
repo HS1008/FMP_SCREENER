@@ -25,8 +25,10 @@ from market_intelligence.store import (
     TRANSPORT_FAILED,
     TRANSPORT_OK,
     ObservationInput,
+    coverage_with_provider_latest,
     finish_run,
     latest_observation_date,
+    ny_today,
     quarantine_observations,
     record_freshness,
     start_run,
@@ -162,6 +164,7 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
             counts = upsert_observations(conn, series_id=spec.series_id, rows=rows, retrieved_at=retrieved_at, run_id=result.run_id, today=today)
             latest = latest_observation_date(conn, spec.series_id)
             first = min((r.observation_date for r in rows), default=None)
+            provider_latest = max((r.observation_date for r in rows), default=latest)
             freshness = record_freshness(
                 conn,
                 source_id=FRED_SOURCE_ID,
@@ -175,6 +178,7 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
                 today=today,
                 metadata_status=metadata_status,
                 latest_observation_retrieved_at=retrieved_at,
+                coverage_json=coverage_with_provider_latest(provider_latest, provider="FRED"),
             )
             details = {
                 "metadata_status": metadata_status,
@@ -279,7 +283,7 @@ def _fail(engine, result: SeriesIngestResult, spec: SeriesSpec, error: str, *, r
 
 
 def ingest_fred_catalog(engine, client: FredClient, *, series_ids: Iterable[str] | None = None, mode: str = "incremental", today: date | None = None, parent_run_id: str | None = None) -> FredIngestReport:
-    today = today or utcnow().date()
+    today = today or ny_today()
     specs = [CATALOG_BY_ID[s] for s in series_ids] if series_ids else list(CATALOG)
     report = FredIngestReport(parent_run_id=parent_run_id, mode=mode)
     for spec in specs:
@@ -307,6 +311,7 @@ def ingest_fred_catalog(engine, client: FredClient, *, series_ids: Iterable[str]
             error_redacted=error,
             run_id=parent_run_id,
             today=today,
+            coverage_json=coverage_with_provider_latest(latest_any, provider="FRED"),
         )
     return report
 

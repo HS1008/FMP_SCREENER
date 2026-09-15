@@ -215,6 +215,19 @@ jobs:
           print("source_count={0}".format(len(health.get("sources") or [])))
           print("stale_count={0}".format(len(health.get("stale") or [])))
           print("failed_transport_count={0}".format(len(health.get("failed_transport") or [])))
+          for row in (health.get("sources") or []):
+              acc = str(row.get("access_status") or "")
+              fresh = str(row.get("freshness_status") or "")
+              label = str(row.get("health_label") or "")
+              transport = str(row.get("transport_status") or "")
+              gated = bool(row.get("retired_optional") or row.get("optional_disabled"))
+              notable = (not gated) and (
+                  fresh in {"STALE", "STALE_INGESTION", "FAILED", "UNKNOWN", "MISSING"}
+                  or transport in {"FAILED", "METADATA_REJECTED"}
+                  or acc in {"NOT_CONFIGURED", "UNKNOWN"}
+              )
+              if notable:
+                  print("nongreen_source={0} dataset={1} access={2} freshness={3} label={4} transport={5}".format(row.get("source_id"), row.get("freshness_dataset") or row.get("dataset"), acc, fresh, label, transport))
           for row in (health.get("stale") or []):
               print("stale_source={0} dataset={1} cadence={2} transport={3}".format(row.get("source_id"), row.get("freshness_dataset") or row.get("dataset"), row.get("dataset_cadence") or row.get("cadence"), row.get("transport_status")))
           for row in (health.get("failed_transport") or []):

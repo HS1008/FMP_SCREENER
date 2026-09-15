@@ -169,6 +169,8 @@ def freshness_chip(status: str | None) -> str:
         "LATEST_AVAILABLE": "🟢 Current",
         "AWAITING_RELEASE": "🟢 Current",
         "CURRENT_TO_SOURCE": "🟢 Current to source",
+        "HEALTHY_CURRENT": "🟢 Current",
+        "HEALTHY_PUBLICATION_LAG": "🟢 Publication lag",
         "ON_DEMAND": "🟢 On demand",
         "STALE_INGESTION": "🟠 Stale ingestion",
         "STALE_UPSTREAM": "🟡 Upstream lag",
