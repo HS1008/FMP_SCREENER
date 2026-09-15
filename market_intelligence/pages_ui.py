@@ -1602,7 +1602,7 @@ def render_commodities() -> None:
                 {"Coverage": "Henry Hub natural gas", "Source": "FRED / EIA (DHHNGSP)", "Notes": "daily dollars per MMBtu"},
                 {"Coverage": "Global copper", "Source": "FRED / IMF (PCOPPUSDM)", "Notes": "monthly USD per metric ton"},
                 {"Coverage": "Gold spot", "Source": "FRED LBMA daily", "Notes": "unavailable — IBA/LBMA series were removed from FRED in 2022; no substitute is invented"},
-                {"Coverage": "EIA inventories / production", "Source": "EIA_ENERGY", "Notes": "weekly stocks/storage when EIA_API_KEY is set; otherwise signup at https://www.eia.gov/opendata/"},
+                {"Coverage": "EIA inventories / production", "Source": "EIA_ENERGY", "Notes": "weekly stocks/storage when the official EIA Open Data key is set; otherwise signup at https://www.eia.gov/opendata/"},
                 {"Coverage": "CFTC positioning", "Source": "CFTC_COT", "Notes": "public weekly COT watchlist; no API key"},
             ]
         ),
