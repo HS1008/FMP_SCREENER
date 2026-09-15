@@ -19,6 +19,7 @@ from typing import Any, Iterable
 
 from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CATALOG_VERSION, FRED_SOURCE_ID, SeriesSpec, publishable, validate_metadata
 from market_intelligence.fred_client import FredClient, FredError, redact
+from market_intelligence.nulls import MalformedValueError, is_missing_token, normalize_numeric
 from market_intelligence.store import (
     RUN_FAILED,
     RUN_SUCCEEDED,
@@ -51,6 +52,32 @@ REVISION_LOOKBACK = {
     "M": timedelta(days=15 * 31),
     "Q": timedelta(days=3 * 366),
 }
+
+
+def latest_usable_observation_date(rows: Iterable[ObservationInput]) -> date | None:
+    """Latest date with a published usable value (same missing-token rules as storage).
+
+    FRED often returns ``"."`` for weekends/holidays. Those dates are response coverage, not
+    ``provider_latest``. Missing tokens never become zero.
+    """
+    usable: list[date] = []
+    for row in rows:
+        if is_missing_token(row.raw_value):
+            continue
+        try:
+            value, _reason = normalize_numeric(row.raw_value)
+        except MalformedValueError:
+            continue
+        if value is None:
+            continue
+        usable.append(row.observation_date)
+    return max(usable) if usable else None
+
+
+def returned_coverage_last_date(rows: Iterable[ObservationInput]) -> date | None:
+    """Max observation date in the provider payload, including missing-token rows."""
+    dates = [row.observation_date for row in rows]
+    return max(dates) if dates else None
 
 
 @dataclass
@@ -164,7 +191,8 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
             counts = upsert_observations(conn, series_id=spec.series_id, rows=rows, retrieved_at=retrieved_at, run_id=result.run_id, today=today)
             latest = latest_observation_date(conn, spec.series_id)
             first = min((r.observation_date for r in rows), default=None)
-            provider_latest = max((r.observation_date for r in rows), default=latest)
+            provider_latest = latest_usable_observation_date(rows)
+            returned_last = returned_coverage_last_date(rows)
             freshness = record_freshness(
                 conn,
                 source_id=FRED_SOURCE_ID,
@@ -178,7 +206,11 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
                 today=today,
                 metadata_status=metadata_status,
                 latest_observation_retrieved_at=retrieved_at,
-                coverage_json=coverage_with_provider_latest(provider_latest, provider="FRED"),
+                coverage_json=coverage_with_provider_latest(
+                    provider_latest,
+                    provider="FRED",
+                    extra={"returned_last_date": returned_last.isoformat() if returned_last else None},
+                ),
             )
             details = {
                 "metadata_status": metadata_status,
@@ -188,7 +220,8 @@ def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, to
                 "provider_observation_end": meta.get("observation_end"),
                 "provider_last_updated": meta.get("last_updated"),
                 "returned_first_date": first.isoformat() if first else None,
-                "returned_last_date": max((r.observation_date for r in rows), default=None).isoformat() if rows else None,
+                "returned_last_date": returned_last.isoformat() if returned_last else None,
+                "provider_latest_observation_date": provider_latest.isoformat() if provider_latest else None,
                 "rejected_samples": counts.rejected_samples,
                 "mode": mode,
             }
@@ -316,4 +349,18 @@ def ingest_fred_catalog(engine, client: FredClient, *, series_ids: Iterable[str]
     return report
 
 
-__all__ = ["FRED_DATASET", "FredIngestReport", "REVISION_LOOKBACK", "RUN_QUARANTINED", "SeriesIngestResult", "TRANSPORT_METADATA_REJECTED", "TRANSPORT_PARTIAL", "ingest_fred_catalog", "ingest_series", "request_window", "spec_registry_fields"]
+__all__ = [
+    "FRED_DATASET",
+    "FredIngestReport",
+    "REVISION_LOOKBACK",
+    "RUN_QUARANTINED",
+    "SeriesIngestResult",
+    "TRANSPORT_METADATA_REJECTED",
+    "TRANSPORT_PARTIAL",
+    "ingest_fred_catalog",
+    "ingest_series",
+    "latest_usable_observation_date",
+    "request_window",
+    "returned_coverage_last_date",
+    "spec_registry_fields",
+]

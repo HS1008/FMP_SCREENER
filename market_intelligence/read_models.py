@@ -9,8 +9,9 @@ applied uniformly.
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, time, timezone
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import text
 
@@ -64,17 +65,57 @@ def _evaluation_clock(today: date | None) -> datetime:
     return datetime.now(NY_TZ)
 
 
+def _research_delivery_has_last_known_good(row: dict[str, Any]) -> bool:
+    """True when downstream still has a usable published research artifact."""
+    latest = row.get("latest_observation_date")
+    if latest not in (None, ""):
+        return True
+    coverage = row.get("coverage_json")
+    if isinstance(coverage, str):
+        try:
+            coverage = json.loads(coverage)
+        except ValueError:
+            coverage = None
+    if isinstance(coverage, Mapping):
+        downstream = str(coverage.get("downstream_data_status") or coverage.get("downstream") or "").upper()
+        if downstream == "LAST_KNOWN_GOOD":
+            return True
+    error = str(row.get("last_error_redacted") or row.get("error_redacted") or "").upper()
+    return "LAST_KNOWN_GOOD" in error
+
+
 def _apply_research_delivery_policy(row: dict[str, Any]) -> dict[str, Any]:
-    """Remote BLOCKED + last-known-good is research policy, not a platform outage."""
+    """Map QS research delivery to honest health without masking real failures.
+
+    A) intentional remote/source-ref block + valid LAST_KNOWN_GOOD → ON_DEMAND / SKIPPED
+    B) configured delivery path fails + no valid local artifact → FAILED
+    C) healthy delivery → leave HEALTHY / current assessment alone
+    D) intentionally absent source ref → policy/configuration ON_DEMAND
+    """
     if str(row.get("source_id") or "") != "QS_RESEARCH_DELIVERY":
         return row
     access = str(row.get("access_status") or "").upper()
     transport = str(row.get("transport_status") or "").upper()
-    if transport == "FAILED" and access in {"ON_DEMAND", "SOURCE_REF_NOT_CONFIGURED", "CONFIGURATION_REQUIRED"}:
+
+    if access in {"SOURCE_REF_NOT_CONFIGURED", "CONFIGURATION_REQUIRED"}:
+        # Case D: policy/configuration state, not an ingestion outage.
+        if transport == "FAILED":
+            row["transport_status"] = "SKIPPED"
+        row["freshness_status"] = "ON_DEMAND"
+        row["policy_status"] = "ON_DEMAND"
+        row["health_label"] = "ON_DEMAND"
+        return row
+
+    if transport == "FAILED" and access == "ON_DEMAND" and _research_delivery_has_last_known_good(row):
+        # Case A: remote blocked/unavailable but last-known-good remains usable.
         row["transport_status"] = "SKIPPED"
         row["freshness_status"] = "ON_DEMAND"
         row["policy_status"] = "ON_DEMAND"
         row["health_label"] = "ON_DEMAND"
+        return row
+
+    # Case B: keep FAILED when the configured path failed and nothing usable remains.
+    # Case C: healthy / SKIPPED / OK rows stay as assessed.
     return row
 
 
@@ -118,10 +159,21 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
         )
         row["stored_freshness_status"] = row.get("freshness_status")
         access = str(row.get("access_status") or "")
+        source_id = str(row.get("source_id") or "")
+        transport = str(row.get("transport_status") or "").upper()
         if access in {"RETIRED_OPTIONAL", "RETIRED"}:
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
             row["retired_optional"] = True
             row["policy_status"] = "RETIRED"
+        elif (
+            source_id == "QS_RESEARCH_DELIVERY"
+            and transport == "FAILED"
+            and access == "ON_DEMAND"
+            and not _research_delivery_has_last_known_good(row)
+        ):
+            # Case B: configured delivery failed with nothing usable — do not mask as ON_DEMAND.
+            row["freshness_status"] = "FAILED"
+            row["policy_status"] = "FAILED"
         elif access in {"ON_DEMAND", "SOURCE_REF_NOT_CONFIGURED"}:
             row["freshness_status"] = "ON_DEMAND" if latest_d is None or assessment.status in {"UNKNOWN", "MISSING", "INVALID_FUTURE"} else assessment.status
             row["policy_status"] = "ON_DEMAND"
@@ -134,8 +186,8 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
             "NOT_CONFIGURED",
             "CONFIGURATION_REQUIRED",
         } and (
-            str(row.get("source_id") or "").startswith("OPENBB_")
-            or str(row.get("source_id") or "")
+            source_id.startswith("OPENBB_")
+            or source_id
             in {
                 "IBKR_OPTIONS",
                 "IBKR_OPTIONS_STORAGE",
