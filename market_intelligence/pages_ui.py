@@ -493,21 +493,39 @@ def _render_overview_visuals(*, rates: dict[str, Any], credit: dict[str, Any], s
     with right:
         curve = [row for row in (rates.get("curve") or []) if row.get("yield_pct") is not None]
         buckets = [row for row in (credit.get("buckets") or []) if row.get("bucket") in {"ig_broad", "hy_broad"} and row.get("oas_bps") is not None]
-        if curve:
+        mixed = bool(rates.get("curve_dates_mixed"))
+        if curve and not mixed:
             st.subheader("Treasury curve")
             try:
                 import plotly.express as px
 
                 frame = pd.DataFrame([{"Tenor": row.get("tenor"), "Yield %": row.get("yield_pct"), "Obs": row.get("observation_date")} for row in curve])
-                fig = px.line(frame, x="Tenor", y="Yield %", markers=True, title="Latest coherent curve")
+                fig = px.line(frame, x="Tenor", y="Yield %", markers=True, title="Latest coherent curve ({0})".format(rates.get("complete_curve_date") or "same-date"))
                 fig.update_layout(height=360, margin=dict(l=10, r=10, t=40, b=10))
                 fig.update_xaxes(fixedrange=True)
                 fig.update_yaxes(fixedrange=True)
                 st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
             except ImportError:  # pragma: no cover
                 st.line_chart(pd.DataFrame(curve).set_index("tenor")["yield_pct"])
-            obs = sorted({str(row.get("observation_date")) for row in curve if row.get("observation_date")})
-            st.caption("Observation date(s): {0}. Mixed-date curves are never drawn as one print.".format(", ".join(obs) or "—"))
+            st.caption("Same-date complete curve on {0}. Mixed-date legs are not drawn as one print.".format(rates.get("complete_curve_date") or "—"))
+            open_registered_page("rates", "Open Rates & Curve")
+        elif curve and mixed:
+            st.subheader("Treasury curve")
+            st.warning(
+                "Tenors span observation dates {0}. A connected curve is withheld; open Rates for the tenor table.".format(
+                    ", ".join(rates.get("curve_observation_dates") or []) or "—"
+                )
+            )
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {"Tenor": row.get("tenor"), "Yield %": row.get("yield_pct"), "Observation": row.get("observation_date"), "Source": row.get("source_id")}
+                        for row in curve
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
             open_registered_page("rates", "Open Rates & Curve")
         elif buckets:
             st.subheader("Credit spreads")
@@ -677,9 +695,9 @@ def render_rates_curve() -> None:
     present = [row for row in curve if row.get("yield_pct") is not None]
     page_header(
         "Rates & Curve",
-        "Treasury curve in percent; changes in basis points. Mixed-date curves are never drawn as one coherent print.",
+        "Treasury curve in percent; changes in basis points. A connected curve is drawn only for a same-date complete print.",
         as_of=compact_as_of([row.get("observation_date") for row in present])[0],
-        warning="Tenors have different observation dates: {0}.".format(", ".join(rates.get("curve_observation_dates") or [])) if rates.get("curve_dates_mixed") else None,
+        warning="Tenors have different observation dates: {0}. Connected curve withheld.".format(", ".join(rates.get("curve_observation_dates") or [])) if rates.get("curve_dates_mixed") else None,
     )
     st.caption(
         "Complete curve date {0} · sources {1}{2}".format(
@@ -696,20 +714,23 @@ def render_rates_curve() -> None:
     frame = frame.sort_values("tenor_order")
     compare = st.radio("Compare with", ["None", "Prior session", "1 week", "1 month"], horizontal=True, key="rates_compare")
     change_key = {"Prior session": "chg_prev_bps", "1 week": "chg_1w_bps", "1 month": "chg_1m_bps"}.get(compare)
+    mixed = bool(rates.get("curve_dates_mixed"))
     try:
         import plotly.graph_objects as go
 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=frame["tenor"], y=frame["yield_pct"], mode="lines+markers", name="Latest yield (%)"))
-        if change_key:
+        mode = "markers" if mixed else "lines+markers"
+        fig.add_trace(go.Scatter(x=frame["tenor"], y=frame["yield_pct"], mode=mode, name="Latest yield (%)" if not mixed else "Latest per tenor (dates differ)"))
+        if change_key and not mixed:
             prior = [implied_prior_yield(row.get("yield_pct"), row.get(change_key)) for row in frame.to_dict("records")]
             if any(value is not None for value in prior):
                 fig.add_trace(go.Scatter(x=frame["tenor"], y=prior, mode="lines+markers", name=compare, line=dict(dash="dash")))
         fig.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="percent", legend=dict(orientation="h"))
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
     except ImportError:  # pragma: no cover
         st.line_chart(frame.set_index("tenor")["yield_pct"])
-
+    if mixed:
+        st.caption("Points are latest observations per tenor and are not a single coherent curve print.")
     headline = [row for row in present if row["tenor"] in {"2Y", "10Y", "30Y"}]
     cols = st.columns(max(1, len(headline)))
     for i, row in enumerate(headline):

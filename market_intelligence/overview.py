@@ -5,6 +5,7 @@ Factual descriptions only. No causal language, recommendations, or generated com
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -12,9 +13,12 @@ def _num(value: Any) -> float | None:
     if value is None:
         return None
     try:
-        return float(value)
+        number = float(value)
     except (TypeError, ValueError):
         return None
+    if math.isnan(number) or math.isinf(number):
+        return None
+    return number
 
 
 def _signed_pct(value: Any, *, digits: int = 2) -> str:
