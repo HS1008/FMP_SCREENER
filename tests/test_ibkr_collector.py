@@ -228,6 +228,7 @@ def test_uninstall_removes_collector_and_eod_tasks(monkeypatch):
         calls.append(list(args))
         return _Result(0)
 
+    monkeypatch.setattr(service_windows.os, "name", "nt")
     monkeypatch.setattr(service_windows, "stop", lambda: 0)
     monkeypatch.setattr(service_windows, "_run_schtasks", fake_run)
     assert service_windows.uninstall() == 0
