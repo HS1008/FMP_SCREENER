@@ -38,6 +38,7 @@ from market_intelligence.store import (
     RUN_FAILED,
     RUN_PARTIAL,
     RUN_SUCCEEDED,
+    coverage_with_provider_latest,
     finish_run,
     record_freshness,
     start_run,
@@ -482,6 +483,7 @@ def ingest_dataset(engine, client: FinraClient, spec: FinraDatasetSpec, *, paren
             run_id=run_id,
             latest_observation_retrieved_at=retrieved_at if latest is not None else None,
             metadata_status=metadata_status,
+            coverage_json=coverage_with_provider_latest(latest, provider="FINRA_QUERY"),
         )
         if complete and latest is not None:
             _write_checkpoint(conn, spec.dataset, latest, spec.overlap_days, {"received": received, "committed": len(committed_dates), "metadata_status": metadata_status})

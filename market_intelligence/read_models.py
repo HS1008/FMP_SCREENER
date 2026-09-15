@@ -9,14 +9,22 @@ applied uniformly.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from typing import Any
 
 from sqlalchemy import text
 
+from market_intelligence.calendars import NY_TZ
 from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CURVE_SLOPES, CURVE_TENORS, EXPORT_ATTRIBUTION_REQUIRED, EXPORT_INTERNAL_ONLY, FRED_ATTRIBUTION, CREDIT_SERIES
 from market_intelligence.openbb_provider.config import CBOE_ATTRIBUTION, CBOE_TERMS_NOTES
-from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness
+from market_intelligence.freshness import (
+    FRESHNESS_POLICY_VERSION,
+    HEALTHY_PUBLICATION_LAG,
+    assess_freshness,
+    health_label,
+    provider_latest_from_coverage,
+    recent_success,
+)
 from market_intelligence.nulls import normalize_payload
 
 MAX_HISTORY_ROWS = 4000
@@ -49,6 +57,27 @@ def ops_status(conn) -> dict[str, Any]:
     return rows[0] if rows else {}
 
 
+def _evaluation_clock(today: date | None) -> datetime:
+    """Freshness is judged in America/New_York, never PostgreSQL UTC CURRENT_DATE."""
+    if today is not None:
+        return datetime.combine(today, time(23, 59), tzinfo=NY_TZ)
+    return datetime.now(NY_TZ)
+
+
+def _apply_research_delivery_policy(row: dict[str, Any]) -> dict[str, Any]:
+    """Remote BLOCKED + last-known-good is research policy, not a platform outage."""
+    if str(row.get("source_id") or "") != "QS_RESEARCH_DELIVERY":
+        return row
+    access = str(row.get("access_status") or "").upper()
+    transport = str(row.get("transport_status") or "").upper()
+    if transport == "FAILED" and access in {"ON_DEMAND", "SOURCE_REF_NOT_CONFIGURED", "CONFIGURATION_REQUIRED"}:
+        row["transport_status"] = "SKIPPED"
+        row["freshness_status"] = "ON_DEMAND"
+        row["policy_status"] = "ON_DEMAND"
+        row["health_label"] = "ON_DEMAND"
+    return row
+
+
 def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
     """Registry x freshness rows with health recomputed against an explicit clock.
 
@@ -57,7 +86,8 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
     decays even when no ingestion job has run. ``stale_after_estimate`` is the tolerance
     bound, not an official release date.
     """
-    today = _today(conn, today)
+    clock = _evaluation_clock(today)
+    eval_day = clock.astimezone(NY_TZ).date()
     rows = _rows(conn, "SELECT * FROM mi_v_source_health ORDER BY source_id, freshness_dataset")
     out = []
     for row in rows:
@@ -72,14 +102,19 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
                 last_success = datetime.fromisoformat(last_success.replace("Z", "+00:00"))
             except ValueError:
                 last_success = None
+        provider_latest = provider_latest_from_coverage(row.get("coverage_json"))
+        if not recent_success(last_success, clock):
+            provider_latest = None
         assessment = assess_freshness(
             latest_d,
             cadence,
-            today,
+            eval_day,
             series_id=series_id,
             source_id=row.get("source_id"),
             transport_status=row.get("transport_status"),
             last_success_at=last_success,
+            now=clock,
+            upstream_latest=provider_latest,
         )
         row["stored_freshness_status"] = row.get("freshness_status")
         access = str(row.get("access_status") or "")
@@ -88,7 +123,7 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
             row["retired_optional"] = True
             row["policy_status"] = "RETIRED"
         elif access in {"ON_DEMAND", "SOURCE_REF_NOT_CONFIGURED"}:
-            row["freshness_status"] = "ON_DEMAND" if latest_d is None or assessment.status in {"UNKNOWN", "MISSING"} else assessment.status
+            row["freshness_status"] = "ON_DEMAND" if latest_d is None or assessment.status in {"UNKNOWN", "MISSING", "INVALID_FUTURE"} else assessment.status
             row["policy_status"] = "ON_DEMAND"
         elif access in {
             "DISABLED",
@@ -109,6 +144,7 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
                 "IBKR_CORPORATE_BONDS",
                 "EIA_ENERGY",
                 "FINRA_TRACE",
+                "SEC_EDGAR",
             }
         ):
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
@@ -121,14 +157,20 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
         else:
             row["freshness_status"] = assessment.status if latest_d is not None else (row.get("freshness_status") or "MISSING")
             row["policy_status"] = access or "UNKNOWN"
+        row = _apply_research_delivery_policy(row)
+        row["health_label"] = health_label(row.get("freshness_status"))
+        if row.get("freshness_status") == "CURRENT_TO_SOURCE":
+            row["health_label"] = HEALTHY_PUBLICATION_LAG
         row["age_days"] = assessment.age_days
         row["tolerance_days"] = assessment.tolerance_days if assessment.tolerance_days is not None else row.get("tolerance_days")
         row.pop("expected_next_release", None)  # pre-012 view column name; never an official release date
         if assessment.stale_after is not None:
             row["stale_after_estimate"] = assessment.stale_after.isoformat()
         row["dataset_cadence"] = cadence
-        row["evaluated_on"] = today.isoformat()
+        row["evaluated_on"] = eval_day.isoformat()
         row["freshness_policy_version"] = row.get("freshness_policy_version") or FRESHNESS_POLICY_VERSION
+        stored_provider = provider_latest_from_coverage(row.get("coverage_json"))
+        row["provider_latest_observation_date"] = stored_provider.isoformat() if stored_provider else None
         out.append(row)
     return out
 

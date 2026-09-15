@@ -374,7 +374,10 @@ def test_adapters_are_disabled_or_configuration_required_and_refuse_to_fetch():
     } <= set(statuses)
     assert statuses["IBKR_OPTIONS"].access_status == adapters.ACCESS_PROVIDER_SUPPORT_REQUIRED
     assert statuses["IBKR_OPTIONS_STORAGE"].access_status == adapters.ACCESS_RIGHTS_PENDING
-    assert statuses["MSRB_EMMA"].access_status == adapters.ACCESS_NOT_CONFIGURED
+    assert statuses["MSRB_EMMA"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
+    assert statuses["IBKR_CORPORATE_BONDS"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
+    assert statuses["IBKR_MUNICIPAL_BONDS"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
+    assert statuses["EIA_ENERGY"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
     assert statuses["OPENBB_CBOE_OPTIONS"].access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
     assert statuses["OPENBB_CBOE_VIX"].access_status == adapters.ACCESS_AGREEMENT_REQUIRED
     assert statuses["OPENBB_CBOE_OPTIONS"].enabled is False

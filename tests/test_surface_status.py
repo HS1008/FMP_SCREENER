@@ -25,3 +25,20 @@ def test_worst_and_chips():
     ) == STALE
     assert "Current" in freshness_chip("current")
     assert "Blocked" in freshness_chip("blocked")
+    assert "Publication lag" in freshness_chip("HEALTHY_PUBLICATION_LAG")
+
+
+def test_research_delivery_failed_transport_is_on_demand():
+    from market_intelligence.read_models import _apply_research_delivery_policy
+
+    row = _apply_research_delivery_policy(
+        {
+            "source_id": "QS_RESEARCH_DELIVERY",
+            "access_status": "SOURCE_REF_NOT_CONFIGURED",
+            "transport_status": "FAILED",
+            "freshness_status": "UNKNOWN",
+        }
+    )
+    assert row["transport_status"] == "SKIPPED"
+    assert row["freshness_status"] == "ON_DEMAND"
+    assert row["policy_status"] == "ON_DEMAND"

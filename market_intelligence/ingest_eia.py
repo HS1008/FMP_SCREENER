@@ -12,7 +12,7 @@ from typing import Any, Mapping
 from sqlalchemy import text
 
 from market_intelligence.nulls import canonical_sha256
-from market_intelligence.store import RUN_FAILED, RUN_SKIPPED, RUN_SUCCEEDED, finish_run, record_freshness, start_run
+from market_intelligence.store import RUN_FAILED, RUN_SKIPPED, RUN_SUCCEEDED, coverage_with_provider_latest, finish_run, record_freshness, start_run
 
 SOURCE_ID = "EIA_ENERGY"
 DATASET = "petroleum_and_gas_statistics"
@@ -106,7 +106,7 @@ def ingest_eia(engine, *, env: Mapping[str, str] | None = None, parent_run_id: s
                     if latest is None or obs > latest:
                         latest = obs
             finish_run(conn, run_id, status=RUN_SUCCEEDED, counts={"inserted": written}, details={"series": seen})
-            record_freshness(conn, source_id=SOURCE_ID, dataset=DATASET, cadence="W", transport_status="OK", latest_observation=latest, success=True, error_redacted=None, run_id=run_id, today=today)
+            record_freshness(conn, source_id=SOURCE_ID, dataset=DATASET, cadence="W", transport_status="OK", latest_observation=latest, success=True, error_redacted=None, run_id=run_id, today=today, coverage_json=coverage_with_provider_latest(latest, provider="EIA"))
         except Exception as exc:  # noqa: BLE001
             finish_run(conn, run_id, status=RUN_FAILED, error_redacted=exc.__class__.__name__)
             record_freshness(conn, source_id=SOURCE_ID, dataset=DATASET, cadence="W", transport_status="FAILED", latest_observation=latest, success=False, error_redacted=exc.__class__.__name__, run_id=run_id, today=today)

@@ -100,3 +100,63 @@ def test_db_behind_upstream_is_stale_ingestion():
         upstream_latest=date(2026, 9, 14),
     )
     assert result.status == STALE_INGESTION
+
+
+def test_fred_friday_print_on_monday_evening_is_current_to_source():
+    from market_intelligence.calendars import NY_TZ
+    from market_intelligence.freshness import health_label, provider_latest_from_coverage
+
+    monday = datetime(2026, 9, 14, 21, 0, tzinfo=NY_TZ)
+    result = assess_freshness(
+        date(2026, 9, 11),
+        "D",
+        now=monday,
+        series_id="DGS10",
+        transport_status="OK",
+        last_success_at=monday,
+        upstream_latest=date(2026, 9, 11),
+    )
+    assert result.status == CURRENT_TO_SOURCE
+    assert health_label(result.status) == "HEALTHY_PUBLICATION_LAG"
+    wti = assess_freshness(
+        date(2026, 9, 9),
+        "D",
+        now=monday,
+        series_id="DCOILWTICO",
+        transport_status="OK",
+        last_success_at=monday,
+        upstream_latest=date(2026, 9, 9),
+    )
+    assert wti.status == CURRENT_TO_SOURCE
+    assert provider_latest_from_coverage({"provider_latest_observation_date": "2026-09-11"}) == date(2026, 9, 11)
+
+
+def test_utc_calendar_date_is_not_used_when_now_is_new_york():
+    from market_intelligence.calendars import NY_TZ
+
+    # 01:50 UTC 15 Sep is still Monday evening in New York. UTC CURRENT_DATE would expect Tuesday.
+    monday_evening = datetime(2026, 9, 14, 21, 50, tzinfo=NY_TZ)
+    result = assess_freshness(
+        date(2026, 9, 11),
+        "D",
+        now=monday_evening,
+        series_id="DGS10",
+        transport_status="OK",
+        last_success_at=monday_evening,
+        upstream_latest=date(2026, 9, 11),
+    )
+    assert result.status == CURRENT_TO_SOURCE
+    utc_date_only = assess_freshness(date(2026, 9, 11), "D", date(2026, 9, 15), series_id="DGS10")
+    assert utc_date_only.status in {INGESTION_OVERDUE, STALE}
+
+
+def test_historical_provider_latest_does_not_mask_calendar_stale():
+    result = assess_freshness(
+        date(2024, 12, 31),
+        "D",
+        date(2026, 9, 14),
+        series_id="DGS10",
+        transport_status="OK",
+        upstream_latest=date(2024, 12, 31),
+    )
+    assert result.status == STALE
