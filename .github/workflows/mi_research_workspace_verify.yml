@@ -170,11 +170,17 @@ jobs:
           # shellcheck disable=SC1091
           . /etc/fmp/market_intelligence.env
           set +a
+          cd /root/FMP_SCREENER
           source /root/FMP_SCREENER/venv/bin/activate
+          export PYTHONPATH=/root/FMP_SCREENER${PYTHONPATH:+:$PYTHONPATH}
           python - <<'PY'
           import os
           from sqlalchemy import create_engine, text
-          from market_intelligence.locking import LOCK_KEY
+          try:
+              from market_intelligence.locking import LOCK_KEY
+          except Exception as exc:  # noqa: BLE001
+              print("orphan_lock_clear=import_failed:{0}".format(exc.__class__.__name__))
+              raise SystemExit(0)
           url = (os.environ.get("MARKET_INTELLIGENCE_DATABASE_URL") or "").strip()
           if not url:
               print("orphan_lock_clear=skipped_no_writer_url")
@@ -225,7 +231,9 @@ jobs:
             # shellcheck disable=SC1091
             . /etc/fmp/market_intelligence.env
             set +a
+            cd /root/FMP_SCREENER
             source /root/FMP_SCREENER/venv/bin/activate
+            export PYTHONPATH=/root/FMP_SCREENER${PYTHONPATH:+:$PYTHONPATH}
             set +e
             python -m jobs.market_intelligence_refresh --all-configured --wait-lock >/tmp/mi_refresh_retry.out 2>/tmp/mi_refresh_retry.err
             retry_rc=$?
