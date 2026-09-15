@@ -185,35 +185,46 @@ jobs:
           if not url:
               print("orphan_lock_clear=skipped_no_writer_url")
               raise SystemExit(0)
+
+          def to_i32(value: int) -> int:
+              value = int(value) & 0xFFFFFFFF
+              return value - 0x100000000 if value >= 0x80000000 else value
+
+          key = int(LOCK_KEY)
+          classid = to_i32(key >> 32)
+          objid = to_i32(key & 0xFFFFFFFF)
           engine = create_engine(url)
-          with engine.begin() as conn:
-              rows = conn.execute(
-                  text(
-                      """
-                      SELECT l.pid, a.state, left(coalesce(a.query, ''), 80) AS query_prefix
-                      FROM pg_locks l
-                      JOIN pg_stat_activity a ON a.pid = l.pid
-                      WHERE l.locktype = 'advisory'
-                        AND l.granted
-                        AND l.classid = ((:key::bigint) >> 32)::integer
-                        AND l.objid = ((:key::bigint) & 4294967295)::integer
-                        AND l.pid <> pg_backend_pid()
-                        AND (
-                          a.state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
-                          OR coalesce(a.query, '') ILIKE '%pg_advisory_lock%'
-                          OR coalesce(a.query, '') ILIKE '%market_intelligence_refresh%'
-                          OR coalesce(a.query, '') ILIKE '%build_analytics%'
-                          OR coalesce(a.query, '') ILIKE '%build_morning_context%'
-                        )
-                      """
-                  ),
-                  {"key": int(LOCK_KEY)},
-              ).mappings().all()
-              print("orphan_lock_pids={0}".format(",".join(str(r["pid"]) for r in rows) or "none"))
-              for row in rows:
-                  print("orphan_lock_state={0}".format(row.get("state")))
-                  conn.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": int(row["pid"])})
-          print("orphan_lock_clear=done")
+          try:
+              with engine.begin() as conn:
+                  rows = conn.execute(
+                      text(
+                          """
+                          SELECT l.pid, a.state, left(coalesce(a.query, ''), 80) AS query_prefix
+                          FROM pg_locks l
+                          JOIN pg_stat_activity a ON a.pid = l.pid
+                          WHERE l.locktype = 'advisory'
+                            AND l.granted
+                            AND l.classid = :classid
+                            AND l.objid = :objid
+                            AND l.pid <> pg_backend_pid()
+                            AND (
+                              a.state IN ('idle', 'idle in transaction', 'idle in transaction (aborted)')
+                              OR coalesce(a.query, '') ILIKE '%pg_advisory_lock%'
+                              OR coalesce(a.query, '') ILIKE '%market_intelligence_refresh%'
+                              OR coalesce(a.query, '') ILIKE '%build_analytics%'
+                              OR coalesce(a.query, '') ILIKE '%build_morning_context%'
+                            )
+                          """
+                      ),
+                      {"classid": classid, "objid": objid},
+                  ).mappings().all()
+                  print("orphan_lock_pids={0}".format(",".join(str(r["pid"]) for r in rows) or "none"))
+                  for row in rows:
+                      print("orphan_lock_state={0}".format(row.get("state")))
+                      conn.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": int(row["pid"])})
+              print("orphan_lock_clear=done")
+          except Exception as exc:  # noqa: BLE001
+              print("orphan_lock_clear=failed:{0}".format(exc.__class__.__name__))
           PY
           unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL MARKET_INTELLIGENCE_DATABASE_URL
           set +e
