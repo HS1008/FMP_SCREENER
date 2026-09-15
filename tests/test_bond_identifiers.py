@@ -65,6 +65,39 @@ def test_qs_failed_caption_is_not_masked():
     assert "last-known-good" not in note.lower() or "no usable" in note.lower()
 
 
+def test_corporate_bond_remapped_rights_pending_is_not_opra_caption():
+    from market_intelligence.quote_status import exception_note
+
+    note = exception_note(
+        {
+            "source_id": "IBKR_CORPORATE_BONDS",
+            "access_status": "ENTITLEMENT_REQUIRED",
+            "policy_status": "RIGHTS_PENDING",
+            "optional_disabled": True,
+            "freshness_status": "UNKNOWN",
+        }
+    )
+    assert "OPRA" not in note
+    assert "CUSIP" in note
+    assert "FINRA" in note
+    assert "RIGHTS_PENDING" in note
+
+
+def test_muni_bond_configuration_caption():
+    from market_intelligence.quote_status import exception_note
+
+    note = exception_note(
+        {
+            "source_id": "IBKR_MUNICIPAL_BONDS",
+            "access_status": "CONFIGURATION_REQUIRED",
+            "policy_status": "CONFIGURATION_REQUIRED",
+            "optional_disabled": True,
+        }
+    )
+    assert "MSRB" in note or "CUSIP" in note
+    assert "OPRA" not in note
+
+
 def test_corporate_adapter_reflects_cusip_resolution_proof():
     from market_intelligence.adapters import IBKRCorporateBondsAdapter
 

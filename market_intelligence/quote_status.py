@@ -253,6 +253,17 @@ def exception_note(row: dict[str, Any]) -> str:
         "NOT_CONFIGURED",
         "CONFIGURATION_REQUIRED",
     }:
+        # Bond cash sources must beat the generic OPRA RIGHTS_PENDING caption.
+        if source == "IBKR_CORPORATE_BONDS":
+            return (
+                "CUSIP/ISIN contract resolution is proven on TWS. Live bond quotes need market-data entitlement; "
+                "PostgreSQL archival is RIGHTS_PENDING. FINRA Query aggregates remain available. Calculator remains available."
+            )
+        if source == "IBKR_MUNICIPAL_BONDS":
+            return (
+                "Municipal cash-bond quotes need an official CUSIP/ISIN (MSRB/EMMA developer key or issuer prospectus). "
+                "Calculator remains available. Persistence is RIGHTS_PENDING."
+            )
         if access == "PROVIDER_SUPPORT_REQUIRED" or policy == "PROVIDER_SUPPORT_REQUIRED" or source == "IBKR_OPTIONS":
             return "PROVIDER_SUPPORT_REQUIRED. Client Portal OPRA L1 is active, but TWS API client 73 still returns 354 / no NBBO on live, frozen, and delayed. Collection is off. Not a platform outage."
         if source == "IBKR_OPTIONS_STORAGE" or access == "RIGHTS_PENDING" or policy == "RIGHTS_PENDING":
@@ -268,10 +279,6 @@ def exception_note(row: dict[str, Any]) -> str:
                 return "CONFIGURATION_REQUIRED. Register a free EIA API key at https://www.eia.gov/opendata/ and set EIA_API_KEY on the writer host. FRED WTI/Henry Hub remain price fallbacks."
             if source == "MSRB_EMMA":
                 return "CONFIGURATION_REQUIRED. Create an MSRB developer account/API key at https://emma.msrb.org/AboutEMMA/Developers. Do not scrape EMMA HTML."
-            if source in {"IBKR_CORPORATE_BONDS", "IBKR_MUNICIPAL_BONDS"}:
-                if source == "IBKR_CORPORATE_BONDS":
-                    return "CUSIP/ISIN contract resolution is proven on TWS. Live bond quotes need market-data entitlement; PostgreSQL archival is RIGHTS_PENDING. FINRA Query aggregates remain available. Calculator remains available."
-                return "Municipal cash-bond quotes need an official CUSIP/ISIN (MSRB/EMMA developer key or issuer prospectus). Calculator remains available. Persistence is RIGHTS_PENDING."
             if source == "SEC_EDGAR":
                 return "CONFIGURATION_REQUIRED. Set SEC_USER_AGENT to 'Org Name contact@example.com'. A contact email cannot be invented."
             return "NOT_CONFIGURED. A user credential or signed agreement is missing. Not a platform outage."
