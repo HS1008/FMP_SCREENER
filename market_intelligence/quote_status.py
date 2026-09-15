@@ -264,12 +264,28 @@ def exception_note(row: dict[str, Any]) -> str:
         if access == "ENTITLEMENT_REQUIRED" or policy in {"AWAITING_RIGHTS_ACK"}:
             return "RIGHTS_PENDING. Cboe website Terms require written consent before storing delayed-quotes JSON. MI_OPENBB_OPTIONS_RIGHTS_ACK is unset. Not a platform outage."
         if access in {"NOT_CONFIGURED", "CONFIGURATION_REQUIRED"} or policy in {"NOT_CONFIGURED", "CONFIGURATION_REQUIRED"}:
-            return "NOT_CONFIGURED. Credentials or a scheduled ingest are absent. Not a platform outage."
+            if source == "EIA_ENERGY":
+                return "CONFIGURATION_REQUIRED. Register a free EIA API key at https://www.eia.gov/opendata/ and set EIA_API_KEY on the writer host. FRED WTI/Henry Hub remain price fallbacks."
+            if source == "MSRB_EMMA":
+                return "CONFIGURATION_REQUIRED. Create an MSRB developer account/API key at https://emma.msrb.org/AboutEMMA/Developers. Do not scrape EMMA HTML."
+            if source in {"IBKR_CORPORATE_BONDS", "IBKR_MUNICIPAL_BONDS"}:
+                return "TWS cash-bond matching returns name-only rows without conId/CUSIP. Persistence is off until an identifier and storage rights are confirmed. The calculator remains available."
+            if source == "SEC_EDGAR":
+                return "CONFIGURATION_REQUIRED. Set SEC_USER_AGENT to 'Org Name contact@example.com'. A contact email cannot be invented."
+            return "NOT_CONFIGURED. A user credential or signed agreement is missing. Not a platform outage."
         return "DISABLED by policy. Recurring collection is off. Not a platform outage."
     if source == "IBKR_MARKET_DATA" or "IBKR" in source:
         return "Windows collector / TWS path. CONNECTED is not proof of fresh quotes; FRED and FINRA do not depend on this laptop."
     if transport in {"FAILED", "METADATA_REJECTED"} and "403" in error:
         return "Last retrieval was rejected by the provider (entitlement or authorization). Stored values were not overwritten."
+    if freshness == "CURRENT_TO_SOURCE":
+        return "Collector is current to the provider. The observation is old because of expected publication lag, not a missed ingest."
+    if freshness == "STALE_UPSTREAM":
+        return "Provider has not published a newer observation. This is not an ingestion failure."
+    if freshness == "STALE_INGESTION":
+        return "Upstream has a newer observation than PostgreSQL. Ingestion is behind."
+    if freshness == "ON_DEMAND":
+        return "On-demand source. No scheduled ingest is required when last-known-good or issuer lookup is available."
     if freshness == "STALE":
         cadence_bit = " ({0} cadence)".format(cadence) if cadence else ""
         return "Latest observation is older than the configured freshness tolerance{0}. Thresholds were not loosened.".format(cadence_bit)

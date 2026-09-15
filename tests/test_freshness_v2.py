@@ -5,11 +5,13 @@ from datetime import date, datetime, time
 from market_intelligence.calendars import CAL_NYSE, CAL_US_TREASURY, is_session, observed_weekday
 from market_intelligence.freshness import (
     AWAITING_RELEASE,
+    CURRENT_TO_SOURCE,
     INGESTION_OVERDUE,
     INVALID_FUTURE,
     LATEST_AVAILABLE,
     MISSING,
     STALE,
+    STALE_INGESTION,
     assess_freshness,
     is_business_day,
 )
@@ -63,3 +65,49 @@ def test_fetch_success_does_not_change_observation_date():
     again = assess_freshness(date(2026, 9, 9), "D", date(2026, 9, 10), series_id="DGS10", transport_status="OK")
     assert first.expected_latest == again.expected_latest
     assert again.transport_status == "OK"
+
+
+def test_saturday_claims_are_current_on_monday_before_thursday_release():
+    from market_intelligence.calendars import NY_TZ
+
+    monday = datetime(2026, 9, 14, 21, 0, tzinfo=NY_TZ)
+    result = assess_freshness(date(2026, 9, 5), "W", now=monday, series_id="ICSA", transport_status="OK")
+    assert result.status == LATEST_AVAILABLE
+    assert result.expected_latest == date(2026, 9, 5)
+
+
+def test_finra_t_plus_one_monday_evening_is_current_to_friday():
+    from market_intelligence.calendars import NY_TZ
+
+    monday = datetime(2026, 9, 14, 21, 0, tzinfo=NY_TZ)
+    result = assess_freshness(date(2026, 9, 11), "D", now=monday, source_id="FINRA_QUERY", transport_status="OK")
+    assert result.status == LATEST_AVAILABLE
+    assert result.expected_latest == date(2026, 9, 11)
+
+
+def test_recent_success_marks_publication_lag_not_ingestion_failure():
+    from market_intelligence.calendars import NY_TZ
+
+    clock = datetime(2026, 9, 14, 21, 0, tzinfo=NY_TZ)
+    success = datetime(2026, 9, 14, 18, 30, tzinfo=NY_TZ)
+    result = assess_freshness(
+        date(2026, 7, 1),
+        "M",
+        now=clock,
+        series_id="M2SL",
+        transport_status="OK",
+        last_success_at=success,
+    )
+    assert result.status in {LATEST_AVAILABLE, CURRENT_TO_SOURCE}
+
+
+def test_db_behind_upstream_is_stale_ingestion():
+    result = assess_freshness(
+        date(2026, 9, 11),
+        "D",
+        date(2026, 9, 14),
+        source_id="EQUITY_EOD",
+        transport_status="OK",
+        upstream_latest=date(2026, 9, 14),
+    )
+    assert result.status == STALE_INGESTION

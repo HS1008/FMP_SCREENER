@@ -33,8 +33,8 @@ state, no guessed data), **PRESERVED** (sealed research evidence).
 | IBKR municipal / corporate quotes | not configured | TWS discovery/quotes if later entitled | UNAVAILABLE | — | `INTERNAL_ONLY` | FINRA Query aggregates for corporates | Do not enable from this PR |
 | Tax-aware muni vs Treasury vs corporate calculator | n/a (session-local) | `market_intelligence.bond_tax` + Fixed Income page | Fixture | n/a | estimates only; not advice | none | Live CUSIP prefill blocked until a muni source exists |
 | Bond ladder builder | n/a (analytical) | `market_intelligence.bond_ladder` | Fixture | n/a | analytical only; no orders | none | Real CUSIP inventory |
-| CFTC COT positioning | not ingested | `CftcCotAdapter` | UNAVAILABLE | weekly if added | public COT | none | Schedule a public ingest later |
-| EIA energy statistics (MI) | not ingested | `EiaEnergyAdapter`; FRED WTI/HH/copper are the current levels | FRED commodities in catalog | EIA publication / FRED lag | public | Power Producers local cache | Do not treat missing EIA_API_KEY as FAILED |
+| CFTC COT positioning | public SODA ingest | `CftcCotAdapter` + `jobs/market_intelligence_refresh.py --cftc` | AVAILABLE | weekly Friday for Tuesday as-of | public, no key | none | Included in `--all-configured` |
+| EIA energy statistics (MI) | EIA v2 weekly stocks/storage when keyed | `EiaEnergyAdapter` + `--eia`; FRED WTI/HH/copper remain prices | CONFIGURATION_REQUIRED without `EIA_API_KEY` | EIA publication / FRED lag | public | Power Producers local cache; FRED prices | Human signup at https://www.eia.gov/opendata/ |
 | Stage 1 / CSFML / final holdout | Sealed research artifacts | Sealed | PRESERVED | — | never exported | — | Human research gates |
 
 ## Operating mode

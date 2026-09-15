@@ -261,15 +261,15 @@ def test_delivery_facts_recorded_in_market_intelligence_tables(mi_db, tmp_path):
     pull_report = json.loads(_blocked_pull_report(tmp_path).read_text())
     report = dv.build_report(event="schedule", target=TLT.parent, repo_root=ROOT, remote=pull_report, remote_config={"repo": "hs1008/quant-strategies", "ref": "", "path": "research/platform_smokes"})
     result = dv.record_to_postgres(mi_db, report)
-    assert result["transport_status"] == "FAILED"
+    assert result["transport_status"] == "SKIPPED"
     with mi_db.connect() as conn:
         health = conn.execute(text("SELECT source_id, enabled, access_status, transport_status, freshness_status, latest_observation_date, last_error_redacted FROM mi_v_source_health WHERE source_id=:s"), {"s": dv.SOURCE_ID}).mappings().one()
         run = conn.execute(text("SELECT status, details_json FROM mi_ingestion_runs WHERE source_id=:s"), {"s": dv.SOURCE_ID}).mappings().one()
-    assert health["access_status"] == "SOURCE_REF_NOT_CONFIGURED" and health["transport_status"] == "FAILED"
-    assert health["freshness_status"] == "UNKNOWN"  # ON_DEMAND cadence: no freshness claim from a fallback
+    assert health["access_status"] == "ON_DEMAND" and health["transport_status"] == "SKIPPED"
+    assert health["freshness_status"] in {"UNKNOWN", "ON_DEMAND"}
     assert health["latest_observation_date"] is not None  # newest local artifact commit date, as provenance
-    assert "downstream LAST_KNOWN_GOOD" in health["last_error_redacted"]
-    assert run["status"] == "FAILED" and run["details_json"]["claims"]["new_remote_artifact_delivered"] is False
+    assert health["last_error_redacted"] in (None, "")
+    assert run["status"] == "SKIPPED" and run["details_json"]["claims"]["new_remote_artifact_delivered"] is False
     assert run["details_json"]["upstream_delivery_status"] == "BLOCKED"
     # A later successful remote pull records OK without erasing the earlier failure row.
     ok = dv.build_report(event="schedule", target=tmp_path / "qc_research" / "platform_artifacts" / "incoming", repo_root=ROOT, remote={"blocked": False, "pulled": 1, "reason": "Pulled"}, remote_config={"repo": "r", "ref": "deadbeef", "path": "p"})

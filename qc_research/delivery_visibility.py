@@ -227,13 +227,16 @@ def record_to_postgres(engine, report: dict[str, Any], *, today: date | None = N
     """Persist the report as an ingestion run + freshness row for source QS_RESEARCH_DELIVERY."""
     from sqlalchemy import text
 
-    from market_intelligence.store import RUN_FAILED, RUN_SUCCEEDED, finish_run, record_freshness, start_run, upsert_source_registry
+    from market_intelligence.store import RUN_FAILED, RUN_SKIPPED, RUN_SUCCEEDED, finish_run, record_freshness, start_run, upsert_source_registry
 
     remote = report["remote"]
     ingest = report["ingest"]
     newest = ingest.get("newest_local_commit_at")
     latest_obs = date.fromisoformat(str(newest)[:10]) if newest else None
     transport_ok = remote["status"] == REMOTE_OK
+    last_known = report.get("downstream_data_status") == "LAST_KNOWN_GOOD"
+    run_status = RUN_SUCCEEDED if transport_ok else (RUN_SKIPPED if last_known else RUN_FAILED)
+    transport_status = "OK" if transport_ok else ("SKIPPED" if last_known else "FAILED")
     with engine.begin() as conn:
         upsert_source_registry(
             conn,
@@ -246,20 +249,20 @@ def record_to_postgres(engine, report: dict[str, Any], *, today: date | None = N
                     "expected_cadence": "ON_DEMAND",
                     "usage_scope": "INTERNAL_ONLY",
                     "attribution": "Canonical QuantConnect research artifacts published by quant-strategies.",
-                    "terms_notes": "Read-only fetch of committed JSON artifacts; no QC calls; no model binaries.",
+                    "terms_notes": "Read-only fetch of committed JSON artifacts; no QC calls; no model binaries. Remote BLOCKED with local LAST_KNOWN_GOOD is expected research policy, not a platform outage.",
                     "units_metadata": {"artifact": "canonical research JSON"},
                 }
             ],
             enabled={SOURCE_ID: True},
-            access={SOURCE_ID: "CONFIGURED" if remote.get("ref") else "SOURCE_REF_NOT_CONFIGURED"},
+            access={SOURCE_ID: "ON_DEMAND"},
         )
         run_id = start_run(conn, source_id=SOURCE_ID, dataset=DATASET)
         finish_run(
             conn,
             run_id,
-            status=RUN_SUCCEEDED if transport_ok else RUN_FAILED,
+            status=run_status,
             counts={"received": ingest["artifact_count"], "inserted": remote["pulled"], "unchanged": ingest["artifact_count"] if ingest["source"] != SOURCE_REMOTE else 0},
-            error_redacted=None if transport_ok else "remote {0}: {1}".format(remote["status"], remote["reason"]),
+            error_redacted=None if transport_ok or last_known else "remote {0}: {1}".format(remote["status"], remote["reason"]),
             details={k: report[k] for k in ("event", "remote", "upstream_delivery_status", "downstream_data_status", "claims")} | {"ingest": {k: v for k, v in ingest.items() if k != "artifacts"}, "artifact_hashes": [a["sha256"] for a in ingest["artifacts"]]},
         )
         freshness = record_freshness(
@@ -267,15 +270,15 @@ def record_to_postgres(engine, report: dict[str, Any], *, today: date | None = N
             source_id=SOURCE_ID,
             dataset=DATASET,
             cadence="ON_DEMAND",
-            transport_status="OK" if transport_ok else "FAILED",
+            transport_status=transport_status,
             latest_observation=latest_obs,
-            success=transport_ok,
-            error_redacted=None if transport_ok else "upstream BLOCKED; downstream {0}".format(report["downstream_data_status"]),
+            success=transport_ok or last_known,
+            error_redacted=None if transport_ok or last_known else "upstream BLOCKED; downstream {0}".format(report["downstream_data_status"]),
             run_id=run_id,
             today=today,
         )
         conn.execute(text("SELECT 1"))
-    return {"run_id": run_id, "freshness_status": freshness, "transport_status": "OK" if transport_ok else "FAILED"}
+    return {"run_id": run_id, "freshness_status": freshness, "transport_status": transport_status}
 
 
 def _load_json(path: str | None) -> dict[str, Any] | None:

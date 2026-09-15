@@ -157,6 +157,18 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "reason": openbb_probe.vix.reason,
             }
         )
+    if getattr(args, "cftc", False) or want_all:
+        steps.append({"step": "cftc", "source_id": "CFTC_COT", "configured": True, "action": "ingest"})
+    eia_configured = bool(str(env.get("EIA_API_KEY") or "").strip())
+    if getattr(args, "eia", False) or want_all:
+        steps.append(
+            {
+                "step": "eia",
+                "source_id": "EIA_ENERGY",
+                "configured": eia_configured,
+                "action": ("ingest" if eia_configured else "skip_unconfigured") if (want_all or eia_configured) else "fail_unconfigured",
+            }
+        )
     if args.build_analytics or want_all:
         steps.append({"step": "build_analytics", "action": "compute"})
     if args.build_morning or want_all:
@@ -189,6 +201,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--equity", action="store_true", help="Ingest independent equity/ETF daily bars")
     parser.add_argument("--options", action="store_true", help="Ingest OpenBB/Cboe delayed options chains (fails if not configured)")
     parser.add_argument("--vix", action="store_true", help="Ingest OpenBB/Cboe VX_EOD curve (fails if not configured)")
+    parser.add_argument("--cftc", action="store_true", help="Ingest public CFTC Commitments of Traders")
+    parser.add_argument("--eia", action="store_true", help="Ingest EIA weekly energy statistics (requires EIA_API_KEY)")
     parser.add_argument("--build-analytics", action="store_true", help="Recompute versioned analytics")
     parser.add_argument("--build-morning", action="store_true", help="Build and publish a morning context snapshot")
     parser.add_argument("--all-configured", action="store_true", help="Run every configured step; disabled sources are explicit skips")
@@ -208,8 +222,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.options, args.vix, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--options/--vix/--build-analytics/--build-morning/--all-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.options, args.vix, args.cftc, args.eia, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--options/--vix/--cftc/--eia/--build-analytics/--build-morning/--all-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -298,8 +312,12 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             continue  # Windows collector owns this row; FRED refresh must not clobber it
         if source_id in {FINRA_QUERY_SOURCE_ID, FINRA_TRACE_SOURCE_ID}:
             continue
-        if source_id in {OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID}:
+        if source_id in {OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID, "CFTC_COT", "EIA_ENERGY"}:
             enabled[source_id] = bool(probe.enabled)
+            access[source_id] = probe.access_status
+            continue
+        if source_id == "SEC_EDGAR":
+            enabled[source_id] = False
             access[source_id] = probe.access_status
             continue
         enabled[source_id] = False
@@ -381,6 +399,20 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 from market_intelligence.openbb_provider.ingest import ingest_openbb
 
                 report = ingest_openbb(engine, parent_run_id=parent_run_id, today=as_of, env=env, include_options=False, include_vix=True)
+                status["results"][name] = report.as_dict()
+                if report.failed:
+                    failures += 1
+            elif name == "cftc":
+                from market_intelligence.ingest_cftc import ingest_cftc
+
+                report = ingest_cftc(engine, parent_run_id=parent_run_id, today=as_of)
+                status["results"][name] = report.as_dict()
+                if report.failed:
+                    failures += 1
+            elif name == "eia":
+                from market_intelligence.ingest_eia import ingest_eia
+
+                report = ingest_eia(engine, env=env, parent_run_id=parent_run_id, today=as_of)
                 status["results"][name] = report.as_dict()
                 if report.failed:
                     failures += 1

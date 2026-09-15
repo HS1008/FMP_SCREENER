@@ -24,15 +24,15 @@ def surface_status(row: Mapping[str, Any] | None) -> str:
     quote = str(row.get("quote_status") or row.get("observed_state") or "").upper()
     if transport in {"FAILED", "METADATA_REJECTED"} or freshness == "BLOCKED":
         return BLOCKED
-    if freshness == "STALE" or quote in {"FROZEN", "OFFLINE"}:
+    if freshness in {"STALE", "STALE_INGESTION"} or quote in {"FROZEN", "OFFLINE"}:
         return STALE
     if quote in {"DELAYED", "OFFLINE_CACHED"} or transport == "PARTIAL":
         return DELAYED
-    if freshness in {"INGESTION_OVERDUE", "INVALID_FUTURE"}:
+    if freshness in {"INGESTION_OVERDUE", "INVALID_FUTURE", "STALE_UPSTREAM"}:
         return DELAYED
     if freshness in {"MISSING", "TRANSPORT_FAILURE"}:
         return UNAVAILABLE if freshness == "MISSING" else BLOCKED
-    if freshness in {"FRESH", "OK", "CURRENT", "LATEST_AVAILABLE", "AWAITING_RELEASE"} or transport == "OK":
+    if freshness in {"FRESH", "OK", "CURRENT", "LATEST_AVAILABLE", "AWAITING_RELEASE", "CURRENT_TO_SOURCE", "ON_DEMAND"} or transport == "OK":
         return CURRENT
     if transport in {"CONFIGURATION_REQUIRED", "NEVER_ATTEMPTED"} or freshness in {"UNKNOWN", ""}:
         if not row.get("latest_observation_date"):

@@ -23,6 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("stop", help="Stop the collector task and any tracked process")
     sub.add_parser("status", help="Show task, lock, and recent log state")
     sub.add_parser("install", help="Install/update the current-user Windows logon task")
+    sub.add_parser("install-eod", help="Install/update the weekday 16:20 ET IBKR EOD fetch task")
     sub.add_parser("uninstall", help="Remove the Windows task; PostgreSQL data is preserved")
     provision = sub.add_parser("provision-token", help="Store the ingest token from a local file into Credential Manager (never prints the token)")
     provision.add_argument("--from-file", required=True, help="Path to a local 0600 file containing only the token")
@@ -81,7 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         from ibkr_collector.options_cli import run_fetch_options
 
         return run_fetch_options(args)
-    if args.command in {"start", "stop", "status", "install", "uninstall", "provision-token"}:
+    if args.command in {"start", "stop", "status", "install", "install-eod", "uninstall", "provision-token"}:
         from ibkr_collector.service_windows import dispatch
 
         return dispatch(args.command, from_file=getattr(args, "from_file", None))

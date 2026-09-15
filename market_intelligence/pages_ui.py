@@ -16,6 +16,7 @@ from market_intelligence.bond_ladder import LadderBond, aggregate_ladder, theore
 from market_intelligence.bond_tax import ASSET_CORPORATE, ASSET_MUNI, ASSET_TREASURY, BondTaxInputs, TaxAssumptions, compare_three, muni_treasury_ratio
 from market_intelligence.bonds import interpolate_par_yield
 from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
+from market_intelligence.freshness import is_current_status
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.overview import build_session_changes, build_what_changed
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
@@ -88,14 +89,31 @@ def _transform_text(entry: dict[str, Any] | None) -> str:
     return text
 
 
+def _actionable_health(health: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop FRED DGS/DFII fallbacks when the Treasury primary curve is current."""
+    treasury_ok = any(
+        str(row.get("source_id") or "") == "TREASURY" and is_current_status(row.get("freshness_status"))
+        for row in health
+    )
+    out = []
+    for row in health:
+        dataset = str(row.get("freshness_dataset") or row.get("dataset") or "")
+        if treasury_ok and str(row.get("source_id") or "") == "FRED" and (
+            dataset.startswith("series:DGS") or dataset.startswith("series:DFII")
+        ):
+            continue
+        out.append(row)
+    return out
+
+
 def _worst_freshness(health: list[dict[str, Any]]) -> str | None:
-    return worst_surface_status(health)
+    return worst_surface_status(_actionable_health(health))
 
 
 def _material_warning(health: list[dict[str, Any]], extra: list[str] | None = None) -> str | None:
     notes = list(extra or [])
-    stale = [row for row in health if str(row.get("freshness_status") or "").upper() == "STALE"]
-    failed = [row for row in health if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED"}]
+    stale = [row for row in _actionable_health(health) if str(row.get("freshness_status") or "").upper() in {"STALE", "STALE_INGESTION"}]
+    failed = [row for row in _actionable_health(health) if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED"}]
     if stale:
         notes.append("{0} source(s) are stale relative to their release cadence.".format(len(stale)))
     if failed:
@@ -766,7 +784,7 @@ def render_data_health() -> None:
     runs = load_or_stop("recent_runs", 200)
     ctx = load_or_stop("data_health_context")
     page_header("Data Health", "Actionable exceptions first. Healthy sources are summarized compactly.", fred=False)
-    stale = [row for row in health if str(row.get("freshness_status") or "").upper() == "STALE" and not row.get("retired_optional")]
+    stale = [row for row in health if str(row.get("freshness_status") or "").upper() in {"STALE", "STALE_INGESTION"} and not row.get("retired_optional")]
     failed = [row for row in health if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED", "PARTIAL"} and not row.get("retired_optional")]
     gated = [row for row in health if row.get("retired_optional") or row.get("optional_disabled")]
     if not health:
@@ -801,7 +819,7 @@ def render_data_health() -> None:
         )
     if stale or failed:
         st.subheader("Needs attention")
-        st.caption("Freshness thresholds are unchanged. A legitimate release lag, missing entitlement, or offline laptop collector is named rather than hidden.")
+        st.caption("STALE_INGESTION means our pipeline is behind the provider. CURRENT_TO_SOURCE / publication lag means the provider has not published a newer print.")
         problem = stale + [row for row in failed if row not in stale]
         st.dataframe(
             pd.DataFrame(
@@ -1584,15 +1602,57 @@ def render_commodities() -> None:
                 {"Coverage": "Henry Hub natural gas", "Source": "FRED / EIA (DHHNGSP)", "Notes": "daily dollars per MMBtu"},
                 {"Coverage": "Global copper", "Source": "FRED / IMF (PCOPPUSDM)", "Notes": "monthly USD per metric ton"},
                 {"Coverage": "Gold spot", "Source": "FRED LBMA daily", "Notes": "unavailable — IBA/LBMA series were removed from FRED in 2022; no substitute is invented"},
-                {"Coverage": "EIA inventories / production", "Source": "EIA_ENERGY", "Notes": "NOT_CONFIGURED until a scheduled MI EIA ingest exists"},
-                {"Coverage": "CFTC positioning", "Source": "CFTC_COT", "Notes": "NOT_CONFIGURED — public COT is not ingested"},
+                {"Coverage": "EIA inventories / production", "Source": "EIA_ENERGY", "Notes": "weekly stocks/storage when EIA_API_KEY is set; otherwise signup at https://www.eia.gov/opendata/"},
+                {"Coverage": "CFTC positioning", "Source": "CFTC_COT", "Notes": "public weekly COT watchlist; no API key"},
             ]
         ),
         use_container_width=True,
         hide_index=True,
     )
     _render_commodities_panel(cats, heading="Stored levels")
-    if not blocks:
+    cot = load_or_stop("cftc_context")
+    if cot.get("rows"):
+        st.subheader("CFTC positioning")
+        st.caption(cot.get("attribution") or "CFTC public COT. Futures-only watchlist.")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Market": row.get("market"),
+                        "Report date": row.get("report_date"),
+                        "Open interest": row.get("open_interest"),
+                        "Noncomm long": row.get("noncomm_long"),
+                        "Noncomm short": row.get("noncomm_short"),
+                        "Noncomm net": row.get("noncomm_net"),
+                        "Comm long": row.get("comm_long"),
+                        "Comm short": row.get("comm_short"),
+                    }
+                    for row in cot["rows"]
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    eia = load_or_stop("eia_context")
+    if eia.get("rows"):
+        st.subheader("EIA weekly energy")
+        st.caption(eia.get("attribution") or "EIA Open Data.")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Series": row.get("series_id"),
+                        "Observation": row.get("observation_date"),
+                        "Value": row.get("value"),
+                        "Units": row.get("units") or "—",
+                    }
+                    for row in eia["rows"]
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    if not blocks and not cot.get("rows") and not eia.get("rows"):
         st.info("No commodity observations stored.")
     gate_ids = {"CFTC_COT", "EIA_ENERGY", "FRED"}
     gate_rows = [row for row in health if str(row.get("source_id") or "") in gate_ids]

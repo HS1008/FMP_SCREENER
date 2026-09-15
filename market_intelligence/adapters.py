@@ -27,6 +27,7 @@ ACCESS_AGREEMENT_REQUIRED = "AGREEMENT_REQUIRED"
 ACCESS_PROVIDER_SUPPORT_REQUIRED = "PROVIDER_SUPPORT_REQUIRED"
 ACCESS_RIGHTS_PENDING = "RIGHTS_PENDING"
 ACCESS_TEMPORARILY_UNAVAILABLE = "TEMPORARILY_UNAVAILABLE"
+ACCESS_ON_DEMAND = "ON_DEMAND"
 
 IBKR_SOURCE_ID = "IBKR_MARKET_DATA"
 TRACE_SOURCE_ID = "FINRA_TRACE"
@@ -163,11 +164,11 @@ class EdgarAdapter:
         agent = str(env.get(self.USER_AGENT_ENV, "")).strip()
         enabled_flag = _flag(env, self.ENABLE_FLAG)
         if not agent or "@" not in agent:
-            status, reason, enabled = ACCESS_CONFIGURATION_REQUIRED, "{0} must be set to 'Org Name contact@example.com' per SEC fair-access policy".format(self.USER_AGENT_ENV), False
+            status, reason, enabled = ACCESS_CONFIGURATION_REQUIRED, "{0} must be set to 'Org Name contact@example.com' per SEC fair-access policy. A contact email cannot be invented.".format(self.USER_AGENT_ENV), False
         elif not enabled_flag:
-            status, reason, enabled = ACCESS_DISABLED, "{0} not set; EDGAR reference fetches are opt-in".format(self.ENABLE_FLAG), False
+            status, reason, enabled = ACCESS_ON_DEMAND, "User agent present. EDGAR is on-demand issuer lookup, not a scheduled ingest. Set {0}=1 only for an explicit fetch.".format(self.ENABLE_FLAG), False
         else:
-            status, reason, enabled = ACCESS_CONFIGURED, "user agent present and adapter enabled", True
+            status, reason, enabled = ACCESS_ON_DEMAND, "user agent present and on-demand fetch enabled", True
         return AdapterStatus(self.source_id, status, enabled, reason, (self.USER_AGENT_ENV, self.ENABLE_FLAG), dict(self.CAPABILITIES))
 
     @staticmethod
@@ -290,7 +291,7 @@ class MsrbEmmaAdapter:
                 self.source_id,
                 ACCESS_NOT_CONFIGURED,
                 False,
-                "No MSRB/EMMA credentials. Municipal TRACE-style prints are not assumed. Do not scrape EMMA.",
+                "No free unauthenticated EMMA API. Create an MSRB developer account and API key at https://emma.msrb.org/AboutEMMA/Developers, then set MSRB_API_KEY. Do not scrape EMMA HTML.",
                 self.CREDENTIAL_ENV + (self.ENABLE_FLAG,),
                 {"trades": "not configured", "curves": "not configured"},
             )
@@ -315,9 +316,9 @@ class IBKRMunicipalBondsAdapter:
             self.source_id,
             ACCESS_NOT_CONFIGURED,
             False,
-            "IBKR municipal discovery/quotes are not enabled. No production muni ingest.",
-            (self.ENABLE_FLAG,),
-            {"discovery": "not configured", "quotes": "entitlement dependent"},
+            "TWS reqMatchingSymbols for cash munis does not return a tradeable conId/CUSIP. The Fixed Income calculator stays usable. Persistence stays off until a CUSIP/ISIN and storage rights are confirmed.",
+            (self.ENABLE_FLAG, "CUSIP or ISIN", "IBKR bond market-data entitlement"),
+            {"discovery": "name-only without conId", "quotes": "blocked without identifiable contract", "calculator": "available"},
         )
 
 
@@ -330,9 +331,9 @@ class IBKRCorporateBondsAdapter:
             self.source_id,
             ACCESS_NOT_CONFIGURED,
             False,
-            "IBKR corporate bond quotes are supplementary to FINRA Query aggregates and are not enabled.",
-            (self.ENABLE_FLAG,),
-            {"quotes": "not configured"},
+            "TWS reqMatchingSymbols for cash corporates does not return a tradeable conId/CUSIP. FINRA Query aggregates remain the live corporate activity feed. Persistence stays off until a CUSIP/ISIN and storage rights are confirmed.",
+            (self.ENABLE_FLAG, "CUSIP or ISIN", "IBKR bond market-data entitlement"),
+            {"discovery": "name-only without conId", "quotes": "blocked without identifiable contract", "aggregates": "FINRA Query"},
         )
 
 
@@ -342,11 +343,11 @@ class CftcCotAdapter:
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
         return AdapterStatus(
             self.source_id,
-            ACCESS_NOT_CONFIGURED,
-            False,
-            "CFTC positioning is not ingested. Public COT remains available for a later adapter.",
+            ACCESS_AVAILABLE,
+            True,
+            "Public CFTC SODA COT (6dca-aqww) requires no credential. Weekly as-of Tuesday, typically released Friday.",
             (),
-            {"positioning": "not configured"},
+            {"positioning": "legacy futures-only watchlist"},
         )
 
 
@@ -356,8 +357,8 @@ class EiaEnergyAdapter:
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
         has_key = bool(str(env.get("EIA_API_KEY") or "").strip())
         if not has_key:
-            return AdapterStatus(self.source_id, ACCESS_NOT_CONFIGURED, False, "EIA_API_KEY is absent from Market Intelligence ingest. Power Producers may still use a local EIA cache.", ("EIA_API_KEY",), {"petroleum": "not configured"})
-        return AdapterStatus(self.source_id, ACCESS_DISABLED, False, "EIA key is present but MI energy ingest is not scheduled.", ("EIA_API_KEY",), {"petroleum": "disabled"})
+            return AdapterStatus(self.source_id, ACCESS_NOT_CONFIGURED, False, "EIA_API_KEY is absent. Register a free key at https://www.eia.gov/opendata/ and set EIA_API_KEY on the writer host. FRED WTI/Henry Hub remain price fallbacks.", ("EIA_API_KEY",), {"petroleum": "signup required"})
+        return AdapterStatus(self.source_id, ACCESS_AVAILABLE, True, "EIA v2 key present; weekly petroleum stocks and working-gas storage ingest is enabled.", ("EIA_API_KEY",), {"petroleum": "configured"})
 
 
 ADAPTERS = (
@@ -383,6 +384,7 @@ def probe_all(env: Mapping[str, str]) -> dict[str, AdapterStatus]:
 
 __all__ = [
     "ACCESS_AVAILABLE",
+    "ACCESS_ON_DEMAND",
     "ACCESS_CONFIGURATION_REQUIRED",
     "ACCESS_CONFIGURED",
     "ACCESS_AGREEMENT_REQUIRED",

@@ -30,11 +30,16 @@ LATEST_AVAILABLE = "LATEST_AVAILABLE"
 AWAITING_RELEASE = "AWAITING_RELEASE"
 INGESTION_OVERDUE = "INGESTION_OVERDUE"
 STALE = "STALE"
+CURRENT_TO_SOURCE = "CURRENT_TO_SOURCE"
+STALE_INGESTION = "STALE_INGESTION"
+STALE_UPSTREAM = "STALE_UPSTREAM"
+ON_DEMAND = "ON_DEMAND"
 MISSING = "MISSING"
 INVALID_FUTURE = "INVALID_FUTURE"
 TRANSPORT_FAILURE = "TRANSPORT_FAILURE"
 UNKNOWN = "UNKNOWN"
 NEVER_ATTEMPTED = "NEVER_ATTEMPTED"
+RECENT_SUCCESS_HOURS = 36
 
 # Backward-compatible alias used by older chips/tests. Means latest available only.
 FRESH = LATEST_AVAILABLE
@@ -65,6 +70,7 @@ class FreshnessPolicy:
     stale_sessions: int = 3
     reference_lag_days: int = 0
     same_day_available: bool = False
+    week_ending: str | None = None
     notes: str = ""
 
 
@@ -128,8 +134,17 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
     "INDPRO": _fred_macro_monthly(lag_days=20),
     "RSAFS": _fred_macro_monthly(lag_days=18),
     "GDPC1": _fred_macro_quarterly(),
-    "ICSA": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(8, 30), overdue_sessions=2, stale_sessions=14, notes="Weekly claims, typically Thursday."),
-    "CCSA": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(8, 30), overdue_sessions=2, stale_sessions=14),
+    "ICSA": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(8, 30), overdue_sessions=8, stale_sessions=21, week_ending="SAT", notes="Week-ending Saturday; typically published the following Thursday 8:30 ET."),
+    "CCSA": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(8, 30), overdue_sessions=8, stale_sessions=21, week_ending="SAT", notes="Week-ending Saturday; typically published the following Thursday 8:30 ET."),
+    "WALCL": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(16, 30), overdue_sessions=8, stale_sessions=21, week_ending="WED", notes="H.4.1 Wednesday level; typically published Thursday."),
+    "WTREGEN": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(16, 30), overdue_sessions=8, stale_sessions=21, week_ending="WED", notes="H.4.1 week average ending Wednesday."),
+    "WRESBAL": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(16, 30), overdue_sessions=8, stale_sessions=21, week_ending="WED", notes="H.4.1 week average ending Wednesday."),
+    "M2SL": _fred_macro_monthly(lag_days=32),
+    **{sid: _daily_treasury() for sid in ("T5YIE", "T10YIE", "T5YIFR", "RRPONTSYD")},
+    **{sid: FreshnessPolicy(calendar=CAL_US_TREASURY, cadence="D", typical_release=time(16, 0), overdue_sessions=2, stale_sessions=6, same_day_available=True, notes="ICE BofA OAS via FRED; often lags the cash session.") for sid in (
+        "BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLC0A1CAAA", "BAMLC0A2CAA", "BAMLC0A3CA", "BAMLC0A4CBBB",
+        "BAMLH0A1HYBB", "BAMLH0A2HYB", "BAMLH0A3HYC",
+    )},
     "DCOILWTICO": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="D", overdue_sessions=2, stale_sessions=6, notes="EIA WTI spot via FRED. Weekends and holidays are missing, not zero."),
     "DHHNGSP": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="D", overdue_sessions=2, stale_sessions=6, notes="EIA Henry Hub spot via FRED. Weekends and holidays are missing, not zero."),
     "PCOPPUSDM": _fred_macro_monthly(lag_days=25),
@@ -138,6 +153,7 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
 SOURCE_DEFAULT_CALENDAR = {
     "TREASURY": CAL_US_TREASURY,
     "FRED": CAL_US_TREASURY,
+    "FINRA_QUERY": CAL_NYSE,
     "EQUITY_EOD": CAL_NYSE,
     "FMP_LEGACY": CAL_NYSE,
     "YAHOO": CAL_NYSE,
@@ -163,16 +179,37 @@ def policy_for(*, series_id: str | None = None, source_id: str | None = None, ca
         if freq in {"D", "INTRADAY"}:
             # Equity daily bars: expected observation is the last completed NYSE session.
             if cal == CAL_NYSE:
+                same_day = source_id != "FINRA_QUERY"
                 return FreshnessPolicy(
                     calendar=cal,
                     cadence=freq,
-                    typical_release=time(16, 0),
+                    typical_release=time(18, 0) if source_id == "FINRA_QUERY" else time(16, 0),
                     overdue_sessions=1,
                     stale_sessions=3,
-                    same_day_available=True,
-                    notes="US equity/ETF last completed session.",
+                    same_day_available=same_day,
+                    notes="FINRA Query aggregates are T+1." if source_id == "FINRA_QUERY" else "US equity/ETF last completed session.",
                 )
             return FreshnessPolicy(calendar=cal, cadence=freq, overdue_sessions=1, stale_sessions=3)
+        if freq == "W" and source_id == "CFTC_COT":
+            return FreshnessPolicy(
+                calendar=CAL_US_FEDERAL,
+                cadence="W",
+                typical_release=time(15, 30),
+                overdue_sessions=8,
+                stale_sessions=21,
+                week_ending="TUE",
+                notes="COT as-of Tuesday; typically released Friday 15:30 ET.",
+            )
+        if freq == "W" and source_id == "EIA_ENERGY":
+            return FreshnessPolicy(
+                calendar=CAL_US_FEDERAL,
+                cadence="W",
+                typical_release=time(10, 30),
+                overdue_sessions=8,
+                stale_sessions=21,
+                week_ending="FRI",
+                notes="EIA weekly petroleum/gas publications; lag is typical, not official.",
+            )
     return None
 
 
@@ -230,7 +267,7 @@ def expected_latest_published(
             return today
         return previous_session(today, policy.calendar)
     if policy.cadence == "W":
-        return today - timedelta(days=min(today.weekday(), 6))
+        return _expected_week_ending(policy=policy, local=local)
     if policy.cadence == "M":
         # Reference month M is typically released `lag` days into month M+1.
         # Walk back until that release date is on or before today.
@@ -253,6 +290,28 @@ def expected_latest_published(
     return previous_session(today, policy.calendar)
 
 
+def _expected_week_ending(*, policy: FreshnessPolicy, local: datetime) -> date:
+    """Week-ending observation date whose typical release has already occurred."""
+    today = local.date()
+    ending = (policy.week_ending or "MON").upper()
+    weekday = {"MON": 0, "TUE": 1, "WED": 2, "THU": 3, "FRI": 4, "SAT": 5, "SUN": 6}.get(ending, 0)
+    offset = (today.weekday() - weekday) % 7
+    period_end = today - timedelta(days=offset)
+    release = policy.typical_release or time(8, 30)
+    if ending == "SAT":
+        release_day = period_end + timedelta(days=5)
+    elif ending == "WED":
+        release_day = period_end + timedelta(days=1)
+    elif ending == "TUE":
+        release_day = period_end + timedelta(days=3)
+    else:
+        release_day = period_end
+    release_at = datetime.combine(release_day, release, tzinfo=NY_TZ)
+    if local < release_at:
+        period_end = period_end - timedelta(days=7)
+    return period_end
+
+
 def assess_freshness(
     latest_observation: date | None,
     cadence: str | None = None,
@@ -264,6 +323,8 @@ def assess_freshness(
     release_time: datetime | None = None,
     reference_period: str | None = None,
     transport_status: str | None = None,
+    last_success_at: datetime | None = None,
+    upstream_latest: date | None = None,
 ) -> FreshnessAssessment:
     transport = (transport_status or "").upper() or None
     clock = now
@@ -346,6 +407,15 @@ def assess_freshness(
     if transport in {"FAILED", "TRANSPORT_FAILED"} and status != LATEST_AVAILABLE:
         # Keep observation freshness; callers also see transport separately.
         pass
+    status = _classify_with_upstream(
+        status,
+        latest_observation=latest_observation,
+        expected=expected,
+        upstream_latest=upstream_latest,
+        last_success_at=last_success_at,
+        clock=clock,
+        transport=transport,
+    )
     return FreshnessAssessment(
         status,
         policy.overdue_sessions,
@@ -358,14 +428,57 @@ def assess_freshness(
     )
 
 
+def _recent_success(last_success_at: datetime | None, clock: datetime) -> bool:
+    if last_success_at is None:
+        return False
+    success = last_success_at if last_success_at.tzinfo else last_success_at.replace(tzinfo=NY_TZ)
+    now = clock if clock.tzinfo else clock.replace(tzinfo=NY_TZ)
+    return (now - success).total_seconds() <= RECENT_SUCCESS_HOURS * 3600
+
+
+def _classify_with_upstream(
+    status: str,
+    *,
+    latest_observation: date,
+    expected: date | None,
+    upstream_latest: date | None,
+    last_success_at: datetime | None,
+    clock: datetime,
+    transport: str | None,
+) -> str:
+    """Separate publication lag from a failed ingest when the collector is current to the provider."""
+    provider_latest = upstream_latest
+    if provider_latest is None and transport == "OK" and _recent_success(last_success_at, clock):
+        provider_latest = latest_observation
+    if provider_latest is None:
+        if status in {STALE, INGESTION_OVERDUE} and transport == "OK" and _recent_success(last_success_at, clock):
+            return CURRENT_TO_SOURCE
+        if status == STALE and last_success_at is not None and not _recent_success(last_success_at, clock):
+            return STALE_INGESTION
+        return status
+    if latest_observation < provider_latest:
+        return STALE_INGESTION
+    if latest_observation == provider_latest:
+        if status in {LATEST_AVAILABLE, AWAITING_RELEASE}:
+            return status
+        if expected is not None and latest_observation < expected:
+            return STALE_UPSTREAM if not _recent_success(last_success_at, clock) and transport != "OK" else CURRENT_TO_SOURCE
+        return CURRENT_TO_SOURCE if status in {STALE, INGESTION_OVERDUE} else status
+    return status
+
+
 def is_current_status(status: str | None) -> bool:
-    return str(status or "").upper() in {LATEST_AVAILABLE, FRESH, "CURRENT", "OK", AWAITING_RELEASE}
+    return str(status or "").upper() in {LATEST_AVAILABLE, FRESH, "CURRENT", "OK", AWAITING_RELEASE, CURRENT_TO_SOURCE, ON_DEMAND}
 
 
 __all__ = [
     "AWAITING_RELEASE",
     "CADENCE_TOLERANCE",
+    "CURRENT_TO_SOURCE",
     "FRESH",
+    "ON_DEMAND",
+    "STALE_INGESTION",
+    "STALE_UPSTREAM",
     "FRESHNESS_POLICY_VERSION",
     "FreshnessAssessment",
     "FreshnessPolicy",

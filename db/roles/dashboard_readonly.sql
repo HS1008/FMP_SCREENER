@@ -105,7 +105,9 @@ BEGIN
         'mi_v_options_latest',
         'mi_v_options_contracts_latest',
         'mi_v_vix_curve_latest',
-        'mi_v_openbb_last_attempt'
+        'mi_v_openbb_last_attempt',
+        'mi_v_cftc_cot_current',
+        'mi_v_eia_latest'
     ]
     LOOP
         IF EXISTS (
