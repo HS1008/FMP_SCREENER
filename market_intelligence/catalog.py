@@ -465,7 +465,7 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "enabled": False,
         "access_status": "NOT_CONFIGURED",
         "attribution": "Municipal transaction reporting is not FINRA TRACE.",
-        "terms_notes": "No EMMA credentials. Do not scrape. Adapter exists; ingest stays off.",
+        "terms_notes": "No free unauthenticated EMMA API. Human must create an MSRB developer account/API key at https://emma.msrb.org/AboutEMMA/Developers. Do not scrape HTML.",
         "units_metadata": {},
     },
     {
@@ -478,7 +478,7 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "enabled": False,
         "access_status": "NOT_CONFIGURED",
         "attribution": "IBKR municipal discovery/quotes if later entitled.",
-        "terms_notes": "Not enabled. INTERNAL_ONLY.",
+        "terms_notes": "TWS matching returns name-only rows without conId/CUSIP. Calculator remains available. Persistence off until CUSIP/ISIN and storage rights are confirmed. INTERNAL_ONLY.",
         "units_metadata": {},
     },
     {
@@ -491,7 +491,7 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "enabled": False,
         "access_status": "NOT_CONFIGURED",
         "attribution": "Supplementary to FINRA Query aggregates.",
-        "terms_notes": "Not enabled. TRACE individual prints remain a separate FINRA product.",
+        "terms_notes": "TWS matching returns name-only rows without conId/CUSIP. FINRA Query aggregates remain the live corporate activity feed. Persistence off until CUSIP/ISIN and storage rights are confirmed. INTERNAL_ONLY.",
         "units_metadata": {},
     },
     {
@@ -501,10 +501,10 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "source_url": "https://www.cftc.gov/MarketReports/CommitmentsofTraders/index.htm",
         "expected_cadence": "W",
         "usage_scope": EXPORT_ATTRIBUTION_REQUIRED,
-        "enabled": False,
-        "access_status": "NOT_CONFIGURED",
-        "attribution": "CFTC public Commitments of Traders. Not ingested.",
-        "terms_notes": "Public reports exist; no MI ingest job is scheduled.",
+        "enabled": True,
+        "access_status": "AVAILABLE",
+        "attribution": "CFTC Public Reporting Environment, Legacy Futures-Only Commitments of Traders.",
+        "terms_notes": "Unauthenticated SODA resource 6dca-aqww. Weekly as-of Tuesday, typically released Friday. No API key.",
         "units_metadata": {},
     },
     {
@@ -516,8 +516,8 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "usage_scope": EXPORT_ATTRIBUTION_REQUIRED,
         "enabled": False,
         "access_status": "NOT_CONFIGURED",
-        "attribution": "EIA public energy statistics. Power Producers may use a separate local cache.",
-        "terms_notes": "MI energy ingest is not scheduled. Missing EIA_API_KEY is NOT_CONFIGURED, not FAILED.",
+        "attribution": "U.S. Energy Information Administration Open Data (v2).",
+        "terms_notes": "Free API key required: https://www.eia.gov/opendata/. Missing EIA_API_KEY is CONFIGURATION_REQUIRED, not FAILED. FRED WTI/Henry Hub remain price fallbacks.",
         "units_metadata": {},
     },
 )

@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from xml.sax.saxutils import escape
 
-from ibkr_collector import TASK_NAME
+from ibkr_collector import EOD_TASK_NAME, TASK_NAME
 from ibkr_collector.config import default_data_dir, load_config, repo_root, write_example_config
 from ibkr_collector.logging_setup import setup_logging
 from ibkr_collector.secrets_win import read_ingest_token, write_ingest_token
@@ -19,6 +19,71 @@ SCHTASKS = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32",
 
 def _venv_pythonw() -> Path:
     return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "FMP_SCREENER" / "ibkr-collector" / "venv" / "Scripts" / "pythonw.exe"
+
+
+def _venv_python() -> Path:
+    return Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local"))) / "FMP_SCREENER" / "ibkr-collector" / "venv" / "Scripts" / "python.exe"
+
+
+def _eod_task_xml(python_exe: Path, repo: Path, user: str) -> str:
+    return """<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Description>FMP_SCREENER read-only IBKR EOD daily bars (ADJUSTED_LAST, no orders)</Description>
+    <Author>{user}</Author>
+  </RegistrationInfo>
+  <Triggers>
+    <CalendarTrigger>
+      <StartBoundary>2026-09-14T16:20:00</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByWeek>
+        <DaysOfWeek>
+          <Monday />
+          <Tuesday />
+          <Wednesday />
+          <Thursday />
+          <Friday />
+        </DaysOfWeek>
+        <WeeksInterval>1</WeeksInterval>
+      </ScheduleByWeek>
+    </CalendarTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>{user}</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>true</RunOnlyIfNetworkAvailable>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{comspec}</Command>
+      <Arguments>/c set PYTHONPATH={repo}&amp;&amp; set PYTHONUNBUFFERED=1&amp;&amp; "{python}" -m ibkr_collector fetch-eod --client-id 72</Arguments>
+      <WorkingDirectory>{repo}</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>
+""".format(
+        user=escape(user),
+        python=escape(str(python_exe)),
+        repo=escape(str(repo)),
+        comspec=escape(os.environ.get("ComSpec", r"C:\Windows\System32\cmd.exe")),
+    )
 
 
 def _task_xml(pythonw: Path, repo: Path, user: str) -> str:
@@ -129,6 +194,32 @@ def install() -> int:
     return 0
 
 
+def install_eod() -> int:
+    if os.name != "nt":
+        sys.stderr.write("Windows Task Scheduler install is only supported on Windows.\n")
+        return 3
+    cfg = load_config()
+    write_example_config(cfg.config_path)
+    setup_logging(cfg.log_dir)
+    python_exe = _venv_python()
+    if not python_exe.is_file():
+        sys.stderr.write("Collector venv python missing at {0}\n".format(python_exe))
+        return 3
+    if not _ensure_token():
+        return 3
+    user = getpass.getuser()
+    xml_path = default_data_dir() / "eod_task.xml"
+    xml_path.parent.mkdir(parents=True, exist_ok=True)
+    repo = Path(os.environ.get("MI_IBKR_REPO_ROOT") or repo_root())
+    xml_path.write_text(_eod_task_xml(python_exe, repo, user), encoding="utf-16")
+    created = _run_schtasks(["/Create", "/TN", EOD_TASK_NAME, "/XML", str(xml_path), "/F"])
+    if created.returncode != 0:
+        sys.stderr.write(created.stdout + created.stderr)
+        return created.returncode
+    sys.stdout.write("Installed task {0} (weekdays 16:20 local, current user, StartWhenAvailable).\n".format(EOD_TASK_NAME))
+    return 0
+
+
 def start() -> int:
     if os.name != "nt":
         return 3
@@ -161,6 +252,9 @@ def status() -> int:
     if os.name == "nt":
         result = _run_schtasks(["/Query", "/TN", TASK_NAME, "/V", "/FO", "LIST"])
         sys.stdout.write(result.stdout or result.stderr or "task not installed\n")
+        eod = _run_schtasks(["/Query", "/TN", EOD_TASK_NAME, "/V", "/FO", "LIST"])
+        sys.stdout.write("\n--- EOD ---\n")
+        sys.stdout.write(eod.stdout or eod.stderr or "eod task not installed\n")
         return 0 if result.returncode == 0 else 2
     sys.stdout.write("not Windows; task scheduler N/A\n")
     return 0
@@ -180,6 +274,8 @@ def uninstall() -> int:
 def dispatch(command: str, *, from_file: str | None = None) -> int:
     if command == "install":
         return install()
+    if command == "install-eod":
+        return install_eod()
     if command == "start":
         return start()
     if command == "stop":

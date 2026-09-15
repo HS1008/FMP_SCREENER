@@ -9,6 +9,8 @@ def test_surface_status_mapping():
     assert surface_status({"freshness_status": "LATEST_AVAILABLE", "transport_status": "OK"}) == CURRENT
     assert surface_status({"freshness_status": "INGESTION_OVERDUE", "transport_status": "OK"}) == DELAYED
     assert surface_status({"freshness_status": "STALE", "transport_status": "OK"}) == STALE
+    assert surface_status({"freshness_status": "STALE_INGESTION", "transport_status": "OK"}) == STALE
+    assert surface_status({"freshness_status": "CURRENT_TO_SOURCE", "transport_status": "OK"}) == CURRENT
     assert surface_status({"transport_status": "FAILED"}) == BLOCKED
     assert surface_status({"transport_status": "PARTIAL"}) == DELAYED
     assert surface_status({}) == UNAVAILABLE

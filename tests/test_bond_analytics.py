@@ -382,7 +382,9 @@ def test_adapters_are_disabled_or_configuration_required_and_refuse_to_fetch():
     assert statuses["IBKR_MARKET_DATA"].access_status == adapters.ACCESS_DISABLED
     assert statuses["FINRA_TRACE"].access_status == adapters.ACCESS_DISABLED
     assert statuses["SEC_EDGAR"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
-    assert not any(s.enabled for s in statuses.values())
+    assert statuses["CFTC_COT"].access_status == adapters.ACCESS_AVAILABLE
+    assert statuses["CFTC_COT"].enabled is True
+    assert not any(s.enabled for s in statuses.values() if s.source_id != "CFTC_COT")
     with pytest.raises(adapters.AdapterDisabled):
         adapters.IBKRMarketDataAdapter().fetch_quotes(["TLT"], env={"MI_IBKR_MARKET_DATA_ENABLED": "1"})
     assert not any(name.lower().startswith(("place", "order", "submit")) for name in dir(adapters.IBKRMarketDataAdapter))
@@ -410,7 +412,7 @@ def test_edgar_requires_contact_user_agent_and_opt_in_and_never_calls_when_disab
     edgar = adapters.EdgarAdapter(opener=opener, min_interval_s=0)
     assert edgar.probe({}).access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
     assert edgar.probe({"SEC_USER_AGENT": "NoContactHere"}).access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
-    assert edgar.probe({"SEC_USER_AGENT": "FMP Research ops@example.com"}).access_status == adapters.ACCESS_DISABLED
+    assert edgar.probe({"SEC_USER_AGENT": "FMP Research ops@example.com"}).access_status == adapters.ACCESS_ON_DEMAND
     with pytest.raises(adapters.AdapterDisabled):
         edgar.submissions("1318605", env={"SEC_USER_AGENT": "FMP Research ops@example.com"})
     assert calls == []
@@ -435,7 +437,8 @@ def test_refresh_plan_reports_external_adapter_status_without_db(capsys):
     assert external["SEC_EDGAR"]["access_status"] == "CONFIGURATION_REQUIRED"
     assert external["OPENBB_CBOE_OPTIONS"]["access_status"] == "ENTITLEMENT_REQUIRED"
     assert external["OPENBB_CBOE_VIX"]["access_status"] == "AGREEMENT_REQUIRED"
-    assert not any(v["enabled"] for v in external.values())
+    assert external["CFTC_COT"]["enabled"] is True
+    assert not any(v["enabled"] for sid, v in external.items() if sid != "CFTC_COT")
 
 
 # ---- stored bonds (PostgreSQL) -------------------------------------------------------------------------

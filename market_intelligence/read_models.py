@@ -66,6 +66,12 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
         latest_d = date.fromisoformat(latest) if isinstance(latest, str) else latest
         dataset = str(row.get("freshness_dataset") or row.get("dataset") or "")
         series_id = dataset.split("series:", 1)[1] if dataset.startswith("series:") else None
+        last_success = row.get("last_success_at")
+        if isinstance(last_success, str):
+            try:
+                last_success = datetime.fromisoformat(last_success.replace("Z", "+00:00"))
+            except ValueError:
+                last_success = None
         assessment = assess_freshness(
             latest_d,
             cadence,
@@ -73,6 +79,7 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
             series_id=series_id,
             source_id=row.get("source_id"),
             transport_status=row.get("transport_status"),
+            last_success_at=last_success,
         )
         row["stored_freshness_status"] = row.get("freshness_status")
         access = str(row.get("access_status") or "")
@@ -80,6 +87,9 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
             row["freshness_status"] = row.get("freshness_status") or "UNKNOWN"
             row["retired_optional"] = True
             row["policy_status"] = "RETIRED"
+        elif access in {"ON_DEMAND", "SOURCE_REF_NOT_CONFIGURED"}:
+            row["freshness_status"] = "ON_DEMAND" if latest_d is None or assessment.status in {"UNKNOWN", "MISSING"} else assessment.status
+            row["policy_status"] = "ON_DEMAND"
         elif access in {
             "DISABLED",
             "ENTITLEMENT_REQUIRED",
@@ -97,7 +107,6 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
                 "MSRB_EMMA",
                 "IBKR_MUNICIPAL_BONDS",
                 "IBKR_CORPORATE_BONDS",
-                "CFTC_COT",
                 "EIA_ENERGY",
                 "FINRA_TRACE",
             }
@@ -990,13 +999,41 @@ def options_chain_details(conn, symbol: str, *, limit: int = 80) -> list[dict[st
     )
 
 
+def cftc_context(conn) -> dict[str, Any]:
+    if not _view_exists(conn, "mi_v_cftc_cot_current"):
+        return {"rows": [], "latest_observation_date": None, "status": "UNAVAILABLE"}
+    rows = _rows(conn, "SELECT * FROM mi_v_cftc_cot_current ORDER BY market")
+    dates = [r.get("report_date") for r in rows if r.get("report_date")]
+    latest = max(dates) if dates else None
+    return {
+        "rows": rows,
+        "latest_observation_date": latest.isoformat() if hasattr(latest, "isoformat") else latest,
+        "attribution": "CFTC Public Reporting Environment, Legacy Futures-Only Commitments of Traders.",
+        "status": "OK" if rows else "EMPTY",
+    }
+
+
+def eia_context(conn) -> dict[str, Any]:
+    if not _view_exists(conn, "mi_v_eia_latest"):
+        return {"rows": [], "latest_observation_date": None, "status": "UNAVAILABLE"}
+    rows = _rows(conn, "SELECT * FROM mi_v_eia_latest ORDER BY series_id")
+    dates = [r.get("observation_date") for r in rows if r.get("observation_date")]
+    latest = max(dates) if dates else None
+    return {
+        "rows": rows,
+        "latest_observation_date": latest.isoformat() if hasattr(latest, "isoformat") else latest,
+        "attribution": "U.S. Energy Information Administration.",
+        "status": "OK" if rows else "EMPTY",
+    }
+
+
 def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
     health = source_health(conn, today=today)
     quarantine = _rows(conn, "SELECT * FROM mi_v_macro_quarantine_summary ORDER BY series_id, reason") if _view_exists(conn, "mi_v_macro_quarantine_summary") else []
     finra_quarantine = _rows(conn, "SELECT * FROM mi_v_finra_aggregate_quarantine ORDER BY created_at DESC LIMIT 200") if _view_exists(conn, "mi_v_finra_aggregate_quarantine") else []
     return {
         "sources": health,
-        "stale": [h for h in health if h.get("freshness_status") == "STALE" and not h.get("retired_optional")],
+        "stale": [h for h in health if h.get("freshness_status") in {"STALE", "STALE_INGESTION"} and not h.get("retired_optional")],
         "failed_transport": [
             h
             for h in health
@@ -1048,8 +1085,10 @@ def strategies_context(conn) -> dict[str, Any]:
 __all__ = [
     "SNAPSHOT_AGE_POLICY_VERSION",
     "credit_context",
+    "cftc_context",
     "credit_latest",
     "data_health_context",
+    "eia_context",
     "order_flow_context",
     "snapshot_age",
     "ibkr_collector_status",
