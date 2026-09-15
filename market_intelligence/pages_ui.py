@@ -451,7 +451,7 @@ def _render_overview_cards(
     for index, card in enumerate(cards):
         with cols[index % len(cols)]:
             st.markdown("**{0}**".format(card["title"]))
-            st.metric(card["title"], card["primary"], card.get("primary_delta"))
+            st.metric("Primary", card["primary"], card.get("primary_delta"), label_visibility="collapsed")
             if card.get("support"):
                 st.caption(card["support"])
             if card.get("as_of"):
