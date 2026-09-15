@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import threading
 import time
 from datetime import datetime, timezone
@@ -18,7 +19,7 @@ from typing import Any
 from ibapi.contract import Contract
 
 from ibkr_collector.readonly_client import ReadOnlyTwsClient
-from ibkr_collector.values import classify_error
+from ibkr_collector.values import finite_or_none, market_data_type_label
 
 logger = logging.getLogger("ibkr_bond_id_proof")
 
@@ -62,6 +63,52 @@ def _attempts(cusip: str | None, isin: str | None) -> list[tuple[str, Contract]]
     return out
 
 
+def _sanitize_ticks(ticks: dict[str, Any]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key in ("bid", "ask", "last", "close", "bid_size", "ask_size", "yield"):
+        if key not in ticks:
+            continue
+        out[key] = finite_or_none(ticks.get(key))
+    return out
+
+
+def _classify_quote(ticks: dict[str, Any], md_label: str | None, errors: list[dict[str, Any]]) -> str:
+    entitlement_codes = {354, 10168, 10089, 10197, 162, 10167}
+    entitlement = [
+        e
+        for e in errors
+        if e.get("kind") == "entitlement" or int(e.get("error_code") or 0) in entitlement_codes
+    ]
+    bid = ticks.get("bid")
+    ask = ticks.get("ask")
+    last = ticks.get("last")
+    close = ticks.get("close")
+    if bid is not None and ask is not None:
+        return "LIVE_BID_ASK" if (md_label or "").upper() in {"LIVE", "REALTIME", "REAL_TIME"} else "DELAYED_BID_ASK"
+    if bid is not None or ask is not None:
+        return "ONE_SIDED_QUOTE"
+    if last is not None and close is None:
+        return "LAST_ONLY"
+    if close is not None and bid is None and ask is None and last is None:
+        return "HISTORICAL_CLOSE_ONLY"
+    if entitlement:
+        return "ENTITLEMENT_NO_QUOTE"
+    if (md_label or "").upper() in {"FROZEN", "DELAYED_FROZEN"}:
+        return "FROZEN_NO_QUOTE"
+    return "NO_QUOTE"
+
+
+def _classify_ratings(details: list[dict[str, Any]]) -> tuple[str, Any]:
+    ratings = []
+    for row in details:
+        value = row.get("ratings")
+        if value not in (None, "", []):
+            ratings.append(value)
+    if not ratings:
+        return "RATINGS_ABSENT", None
+    return "RATINGS_PRESENT", ratings[0]
+
+
 def _classify(details: list[dict[str, Any]], ticks: dict[str, Any], errors: list[dict[str, Any]]) -> str:
     entitlement_codes = {354, 10168, 10089, 10197, 162}
     entitlement = [
@@ -78,6 +125,36 @@ def _classify(details: list[dict[str, Any]], ticks: dict[str, Any], errors: list
     if entitlement:
         return "IDENTIFIER_RESOLVED_ENTITLEMENT_REQUIRED"
     return "IDENTIFIER_RESOLVED_NO_QUOTE"
+
+
+def _capability_path() -> Path:
+    local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
+    if local:
+        return Path(local) / "FMP_SCREENER" / "ibkr_collector" / "bond_capability_latest.json"
+    return Path.home() / ".fmp_screener" / "ibkr_collector" / "bond_capability_latest.json"
+
+
+def _write_capability_evidence(report: dict[str, Any]) -> str:
+    import os
+
+    evidence = {
+        "observed_at": report.get("finished_at") or datetime.now(timezone.utc).isoformat(),
+        "label": report.get("label"),
+        "asset_class": report.get("asset_class"),
+        "discovery_classification": report.get("classification"),
+        "quote_classification": report.get("quote_classification"),
+        "ratings_classification": report.get("ratings_classification"),
+        "ratings_sample_present": report.get("ratings_classification") == "RATINGS_PRESENT",
+        "market_data_type": report.get("market_data_type_label"),
+        "con_id": (report.get("contract_details") or [{}])[0].get("con_id") if report.get("contract_details") else None,
+        "resolved_via": report.get("resolved_via"),
+        "storage_rights": "RIGHTS_PENDING",
+        "orders_attempted": False,
+    }
+    path = _capability_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(evidence, indent=2, default=str), encoding="utf-8")
+    return str(path)
 
 
 def run_proof(
@@ -117,12 +194,7 @@ def run_proof(
             report["fatal_error"] = "handshake_timeout"
             return report
         report["handshake_ok"] = True
-        try:
-            client.reqMarketDataType(3)
-            report["requested_market_data_type"] = 3
-        except Exception as exc:  # noqa: BLE001
-            report["requested_market_data_type_error"] = exc.__class__.__name__
-
+        # Market-data type is chosen per quote attempt below (live then delayed).
         resolved_details: list[dict[str, Any]] = []
         for method, contract in _attempts(cusip, isin):
             before_errors = len(client.errors)
@@ -153,24 +225,52 @@ def run_proof(
             resolved.exchange = str(resolved_details[0].get("exchange") or "SMART") or "SMART"
             resolved.currency = "USD"
             resolved.secType = "BOND"
-            quote_req = client.next_req_id()
-            subscribed.append(quote_req)
-            client.ticks.setdefault(quote_req, {})
-            client.reqMktData(quote_req, resolved, "", False, False, [])
-            time.sleep(QUOTE_WAIT_SEC)
-            ticks = dict(client.ticks.get(quote_req, {}))
-            report["market_data_type_code"] = client.market_data_types.get(quote_req)
-            try:
-                client.cancelMktData(quote_req)
-            except Exception:  # noqa: BLE001
-                logger.debug("cancelMktData failed", exc_info=True)
+            for md_type in (1, 3):
+                try:
+                    client.reqMarketDataType(md_type)
+                    report["requested_market_data_type"] = md_type
+                except Exception as exc:  # noqa: BLE001
+                    report["requested_market_data_type_error"] = exc.__class__.__name__
+                quote_req = client.next_req_id()
+                subscribed.append(quote_req)
+                client.ticks.setdefault(quote_req, {})
+                before_errors = len(client.errors)
+                client.reqMktData(quote_req, resolved, "", False, False, [])
+                time.sleep(QUOTE_WAIT_SEC)
+                ticks = dict(client.ticks.get(quote_req, {}))
+                report["market_data_type_code"] = client.market_data_types.get(quote_req)
+                try:
+                    client.cancelMktData(quote_req)
+                except Exception:  # noqa: BLE001
+                    logger.debug("cancelMktData failed", exc_info=True)
+                clean = _sanitize_ticks(ticks)
+                if any(clean.get(k) is not None for k in ("bid", "ask", "last", "close")):
+                    break
+                new_entitlement = [
+                    e
+                    for e in client.errors[before_errors:]
+                    if e.get("kind") == "entitlement" or int(e.get("error_code") or 0) in {354, 10168, 10089, 10197, 2186}
+                ]
+                if not new_entitlement:
+                    break
+                ticks = {}
 
         report["contract_details"] = resolved_details[:3]
-        report["quote_ticks"] = {
-            k: ticks.get(k) for k in ("bid", "ask", "last", "close", "bid_size", "ask_size", "yield")
-        }
+        clean_ticks = _sanitize_ticks(ticks)
+        md_code = report.get("market_data_type_code")
+        md_label = market_data_type_label(int(md_code)) if md_code is not None else None
+        report["market_data_type_label"] = md_label
+        report["quote_ticks"] = clean_ticks
         report["errors"] = list(client.errors)[:40]
-        report["classification"] = _classify(resolved_details, ticks, list(client.errors))
+        report["classification"] = _classify(resolved_details, clean_ticks, list(client.errors))
+        report["quote_classification"] = (
+            _classify_quote(clean_ticks, md_label, list(client.errors)) if resolved_details else "NO_CONTRACT"
+        )
+        ratings_class, ratings_value = _classify_ratings(resolved_details)
+        report["ratings_classification"] = ratings_class
+        report["ratings_value_present"] = ratings_class == "RATINGS_PRESENT"
+        # Do not echo raw rating text into stdout by default; presence only.
+        report["ratings_observed"] = bool(ratings_value)
     except Exception as exc:  # noqa: BLE001
         report["handshake_ok"] = bool(report.get("handshake_ok"))
         report["fatal_error"] = "{0}: {1}".format(exc.__class__.__name__, exc)
@@ -187,6 +287,10 @@ def run_proof(
         except Exception:  # noqa: BLE001
             pass
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            report["capability_evidence_path"] = _write_capability_evidence(report)
+        except Exception as exc:  # noqa: BLE001
+            report["capability_evidence_error"] = exc.__class__.__name__
     return report
 
 
@@ -194,7 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=7496)
-    parser.add_argument("--client-id", type=int, default=73)
+    parser.add_argument("--client-id", type=int, default=74)
     parser.add_argument("--label", required=True)
     parser.add_argument("--asset-class", choices=["corporate", "municipal", "treasury", "other"], required=True)
     parser.add_argument("--cusip", default=None)

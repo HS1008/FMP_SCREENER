@@ -1,11 +1,11 @@
 # DigitalOcean secret provisioning (not activation)
 
 This is a **separate** operator path from merging Market Intelligence or enabling
-the weekday refresh timer. It exists so `FRED_API_KEY` can be placed on the
-existing host without changing production behaviour.
+the weekday refresh timer. It places provider credentials on the writer host
+without changing production behaviour.
 
-Do **not** run a FRED ingest, enable `fmp-mi-refresh.timer`, restart Streamlit,
-or treat this as go-live.
+Do **not** run provider ingest, enable `fmp-mi-refresh.timer`, restart Streamlit,
+or treat credential presence as READY / AVAILABLE.
 
 ## What is already there
 
@@ -15,49 +15,50 @@ Intelligence timers and does not write provider secrets. The host already has
 migrations. The env file, if present, is `/etc/fmp/market_intelligence.env`
 (mode 0600).
 
-## Prepare the key on the host
+GitHub Actions repository secrets may hold `EIA_API_KEY`, `OPENFIGI_API_KEY`,
+and `SEC_USER_AGENT`. Their existence in GitHub does **not** prove they reach the
+ingestion runtime. Transfer them with the workflow below (or the host script).
 
-Write the FRED key to a protected file. Never put it on a command line, in
-`git`, or in a chat transcript.
+## GitHub Actions path (preferred when secrets live only in GitHub)
 
-```bash
-install -d -m 0700 /root/FMP_SCREENER/.secrets
-install -m 0600 /dev/null /root/FMP_SCREENER/.secrets/fred_api_key
-# paste the key into that file with an editor; one line, no quotes
+```text
+Actions → Provision MI provider keys (not activation) → Run workflow
 ```
 
-## Dry run (default)
+Workflow file: `.github/workflows/provision_mi_provider_keys.yml`
 
-From the checkout:
+- Uses pinned SSH trust (`DO_SSH_KEY` + `DO_SSH_KNOWN_HOSTS`)
+- Writes `/root/FMP_SCREENER/.secrets/{eia_api_key,openfigi_api_key,sec_user_agent}`
+- Upserts into `/etc/fmp/market_intelligence.env` via
+  `scripts/provision_digitalocean_mi_secrets.sh`
+- Preserves existing non-placeholder values unless `rotate=true`
+- Refuses empty GitHub values (does not clobber a valid host secret with blank)
+- Never prints secret values; never restarts services; never enables ingest flags
+
+## Host script (when key files are already on the droplet)
 
 ```bash
 scripts/provision_digitalocean_mi_secrets.sh \
-  --fred-key-file /root/FMP_SCREENER/.secrets/fred_api_key
-```
+  --eia-key-file /root/FMP_SCREENER/.secrets/eia_api_key \
+  --openfigi-key-file /root/FMP_SCREENER/.secrets/openfigi_api_key \
+  --sec-ua-file /root/FMP_SCREENER/.secrets/sec_user_agent
 
-Prints the planned edit. Does not write the env file, does not restart anything.
-
-## Apply (still not activation)
-
-```bash
 scripts/provision_digitalocean_mi_secrets.sh --apply \
-  --fred-key-file /root/FMP_SCREENER/.secrets/fred_api_key
+  --eia-key-file /root/FMP_SCREENER/.secrets/eia_api_key \
+  --openfigi-key-file /root/FMP_SCREENER/.secrets/openfigi_api_key \
+  --sec-ua-file /root/FMP_SCREENER/.secrets/sec_user_agent
 ```
 
-- Creates `/etc/fmp/market_intelligence.env` from the example if it is missing
-  (still placeholders for writer DB / API token).
-- Sets `FRED_API_KEY` from the protected file.
-- Leaves every other existing assignment untouched.
-- Does not enable timers, does not run `market_intelligence_refresh`, does not
-  open the API to the network.
-
-Fill writer identity and `AI_CONTEXT_API_TOKEN` by editing the env file later.
-Provision `mi_readonly` only when you are ready for pages/API reads
-(`docs/MARKET_INTELLIGENCE.md`).
+`SEC_USER_AGENT` may contain spaces; the provisioner quotes it safely.
+API keys must remain single tokens without whitespace.
 
 ## Activation remains a later human step
 
-When you decide to go live, follow the operator steps in
-`docs/MARKET_INTELLIGENCE.md` (probe-config, dry-run, `--fred --mode full`,
-analytics backfill, morning snapshot, then timers). Those commands are
-intentionally not invoked here.
+Credential presence is configuration only. Bounded validation examples:
+
+- EIA: `python -m jobs.market_intelligence_refresh --eia --json` on the writer host
+- OpenFIGI: set `MI_OPENFIGI_ENABLED=1` for one bounded run, then unset
+- SEC: set `MI_EDGAR_ENABLED=1` for one Apple CIK run (`--edgar`), then unset
+
+MSRB/EMMA purchase is deferred; the adapter remains registered but is omitted from
+Data Health. Manual EMMA website review + Fixed Income calculator stay available.

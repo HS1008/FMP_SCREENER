@@ -13,7 +13,7 @@ For each major dataset: provider → adapter → job → cadence → table/view 
 | IBKR options | TWS API client 73 | `ibkr_collector.options` (no timer) | off | not persisted | Data Health | Cboe if licensed | PROVIDER_SUPPORT_REQUIRED + storage RIGHTS_PENDING | n/a |
 | OpenBB/Cboe options | Cboe delayed JSON | `openbb_provider` | off | `mi_openbb_*`, `mi_v_options_*` | Overview vol panel if stored | IBKR | RIGHTS_PENDING | NYSE |
 | OpenBB/Cboe VIX | CFE | `openbb_provider` | off | `mi_openbb_*` VIX views | Overview if stored | none | AGREEMENT_REQUIRED | NYSE |
-| MSRB/EMMA munis | MSRB | `MsrbEmmaAdapter` | off | none | Fixed Income calculator | manual calculator | CONFIGURATION_REQUIRED (developer key at emma.msrb.org/AboutEMMA/Developers); do not scrape | n/a |
+| MSRB/EMMA munis | MSRB | `MsrbEmmaAdapter` retained for a future subscription | off | none | Fixed Income calculator; omitted from Data Health | user manually reviews EMMA website and enters calculator inputs | Paid API purchase deferred by user; backend and access gates retained | n/a |
 | CFTC COT | CFTC SODA 6dca-aqww | refresh `--cftc` | weekly Fri | `mi_cftc_cot_observations`, `mi_v_cftc_cot_current` | Commodities, Data Health | none | public, no key | as-of Tuesday / published Friday |
 | EIA energy | EIA v2 | refresh `--eia` | weekly if `EIA_API_KEY` | `mi_eia_observations`, `mi_v_eia_latest` | Commodities | FRED WTI/HH/copper | free key at eia.gov/opendata | publication |
 | FRED commodities | FRED (EIA/IMF) | refresh `--fred` (`DCOILWTICO`, `DHHNGSP`, `PCOPPUSDM`) | daily / monthly | `mi_macro_*` | Overview, Macro, Commodities | none | attribution | series policy |

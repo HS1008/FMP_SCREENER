@@ -72,6 +72,8 @@ def ingest_eia(engine, *, env: Mapping[str, str] | None = None, parent_run_id: s
                 with urllib.request.urlopen(req, timeout=30) as resp:
                     payload = json.loads(resp.read().decode("utf-8"))
                 points = ((payload.get("response") or {}).get("data")) or []
+                if not points:
+                    raise RuntimeError("EIA empty_or_error_payload for {0}".format(alias))
                 seen.append(alias)
                 for point in points:
                     period = str(point.get("period") or "")[:10]

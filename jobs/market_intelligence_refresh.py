@@ -177,6 +177,32 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "action": ("ingest" if eia_configured else "skip_unconfigured") if (want_all or eia_configured) else "fail_unconfigured",
             }
         )
+    from market_intelligence.openfigi_client import OPENFIGI_SOURCE_ID, api_key_from_env as figi_key, enabled_from_env as figi_on
+
+    figi_ok = figi_key(env) is not None and figi_on(env)
+    want_figi = bool(getattr(args, "openfigi", False))
+    if want_figi or want_all:
+        steps.append(
+            {
+                "step": "openfigi",
+                "source_id": OPENFIGI_SOURCE_ID,
+                "configured": figi_ok,
+                "action": ("ingest" if figi_ok else ("skip_unconfigured" if want_all or not want_figi else "fail_unconfigured")),
+            }
+        )
+    edgar_ua = str(env.get("SEC_USER_AGENT") or "").strip().strip('"').strip("'")
+    edgar_on = str(env.get("MI_EDGAR_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"}
+    edgar_ok = bool(edgar_ua and "@" in edgar_ua and edgar_on)
+    want_edgar = bool(getattr(args, "edgar", False))
+    if want_edgar or (want_all and edgar_ok):
+        steps.append(
+            {
+                "step": "edgar",
+                "source_id": "SEC_EDGAR",
+                "configured": edgar_ok,
+                "action": ("ingest" if edgar_ok else ("skip_unconfigured" if want_all or not want_edgar else "fail_unconfigured")),
+            }
+        )
     if args.build_analytics or want_all:
         steps.append({"step": "build_analytics", "action": "compute"})
     if args.build_morning or want_all:
@@ -211,6 +237,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--vix", action="store_true", help="Ingest OpenBB/Cboe VX_EOD curve (fails if not configured)")
     parser.add_argument("--cftc", action="store_true", help="Ingest public CFTC Commitments of Traders")
     parser.add_argument("--eia", action="store_true", help="Ingest EIA weekly energy statistics (requires EIA_API_KEY)")
+    parser.add_argument("--openfigi", action="store_true", help="Resolve a bounded OpenFIGI mapping batch (requires MI_OPENFIGI_ENABLED)")
+    parser.add_argument("--edgar", action="store_true", help="Bounded SEC EDGAR submissions/facts ingest (requires SEC_USER_AGENT and MI_EDGAR_ENABLED)")
     parser.add_argument("--build-analytics", action="store_true", help="Recompute versioned analytics")
     parser.add_argument("--build-morning", action="store_true", help="Build and publish a morning context snapshot")
     parser.add_argument("--all-configured", action="store_true", help="Run every configured step; disabled sources are explicit skips")
@@ -230,8 +258,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.options, args.vix, args.cftc, args.eia, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--options/--vix/--cftc/--eia/--build-analytics/--build-morning/--all-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.options, args.vix, args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--options/--vix/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -271,10 +299,17 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
 
 def _probe(engine) -> dict[str, Any]:
     from market_intelligence.finra_client import configured_from_env as finra_configured_from_env
+    from market_intelligence.openfigi_client import api_key_from_env as figi_key, enabled_from_env as figi_on
 
+    ua = str(os.environ.get("SEC_USER_AGENT") or "").strip().strip('"').strip("'")
     probe: dict[str, Any] = {
         "fred_api_key_present": api_key_from_env() is not None,
         "finra_credentials_present": finra_configured_from_env(),
+        "eia_api_key_present": bool(str(os.environ.get("EIA_API_KEY") or "").strip()),
+        "openfigi_api_key_present": figi_key() is not None,
+        "openfigi_enabled": figi_on(),
+        "sec_user_agent_present": bool(ua and "@" in ua),
+        "edgar_enabled": str(os.environ.get("MI_EDGAR_ENABLED") or "").strip().lower() in {"1", "true", "yes", "on"},
     }
     try:
         if engine is None:
@@ -320,7 +355,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             continue  # Windows collector owns this row; FRED refresh must not clobber it
         if source_id in {FINRA_QUERY_SOURCE_ID, FINRA_TRACE_SOURCE_ID}:
             continue
-        if source_id in {OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID, "CFTC_COT", "EIA_ENERGY"}:
+        if source_id in {OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID, "CFTC_COT", "EIA_ENERGY", "OPENFIGI"}:
             enabled[source_id] = bool(probe.enabled)
             access[source_id] = probe.access_status
             continue
@@ -423,6 +458,27 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 report = ingest_eia(engine, env=env, parent_run_id=parent_run_id, today=as_of)
                 status["results"][name] = report.as_dict()
                 if report.failed:
+                    failures += 1
+            elif name == "openfigi":
+                from market_intelligence.openfigi_client import OpenFIGIClient, api_key_from_env as figi_key
+                from market_intelligence.ingest_openfigi import persist_mapping_results
+                from market_intelligence.store import RUN_FAILED, RUN_SUCCEEDED, finish_run, start_run
+
+                jobs = [{"idType": "TICKER", "idValue": "AAPL", "exchCode": "US"}]
+                client = OpenFIGIClient(figi_key(env))
+                mapped = client.map_jobs(jobs)
+                with engine.begin() as conn:
+                    rid = start_run(conn, source_id="OPENFIGI", dataset="identifier_mapping", parent_run_id=parent_run_id)
+                    counts = persist_mapping_results(conn, mapped)
+                    finish_run(conn, rid, status=RUN_SUCCEEDED, counts=counts, details={"jobs": len(jobs)})
+                status["results"][name] = {"status": RUN_SUCCEEDED, "counts": counts}
+            elif name == "edgar":
+                from market_intelligence.adapters import EdgarAdapter
+                from market_intelligence.ingest_sec import ingest_sec
+
+                report = ingest_sec(engine, EdgarAdapter(), env=env, parent_run_id=parent_run_id)
+                status["results"][name] = report
+                if report.get("failed"):
                     failures += 1
             elif name == "build_analytics":
                 from market_intelligence.analytics import build_analytics, last_analytics_run_at

@@ -11,11 +11,17 @@ implying coverage that does not exist. There is no order-routing surface anywher
 from __future__ import annotations
 
 import json
+import os
+import random
+import threading
 import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlparse
 
 ACCESS_DISABLED = "DISABLED"
 ACCESS_CONFIGURATION_REQUIRED = "CONFIGURATION_REQUIRED"
@@ -32,9 +38,17 @@ ACCESS_ON_DEMAND = "ON_DEMAND"
 IBKR_SOURCE_ID = "IBKR_MARKET_DATA"
 TRACE_SOURCE_ID = "FINRA_TRACE"
 EDGAR_SOURCE_ID = "SEC_EDGAR"
+OPENFIGI_SOURCE_ID = "OPENFIGI"
 
 EDGAR_BASE_URL = "https://data.sec.gov"
-EDGAR_MAX_REQUESTS_PER_SECOND = 10  # SEC fair-access ceiling; we stay well under it.
+EDGAR_ALLOWED_HOSTS = frozenset({"data.sec.gov", "www.sec.gov", "sec.gov"})
+# Target ~5 rps internally; never exceed the SEC fair-access ceiling of 10 rps.
+EDGAR_MAX_REQUESTS_PER_SECOND = 5
+EDGAR_MIN_INTERVAL_S = 1.0 / EDGAR_MAX_REQUESTS_PER_SECOND
+EDGAR_MAX_ATTEMPTS = 3
+EDGAR_RETRY_BUDGET_S = 30.0
+_EDGAR_RATE_LOCK = threading.Lock()
+_EDGAR_LAST_REQUEST_MONOTONIC = 0.0
 
 
 class AdapterDisabled(RuntimeError):
@@ -146,27 +160,53 @@ class EdgarAdapter:
 
     Public and free, but the SEC requires a descriptive ``User-Agent`` with contact details and
     caps request rate. Fetching is gated behind ``MI_EDGAR_ENABLED`` so nothing touches sec.gov
-    unless an operator opted in; the scheduled refresh never calls this adapter.
+    unless an operator opted in. Process-wide rate limiting prevents concurrent client instances
+    from exceeding the fair-access budget.
     """
 
     source_id = EDGAR_SOURCE_ID
     ENABLE_FLAG = "MI_EDGAR_ENABLED"
     USER_AGENT_ENV = "SEC_USER_AGENT"
-    CAPABILITIES = {"submissions": "available when enabled", "company_facts": "available when enabled", "bond_terms": "not derivable from EDGAR JSON; prospectus parsing is out of scope"}
+    CAPABILITIES = {
+        "submissions": "available when enabled",
+        "company_facts": "available when enabled",
+        "bond_terms": "not derivable from EDGAR JSON; prospectus parsing is out of scope",
+    }
 
-    def __init__(self, *, opener=None, min_interval_s: float = 1.0 / EDGAR_MAX_REQUESTS_PER_SECOND * 2, timeout_s: float = 20.0) -> None:
+    def __init__(
+        self,
+        *,
+        opener=None,
+        min_interval_s: float = EDGAR_MIN_INTERVAL_S,
+        timeout_s: float = 20.0,
+        sleeper=None,
+        clock=None,
+        max_attempts: int = EDGAR_MAX_ATTEMPTS,
+        retry_budget_s: float = EDGAR_RETRY_BUDGET_S,
+    ) -> None:
         self._opener = opener or urllib.request.urlopen
-        self._min_interval = min_interval_s
+        self._min_interval = max(float(min_interval_s), EDGAR_MIN_INTERVAL_S)
         self._timeout = timeout_s
-        self._last_request = 0.0
+        self._sleeper = sleeper or time.sleep
+        self._clock = clock or time.monotonic
+        self._max_attempts = max(1, int(max_attempts))
+        self._retry_budget_s = float(retry_budget_s)
 
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
-        agent = str(env.get(self.USER_AGENT_ENV, "")).strip()
+        agent = str(env.get(self.USER_AGENT_ENV, "")).strip().strip('"').strip("'")
         enabled_flag = _flag(env, self.ENABLE_FLAG)
         if not agent or "@" not in agent:
-            status, reason, enabled = ACCESS_CONFIGURATION_REQUIRED, "{0} must be set to 'Org Name contact@example.com' per SEC fair-access policy. A contact email cannot be invented.".format(self.USER_AGENT_ENV), False
+            status, reason, enabled = (
+                ACCESS_CONFIGURATION_REQUIRED,
+                "{0} must be set to 'Org Name contact@example.com' per SEC fair-access policy. A contact email cannot be invented.".format(self.USER_AGENT_ENV),
+                False,
+            )
         elif not enabled_flag:
-            status, reason, enabled = ACCESS_ON_DEMAND, "User agent present. EDGAR is on-demand issuer lookup, not a scheduled ingest. Set {0}=1 only for an explicit fetch.".format(self.ENABLE_FLAG), False
+            status, reason, enabled = (
+                ACCESS_ON_DEMAND,
+                "User agent present. EDGAR is on-demand issuer lookup, not a scheduled market-data feed. Set {0}=1 only for an explicit bounded fetch.".format(self.ENABLE_FLAG),
+                False,
+            )
         else:
             status, reason, enabled = ACCESS_ON_DEMAND, "user agent present and on-demand fetch enabled", True
         return AdapterStatus(self.source_id, status, enabled, reason, (self.USER_AGENT_ENV, self.ENABLE_FLAG), dict(self.CAPABILITIES))
@@ -178,23 +218,75 @@ class EdgarAdapter:
             raise ValueError("invalid CIK {0!r}".format(cik))
         return digits.zfill(10)
 
+    @staticmethod
+    def _user_agent(env: Mapping[str, str]) -> str:
+        return str(env.get(EdgarAdapter.USER_AGENT_ENV, "")).strip().strip('"').strip("'")
+
+    def _acquire_rate_slot(self) -> None:
+        global _EDGAR_LAST_REQUEST_MONOTONIC
+        with _EDGAR_RATE_LOCK:
+            now = self._clock()
+            wait = self._min_interval - (now - _EDGAR_LAST_REQUEST_MONOTONIC)
+            if wait > 0:
+                self._sleeper(wait)
+            _EDGAR_LAST_REQUEST_MONOTONIC = self._clock()
+
     def _get_json(self, path: str, *, env: Mapping[str, str]) -> dict[str, Any]:
         status = self.probe(env)
+        if status.access_status == ACCESS_CONFIGURATION_REQUIRED:
+            raise AdapterDisabled(self.source_id, status.access_status, status.reason)
         if not status.enabled:
             raise AdapterDisabled(self.source_id, status.access_status, status.reason)
-        wait = self._min_interval - (time.monotonic() - self._last_request)
-        if wait > 0:
-            time.sleep(wait)
-        request = urllib.request.Request(EDGAR_BASE_URL + path, headers={"User-Agent": env[self.USER_AGENT_ENV], "Accept": "application/json", "Host": "data.sec.gov"})
-        self._last_request = time.monotonic()
-        try:
-            with self._opener(request, timeout=self._timeout) as response:
-                body = response.read()
-        except urllib.error.HTTPError as exc:
-            raise RuntimeError("EDGAR {0} returned HTTP {1}".format(path, exc.code)) from None
-        except urllib.error.URLError as exc:
-            raise RuntimeError("EDGAR {0} unreachable: {1}".format(path, exc.reason.__class__.__name__ if not isinstance(exc.reason, str) else exc.reason)) from None
-        return json.loads(body)
+        agent = self._user_agent(env)
+        url = EDGAR_BASE_URL + path
+        deadline = self._clock() + self._retry_budget_s
+        last_error: Exception | None = None
+        for attempt in range(1, self._max_attempts + 1):
+            self._acquire_rate_slot()
+            request = urllib.request.Request(
+                url,
+                headers={"User-Agent": agent, "Accept": "application/json"},
+            )
+            try:
+                with self._opener(request, timeout=self._timeout) as response:
+                    geturl = getattr(response, "geturl", None)
+                    if callable(geturl):
+                        final_host = urlparse(geturl()).hostname or ""
+                        if final_host and final_host.lower() not in EDGAR_ALLOWED_HOSTS:
+                            raise RuntimeError("EDGAR redirect left sec.gov hosts; identifying header not forwarded")
+                    body = response.read()
+                try:
+                    payload = json.loads(body)
+                except json.JSONDecodeError as exc:
+                    raise RuntimeError("EDGAR {0} returned invalid JSON".format(path)) from exc
+                if not isinstance(payload, dict):
+                    raise RuntimeError("EDGAR {0} returned unexpected JSON schema".format(path))
+                return payload
+            except urllib.error.HTTPError as exc:
+                code = int(exc.code)
+                if code in {400, 401, 403, 404}:
+                    raise RuntimeError("EDGAR {0} returned HTTP {1}".format(path, code)) from None
+                last_error = RuntimeError("EDGAR {0} returned HTTP {1}".format(path, code))
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                delay = None
+                if retry_after:
+                    try:
+                        delay = float(retry_after)
+                    except ValueError:
+                        delay = None
+                if delay is None:
+                    delay = min(8.0, (2 ** (attempt - 1)) + random.uniform(0, 0.25))
+                if attempt >= self._max_attempts or self._clock() + delay > deadline:
+                    raise last_error from None
+                self._sleeper(delay)
+            except urllib.error.URLError as exc:
+                reason = exc.reason.__class__.__name__ if not isinstance(exc.reason, str) else exc.reason
+                last_error = RuntimeError("EDGAR {0} unreachable: {1}".format(path, reason))
+                delay = min(8.0, (2 ** (attempt - 1)) + random.uniform(0, 0.25))
+                if attempt >= self._max_attempts or self._clock() + delay > deadline:
+                    raise last_error from None
+                self._sleeper(delay)
+        raise last_error or RuntimeError("EDGAR {0} failed".format(path))
 
     def submissions(self, cik: str | int, *, env: Mapping[str, str]) -> dict[str, Any]:
         return self._get_json("/submissions/CIK{0}.json".format(self.normalize_cik(cik)), env=env)
@@ -327,25 +419,88 @@ class IBKRMunicipalBondsAdapter:
         )
 
 
+def _bond_capability_evidence_path(env: Mapping[str, str]) -> Path:
+    override = str(env.get("MI_IBKR_BOND_CAPABILITY_EVIDENCE") or "").strip()
+    if override:
+        return Path(override)
+    local = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or ""
+    if local:
+        return Path(local) / "FMP_SCREENER" / "ibkr_collector" / "bond_capability_latest.json"
+    return Path.home() / ".fmp_screener" / "ibkr_collector" / "bond_capability_latest.json"
+
+
+def _load_bond_capability(env: Mapping[str, str]) -> dict[str, Any] | None:
+    path = _bond_capability_evidence_path(env)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    observed_at = str(payload.get("observed_at") or "")
+    try:
+        when = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    max_age_h = float(str(env.get("MI_IBKR_BOND_CAPABILITY_MAX_AGE_HOURS") or "72"))
+    if datetime.now(timezone.utc) - when > timedelta(hours=max_age_h):
+        return None
+    return payload
+
+
 class IBKRCorporateBondsAdapter:
     source_id = "IBKR_CORPORATE_BONDS"
     ENABLE_FLAG = "MI_IBKR_CORP_BONDS_ENABLED"
 
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
-        # Live proof (2026-09-15): Apple CUSIP 037833EY2 via symbol=CUSIP -> conId 782156293.
-        # Quotes returned 10167 delayed notice with null ticks; storage rights unconfirmed.
+        evidence = _load_bond_capability(env)
+        if evidence is None:
+            return AdapterStatus(
+                self.source_id,
+                ACCESS_ENTITLEMENT_REQUIRED,
+                False,
+                "No fresh local bond capability evidence. Prior CUSIP→conId resolution is documented; re-run scripts/ibkr_bond_identifier_proof.py against the Windows TWS session. PostgreSQL archival remains RIGHTS_PENDING. FINRA Query aggregates remain available.",
+                (self.ENABLE_FLAG, "fresh bond capability evidence", "storage rights review"),
+                {
+                    "discovery": "unproven_this_session",
+                    "quotes": "unproven",
+                    "ratings": "unproven",
+                    "storage": "RIGHTS_PENDING",
+                    "aggregates": "FINRA Query",
+                },
+            )
+        quote_class = str(evidence.get("quote_classification") or "UNKNOWN")
+        rating_class = str(evidence.get("ratings_classification") or "UNKNOWN")
+        discovery = str(evidence.get("discovery_classification") or "UNKNOWN")
+        caps = {
+            "discovery": discovery,
+            "quotes": quote_class,
+            "ratings": rating_class,
+            "storage": "RIGHTS_PENDING",
+            "aggregates": "FINRA Query",
+            "observed_at": evidence.get("observed_at"),
+            "market_data_type": evidence.get("market_data_type"),
+        }
+        if discovery.startswith("IDENTIFIER_RESOLVED") and quote_class in {"LIVE_BID_ASK", "ONE_SIDED_QUOTE"}:
+            access = ACCESS_AVAILABLE
+            reason = "Fresh local proof: contract resolved with current quote ticks. Subscription confirmation alone is insufficient; this status reflects observed API delivery. Storage remains RIGHTS_PENDING."
+        elif discovery.startswith("IDENTIFIER_RESOLVED"):
+            access = ACCESS_ENTITLEMENT_REQUIRED
+            reason = "Fresh local proof: contract resolved ({0}); quotes classified {1}; ratings {2}. Storage remains RIGHTS_PENDING.".format(
+                discovery, quote_class, rating_class
+            )
+        else:
+            access = ACCESS_ENTITLEMENT_REQUIRED
+            reason = "Fresh local proof did not resolve a corporate bond contract ({0}).".format(discovery)
         return AdapterStatus(
             self.source_id,
-            ACCESS_ENTITLEMENT_REQUIRED,
+            access,
             False,
-            "Corporate CUSIP/ISIN resolves to a tradeable conId via TWS reqContractDetails (symbol=CUSIP). Live quotes still require bond market-data entitlement; PostgreSQL archival remains RIGHTS_PENDING. FINRA Query aggregates remain the live activity feed. Collection stays off.",
+            reason,
             (self.ENABLE_FLAG, "IBKR bond market-data entitlement", "storage rights review"),
-            {
-                "discovery": "CUSIP/ISIN -> conId proven",
-                "quotes": "IDENTIFIER_RESOLVED_NO_QUOTE / entitlement",
-                "storage": "RIGHTS_PENDING",
-                "aggregates": "FINRA Query",
-            },
+            caps,
         )
 
 
@@ -369,14 +524,59 @@ class EiaEnergyAdapter:
     def probe(self, env: Mapping[str, str]) -> AdapterStatus:
         has_key = bool(str(env.get("EIA_API_KEY") or "").strip())
         if not has_key:
-            return AdapterStatus(self.source_id, ACCESS_CONFIGURATION_REQUIRED, False, "EIA_API_KEY is absent. Register a free key at https://www.eia.gov/opendata/ and set EIA_API_KEY on the writer host. FRED WTI/Henry Hub remain price fallbacks.", ("EIA_API_KEY",), {"petroleum": "signup required"})
-        return AdapterStatus(self.source_id, ACCESS_AVAILABLE, True, "EIA v2 key present; weekly petroleum stocks and working-gas storage ingest is enabled.", ("EIA_API_KEY",), {"petroleum": "configured"})
+            return AdapterStatus(
+                self.source_id,
+                ACCESS_CONFIGURATION_REQUIRED,
+                False,
+                "EIA_API_KEY is absent. Register a free key at https://www.eia.gov/opendata/ and set EIA_API_KEY on the writer host. FRED WTI/Henry Hub remain price fallbacks and must not be labeled as EIA observations.",
+                ("EIA_API_KEY",),
+                {"petroleum": "signup required"},
+            )
+        # Key presence is configuration only. Freshness/transport evidence decides health.
+        return AdapterStatus(
+            self.source_id,
+            ACCESS_CONFIGURED,
+            True,
+            "EIA_API_KEY present on writer env. Credential presence is not READY; weekly petroleum stocks / working-gas storage require a successful ingest with non-empty observations.",
+            ("EIA_API_KEY",),
+            {"petroleum": "configured_pending_evidence"},
+        )
+
+
+class OpenFIGIAdapter:
+    source_id = OPENFIGI_SOURCE_ID
+    ENABLE_FLAG = "MI_OPENFIGI_ENABLED"
+    KEY_ENV = "OPENFIGI_API_KEY"
+    CAPABILITIES = {
+        "mapping": "bounded identifier mapping only",
+        "quotes": "not a quote feed",
+        "ratings": "not provided",
+    }
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        from market_intelligence.openfigi_client import api_key_from_env, enabled_from_env
+
+        key = api_key_from_env(env)
+        flag = enabled_from_env(env)
+        if not key:
+            return AdapterStatus(self.source_id, ACCESS_CONFIGURATION_REQUIRED, False, "OPENFIGI_API_KEY absent", (self.KEY_ENV, self.ENABLE_FLAG), dict(self.CAPABILITIES))
+        if not flag:
+            return AdapterStatus(
+                self.source_id,
+                ACCESS_ON_DEMAND,
+                False,
+                "OPENFIGI_API_KEY present. Identifier mapping is on-demand reference data; set MI_OPENFIGI_ENABLED=1 for an explicit bounded batch.",
+                (self.KEY_ENV, self.ENABLE_FLAG),
+                dict(self.CAPABILITIES),
+            )
+        return AdapterStatus(self.source_id, ACCESS_ON_DEMAND, True, "key present and on-demand mapping enabled", (self.KEY_ENV, self.ENABLE_FLAG), dict(self.CAPABILITIES))
 
 
 ADAPTERS = (
     IBKRMarketDataAdapter(),
     TraceAdapter(),
     EdgarAdapter(),
+    OpenFIGIAdapter(),
     OpenBBCboeOptionsAdapter(),
     OpenBBCboeVixAdapter(),
     IBKROptionsAdapter(),
@@ -420,6 +620,7 @@ __all__ = [
     "MsrbEmmaAdapter",
     "OpenBBCboeOptionsAdapter",
     "OpenBBCboeVixAdapter",
+    "OpenFIGIAdapter",
     "TraceAdapter",
     "probe_all",
 ]
