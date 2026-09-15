@@ -148,3 +148,15 @@ def test_utc_calendar_date_is_not_used_when_now_is_new_york():
     assert result.status == CURRENT_TO_SOURCE
     utc_date_only = assess_freshness(date(2026, 9, 11), "D", date(2026, 9, 15), series_id="DGS10")
     assert utc_date_only.status in {INGESTION_OVERDUE, STALE}
+
+
+def test_historical_provider_latest_does_not_mask_calendar_stale():
+    result = assess_freshness(
+        date(2024, 12, 31),
+        "D",
+        date(2026, 9, 14),
+        series_id="DGS10",
+        transport_status="OK",
+        upstream_latest=date(2024, 12, 31),
+    )
+    assert result.status == STALE

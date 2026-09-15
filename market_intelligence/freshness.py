@@ -418,6 +418,7 @@ def assess_freshness(
         last_success_at=last_success_at,
         clock=clock,
         transport=transport,
+        policy=policy,
     )
     return FreshnessAssessment(
         status,
@@ -436,7 +437,8 @@ def recent_success(last_success_at: datetime | None, clock: datetime) -> bool:
         return False
     success = last_success_at if last_success_at.tzinfo else last_success_at.replace(tzinfo=NY_TZ)
     now = clock if clock.tzinfo else clock.replace(tzinfo=NY_TZ)
-    return (now - success).total_seconds() <= RECENT_SUCCESS_HOURS * 3600
+    delta = (now - success).total_seconds()
+    return 0 <= delta <= RECENT_SUCCESS_HOURS * 3600
 
 
 def _recent_success(last_success_at: datetime | None, clock: datetime) -> bool:
@@ -452,6 +454,7 @@ def _classify_with_upstream(
     last_success_at: datetime | None,
     clock: datetime,
     transport: str | None,
+    policy: FreshnessPolicy,
 ) -> str:
     """Separate publication lag from a failed ingest when the collector is current to the provider."""
     provider_latest = upstream_latest
@@ -459,6 +462,14 @@ def _classify_with_upstream(
         # last_success alone does not prove the provider has nothing newer.
         # Weekly/monthly publication lag is modeled in expected_latest_published.
         return status
+    if expected is not None and provider_latest < expected:
+        if policy.cadence in {"D", "INTRADAY"}:
+            upstream_gap = sessions_between(provider_latest, expected, policy.calendar)
+        else:
+            upstream_gap = (expected - provider_latest).days
+        # A coverage payload from a historical as-of ingest is not a live probe.
+        if upstream_gap > policy.stale_sessions:
+            return status
     if latest_observation < provider_latest:
         return STALE_INGESTION
     if latest_observation == provider_latest:
