@@ -27,18 +27,33 @@ def test_registry_covers_required_routes_and_sections():
         "credit",
         "macro",
         "order_flow",
+        "options",
         "strategy_monitor",
         "data_health",
+        "fixed_income",
     }
     assert required <= set(PAGE_BY_ROUTE)
     grouped = specs_by_section()
-    assert [spec.title for spec in grouped["Overview"]] == ["Overview"]
-    assert {spec.title for spec in grouped["Markets"]} == {"Sectors", "Rates", "Credit", "Order Flow", "Fixed Income", "Commodities"}
+    assert [spec.title for spec in grouped["Overview"]] == ["Market Overview"]
+    assert {spec.title for spec in grouped["Markets"]} == {
+        "Equities & Sectors",
+        "Rates & Curve",
+        "Credit",
+        "Commodities & Energy",
+        "Options & Volatility",
+        "Bond Trading Activity",
+    }
+    assert {spec.title for spec in grouped["Research"]} >= {"Bond Research", "Strategy Monitor", "Power Producers"}
     assert any(spec.default for spec in PAGE_SPECS)
     urls = [spec.url_path for spec in PAGE_SPECS]
     assert len(urls) == len(set(urls))
     assert PAGE_BY_ROUTE["sectors"].url_path == "Sector_Rotation_V2"
+    assert PAGE_BY_ROUTE["overview"].url_path == "Market_Pulse"
     assert PAGE_BY_ROUTE["overview"].legacy_path == PAGE_BY_ROUTE["overview"].file_path == "pages/10_Market_Pulse.py"
+    assert PAGE_BY_ROUTE["options"].url_path == "Options_Volatility"
+    assert PAGE_BY_ROUTE["order_flow"].title == "Bond Trading Activity"
+    assert PAGE_BY_ROUTE["fixed_income"].title == "Bond Research"
+    assert PAGE_BY_ROUTE["fixed_income"].section == "Research"
 
 
 def test_dashboard_builds_navigation_from_registry():
@@ -47,20 +62,19 @@ def test_dashboard_builds_navigation_from_registry():
     assert "set_registered_pages" in source
     assert "st.navigation" in source
     titles = {spec.title for spec in PAGE_SPECS} | set(NAV_SECTIONS)
-    for label in ("Overview", "Markets", "Economy", "Research", "System", "Legacy FMP comparison", "Morning Brief", "Order Flow"):
+    for label in ("Overview", "Markets", "Economy", "Research", "System", "Legacy FMP comparison", "Morning Brief", "Bond Trading Activity"):
         assert label in source or label in titles
     assert "st.Page(" in source
 
 
 def test_overview_drilldowns_use_registry_not_wrapper_paths():
     source = (ROOT / "market_intelligence" / "pages_ui.py").read_text(encoding="utf-8")
-    assert 'open_registered_page("sectors", "Open Sectors")' in source
-    assert 'open_registered_page("rates", "Open Rates")' in source
-    assert 'open_registered_page("credit", "Open Credit")' in source
-    assert 'open_registered_page("macro", "Open Macro")' in source
-    assert 'open_registered_page("order_flow", "Open Order Flow")' in source
-    assert 'open_registered_page("fixed_income", "Open Fixed Income")' in source
-    assert 'open_registered_page("commodities", "Open Commodities")' in source
+    assert 'open_registered_page("sectors"' in source
+    assert 'open_registered_page("rates"' in source
+    assert 'open_registered_page("credit"' in source
+    assert 'open_registered_page("macro"' in source
+    assert 'open_registered_page("order_flow"' in source
+    assert 'open_registered_page("options"' in source
     assert "pages/14_Sector_Rotation_V2.py" not in source
     assert "pages/12_Rates_Curve.py" not in source
     opener = source.split("def open_registered_page", 1)[1].split("\n\n", 1)[0]
@@ -74,15 +88,18 @@ def test_resolve_render_uses_same_callables_as_wrappers():
 
     assert resolve_render(PAGE_BY_ROUTE["rates"], pages_ui=pages_ui) == "pages/12_Rates_Curve.py"
     assert resolve_render(PAGE_BY_ROUTE["sectors"], pages_ui=pages_ui) == "pages/14_Sector_Rotation_V2.py"
+    assert resolve_render(PAGE_BY_ROUTE["options"], pages_ui=pages_ui) == "pages/21_Options_Volatility.py"
     assert resolve_render(PAGE_BY_ROUTE["strategy_monitor"], pages_ui=pages_ui) == "pages/strategy_monitor.py"
     assert PAGE_BY_ROUTE["rates"].file_path == PAGE_BY_ROUTE["rates"].legacy_path
+    assert hasattr(pages_ui, "render_options_volatility")
 
 
-def test_registered_pages_are_explicit_and_empty_until_dashboard_main():
+def test_registered_page_lookup_round_trip():
     set_registered_pages({})
     assert navigation_active() is False
-    assert registered_page("rates") is None
-    set_registered_pages({"rates": object()})
+    assert registered_page("overview") is None
+    sentinel = object()
+    set_registered_pages({"overview": sentinel})
     assert navigation_active() is True
-    assert registered_page("rates") is not None
+    assert registered_page("overview") is sentinel
     set_registered_pages({})

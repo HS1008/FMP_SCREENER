@@ -18,10 +18,10 @@ from market_intelligence.bonds import interpolate_par_yield
 from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
 from market_intelligence.freshness import is_current_status
 from market_intelligence.nulls import strict_dumps
-from market_intelligence.overview import build_session_changes, build_what_changed
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
 from market_intelligence.read_models import term_structure_display_rows
+from market_intelligence.signals import build_what_matters, credit_sector_coverage
 from market_intelligence.surface_status import worst_surface_status
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.ui import (
@@ -33,6 +33,7 @@ from market_intelligence.ui import (
     heatmap_legend,
     history_chart,
     implied_prior_yield,
+    load_optional,
     load_or_stop,
     page_header,
     styled_heatmap,
@@ -110,15 +111,29 @@ def _worst_freshness(health: list[dict[str, Any]]) -> str | None:
     return worst_surface_status(_actionable_health(health))
 
 
-def _material_warning(health: list[dict[str, Any]], extra: list[str] | None = None) -> str | None:
+def _material_warning(health: list[dict[str, Any]], extra: list[str] | None = None, *, displayed_dates: list[Any] | None = None) -> str | None:
+    """One concise notice when a problem affects an important displayed signal."""
     notes = list(extra or [])
-    stale = [row for row in _actionable_health(health) if str(row.get("freshness_status") or "").upper() in {"STALE", "STALE_INGESTION"}]
-    failed = [row for row in _actionable_health(health) if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED"}]
+    actionable = _actionable_health(health)
+    # Prefer rows whose latest observation feeds the overview dates we actually show.
+    relevant = actionable
+    if displayed_dates:
+        shown = {str(value)[:10] for value in displayed_dates if value}
+        dated = [
+            row
+            for row in actionable
+            if str(row.get("latest_observation_date") or "")[:10] in shown
+            or str(row.get("source_id") or "") in {"TREASURY", "FRED", "FINRA_QUERY", "ICE", "SECTOR"}
+        ]
+        if dated:
+            relevant = dated
+    stale = [row for row in relevant if str(row.get("freshness_status") or "").upper() in {"STALE", "STALE_INGESTION"}]
+    failed = [row for row in relevant if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED"}]
     if stale:
-        notes.append("{0} source(s) are stale relative to their release cadence.".format(len(stale)))
-    if failed:
-        notes.append("{0} source(s) failed the last retrieval. Last valid stored values are shown.".format(len(failed)))
-    return " ".join(notes) if notes else None
+        notes.append("Some displayed market data is stale relative to its release cadence; last valid stored values are shown.")
+    elif failed:
+        notes.append("A source used on this page failed its last retrieval; last valid stored values are shown.")
+    return " ".join(notes[:1]) if notes else None
 
 
 def open_registered_page(route_id: str, label: str) -> None:
@@ -138,6 +153,10 @@ def open_registered_page(route_id: str, label: str) -> None:
         return
     # Standalone ``pages/*.py`` render: the production entry point is dashboard.py.
     _ = spec
+
+
+def _optional_data(result: dict[str, Any]) -> Any:
+    return result.get("data")
 
 
 # ---- Overview ---------------------------------------------------------------------------
@@ -187,6 +206,7 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
     st.caption("Stored PostgreSQL option snapshots only. Delay label is provider-specific (not hardcoded Cboe). Not a live quote. GEX is an OI-derived gamma-exposure proxy (estimated, CALL_PLUS_PUT_MINUS_V1), not observed dealer inventory. IBKR OPRA is gated until the TWS API delivers NBBO.")
     if not ctx or (not ctx.get("symbols") and not ctx.get("vix")):
         st.info(ctx.get("reason") if ctx else "Options schema is not available. This optional source is not a platform outage.")
+        open_registered_page("data_health", "Open Data Health")
         return
     symbols = ctx.get("symbols") or []
     if symbols:
@@ -229,10 +249,11 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
                         use_container_width=True,
                         hide_index=True,
                     )
-                details = load_or_stop("options_chain_details", row.get("underlying_symbol"), limit=40)
-                if details:
+                details = load_optional("options_chain_details", row.get("underlying_symbol"), limit=40, default=[])
+                chain = details.get("data") or []
+                if chain:
                     st.caption("Bounded chain sample (not the full chain).")
-                    st.dataframe(pd.DataFrame([{"Contract": d.get("contract_symbol"), "Exp": d.get("expiration"), "K": d.get("strike"), "CP": d.get("call_put"), "OI": d.get("open_interest"), "IV": d.get("implied_volatility")} for d in details]), use_container_width=True, hide_index=True)
+                    st.dataframe(pd.DataFrame([{"Contract": d.get("contract_symbol"), "Exp": d.get("expiration"), "K": d.get("strike"), "CP": d.get("call_put"), "OI": d.get("open_interest"), "IV": d.get("implied_volatility")} for d in chain]), use_container_width=True, hide_index=True)
     vix = ctx.get("vix")
     if vix:
         cols = st.columns(4)
@@ -246,136 +267,326 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
             st.dataframe(pd.DataFrame([{"Expiry": p.get("expiration"), "Precision": p.get("precision"), "Price": p.get("price")} for p in points]), use_container_width=True, hide_index=True)
 
 
+def render_options_volatility() -> None:
+    page_header(
+        "Options & Volatility",
+        "ATM IV, skew, put/call, expected move, and the GEX proxy from stored snapshots only. Spot VIX is distinct from a VIX futures curve.",
+        fred=False,
+    )
+    result = load_optional("options_volatility_context", default={})
+    ctx = result.get("data") or {}
+    if not result.get("available"):
+        st.info("Options read model is unavailable ({0}). This optional category is not a platform outage.".format(result.get("error") or "query failed"))
+        open_registered_page("data_health", "Open Data Health")
+        return
+    _render_volatility_panel(ctx)
+    open_registered_page("options", "Refresh Options & Volatility")
+    open_registered_page("data_health", "Open Data Health")
+
+
+def _overview_displayed_dates(
+    *,
+    rates: dict[str, Any],
+    credit: dict[str, Any],
+    sectors: dict[str, Any],
+    order_flow: dict[str, Any],
+) -> list[Any]:
+    dates: list[Any] = []
+    for row in rates.get("curve") or []:
+        dates.append(row.get("observation_date"))
+    for row in credit.get("buckets") or []:
+        dates.append(row.get("as_of"))
+    for row in (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []:
+        dates.append(row.get("as_of"))
+    for row in (order_flow.get("breadth") or {}).get("rows") or []:
+        dates.append(row.get("observation_date"))
+    return dates
+
+
+def _render_overview_cards(
+    *,
+    rates: dict[str, Any],
+    credit: dict[str, Any],
+    sectors: dict[str, Any],
+    macro: dict[str, Any],
+    order_flow: dict[str, Any],
+    options: dict[str, Any] | None,
+    horizon: str,
+) -> None:
+    cards: list[dict[str, Any]] = []
+    rs_rows = (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []
+    metric = {"1D": "ret_1d", "1W": "ret_1w", "1M": "ret_1m"}.get(horizon, "ret_1d")
+    day_ranked = [row for row in rs_rows if (row.get("metrics") or {}).get(metric) is not None]
+    if day_ranked:
+        day_ranked = sorted(day_ranked, key=lambda row: -((row.get("metrics") or {}).get(metric) or 0))
+        lead = day_ranked[0]
+        lag = day_ranked[-1]
+        cards.append(
+            {
+                "title": "Equities & Sectors",
+                "primary": str(lead.get("sector_key") or "—"),
+                "primary_delta": fmt_signed((lead.get("metrics") or {}).get(metric), "fraction"),
+                "support": "Laggard {0} {1}".format(lag.get("sector_key") or "—", fmt_signed((lag.get("metrics") or {}).get(metric), "fraction")),
+                "as_of": lead.get("as_of"),
+                "route": "sectors",
+                "link": "Open Equities & Sectors",
+            }
+        )
+    curve = [row for row in rates.get("curve") or [] if row.get("tenor") == "10Y" and row.get("yield_pct") is not None]
+    if curve:
+        ten = curve[0]
+        slope = (rates.get("slopes") or {}).get("2s10s") or (rates.get("slopes") or {}).get("2Y10Y") or {}
+        slope_txt = fmt_signed(slope.get("value"), "bps") if isinstance(slope, dict) and slope.get("value") is not None else "—"
+        cards.append(
+            {
+                "title": "Rates & Curve",
+                "primary": fmt(ten.get("yield_pct"), "pct"),
+                "primary_delta": fmt_signed(ten.get("chg_prev_bps"), "bps") if ten.get("chg_prev_bps") is not None else None,
+                "support": "2s10s {0}".format(slope_txt),
+                "as_of": ten.get("observation_date"),
+                "route": "rates",
+                "link": "Open Rates & Curve",
+            }
+        )
+    buckets = [row for row in (credit.get("buckets") or []) if row.get("bucket") in {"ig_broad", "hy_broad"}]
+    if buckets:
+        ig = next((row for row in buckets if row["bucket"] == "ig_broad"), buckets[0])
+        hy = next((row for row in buckets if row["bucket"] == "hy_broad"), None)
+        support = "HY {0}".format(fmt(hy.get("oas_bps"), "bps").replace("+", "") if hy and hy.get("oas_bps") is not None else "—")
+        if hy and hy.get("change_1d_bps") is not None:
+            support += " ({0})".format(fmt_signed(hy.get("change_1d_bps"), "bps"))
+        cards.append(
+            {
+                "title": "Credit",
+                "primary": "IG {0}".format(fmt(ig.get("oas_bps"), "bps").replace("+", "") if ig.get("oas_bps") is not None else "—"),
+                "primary_delta": fmt_signed(ig.get("change_1d_bps"), "bps") if ig.get("change_1d_bps") is not None else None,
+                "support": support,
+                "as_of": ig.get("as_of"),
+                "route": "credit",
+                "link": "Open Credit",
+            }
+        )
+    cats = macro.get("categories") or {}
+    for cat in PRIMARY_MACRO:
+        blocks = cats.get(cat) or []
+        if not blocks:
+            continue
+        block = blocks[0]
+        transforms = block.get("transforms") or {}
+        headline = transforms.get("yoy_pct") or transforms.get("qoq_saar_pct") or transforms.get("mom_change") or transforms.get("chg_4w") or transforms.get("wow_change")
+        cards.append(
+            {
+                "title": "Macro & Liquidity",
+                "primary": str(block.get("label") or block.get("series_id") or cat),
+                "primary_delta": _transform_text(headline) if headline else None,
+                "support": "Observation {0}".format(block.get("latest", {}).get("observation_date") or "—"),
+                "as_of": block.get("latest", {}).get("observation_date"),
+                "route": "macro",
+                "link": "Open Macro & Liquidity",
+            }
+        )
+        break
+    commodity_blocks = cats.get("commodities") or []
+    if commodity_blocks:
+        block = commodity_blocks[0]
+        transforms = block.get("transforms") or {}
+        headline = transforms.get("chg_prev") or transforms.get("mom_pct") or transforms.get("wow_change")
+        cards.append(
+            {
+                "title": "Commodities & Energy",
+                "primary": str(block.get("label") or block.get("series_id")),
+                "primary_delta": _transform_text(headline) if headline else fmt(block.get("latest", {}).get("value"), None),
+                "support": "Cadence-aware release; not a live futures quote",
+                "as_of": block.get("latest", {}).get("observation_date"),
+                "route": "commodities",
+                "link": "Open Commodities & Energy",
+            }
+        )
+    if options and (options.get("symbols") or options.get("vix")):
+        symbols = options.get("symbols") or []
+        if symbols and symbols[0].get("iv_30d") is not None:
+            row = symbols[0]
+            cards.append(
+                {
+                    "title": "Options & Volatility",
+                    "primary": "{0} ATM IV {1}".format(row.get("underlying_symbol") or "", _fmt_or_dash(row.get("iv_30d"), "pct")),
+                    "primary_delta": row.get("delay_label"),
+                    "support": "Session {0}".format(row.get("session_date") or "—"),
+                    "as_of": row.get("session_date") or row.get("observation_date"),
+                    "route": "options",
+                    "link": "Open Options & Volatility",
+                }
+            )
+        elif options.get("vix"):
+            vix = options["vix"]
+            cards.append(
+                {
+                    "title": "Options & Volatility",
+                    "primary": "VX M1 {0}".format(_fmt_or_dash((vix.get("m1") or {}).get("price"), None)),
+                    "primary_delta": str(vix.get("front_shape") or ""),
+                    "support": "Futures curve EOD {0}".format(vix.get("observation_date") or "—"),
+                    "as_of": vix.get("observation_date"),
+                    "route": "options",
+                    "link": "Open Options & Volatility",
+                }
+            )
+    breadth = next((row for row in ((order_flow.get("breadth") or {}).get("rows") or []) if (row.get("product_category") or "").lower() == "all securities"), None)
+    if breadth and len(cards) < 6:
+        cards.append(
+            {
+                "title": "Bond Trading Activity",
+                "primary": fmt(breadth.get("total_volume"), None),
+                "primary_delta": fmt_signed(breadth.get("volume_change"), None) if breadth.get("volume_change") is not None else None,
+                "support": "Trades {0}".format(fmt(breadth.get("total_trades"), None)),
+                "as_of": breadth.get("observation_date"),
+                "route": "order_flow",
+                "link": "Open Bond Trading Activity",
+            }
+        )
+    cards = cards[:6]
+    if not cards:
+        st.info("No category cards have usable stored observations yet.")
+        return
+    cols = st.columns(min(3, len(cards)))
+    for index, card in enumerate(cards):
+        with cols[index % len(cols)]:
+            st.markdown("**{0}**".format(card["title"]))
+            st.metric(card["title"], card["primary"], card.get("primary_delta"))
+            if card.get("support"):
+                st.caption(card["support"])
+            if card.get("as_of"):
+                st.caption("Observation {0}".format(card["as_of"]))
+            open_registered_page(card["route"], card["link"])
+
+
+def _render_overview_visuals(*, rates: dict[str, Any], credit: dict[str, Any], sectors: dict[str, Any], horizon: str) -> None:
+    left, right = st.columns(2)
+    rs_rows = (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []
+    metric = {"1D": "ret_1d", "1W": "ret_1w", "1M": "ret_1m"}.get(horizon, "ret_1d")
+    with left:
+        st.subheader("Sector leadership")
+        usable = [row for row in rs_rows if (row.get("metrics") or {}).get(metric) is not None]
+        if usable:
+            frame = pd.DataFrame(
+                [
+                    {
+                        "Sector": row.get("sector_key") or row.get("instrument_id"),
+                        "Return": (row.get("metrics") or {}).get(metric),
+                    }
+                    for row in usable
+                ]
+            ).sort_values("Return", ascending=True)
+            try:
+                import plotly.express as px
+
+                fig = px.bar(frame, x="Return", y="Sector", orientation="h", title="{0} absolute return".format(horizon))
+                fig.update_layout(height=360, margin=dict(l=10, r=10, t=40, b=10), xaxis_tickformat=".1%")
+                fig.update_xaxes(fixedrange=True)
+                fig.update_yaxes(fixedrange=True)
+                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
+            except ImportError:  # pragma: no cover
+                st.bar_chart(frame.set_index("Sector")["Return"])
+            st.caption("Absolute ETF proxy returns for the selected horizon. Relative strength lives on Equities & Sectors.")
+            open_registered_page("sectors", "Open Equities & Sectors")
+        else:
+            st.info("No sector returns stored for {0}.".format(horizon))
+    with right:
+        curve = [row for row in (rates.get("curve") or []) if row.get("yield_pct") is not None]
+        buckets = [row for row in (credit.get("buckets") or []) if row.get("bucket") in {"ig_broad", "hy_broad"} and row.get("oas_bps") is not None]
+        if curve:
+            st.subheader("Treasury curve")
+            try:
+                import plotly.express as px
+
+                frame = pd.DataFrame([{"Tenor": row.get("tenor"), "Yield %": row.get("yield_pct"), "Obs": row.get("observation_date")} for row in curve])
+                fig = px.line(frame, x="Tenor", y="Yield %", markers=True, title="Latest coherent curve")
+                fig.update_layout(height=360, margin=dict(l=10, r=10, t=40, b=10))
+                fig.update_xaxes(fixedrange=True)
+                fig.update_yaxes(fixedrange=True)
+                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
+            except ImportError:  # pragma: no cover
+                st.line_chart(pd.DataFrame(curve).set_index("tenor")["yield_pct"])
+            obs = sorted({str(row.get("observation_date")) for row in curve if row.get("observation_date")})
+            st.caption("Observation date(s): {0}. Mixed-date curves are never drawn as one print.".format(", ".join(obs) or "—"))
+            open_registered_page("rates", "Open Rates & Curve")
+        elif buckets:
+            st.subheader("Credit spreads")
+            try:
+                import plotly.express as px
+
+                frame = pd.DataFrame([{"Bucket": row.get("label"), "OAS bps": row.get("oas_bps")} for row in buckets])
+                fig = px.bar(frame, x="Bucket", y="OAS bps", title="Broad IG / HY OAS")
+                fig.update_layout(height=360, margin=dict(l=10, r=10, t=40, b=10))
+                fig.update_xaxes(fixedrange=True)
+                fig.update_yaxes(fixedrange=True)
+                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
+            except ImportError:  # pragma: no cover
+                st.bar_chart(pd.DataFrame(buckets).set_index("label")["oas_bps"])
+            open_registered_page("credit", "Open Credit")
+        else:
+            st.subheader("Rates / Credit")
+            st.info("No Treasury curve or broad credit spreads are stored for a second overview visual.")
+
+
 def render_market_pulse() -> None:
-    health = load_or_stop("source_health")
+    health_result = load_optional("source_health", default=[])
+    health = health_result.get("data") or []
     rates = load_or_stop("rates_context")
     credit = load_or_stop("credit_context")
     sectors = load_or_stop("sectors_context")
-    macro = load_or_stop("macro_context")
-    order_flow = load_or_stop("order_flow_overview")
-    as_of, freshness = compact_as_of(
-        [row.get("latest_observation_date") for row in health] + [row.get("as_of") for row in (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []],
-        freshness=_worst_freshness(health),
-    )
+    macro = _optional_data(load_optional("macro_context", default={})) or {}
+    order_flow = _optional_data(load_optional("order_flow_overview", default={})) or {}
+    options_result = load_optional("options_volatility_context", default={})
+    options_vol = options_result.get("data") if options_result.get("available") else None
+
+    displayed = _overview_displayed_dates(rates=rates, credit=credit, sectors=sectors, order_flow=order_flow)
+    as_of, freshness = compact_as_of(displayed, freshness=_worst_freshness(health) if health else None)
     page_header(
-        "Overview",
-        "What changed across sectors, rates, credit, the economy, and reported bond activity.",
+        "Market Overview",
+        "High-level market intelligence from validated stored observations. Detail lives on each category page.",
         as_of=as_of,
         freshness=freshness,
-        warning=_material_warning(health),
+        warning=_material_warning(health, displayed_dates=displayed),
     )
-    collectors = load_or_stop("ibkr_collector_status")
-    quotes = load_or_stop("ibkr_quotes_latest")
+    collectors = _optional_data(load_optional("ibkr_collector_status", default=[])) or []
+    quotes = _optional_data(load_optional("ibkr_quotes_latest", default=[])) or []
     quote_state = derive_quote_status(collectors=collectors, quotes=quotes)
     st.caption(overview_caption(quote_state))
 
-    session = build_session_changes(rates=rates, credit=credit, sectors=sectors, order_flow=order_flow)
-    st.subheader("Day to day")
-    st.caption("Prior-session moves only. Macro releases use their own publication lag and are listed under What changed.")
-    if session:
-        st.dataframe(pd.DataFrame([{"Area": row["area"], "Change": row["text"], "Period": row["period"]} for row in session]), use_container_width=True, hide_index=True)
+    horizon = st.radio("Market-move horizon", ("1D", "1W", "1M"), index=0, horizontal=True, key="overview_horizon")
+    st.caption("Horizon applies to daily equity session moves only. Macro releases and weekly positioning keep their own cadence.")
+
+    takeaways = build_what_matters(
+        rates=rates,
+        credit=credit,
+        sectors=sectors,
+        macro=macro,
+        order_flow=order_flow,
+        options=options_vol if isinstance(options_vol, dict) else None,
+        horizon=horizon,
+        limit=5,
+    )
+    st.subheader("What matters")
+    if takeaways:
+        for signal in takeaways:
+            cols = st.columns([6, 1.2])
+            cols[0].markdown("- {0}".format(signal.text))
+            with cols[1]:
+                open_registered_page(signal.drilldown_route, "Open {0}".format(signal.category))
     else:
-        st.info("No prior-session changes are stored yet. Sector 1-day ETF returns appear after the next snapshot that includes ret_1d.")
+        st.info("No material stored changes passed the display rules for this horizon.")
 
-    changed = build_what_changed(rates=rates, credit=credit, sectors=sectors, macro=macro, order_flow=order_flow)
-    st.subheader("What changed")
-    if changed:
-        st.dataframe(pd.DataFrame([{"Area": row["area"], "Change": row["text"], "Period": row["period"]} for row in changed]), use_container_width=True, hide_index=True)
-    else:
-        st.info("No stored observations yet.")
-
-    curve = [row for row in rates.get("curve", []) if row.get("tenor") in {"2Y", "10Y", "30Y"} and row.get("yield_pct") is not None]
-    buckets = [row for row in (credit.get("buckets") or []) if row.get("bucket") in {"ig_broad", "hy_broad"}]
-    rs_rows = (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []
-    headline_cols = st.columns(4)
-    if curve:
-        ten = next((row for row in curve if row["tenor"] == "10Y"), curve[0])
-        headline_cols[0].metric("10Y yield", fmt(ten.get("yield_pct"), "pct"), fmt_signed(ten.get("chg_prev_bps"), "bps") if ten.get("chg_prev_bps") is not None else None)
-    if buckets:
-        ig = next((row for row in buckets if row["bucket"] == "ig_broad"), buckets[0])
-        headline_cols[1].metric("IG OAS", fmt(ig.get("oas_bps"), "bps").replace("+", ""), fmt_signed(ig.get("change_1d_bps"), "bps") if ig.get("change_1d_bps") is not None else None)
-    if rs_rows:
-        day_ranked = [row for row in rs_rows if (row.get("metrics") or {}).get("ret_1d") is not None]
-        if day_ranked:
-            day_ranked = sorted(day_ranked, key=lambda row: -((row.get("metrics") or {}).get("ret_1d") or 0))
-            lead = day_ranked[0]
-            headline_cols[2].metric("Sector lead (1D)", str(lead.get("sector_key") or "—"), fmt_signed((lead.get("metrics") or {}).get("ret_1d"), "fraction") if (lead.get("metrics") or {}).get("ret_1d") is not None else None)
-        else:
-            ranked = sorted(rs_rows, key=lambda row: ((row.get("metrics") or {}).get("rs_chg_1m") is None, -((row.get("metrics") or {}).get("rs_chg_1m") or 0)))
-            lead = ranked[0]
-            headline_cols[2].metric("Sector lead (1M RS)", str(lead.get("sector_key") or "—"), fmt_signed((lead.get("metrics") or {}).get("rs_chg_1m"), "fraction") if (lead.get("metrics") or {}).get("rs_chg_1m") is not None else None)
-    breadth = next((row for row in ((order_flow.get("breadth") or {}).get("rows") or []) if (row.get("product_category") or "").lower() == "all securities"), None)
-    if breadth:
-        headline_cols[3].metric("Bond activity (volume)", fmt(breadth.get("total_volume"), None), fmt_signed(breadth.get("volume_change"), None) if breadth.get("volume_change") is not None else None)
-
-    options_vol = load_or_stop("options_volatility_context")
-    _render_volatility_panel(options_vol)
-
-    st.subheader("Sector leadership and weakness")
-    if rs_rows:
-        frame = pd.DataFrame(
-            [{"Sector": row["sector_key"], "ETF proxy": row["instrument_id"], "As of": row["as_of"], "Source": row.get("source_id"), "1D return": (row["metrics"] or {}).get("ret_1d"), "1D RS": (row["metrics"] or {}).get("rs_chg_1d"), "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m"), "1M return": (row["metrics"] or {}).get("ret_1m")} for row in rs_rows]
-        ).sort_values("1M RS", ascending=False, na_position="last")
-        heat_cols = [name for name in ("1D return", "1D RS", "1W RS", "1M RS", "3M RS", "1M return") if name in frame.columns]
-        st.dataframe(styled_heatmap(frame, heat_cols), use_container_width=True, hide_index=True)
-        heatmap_legend()
-        st.caption("1D return and 1D RS use the last completed aligned session. RS is the change in the ETF/SPY adjusted-close ratio (not arithmetic excess). Missing values are blank, not zero. Source and as-of are per row.")
-        open_registered_page("sectors", "Open Sectors")
-    else:
-        st.info("No sector snapshots stored.")
-
-    st.subheader("Treasury yields")
-    if curve:
-        cols = st.columns(len(curve))
-        for i, row in enumerate(curve):
-            cols[i].metric("{0}".format(row["tenor"]), fmt(row.get("yield_pct"), "pct"), fmt_signed(row.get("chg_prev_bps"), "bps") if row.get("chg_prev_bps") is not None else None)
-        open_registered_page("rates", "Open Rates")
-    else:
-        st.info("No Treasury curve data stored.")
-
-    st.subheader("Credit spreads")
-    if buckets:
-        cols = st.columns(len(buckets))
-        for i, row in enumerate(buckets):
-            cols[i].metric(row["label"], fmt(row.get("oas_bps"), "bps").replace("+", ""), fmt_signed(row.get("change_1d_bps"), "bps") if row.get("change_1d_bps") is not None else None)
-        st.caption(credit.get("attribution") or "")
-        open_registered_page("credit", "Open Credit")
-    else:
-        st.info("No credit index snapshots stored.")
-
-    st.subheader("Economy")
-    cats = macro.get("categories") or {}
-    quick = []
-    for cat in PRIMARY_MACRO:
-        for block in cats.get(cat, []):
-            transforms = block.get("transforms") or {}
-            headline = transforms.get("yoy_pct") or transforms.get("qoq_saar_pct") or transforms.get("mom_change") or transforms.get("chg_4w") or transforms.get("wow_change")
-            kind = next((TRANSFORM_LABELS.get(key) for key in ("yoy_pct", "qoq_saar_pct", "mom_change", "chg_4w", "wow_change") if key in transforms), "—")
-            quick.append({"Group": CATEGORY_TITLES[cat], "Series": block.get("label"), "Latest": fmt(block["latest"].get("value"), None), "Change": _transform_text(headline), "Change kind": kind, "Observation": block["latest"].get("observation_date")})
-    if quick:
-        st.dataframe(pd.DataFrame(quick), use_container_width=True, hide_index=True)
-        open_registered_page("macro", "Open Macro")
-    else:
-        st.info("No macro observations stored.")
-
-    _render_commodities_panel(cats)
-    open_registered_page("commodities", "Open Commodities")
-
-    st.subheader("Bond trading activity")
-    if breadth:
-        st.caption("Reported TRACE activity, not a live order book.")
-        cols = st.columns(3)
-        cols[0].metric("Reported volume", fmt(breadth.get("total_volume"), None), fmt_signed(breadth.get("volume_change"), None) if breadth.get("volume_change") is not None else None)
-        cols[1].metric("Trade count", fmt(breadth.get("total_trades"), None), fmt_signed(breadth.get("trade_count_change"), None) if breadth.get("trade_count_change") is not None else None)
-        cols[2].metric("Session", str(breadth.get("observation_date") or "—"))
-        capped = order_flow.get("capped_volume") or {}
-        if not capped.get("headline_eligible"):
-            st.caption(capped.get("identity_note") or "Capped-volume figures are withheld from headlines until reporting-period identity is validated.")
-        open_registered_page("order_flow", "Open Order Flow")
-        open_registered_page("fixed_income", "Open Fixed Income")
-    else:
-        st.info("No corporate-bond activity aggregates stored.")
-        open_registered_page("fixed_income", "Open Fixed Income")
+    st.subheader("Category snapshot")
+    _render_overview_cards(
+        rates=rates,
+        credit=credit,
+        sectors=sectors,
+        macro=macro,
+        order_flow=order_flow,
+        options=options_vol if isinstance(options_vol, dict) else None,
+        horizon=horizon,
+    )
+    _render_overview_visuals(rates=rates, credit=credit, sectors=sectors, horizon=horizon)
 
 
 # ---- Macro ---------------------------------------------------------------------------
@@ -385,7 +596,7 @@ def render_macro_overview() -> None:
     cats = macro.get("categories") or {}
     dates = [block.get("latest", {}).get("observation_date") for blocks in cats.values() for block in blocks]
     page_header(
-        "Macro",
+        "Macro & Liquidity",
         "Growth, labor, inflation, and liquidity. Observation dates are the period being measured, not the retrieval time.",
         as_of=compact_as_of(dates)[0],
     )
@@ -465,8 +676,8 @@ def render_rates_curve() -> None:
     curve = rates.get("curve") or []
     present = [row for row in curve if row.get("yield_pct") is not None]
     page_header(
-        "Rates",
-        "Treasury curve in percent; changes in basis points.",
+        "Rates & Curve",
+        "Treasury curve in percent; changes in basis points. Mixed-date curves are never drawn as one coherent print.",
         as_of=compact_as_of([row.get("observation_date") for row in present])[0],
         warning="Tenors have different observation dates: {0}.".format(", ".join(rates.get("curve_observation_dates") or [])) if rates.get("curve_dates_mixed") else None,
     )
@@ -548,33 +759,114 @@ def render_rates_curve() -> None:
 def render_credit_overview() -> None:
     credit = load_or_stop("credit_context")
     buckets = credit.get("buckets") or []
+    coverage = credit_sector_coverage(credit)
     page_header(
         "Credit",
-        "ICE BofA option-adjusted spreads. Internal view; redistribution restricted.",
+        "ICE BofA option-adjusted spreads by broad market and rating. Sector/subsector OAS only where stored coverage supports it.",
         as_of=compact_as_of([row.get("as_of") for row in buckets])[0],
     )
     if not buckets:
         st.info("No credit index snapshots stored.")
         return
-    broad = [row for row in buckets if row["bucket"] in {"ig_broad", "hy_broad"}]
-    cols = st.columns(max(1, len(broad)))
-    for i, row in enumerate(broad):
-        cols[i].metric(row["label"], "{0:.0f} bps".format(row["oas_bps"]) if row.get("oas_bps") is not None else "—", fmt_signed(row.get("change_1d_bps"), "bps") if row.get("change_1d_bps") is not None else None)
-    st.caption(credit.get("attribution") or "")
 
+    view = st.radio("Credit view", ("Broad market", "Ratings", "Sectors & subsectors"), horizontal=True, key="credit_view")
+    broad = [row for row in buckets if row["bucket"] in {"ig_broad", "hy_broad"}]
     rating = [row for row in buckets if row["bucket"] not in {"ig_broad", "hy_broad"}]
-    if rating:
+
+    if view == "Broad market":
+        st.subheader("Key takeaways")
+        cols = st.columns(max(1, len(broad)))
+        for i, row in enumerate(broad):
+            change = row.get("change_1d_bps")
+            delta = None
+            if change is not None:
+                widen = "widening" if change > 0 else ("tightening" if change < 0 else "unchanged")
+                delta = "{0} ({1})".format(fmt_signed(change, "bps"), widen)
+            cols[i].metric(row["label"], "{0:.0f} bps".format(row["oas_bps"]) if row.get("oas_bps") is not None else "—", delta)
+        st.caption(credit.get("attribution") or "")
+        if broad:
+            try:
+                import plotly.express as px
+
+                frame = pd.DataFrame([{"Bucket": row["label"], "OAS bps": row.get("oas_bps"), "1D": row.get("change_1d_bps")} for row in broad])
+                fig = px.bar(frame, x="Bucket", y="OAS bps", title="Broad IG / HY OAS")
+                fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
+                fig.update_xaxes(fixedrange=True)
+                fig.update_yaxes(fixedrange=True)
+                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
+            except ImportError:  # pragma: no cover
+                pass
+        ids = [row["series_id"] for row in broad] or [row["series_id"] for row in buckets]
+        chosen = st.selectbox("History", ids, format_func=lambda series_id: CATALOG_BY_ID[series_id].label if series_id in CATALOG_BY_ID else series_id, key="credit_hist_broad")
+        history = load_or_stop("metric_history", "{0}.oas_bps".format(chosen))
+        history_chart(history, x="as_of", y="value", title="{0} OAS (bps)".format(CATALOG_BY_ID[chosen].label if chosen in CATALOG_BY_ID else chosen), units="bps")
+
+    elif view == "Ratings":
         st.subheader("Rating buckets")
+        if rating:
+            table = pd.DataFrame(
+                [
+                    {
+                        "Bucket": row["label"],
+                        "As of": row["as_of"],
+                        "OAS (bps)": row["oas_bps"],
+                        "1D": row["change_1d_bps"],
+                        "1W": row["change_1w_bps"],
+                        "1M": row["change_1m_bps"],
+                    }
+                    for row in rating
+                ]
+            )
+            st.dataframe(
+                table.style.format(
+                    {
+                        "OAS (bps)": lambda v: "—" if v is None else "{0:.0f}".format(v),
+                        "1D": lambda v: "—" if v is None else "{0:+.0f}".format(v),
+                        "1W": lambda v: "—" if v is None else "{0:+.0f}".format(v),
+                        "1M": lambda v: "—" if v is None else "{0:+.0f}".format(v),
+                    },
+                    na_rep="—",
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+            try:
+                import plotly.express as px
+
+                fig = px.bar(table.dropna(subset=["OAS (bps)"]), x="Bucket", y="OAS (bps)", title="Rating-bucket OAS")
+                fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
+                fig.update_xaxes(fixedrange=True)
+                fig.update_yaxes(fixedrange=True)
+                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
+            except ImportError:  # pragma: no cover
+                pass
+        else:
+            st.info("No rating-bucket OAS rows are stored.")
+        ids = [row["series_id"] for row in rating] or [row["series_id"] for row in buckets]
+        chosen = st.selectbox("History", ids, format_func=lambda series_id: CATALOG_BY_ID[series_id].label if series_id in CATALOG_BY_ID else series_id, key="credit_hist_rating")
+        history = load_or_stop("metric_history", "{0}.oas_bps".format(chosen))
+        history_chart(history, x="as_of", y="value", title="{0} OAS (bps)".format(CATALOG_BY_ID[chosen].label if chosen in CATALOG_BY_ID else chosen), units="bps")
+
+    else:
+        st.subheader("Sectors & subsectors")
+        st.info(coverage.get("note") or "Sector OAS is unavailable.")
+        st.caption("Status: {0}".format(coverage.get("status")))
         st.dataframe(
-            pd.DataFrame([{"Bucket": row["label"], "As of": row["as_of"], "OAS (bps)": fmt(row["oas_bps"], None, digits=0), "1D": fmt_signed(row["change_1d_bps"], "bps"), "1W": fmt_signed(row["change_1w_bps"], "bps"), "1M": fmt_signed(row["change_1m_bps"], "bps")} for row in rating]),
+            pd.DataFrame(
+                [
+                    {"Available dimension": "Broad market / rating buckets", "Series count": len(coverage.get("available_series") or [])},
+                    {"Available dimension": "Sector OAS", "Series count": 0},
+                    {"Available dimension": "Subsector OAS", "Series count": 0},
+                ]
+            ),
             use_container_width=True,
             hide_index=True,
         )
-
-    ids = [row["series_id"] for row in buckets]
-    chosen = st.selectbox("History", ids, format_func=lambda series_id: CATALOG_BY_ID[series_id].label if series_id in CATALOG_BY_ID else series_id)
-    history = load_or_stop("metric_history", "{0}.oas_bps".format(chosen))
-    history_chart(history, x="as_of", y="value", title="{0} OAS (bps)".format(CATALOG_BY_ID[chosen].label if chosen in CATALOG_BY_ID else chosen), units="bps")
+        with st.expander("Missing inputs"):
+            for item in coverage.get("missing_inputs") or []:
+                st.markdown("- {0}".format(item))
+            st.caption("FINRA activity aggregates are not a substitute sector-spread chart.")
+            open_registered_page("order_flow", "Open Bond Trading Activity")
 
     with st.expander("Percentiles, z-scores, and history windows"):
         st.dataframe(
@@ -606,7 +898,7 @@ def render_sector_rotation_v2() -> None:
     datasets = sectors.get("datasets") or {}
     rs_rows = datasets.get("ETF_RS_VS_SPY") or []
     page_header(
-        "Sectors",
+        "Equities & Sectors",
         "Sector comparison from stored snapshots. ETF proxies versus SPY unless another benchmark is selected.",
         fred=False,
         as_of=compact_as_of([row.get("as_of") for row in rs_rows])[0],
@@ -627,18 +919,49 @@ def render_sector_rotation_v2() -> None:
         basis = rows[0].get("return_basis") if rows else "—"
         st.caption("Benchmark {0} · as of {1} · {2} · ETF proxy, not a constituent aggregate.".format(benchmark, ", ".join(as_ofs), basis))
         if metric.startswith("Relative"):
-            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "As of": row["as_of"], "1D": (row["metrics"] or {}).get("rs_chg_1d"), "1W": (row["metrics"] or {}).get("rs_chg_1w"), "1M": (row["metrics"] or {}).get("rs_chg_1m"), "3M": (row["metrics"] or {}).get("rs_chg_3m"), "6M": (row["metrics"] or {}).get("rs_chg_6m"), "12M": (row["metrics"] or {}).get("rs_chg_12m")} for row in rows])
-            value_cols = ["1D", "1W", "1M", "3M", "6M", "12M"]
-            st.caption("Relative strength = change in the ETF/benchmark adjusted-close ratio on aligned sessions. 1D is side-by-side with longer horizons.")
+            frame = pd.DataFrame(
+                [
+                    {
+                        "Sector": row["sector_key"],
+                        "Kind": row["entity_kind"],
+                        "ETF": row["instrument_id"],
+                        "As of": row["as_of"],
+                        "1D RS": (row["metrics"] or {}).get("rs_chg_1d"),
+                        "1W RS": (row["metrics"] or {}).get("rs_chg_1w"),
+                        "1M RS": (row["metrics"] or {}).get("rs_chg_1m"),
+                        "3M RS": (row["metrics"] or {}).get("rs_chg_3m"),
+                        "6M RS": (row["metrics"] or {}).get("rs_chg_6m"),
+                        "12M RS": (row["metrics"] or {}).get("rs_chg_12m"),
+                    }
+                    for row in rows
+                ]
+            )
+            value_cols = [name for name in ("1D RS", "1W RS", "1M RS", "3M RS", "6M RS", "12M RS") if name in frame.columns]
+            st.caption("Relative strength = (1 + asset return) / (1 + benchmark return) − 1 on aligned sessions (adjusted-price ratio). Not arithmetic excess return.")
         else:
-            frame = pd.DataFrame([{"Sector": row["sector_key"], "Kind": row["entity_kind"], "ETF": row["instrument_id"], "As of": row["as_of"], "1D": (row["metrics"] or {}).get("ret_1d"), "1W": (row["metrics"] or {}).get("ret_1w"), "1M": (row["metrics"] or {}).get("ret_1m"), "3M": (row["metrics"] or {}).get("ret_3m"), "12M": (row["metrics"] or {}).get("ret_12m")} for row in rows])
-            value_cols = ["1D", "1W", "1M", "3M", "12M"]
+            frame = pd.DataFrame(
+                [
+                    {
+                        "Sector": row["sector_key"],
+                        "Kind": row["entity_kind"],
+                        "ETF": row["instrument_id"],
+                        "As of": row["as_of"],
+                        "1D return": (row["metrics"] or {}).get("ret_1d"),
+                        "1W return": (row["metrics"] or {}).get("ret_1w"),
+                        "1M return": (row["metrics"] or {}).get("ret_1m"),
+                        "3M return": (row["metrics"] or {}).get("ret_3m"),
+                        "12M return": (row["metrics"] or {}).get("ret_12m"),
+                    }
+                    for row in rows
+                ]
+            )
+            value_cols = [name for name in ("1D return", "1W return", "1M return", "3M return", "12M return") if name in frame.columns]
             st.caption("Absolute ETF price returns on adjusted close. Missing values are blank, not zero. Dividend treatment is not proven from the vendor name alone.")
         order = {name: i for i, name in enumerate(CANONICAL_SECTORS)}
         frame["_o"] = frame["Sector"].map(lambda name: order.get(name, 99))
         frame = frame.sort_values(["_o", "Sector"]).drop(columns="_o")
         st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
-        heatmap_legend()
+        heatmap_legend(scale_note="each column uses its own near-zero band")
 
         names = [row["sector_key"] for row in rows]
         chosen = st.selectbox("Sector drilldown", names, key="sector_drilldown")
@@ -787,43 +1110,15 @@ def render_data_health() -> None:
     health = [row for row in load_or_stop("source_health") if row.get("source_id") not in _DATA_HEALTH_HIDDEN_SOURCES]
     runs = [row for row in load_or_stop("recent_runs", 200) if row.get("source_id") not in _DATA_HEALTH_HIDDEN_SOURCES]
     ctx = load_or_stop("data_health_context")
-    page_header("Data Health", "Actionable exceptions first. Healthy sources are summarized compactly.", fred=False)
+    page_header("Data Health", "Available sources, needs attention, and optional/not-active products. Healthy sources are summarized compactly.", fred=False)
     stale = [row for row in health if str(row.get("freshness_status") or "").upper() in {"STALE", "STALE_INGESTION"} and not row.get("retired_optional")]
     failed = [row for row in health if str(row.get("transport_status") or "").upper() in {"FAILED", "METADATA_REJECTED", "PARTIAL"} and not row.get("retired_optional")]
     gated = [row for row in health if row.get("retired_optional") or row.get("optional_disabled")]
     if not health:
         st.info("No sources registered yet.")
-    if gated:
-        st.subheader("Disabled or rights-gated")
-        st.caption("Licensing and configuration gates are not platform outages. RIGHTS_PENDING / AGREEMENT_REQUIRED are not FAILED.")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Source": row.get("source_id"),
-                        "Provider": row.get("provider") or "—",
-                        "Product": row.get("dataset") or row.get("freshness_dataset") or "—",
-                        "State": row.get("policy_status") or row.get("access_status") or "DISABLED",
-                        "Rights / access": row.get("access_status") or "—",
-                        "Collection": "on" if row.get("enabled") else "off",
-                        "Export": row.get("usage_scope") or "—",
-                        "Cadence": row.get("dataset_cadence") or row.get("expected_cadence") or "—",
-                        "Stale after (days)": display_cell(row.get("tolerance_days")),
-                        "Last attempt": age_text(row.get("last_attempt_at")),
-                        "Last success": age_text(row.get("last_success_at")),
-                        "Latest observation": row.get("latest_observation_date") or "—",
-                        "Latest failure": (row.get("last_error_redacted") or "—"),
-                        "Why": exception_note(row),
-                    }
-                    for row in gated
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
     if stale or failed:
         st.subheader("Needs attention")
-        st.caption("STALE_INGESTION means our pipeline is behind the provider. HEALTHY_PUBLICATION_LAG / CURRENT_TO_SOURCE means the provider has not published a newer print.")
+        st.caption("STALE_INGESTION means our pipeline is behind the provider. HEALTHY_PUBLICATION_LAG / CURRENT_TO_SOURCE means the provider has not published a newer print. Counts exclude deliberately disabled products.")
         problem = stale + [row for row in failed if row not in stale]
         st.dataframe(
             pd.DataFrame(
@@ -836,7 +1131,7 @@ def render_data_health() -> None:
                         "Latest observation": row.get("latest_observation_date") or "—",
                         "Provider latest": row.get("provider_latest_observation_date") or "—",
                         "Last success": age_text(row.get("last_success_at")),
-                        "Why it looks like this": exception_note(row),
+                        "Feature affected": exception_note(row),
                     }
                     for row in problem
                 ]
@@ -846,7 +1141,7 @@ def render_data_health() -> None:
         )
     healthy = [row for row in health if row not in stale and row not in failed and row not in gated]
     if healthy:
-        st.subheader("Healthy sources")
+        st.subheader("Available")
         st.dataframe(
             pd.DataFrame(
                 [
@@ -863,6 +1158,30 @@ def render_data_health() -> None:
             use_container_width=True,
             hide_index=True,
         )
+    if gated:
+        with st.expander("Optional / not active ({0})".format(len(gated)), expanded=False):
+            st.caption("Licensing and configuration gates are not platform outages. RIGHTS_PENDING / AGREEMENT_REQUIRED are not FAILED.")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Source": row.get("source_id"),
+                            "Provider": row.get("provider") or "—",
+                            "Product": row.get("dataset") or row.get("freshness_dataset") or "—",
+                            "State": row.get("policy_status") or row.get("access_status") or "DISABLED",
+                            "Rights / access": row.get("access_status") or "—",
+                            "Collection": "on" if row.get("enabled") else "off",
+                            "Export": row.get("usage_scope") or "—",
+                            "Cadence": row.get("dataset_cadence") or row.get("expected_cadence") or "—",
+                            "Latest observation": row.get("latest_observation_date") or "—",
+                            "Why": exception_note(row),
+                        }
+                        for row in gated
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     collectors = load_or_stop("ibkr_collector_status")
     quotes = load_or_stop("ibkr_quotes_latest")
@@ -1173,8 +1492,8 @@ def render_order_flow() -> None:
     breadth = ctx.get("breadth") or {}
     rows = breadth.get("rows") or []
     page_header(
-        "Order Flow",
-        "Corporate Bond Trading Activity — reported TRACE aggregates, not a live order book.",
+        "Bond Trading Activity",
+        "Corporate bond TRACE aggregates — reported volume, trade count, breadth, and customer measures. Not a live institutional order book.",
         fred=False,
         as_of=str(breadth.get("latest_observation_date") or "—") if breadth.get("latest_observation_date") else None,
     )
@@ -1325,13 +1644,14 @@ def _tax_assumptions_from_ui(prefix: str) -> TaxAssumptions:
 def render_fixed_income() -> None:
     rates = load_or_stop("rates_context")
     credit = load_or_stop("credit_context")
-    order_flow = load_or_stop("order_flow_overview")
-    health = load_or_stop("source_health")
+    order_flow = _optional_data(load_optional("order_flow_overview", default={})) or {}
+    health = _optional_data(load_optional("source_health", default=[])) or []
     page_header(
-        "Fixed Income",
-        "Treasuries, credit, TRACE activity, tax-aware comparison, and an analytical ladder. Streamlit does not place orders or fetch live brokers.",
-        as_of=compact_as_of([row.get("observation_date") for row in (rates.get("curve") or [])])[0],
+        "Bond Research",
+        "Individual securities, tax-aware comparisons, and analytical ladders. Market-wide rates, credit, and TRACE activity live on their category pages.",
+        fred=False,
     )
+    st.caption("Streamlit does not place orders or fetch live brokers. Manual municipal inputs are scenarios, not live quotes.")
     st.dataframe(
         pd.DataFrame(
             [
@@ -1343,6 +1663,13 @@ def render_fixed_income() -> None:
         use_container_width=True,
         hide_index=True,
     )
+    ctx_cols = st.columns(3)
+    with ctx_cols[0]:
+        open_registered_page("rates", "Rates & Curve context")
+    with ctx_cols[1]:
+        open_registered_page("credit", "Credit context")
+    with ctx_cols[2]:
+        open_registered_page("order_flow", "Bond Trading Activity")
     fi_ids = {
         "TREASURY",
         "FRED",
@@ -1353,72 +1680,27 @@ def render_fixed_income() -> None:
     }
     fi_health = [row for row in health if str(row.get("source_id") or "") in fi_ids]
     if fi_health:
-        st.caption("Fixed-income source states are independent. A blocked muni feed does not fail Treasuries or TRACE aggregates.")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Source": row.get("source_id"),
-                        "State": row.get("policy_status") or row.get("access_status") or "—",
-                        "Freshness": row.get("freshness_status") or "—",
-                        "Latest observation": row.get("latest_observation_date") or "—",
-                        "Why": exception_note(row),
-                    }
-                    for row in fi_health
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-    tab_overview, tab_corporates, tab_munis, tab_rv, tab_ladder = st.tabs(["Overview", "Corporates / TRACE", "Municipals", "Relative value", "Ladder builder"])
-    curve = [row for row in (rates.get("curve") or []) if row.get("yield_pct") is not None]
-    buckets = credit.get("buckets") or []
-    with tab_overview:
-        st.subheader("Treasury curve")
-        if curve:
+        with st.expander("Bond-research source states"):
+            st.caption("Fixed-income source states are independent. A blocked muni feed does not fail Treasuries or TRACE aggregates.")
             st.dataframe(
                 pd.DataFrame(
                     [
                         {
-                            "Tenor": row.get("tenor"),
-                            "Yield (%)": fmt(row.get("yield_pct"), "pct"),
-                            "vs prior (bps)": fmt_signed(row.get("chg_prev_bps"), "bps"),
                             "Source": row.get("source_id"),
+                            "State": row.get("policy_status") or row.get("access_status") or "—",
+                            "Freshness": row.get("freshness_status") or "—",
+                            "Latest observation": row.get("latest_observation_date") or "—",
+                            "Why": exception_note(row),
                         }
-                        for row in curve
+                        for row in fi_health
                     ]
                 ),
                 use_container_width=True,
                 hide_index=True,
             )
-            open_registered_page("rates", "Open Rates")
-        else:
-            st.info("No Treasury curve is stored.")
-        st.subheader("Credit spreads")
-        if buckets:
-            st.dataframe(
-                pd.DataFrame(
-                    [
-                        {"Bucket": row.get("label"), "OAS (bps)": fmt(row.get("oas_bps"), None, digits=0), "1D": fmt_signed(row.get("change_1d_bps"), "bps")}
-                        for row in buckets
-                        if row.get("bucket") in {"ig_broad", "hy_broad", "aaa", "bbb"}
-                    ]
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-            open_registered_page("credit", "Open Credit")
-        else:
-            st.info("No ICE BofA OAS snapshots are stored.")
-        st.subheader("Muni / Treasury ratios")
-        st.caption("Market-level ratios require a municipal curve. None is configured, so this panel stays empty rather than using a single bond.")
-        st.info("MSRB/EMMA municipal curve is NOT_CONFIGURED. Ratios are not computed from a random CUSIP.")
-        activity = (order_flow.get("breadth") or {}).get("rows") or []
-        if activity:
-            st.subheader("Corporate market activity")
-            st.caption("FINRA Query aggregates, not individual TRACE prints.")
-            st.dataframe(pd.DataFrame(activity), use_container_width=True, hide_index=True)
-            open_registered_page("order_flow", "Open Order Flow")
+    tab_corporates, tab_munis, tab_rv, tab_ladder = st.tabs(["Corporates / TRACE", "Municipals", "Relative value", "Ladder builder"])
+    curve = [row for row in (rates.get("curve") or []) if row.get("yield_pct") is not None]
+    buckets = credit.get("buckets") or []
     with tab_corporates:
         st.caption(
             "Primary transaction data is FINRA Query API aggregates. Individual TRACE prints remain ENTITLEMENT_REQUIRED. "
@@ -1429,7 +1711,7 @@ def render_fixed_income() -> None:
             st.dataframe(pd.DataFrame(activity_corp), use_container_width=True, hide_index=True)
         else:
             st.info("No FINRA aggregates stored.")
-        open_registered_page("order_flow", "Open Order Flow")
+        open_registered_page("order_flow", "Open Bond Trading Activity")
         st.subheader("Individual corporates")
         st.info("No canonical individual corporate inventory is ingested. Use Relative value for manual comparison.")
     with tab_munis:
@@ -1596,8 +1878,8 @@ def render_commodities() -> None:
     blocks = cats.get("commodities") or []
     dates = [block.get("latest", {}).get("observation_date") for block in blocks]
     page_header(
-        "Commodities",
-        "Stored energy and metal levels from PostgreSQL. Not a futures curve and not a live quote.",
+        "Commodities & Energy",
+        "Stored energy and metal levels from PostgreSQL. Copper (PCOPPUSDM) is monthly. Not a futures curve and not a live quote.",
         as_of=compact_as_of(dates)[0],
     )
     st.caption("Gold (LBMA daily) was removed from FRED in 2022. No substitute gold price is invented.")
@@ -1694,6 +1976,7 @@ __all__ = [
     "render_macro_overview",
     "render_market_pulse",
     "render_morning_context",
+    "render_options_volatility",
     "render_order_flow",
     "render_pit_sector_internals",
     "render_rates_curve",
