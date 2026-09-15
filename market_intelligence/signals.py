@@ -148,14 +148,17 @@ def _sector_signals(sectors: dict[str, Any], *, horizon: str) -> list[Signal]:
 def _rate_signals(rates: dict[str, Any]) -> list[Signal]:
     curve = {row.get("tenor"): row for row in (rates.get("curve") or []) if row.get("tenor")}
     ten = curve.get("10Y")
-    if not ten or ten.get("yield_pct") is None:
+    if not ten:
+        return []
+    yield_pct = _num(ten.get("yield_pct"))
+    if yield_pct is None:
         return []
     change = _num(ten.get("chg_prev_bps"))
     slope = (rates.get("slopes") or {}).get("2s10s") or (rates.get("slopes") or {}).get("2Y10Y") or {}
     slope_value = _num(slope.get("value") if isinstance(slope, dict) else None)
     slope_chg = _num(slope.get("chg_prev_bps") if isinstance(slope, dict) else None)
     parts = [
-        "10Y yield {0}".format(_level(ten.get("yield_pct"), "pct")),
+        "10Y yield {0}".format(_level(yield_pct, "pct")),
     ]
     if change is not None:
         parts.append("{0} vs prior session".format(_signed(change, "bps")))
@@ -164,14 +167,14 @@ def _rate_signals(rates: dict[str, Any]) -> list[Signal]:
         parts.append("2s10s {0} ({1})".format(_signed(slope_value, "bps"), shape if slope_chg is not None else "level"))
     text = "{0} (observation {1}).".format("; ".join(parts), ten.get("observation_date") or "—")
     materiality = abs(change or 0) / 100.0 + abs(slope_chg or 0) / 100.0
-    if materiality == 0 and ten.get("yield_pct") is not None:
+    if materiality == 0:
         materiality = 0.01
     return [
         Signal(
             metric_key="ust_10y_session",
             category="Rates",
             label="Treasury 10Y",
-            value=_num(ten.get("yield_pct")),
+            value=yield_pct,
             units="pct",
             change=change,
             comparison_period="prior session",
@@ -371,7 +374,7 @@ def _options_signals(options: dict[str, Any]) -> list[Signal]:
         return []
     text = "{0} 30D ATM IV {1} (session {2}; {3}).".format(
         row.get("underlying_symbol") or "Underlying",
-        _level(iv * 100 if iv <= 3 else iv, "pct"),
+        _level(iv, "pct"),
         row.get("session_date") or "—",
         row.get("delay_label") or "stored snapshot",
     )

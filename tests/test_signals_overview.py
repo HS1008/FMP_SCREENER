@@ -38,6 +38,12 @@ def test_what_matters_omits_missing_and_rejects_nan_as_signal():
         credit={"buckets": [{"bucket": "ig_broad", "oas_bps": None}]},
     )
     assert items == []
+    import math
+
+    nan_items = build_what_matters(
+        rates={"curve": [{"tenor": "10Y", "yield_pct": math.nan, "chg_prev_bps": math.nan, "observation_date": "2026-09-08"}]},
+    )
+    assert nan_items == []
 
 
 def test_credit_sector_coverage_is_unavailable_without_fabricating_values():
