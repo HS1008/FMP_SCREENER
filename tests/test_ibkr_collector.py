@@ -199,3 +199,50 @@ def test_task_xml_does_not_wake_or_require_admin():
     assert "IgnoreNew" in xml
     assert "LogonTrigger" in xml
     assert "ibkr_collector run" in xml
+
+
+def test_eod_task_xml_is_weekday_1620_with_client_72():
+    from ibkr_collector.service_windows import _eod_task_xml
+    from pathlib import Path
+
+    xml = _eod_task_xml(Path("python.exe"), Path("C:/repo"), "dipka")
+    assert "16:20:00" in xml
+    assert "fetch-eod --client-id 72" in xml
+    assert "<Monday />" in xml and "<Friday />" in xml
+    assert "StartWhenAvailable>true" in xml
+
+
+def test_uninstall_removes_collector_and_eod_tasks(monkeypatch):
+    from ibkr_collector import service_windows
+    from ibkr_collector.service_windows import EOD_TASK_NAME, TASK_NAME
+
+    calls: list[list[str]] = []
+
+    class _Result:
+        def __init__(self, code: int = 0):
+            self.returncode = code
+            self.stdout = ""
+            self.stderr = ""
+
+    def fake_run(args):
+        calls.append(list(args))
+        return _Result(0)
+
+    monkeypatch.setattr(service_windows, "stop", lambda: 0)
+    monkeypatch.setattr(service_windows, "_run_schtasks", fake_run)
+    assert service_windows.uninstall() == 0
+    deleted = [" ".join(c) for c in calls if c and c[0] == "/Delete"]
+    assert any(TASK_NAME in item for item in deleted)
+    assert any(EOD_TASK_NAME in item for item in deleted)
+
+
+def test_install_eod_refuses_non_eastern_timezone(monkeypatch, capsys):
+    from ibkr_collector import service_windows
+
+    monkeypatch.setattr(service_windows.os, "name", "nt")
+    monkeypatch.setattr(service_windows, "_windows_timezone_id", lambda: "Pacific Standard Time")
+    monkeypatch.delenv("MI_IBKR_EOD_ALLOW_NON_ET", raising=False)
+    assert service_windows.install_eod() == 3
+    err = capsys.readouterr().err
+    assert "Eastern Standard Time" in err
+    assert "Pacific Standard Time" in err
