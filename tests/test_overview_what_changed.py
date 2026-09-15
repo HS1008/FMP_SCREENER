@@ -38,7 +38,7 @@ def test_dashboard_navigation_groups_research_workspace():
     source = (__import__("pathlib").Path(__file__).resolve().parents[1] / "dashboard.py").read_text(encoding="utf-8")
     assert "st.navigation" in source
     titles = {spec.title for spec in PAGE_SPECS} | set(NAV_SECTIONS)
-    for label in ("Overview", "Markets", "Economy", "Research", "System", "Legacy FMP comparison", "Morning Brief", "Order Flow"):
+    for label in ("Overview", "Markets", "Economy", "Research", "System", "Legacy FMP comparison", "Morning Brief", "Bond Trading Activity"):
         assert label in source or label in titles
     assert "set_registered_pages" in source
     assert any(spec.default for spec in PAGE_SPECS)

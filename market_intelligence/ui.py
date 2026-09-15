@@ -107,6 +107,23 @@ def load_or_stop(fn_name: str, *args: Any, **kwargs: Any) -> Any:
         st.stop()
 
 
+def load_optional(fn_name: str, *args: Any, default: Any = None, **kwargs: Any) -> dict[str, Any]:
+    """Load an optional read model without stopping the page.
+
+    Identity/security failures (``ReadOnlyUnavailable``) still fail closed via
+    :func:`unavailable`. Query/schema failures return ``available=False`` so
+    unrelated categories can render.
+    """
+    empty = {} if default is None else default
+    try:
+        return {"data": cached_read(fn_name, *args, **kwargs), "available": True, "error": None}
+    except ReadOnlyUnavailable as exc:
+        unavailable(exc)
+        return {"data": empty, "available": False, "error": "CONFIGURATION_REQUIRED"}
+    except Exception as exc:  # noqa: BLE001 - contained empty state
+        return {"data": empty, "available": False, "error": exc.__class__.__name__}
+
+
 # ---- formatting -------------------------------------------------------------------------
 
 def _is_missing(value: Any) -> bool:
@@ -208,6 +225,33 @@ def age_text(iso: str | None, *, now: datetime | None = None) -> str:
 
 # ---- heatmap ---------------------------------------------------------------------------------
 
+# Metric-specific near-zero bands. Returns stay in fraction units; spreads use bps.
+HEATMAP_SCALES: dict[str, dict[str, Any]] = {
+    "1D return": {"threshold": 0.005, "as_percent": True, "units_label": "return (fraction)"},
+    "1W return": {"threshold": 0.01, "as_percent": True, "units_label": "return (fraction)"},
+    "1M return": {"threshold": 0.02, "as_percent": True, "units_label": "return (fraction)"},
+    "3M return": {"threshold": 0.03, "as_percent": True, "units_label": "return (fraction)"},
+    "6M return": {"threshold": 0.05, "as_percent": True, "units_label": "return (fraction)"},
+    "12M return": {"threshold": 0.08, "as_percent": True, "units_label": "return (fraction)"},
+    "1D RS": {"threshold": 0.005, "as_percent": True, "units_label": "RS change (fraction)"},
+    "1W RS": {"threshold": 0.01, "as_percent": True, "units_label": "RS change (fraction)"},
+    "1M RS": {"threshold": 0.015, "as_percent": True, "units_label": "RS change (fraction)"},
+    "3M RS": {"threshold": 0.025, "as_percent": True, "units_label": "RS change (fraction)"},
+    "6M RS": {"threshold": 0.04, "as_percent": True, "units_label": "RS change (fraction)"},
+    "12M RS": {"threshold": 0.06, "as_percent": True, "units_label": "RS change (fraction)"},
+    "1D (bps)": {"threshold": 1.0, "as_percent": False, "units_label": "bps", "number_format": "+.0f"},
+    "1W (bps)": {"threshold": 2.0, "as_percent": False, "units_label": "bps", "number_format": "+.0f"},
+    "1M (bps)": {"threshold": 5.0, "as_percent": False, "units_label": "bps", "number_format": "+.0f"},
+}
+
+
+def heatmap_scale_for(column: str) -> dict[str, Any]:
+    return HEATMAP_SCALES.get(
+        column,
+        {"threshold": 0.01, "as_percent": True, "units_label": "value"},
+    )
+
+
 def heat_color(value: Any, *, low_positive_threshold: float = 0.01) -> str:
     """Negative red, positive green, low positive yellow, missing grey (legend on page)."""
     if _is_missing(value):
@@ -232,30 +276,78 @@ def heat_marker(value: Any, *, low_positive_threshold: float = 0.01) -> str:
     return "🟩"
 
 
-def styled_heatmap(frame: pd.DataFrame, value_columns: list[str], *, low_positive_threshold: float = 0.01, as_percent: bool = True):
+def _format_heat_value(value: Any, *, as_percent: bool, number_format: str | None = None) -> str:
+    if _is_missing(value):
+        return "—"
+    v = float(value)
+    if as_percent:
+        return "{0:+.2f}%".format(v * 100)
+    if number_format:
+        return ("{0:" + number_format + "}").format(v)
+    return "{0:+.3f}".format(v)
+
+
+def styled_heatmap(
+    frame: pd.DataFrame,
+    value_columns: list[str],
+    *,
+    low_positive_threshold: float | None = None,
+    as_percent: bool | None = None,
+    column_scales: dict[str, dict[str, Any]] | None = None,
+):
+    """Color numeric columns with metric-specific near-zero bands when known.
+
+    Pass ``column_scales`` or rely on :data:`HEATMAP_SCALES` keys matching column names.
+    Legacy callers may still pass a single ``low_positive_threshold`` / ``as_percent``.
+    """
     display = frame.copy()
+    scales = column_scales or {}
+
+    def _scale(col: str) -> dict[str, Any]:
+        if col in scales:
+            return scales[col]
+        known = heatmap_scale_for(col)
+        if low_positive_threshold is not None or as_percent is not None:
+            return {
+                "threshold": low_positive_threshold if low_positive_threshold is not None else known["threshold"],
+                "as_percent": as_percent if as_percent is not None else known["as_percent"],
+                "units_label": known.get("units_label", "value"),
+                "number_format": known.get("number_format"),
+            }
+        return known
+
     try:
         styler = display.style
     except (AttributeError, ImportError):
-        # pandas Styler needs jinja2 (requirements.txt pins it); degrade to marker + number text so
-        # missing cells still read as "—" and never as zero.
         for col in value_columns:
+            scale = _scale(col)
             display[col] = [
-                "{0} {1}".format(heat_marker(v, low_positive_threshold=low_positive_threshold), "—" if _is_missing(v) else ("{0:+.2f}%".format(v * 100) if as_percent else "{0:+.3f}".format(v)))
+                "{0} {1}".format(
+                    heat_marker(v, low_positive_threshold=float(scale["threshold"])),
+                    _format_heat_value(v, as_percent=bool(scale["as_percent"]), number_format=scale.get("number_format")),
+                )
                 for v in display[col]
             ]
         return display
     for col in value_columns:
-        styler = styler.map(lambda v: heat_color(v, low_positive_threshold=low_positive_threshold), subset=[col])
-    fmt_map = {col: (lambda v: "—" if _is_missing(v) else ("{0:+.2f}%".format(v * 100) if as_percent else "{0:+.3f}".format(v))) for col in value_columns}
+        scale = _scale(col)
+        threshold = float(scale["threshold"])
+        styler = styler.map(lambda v, t=threshold: heat_color(v, low_positive_threshold=t), subset=[col])
+    fmt_map = {}
+    for col in value_columns:
+        scale = _scale(col)
+        pct = bool(scale["as_percent"])
+        number_format = scale.get("number_format")
+        fmt_map[col] = lambda v, p=pct, nf=number_format: _format_heat_value(v, as_percent=p, number_format=nf)
     styler = styler.format(fmt_map, na_rep="—")
     return styler
 
 
-def heatmap_legend(low_positive_threshold: float = 0.01) -> None:
+def heatmap_legend(low_positive_threshold: float = 0.01, *, scale_note: str | None = None) -> None:
+    note = scale_note or "near-zero band is metric-specific (see column labels)"
     st.caption(
-        "Legend: 🟥 negative · 🟨 low positive (0 to {0:.0%}) · 🟩 positive · ⬜ missing (shown as — , never as zero). "
-        "Values are shown numerically in every cell.".format(low_positive_threshold)
+        "Legend: 🟥 negative · 🟨 near zero ({0}) · 🟩 positive · ⬜ missing (shown as — , never as zero). "
+        "Values remain numeric in every cell. Default band example: 0 to {1}.".format(note, low_positive_threshold)
     )
 
 
@@ -290,6 +382,7 @@ def as_date(value: Any) -> date | None:
 
 __all__ = [
     "CACHE_TTL_SECONDS",
+    "HEATMAP_SCALES",
     "age_text",
     "as_date",
     "cached_read",
@@ -301,8 +394,10 @@ __all__ = [
     "heat_color",
     "heat_marker",
     "heatmap_legend",
+    "heatmap_scale_for",
     "history_chart",
     "implied_prior_yield",
+    "load_optional",
     "load_or_stop",
     "page_header",
     "styled_heatmap",

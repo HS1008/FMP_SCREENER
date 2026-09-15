@@ -589,6 +589,16 @@ def credit_context(conn) -> dict[str, Any]:
         "buckets": buckets,
         "coverage_note": "Provider history is limited; percentiles cover only the labeled window (1Y/3Y/AVAILABLE) or are NULL.",
         "attribution": (CATALOG_BY_ID[CREDIT_SERIES[0]].attribution if CREDIT_SERIES else None),
+        "sector_coverage": {
+            "status": "UNAVAILABLE",
+            "sector_oas_available": False,
+            "subsector_oas_available": False,
+            "available_dimensions": ["broad_market", "rating_bucket"],
+            "note": (
+                "Stored ICE BofA OAS series are broad IG/HY and rating buckets only. "
+                "No sector/subsector OAS feed or display-quality bond-sample aggregate is available."
+            ),
+        },
     }
 
 

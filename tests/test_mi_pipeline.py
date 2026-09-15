@@ -821,13 +821,29 @@ def test_pages_render_populated_state_db_only(consumer, page):
     assert not at.exception, [e.value for e in at.exception]
     text_out = _texts(at)
     assert at.title[0].value
-    assert len(at.dataframe) >= 1, "each page shows at least one table when data exists"
-    if page.stem not in {"14_Sector_Rotation_V2", "15_Data_Health", "17_PIT_Sector_Internals", "18_Order_Flow"}:
+    # Overview is intentionally table-light (signals + cards + charts). Options may be empty
+    # when no published snapshots exist. Other pages still show at least one dataframe.
+    if page.stem == "10_Market_Pulse":
+        assert at.metric or at.plotly_chart or at.subheader
+    elif page.stem == "21_Options_Volatility":
+        assert at.info or at.dataframe or at.metric
+    else:
+        assert len(at.dataframe) >= 1, "each page shows at least one table when data exists"
+    fred_exempt = {
+        "14_Sector_Rotation_V2",
+        "15_Data_Health",
+        "17_PIT_Sector_Internals",
+        "18_Order_Flow",
+        "19_Fixed_Income",
+        "21_Options_Volatility",
+    }
+    if page.stem not in fred_exempt:
         assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in text_out
     if page.stem == "10_Market_Pulse":
         assert "not labeled as overnight" in text_out.lower() or "quotes" in text_out.lower()
-        assert "What changed" in text_out
-        assert "Day to day" in text_out
+        assert "What matters" in text_out
+        assert "Market Overview" in text_out or "Category snapshot" in text_out
+        assert "Day to day" not in text_out
     if page.stem == "16_Morning_Context":
         assert at.expander
     if page.stem == "14_Sector_Rotation_V2":
@@ -835,15 +851,17 @@ def test_pages_render_populated_state_db_only(consumer, page):
     if page.stem == "17_PIT_Sector_Internals":
         assert "research_eligible = FALSE" in text_out and "SYNTHETIC_TEST_ONLY" in text_out and "2020-01-01" in text_out
     if page.stem == "18_Order_Flow":
-        assert "Corporate Bond Trading Activity" in text_out
-        assert "not a live order book" in text_out.lower()
+        assert "Corporate Bond Trading Activity" in text_out or "Bond Trading Activity" in text_out
+        assert "not a live order book" in text_out.lower() or "not a live institutional order book" in text_out.lower()
     if page.stem == "19_Fixed_Income":
-        assert "Fixed Income" in text_out
+        assert "Bond Research" in text_out or "Fixed Income" in text_out
         assert "not tax or legal advice" in text_out.lower() or "Yield is not guaranteed" in text_out
     if page.stem == "20_Commodities":
         assert "Commodities" in text_out
         assert "no substitute is invented" in text_out.lower() or "removed from FRED" in text_out
-
+    if page.stem == "21_Options_Volatility":
+        assert "Options" in text_out
+        assert "platform outage" in text_out.lower() or at.dataframe or at.metric
 
 def test_dashboard_entry_point_overview_links_use_registry(consumer):
     from market_intelligence.page_registry import PAGE_BY_ROUTE
@@ -852,16 +870,16 @@ def test_dashboard_entry_point_overview_links_use_registry(consumer):
     assert not at.exception, [e.value for e in at.exception]
     text_out = _texts(at)
     assert "Overview" in text_out or (at.title and "Overview" in str(at.title[0].value))
-    assert "Day to day" in text_out
-    assert "What changed" in text_out
+    assert "What matters" in text_out or "Category snapshot" in text_out
     journeys = (
-        ("sectors", "Sectors"),
-        ("rates", "Rates"),
+        ("sectors", "Equities & Sectors"),
+        ("rates", "Rates & Curve"),
         ("credit", "Credit"),
-        ("macro", "Macro"),
-        ("order_flow", "Order Flow"),
-        ("fixed_income", "Fixed Income"),
-        ("commodities", "Commodities"),
+        ("macro", "Macro & Liquidity"),
+        ("order_flow", "Bond Trading Activity"),
+        ("fixed_income", "Bond Research"),
+        ("commodities", "Commodities & Energy"),
+        ("options", "Options & Volatility"),
     )
     for route_id, title in journeys:
         spec = PAGE_BY_ROUTE[route_id]
