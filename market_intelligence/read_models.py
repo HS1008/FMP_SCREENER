@@ -195,6 +195,7 @@ def source_health(conn, *, today: date | None = None) -> list[dict[str, Any]]:
                 "IBKR_MUNICIPAL_BONDS",
                 "IBKR_CORPORATE_BONDS",
                 "EIA_ENERGY",
+                "OPENFIGI",
                 "FINRA_TRACE",
                 "SEC_EDGAR",
             }

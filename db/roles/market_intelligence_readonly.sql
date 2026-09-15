@@ -87,6 +87,10 @@ GRANT SELECT ON mi_v_ops_status TO mi_readonly;
 GRANT SELECT ON mi_v_provider_observations_current TO mi_readonly;
 GRANT SELECT ON mi_v_cftc_cot_current TO mi_readonly;
 GRANT SELECT ON mi_v_eia_latest TO mi_readonly;
+GRANT SELECT ON mi_v_sec_filings_recent TO mi_readonly;
+GRANT SELECT ON mi_v_financial_metrics_latest TO mi_readonly;
+GRANT SELECT ON mi_v_corporate_events_recent TO mi_readonly;
+GRANT SELECT ON mi_v_openfigi_resolution TO mi_readonly;
 
 SELECT EXISTS (SELECT 1 FROM information_schema.views WHERE table_name = 'mi_v_options_latest') AS has_openbb_options \gset
 \if :has_openbb_options
