@@ -211,16 +211,68 @@ jobs:
               collectors = ibkr_collector_status(conn)
               quotes = ibkr_quotes_latest(conn)
               grant = conn.execute(text("SELECT has_table_privilege(current_user, 'mi_v_finra_aggregate_quarantine', 'SELECT')")).scalar()
+              cftc_table = conn.execute(text("SELECT to_regclass('public.mi_cftc_cot_observations') IS NOT NULL")).scalar()
+              cftc_view = conn.execute(text("SELECT to_regclass('public.mi_v_cftc_cot_current') IS NOT NULL")).scalar()
+              cftc_obs = 0
+              cftc_latest = None
+              cftc_markets = []
+              if cftc_table:
+                  cftc_obs = int(conn.execute(text("SELECT COUNT(*) FROM mi_cftc_cot_observations")).scalar() or 0)
+                  cftc_latest = conn.execute(text("SELECT MAX(report_date)::text FROM mi_cftc_cot_observations")).scalar()
+              if cftc_view:
+                  cftc_markets = [str(r[0]) for r in conn.execute(text("SELECT market FROM mi_v_cftc_cot_current ORDER BY market")).fetchall()]
+              eia_table = conn.execute(text("SELECT to_regclass('public.mi_eia_observations') IS NOT NULL")).scalar()
+              eia_obs = 0
+              eia_latest = None
+              if eia_table:
+                  eia_obs = int(conn.execute(text("SELECT COUNT(*) FROM mi_eia_observations")).scalar() or 0)
+                  eia_latest = conn.execute(text("SELECT MAX(observation_date)::text FROM mi_eia_observations")).scalar()
+              eod_batch_id = None
+              eod_state = None
+              eod_bars = None
+              eod_coverage = None
+              if conn.execute(text("SELECT to_regclass('public.mi_equity_eod_batches') IS NOT NULL")).scalar():
+                  eod_row = conn.execute(text(
+                      """
+                      SELECT batch_id, state, bars_received, coverage_status, finalized_at
+                      FROM mi_equity_eod_batches
+                      WHERE coverage_status = 'COMPLETE' OR state IN ('COMPLETE', 'FINALIZED', 'SUCCEEDED')
+                      ORDER BY COALESCE(finalized_at, updated_at) DESC NULLS LAST
+                      LIMIT 1
+                      """
+                  )).mappings().first()
+                  if eod_row:
+                      eod_batch_id = eod_row.get("batch_id")
+                      eod_state = eod_row.get("state")
+                      eod_bars = eod_row.get("bars_received")
+                      eod_coverage = eod_row.get("coverage_status")
           print("readonly_quarantine_select={0}".format(bool(grant)))
           print("source_count={0}".format(len(health.get("sources") or [])))
           print("stale_count={0}".format(len(health.get("stale") or [])))
           print("failed_transport_count={0}".format(len(health.get("failed_transport") or [])))
           for row in (health.get("sources") or []):
+              sid = str(row.get("source_id") or "")
               acc = str(row.get("access_status") or "")
               fresh = str(row.get("freshness_status") or "")
               label = str(row.get("health_label") or "")
               transport = str(row.get("transport_status") or "")
+              provider_latest = row.get("provider_latest_observation_date")
+              db_latest = row.get("latest_observation_date")
               gated = bool(row.get("retired_optional") or row.get("optional_disabled"))
+              if sid in {"CFTC_COT", "EIA_ENERGY", "FRED", "FINRA_QUERY", "QS_RESEARCH_DELIVERY", "TREASURY_DIRECT", "IBKR_CORPORATE_BONDS", "IBKR_MUNICIPAL_BONDS", "MSRB_EMMA", "SEC_EDGAR"}:
+                  print(
+                      "source_status={0} dataset={1} access={2} freshness={3} label={4} transport={5} db_latest={6} provider_latest={7} gated={8}".format(
+                          sid,
+                          row.get("freshness_dataset") or row.get("dataset"),
+                          acc,
+                          fresh,
+                          label,
+                          transport,
+                          db_latest,
+                          provider_latest,
+                          gated,
+                      )
+                  )
               notable = (not gated) and (
                   fresh in {"STALE", "STALE_INGESTION", "FAILED", "UNKNOWN", "MISSING"}
                   or transport in {"FAILED", "METADATA_REJECTED"}
@@ -233,6 +285,9 @@ jobs:
           for row in (health.get("failed_transport") or []):
               print("failed_source={0} dataset={1} transport={2} access={3}".format(row.get("source_id"), row.get("freshness_dataset") or row.get("dataset"), row.get("transport_status"), row.get("access_status") or row.get("capability_status")))
           print("finra_quarantine_count={0}".format(len(health.get("finra_quarantine") or [])))
+          print("cftc_table={0} cftc_view={1} cftc_obs={2} cftc_latest={3} cftc_markets={4}".format(bool(cftc_table), bool(cftc_view), cftc_obs, cftc_latest, ",".join(cftc_markets)))
+          print("eia_table={0} eia_obs={1} eia_latest={2}".format(bool(eia_table), eia_obs, eia_latest))
+          print("eod_batch_id={0} eod_state={1} eod_bars={2} eod_coverage={3}".format(eod_batch_id, eod_state, eod_bars, eod_coverage))
           capped = flow.get("capped_volume") or {}
           print("capped_identity_validated={0}".format(bool(capped.get("identity_validated"))))
           print("capped_headline_eligible={0}".format(bool(capped.get("headline_eligible"))))
