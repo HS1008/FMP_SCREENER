@@ -1418,7 +1418,10 @@ def render_fixed_income() -> None:
             st.dataframe(pd.DataFrame(activity), use_container_width=True, hide_index=True)
             open_registered_page("order_flow", "Open Order Flow")
     with tab_corporates:
-        st.caption("Primary transaction data is FINRA Query API aggregates. Individual TRACE prints remain ENTITLEMENT_REQUIRED. IBKR corporate quotes are NOT_CONFIGURED.")
+        st.caption(
+            "Primary transaction data is FINRA Query API aggregates. Individual TRACE prints remain ENTITLEMENT_REQUIRED. "
+            "IBKR corporate CUSIP→conId resolution is proven; live quotes need market-data entitlement and PostgreSQL archival is RIGHTS_PENDING."
+        )
         activity_corp = (order_flow.get("breadth") or {}).get("rows") or []
         if activity_corp:
             st.dataframe(pd.DataFrame(activity_corp), use_container_width=True, hide_index=True)
