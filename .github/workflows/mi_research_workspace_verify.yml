@@ -161,6 +161,48 @@ jobs:
                   placeholder = "CHANGE_ME" in value
           print("refresh_env_writer_url={0}".format("placeholder" if placeholder else ("present" if present else "absent")))
           PY
+          # Cancelled Actions SSH sessions can leave orphaned MI writers holding the
+          # PostgreSQL advisory lock; systemd then reports SuccessExitStatus=75 and skips work.
+          echo "clearing_orphaned_mi_writers"
+          pkill -f 'jobs.market_intelligence_refresh' 2>/dev/null || true
+          pkill -f 'jobs.build_morning_context' 2>/dev/null || true
+          pkill -f 'activate_market_intelligence_host.sh' 2>/dev/null || true
+          sleep 2
+          set -a
+          # shellcheck disable=SC1091
+          . /etc/fmp/market_intelligence.env
+          set +a
+          source /root/FMP_SCREENER/venv/bin/activate
+          python - <<'PY'
+          import os
+          from sqlalchemy import create_engine, text
+          from market_intelligence.locking import LOCK_KEY
+          url = (os.environ.get("MARKET_INTELLIGENCE_DATABASE_URL") or "").strip()
+          if not url:
+              print("orphan_lock_clear=skipped_no_writer_url")
+              raise SystemExit(0)
+          engine = create_engine(url)
+          with engine.begin() as conn:
+              rows = conn.execute(
+                  text(
+                      """
+                      SELECT l.pid
+                      FROM pg_locks l
+                      WHERE l.locktype = 'advisory'
+                        AND l.granted
+                        AND l.classid = ((:key::bigint) >> 32)::integer
+                        AND l.objid = ((:key::bigint) & 4294967295)::integer
+                        AND l.pid <> pg_backend_pid()
+                      """
+                  ),
+                  {"key": int(LOCK_KEY)},
+              ).fetchall()
+              print("orphan_lock_pids={0}".format(",".join(str(r[0]) for r in rows) or "none"))
+              for row in rows:
+                  conn.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": int(row[0])})
+          print("orphan_lock_clear=done")
+          PY
+          unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL MARKET_INTELLIGENCE_DATABASE_URL
           set +e
           systemctl start fmp-mi-refresh.service
           start_rc=$?
@@ -168,9 +210,25 @@ jobs:
           echo "refresh_start_rc=${start_rc}"
           echo "refresh_result=$(systemctl show fmp-mi-refresh.service -p Result --value || true)"
           echo "refresh_exec=$(systemctl show fmp-mi-refresh.service -p ExecMainStatus --value || true)"
+          # If contention persists, run one bounded wait-lock refresh so CFTC/FRED still move.
+          exec_status="$(systemctl show fmp-mi-refresh.service -p ExecMainStatus --value || true)"
+          if [ "${exec_status}" = "75" ]; then
+            echo "refresh_retry=wait_lock_all_configured"
+            set -a
+            # shellcheck disable=SC1091
+            . /etc/fmp/market_intelligence.env
+            set +a
+            source /root/FMP_SCREENER/venv/bin/activate
+            set +e
+            python -m jobs.market_intelligence_refresh --all-configured --wait-lock --json
+            retry_rc=$?
+            set -e
+            echo "refresh_retry_rc=${retry_rc}"
+            unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL MARKET_INTELLIGENCE_DATABASE_URL
+          fi
           echo "refresh_journal_sanitized:"
           journalctl -u fmp-mi-refresh.service -n 60 --no-pager -o cat 2>/dev/null \
-            | grep -Ei 'error|traceback|address already|permission|modulenotfound|importerror|failed|started|CONFIGURATION|writer|lock|exit' \
+            | grep -Ei 'error|traceback|address already|permission|modulenotfound|importerror|failed|started|CONFIGURATION|writer|lock|exit|cftc|eia' \
             | grep -viE 'postgres(ql)?://|bearer |password=|api_key|token=|FINRA_CLIENT|FRED_API|DATABASE_URL|MARKET_INTELLIGENCE_DATABASE' \
             || true
           if [ "$start_rc" -ne 0 ]; then
