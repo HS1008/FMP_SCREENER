@@ -462,7 +462,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             elif name == "openfigi":
                 from market_intelligence.openfigi_client import OpenFIGIClient, api_key_from_env as figi_key
                 from market_intelligence.ingest_openfigi import persist_mapping_results
-                from market_intelligence.store import RUN_FAILED, RUN_SUCCEEDED, finish_run, start_run
+                from market_intelligence.store import RUN_SUCCEEDED, finish_run, record_freshness, start_run
 
                 jobs = [{"idType": "TICKER", "idValue": "AAPL", "exchCode": "US"}]
                 client = OpenFIGIClient(figi_key(env))
@@ -471,6 +471,17 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                     rid = start_run(conn, source_id="OPENFIGI", dataset="identifier_mapping", parent_run_id=parent_run_id)
                     counts = persist_mapping_results(conn, mapped)
                     finish_run(conn, rid, status=RUN_SUCCEEDED, counts=counts, details={"jobs": len(jobs)})
+                    record_freshness(
+                        conn,
+                        source_id="OPENFIGI",
+                        dataset="identifier_mapping",
+                        cadence="ON_DEMAND",
+                        transport_status="OK",
+                        latest_observation=None,
+                        success=True,
+                        error_redacted=None,
+                        run_id=rid,
+                    )
                 status["results"][name] = {"status": RUN_SUCCEEDED, "counts": counts}
             elif name == "edgar":
                 from market_intelligence.adapters import EdgarAdapter
