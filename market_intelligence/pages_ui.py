@@ -779,9 +779,13 @@ def render_pit_sector_internals() -> None:
 
 # ---- Data Health -----------------------------------------------------------------------
 
+# Manual EMMA website review is the current workflow. Keep the registered backend
+# available for a future subscription, but omit it from this operational surface.
+_DATA_HEALTH_HIDDEN_SOURCES = frozenset({"MSRB_EMMA"})
+
 def render_data_health() -> None:
-    health = load_or_stop("source_health")
-    runs = load_or_stop("recent_runs", 200)
+    health = [row for row in load_or_stop("source_health") if row.get("source_id") not in _DATA_HEALTH_HIDDEN_SOURCES]
+    runs = [row for row in load_or_stop("recent_runs", 200) if row.get("source_id") not in _DATA_HEALTH_HIDDEN_SOURCES]
     ctx = load_or_stop("data_health_context")
     page_header("Data Health", "Actionable exceptions first. Healthy sources are summarized compactly.", fred=False)
     stale = [row for row in health if str(row.get("freshness_status") or "").upper() in {"STALE", "STALE_INGESTION"} and not row.get("retired_optional")]
@@ -932,7 +936,6 @@ def render_data_health() -> None:
             "FINRA_TRACE",
             "IBKR_CORPORATE_BONDS",
             "IBKR_MUNICIPAL_BONDS",
-            "MSRB_EMMA",
             "CFTC_COT",
             "EIA_ENERGY",
         }
@@ -972,9 +975,9 @@ def render_data_health() -> None:
             st.caption("Engineering detail stays on Data Health. Main pages show only current / delayed / stale / unavailable / blocked.")
             st.write(
                 {
-                    "sources": ops.get("source_count"),
-                    "stale": ops.get("stale_count"),
-                    "failed_transport": ops.get("failed_transport_count"),
+                    "sources": len({row.get("source_id") for row in health}),
+                    "stale": len(stale),
+                    "failed_transport": len(failed),
                     "last_successful_refresh": ops.get("last_successful_refresh"),
                     "research_runs": ops.get("research_run_count"),
                     "latest_research_update": ops.get("latest_research_update"),
