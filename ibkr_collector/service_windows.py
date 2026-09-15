@@ -169,6 +169,37 @@ def provision_token(from_file: str) -> int:
     return 0
 
 
+def _windows_timezone_id() -> str:
+    if os.name != "nt":
+        return ""
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-Command", "[System.TimeZoneInfo]::Local.Id"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return ""
+    return (completed.stdout or "").strip()
+
+
+def _require_eastern_timezone_for_eod() -> bool:
+    """Weekday 16:20 must mean America/New_York, not an arbitrary host local clock."""
+    if os.environ.get("MI_IBKR_EOD_ALLOW_NON_ET", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return True
+    tz_id = _windows_timezone_id()
+    if tz_id == "Eastern Standard Time":
+        return True
+    sys.stderr.write(
+        "Refusing to install {0}: host timezone is {1!r}, not 'Eastern Standard Time'. "
+        "Task Scheduler StartBoundary uses local time; set the Windows timezone to Eastern "
+        "or export MI_IBKR_EOD_ALLOW_NON_ET=1 only if you understand the schedule will follow "
+        "host local time instead of America/New_York.\n".format(EOD_TASK_NAME, tz_id or "unknown")
+    )
+    return False
+
+
 def install() -> int:
     if os.name != "nt":
         sys.stderr.write("Windows Task Scheduler install is only supported on Windows.\n")
@@ -198,6 +229,8 @@ def install_eod() -> int:
     if os.name != "nt":
         sys.stderr.write("Windows Task Scheduler install is only supported on Windows.\n")
         return 3
+    if not _require_eastern_timezone_for_eod():
+        return 3
     cfg = load_config()
     write_example_config(cfg.config_path)
     setup_logging(cfg.log_dir)
@@ -216,7 +249,10 @@ def install_eod() -> int:
     if created.returncode != 0:
         sys.stderr.write(created.stdout + created.stderr)
         return created.returncode
-    sys.stdout.write("Installed task {0} (weekdays 16:20 local, current user, StartWhenAvailable).\n".format(EOD_TASK_NAME))
+    sys.stdout.write(
+        "Installed task {0} (weekdays 16:20 America/New_York via Eastern Standard Time host clock, "
+        "current user, StartWhenAvailable).\n".format(EOD_TASK_NAME)
+    )
     return 0
 
 
@@ -264,11 +300,18 @@ def uninstall() -> int:
     if os.name != "nt":
         return 3
     stop()
-    result = _run_schtasks(["/Delete", "/TN", TASK_NAME, "/F"])
+    collector = _run_schtasks(["/Delete", "/TN", TASK_NAME, "/F"])
+    eod = _run_schtasks(["/Delete", "/TN", EOD_TASK_NAME, "/F"])
+    # schtasks returns 1 when the named task is already absent; treat that as success.
+    ok = collector.returncode in {0, 1} and eod.returncode in {0, 1}
     sys.stdout.write(
-        "Task removed (if it existed). Canonical PostgreSQL market-data rows are not deleted.\n"
+        "Removed tasks {0} and {1} (if present). Canonical PostgreSQL market-data rows are not deleted.\n".format(
+            TASK_NAME, EOD_TASK_NAME
+        )
     )
-    return 0 if result.returncode in {0, 1} else result.returncode
+    if not ok:
+        sys.stderr.write(collector.stdout + collector.stderr + eod.stdout + eod.stderr)
+    return 0 if ok else max(collector.returncode, eod.returncode)
 
 
 def dispatch(command: str, *, from_file: str | None = None) -> int:

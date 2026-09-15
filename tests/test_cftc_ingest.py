@@ -76,3 +76,26 @@ def test_cftc_ingest_writes_watchlist_rows(pg_engine):
         row = conn.execute(text("SELECT market, noncomm_net FROM mi_v_cftc_cot_current")).mappings().one()
     assert row["market"].startswith("GOLD")
     assert int(row["noncomm_net"]) == 20
+
+
+@pytest.mark.usefixtures("pg_engine")
+def test_cftc_empty_payload_is_failed_not_healthy(pg_engine):
+    class _Empty:
+        def latest_rows(self):
+            return []
+
+    report = ingest_cftc(pg_engine, _Empty(), today=date(2026, 9, 14))
+    assert report.failed is True
+    assert report.status == "FAILED"
+    assert report.rows_written == 0
+    assert "zero publishable" in (report.error or "")
+    from sqlalchemy import text
+
+    with pg_engine.connect() as conn:
+        fresh = conn.execute(
+            text(
+                "SELECT transport_status, freshness_status FROM mi_data_freshness "
+                "WHERE source_id = 'CFTC_COT' AND dataset = 'commitment_of_traders'"
+            )
+        ).mappings().one()
+    assert fresh["transport_status"] == "FAILED"

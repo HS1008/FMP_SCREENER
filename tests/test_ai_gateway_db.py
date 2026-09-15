@@ -531,7 +531,9 @@ def test_strategy_summary_hides_holdout_metrics(remote):
     payload = remote.get("/api/v1/strategies?strategy=GW_STRAT", headers=HEADERS).json()
     rows = payload["body"]["strategies"]
     assert rows and all(row["holdout_metrics"] == "NOT_EXPOSED" for row in rows)
-    assert "9.9" not in json.dumps(payload)
+    dumped = json.dumps(payload)
+    # Word-boundary: ISO timestamps like ...09.907519... must not trip a bare "9.9" scan.
+    assert re.search(r"(?<![0-9.])9\.9(?![0-9])", dumped) is None
 
 
 def test_holdout_excluded_is_false_when_the_view_is_missing(consumer, monkeypatch):

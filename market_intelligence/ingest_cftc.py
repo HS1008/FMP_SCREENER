@@ -51,6 +51,23 @@ def ingest_cftc(engine, client: CftcClient | None = None, *, parent_run_id: str 
     markets: set[str] = set()
     with engine.begin() as conn:
         run_id = start_run(conn, source_id=SOURCE_ID, dataset=DATASET, parent_run_id=parent_run_id)
+        if not rows:
+            # HTTP 200 with zero publishable watchlist rows is not a healthy ingest.
+            error = "CFTC returned zero publishable watchlist rows (empty payload or name drift)"
+            finish_run(conn, run_id, status=RUN_FAILED, counts={"received": 0, "inserted": 0}, error_redacted=error)
+            record_freshness(
+                conn,
+                source_id=SOURCE_ID,
+                dataset=DATASET,
+                cadence="W",
+                transport_status="FAILED",
+                latest_observation=None,
+                success=False,
+                error_redacted=error,
+                run_id=run_id,
+                today=today,
+            )
+            return CftcIngestReport(status=RUN_FAILED, failed=True, error=error)
         for row in rows:
             digest = canonical_sha256(row)
             conn.execute(
