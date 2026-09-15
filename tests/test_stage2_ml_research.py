@@ -98,6 +98,7 @@ def test_migration_is_idempotent_and_additive():
         "033_openbb_options_vix.sql",
         "034_provider_neutral_options_delay.sql",
         "035_cftc_cot_and_eia.sql",
+        "036_sec_openfigi.sql",
     ]
     assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})

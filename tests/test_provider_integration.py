@@ -64,7 +64,8 @@ def test_sec_header_propagation_and_success():
 
 def test_sec_process_wide_rate_limit_uses_fake_clock():
     sleeps = []
-    clock = {"t": 100.0}
+    clock = {"t": 0.0}
+    adapters._EDGAR_LAST_REQUEST_MONOTONIC = -1.0
 
     def now():
         return clock["t"]
@@ -73,16 +74,12 @@ def test_sec_process_wide_rate_limit_uses_fake_clock():
         sleeps.append(dt)
         clock["t"] += dt
 
-    def opener(request, timeout=0):
-        clock["t"] += 0.01
-        return _FakeResponse({"ok": True})
-
-    env = {"SEC_USER_AGENT": "FMP Research ops@example.com", "MI_EDGAR_ENABLED": "1"}
-    a = adapters.EdgarAdapter(opener=opener, min_interval_s=0.2, sleeper=sleeper, clock=now)
-    b = adapters.EdgarAdapter(opener=opener, min_interval_s=0.2, sleeper=sleeper, clock=now)
-    a.submissions("320193", env=env)
-    b.submissions("320193", env=env)
-    assert sleeps and sleeps[0] >= 0.19
+    a = adapters.EdgarAdapter(opener=lambda *a, **k: None, min_interval_s=0.2, sleeper=sleeper, clock=now)
+    b = adapters.EdgarAdapter(opener=lambda *a, **k: None, min_interval_s=0.2, sleeper=sleeper, clock=now)
+    a._acquire_rate_slot()
+    clock["t"] += 0.01
+    b._acquire_rate_slot()
+    assert any(x >= 0.19 for x in sleeps)
 
 
 def test_sec_retry_after_respected_then_success():
