@@ -13,13 +13,14 @@ from sqlalchemy import text
 
 from market_intelligence.live_session import (
     DEFAULT_QUOTE_MAX_AGE_SECONDS,
+    REQUIRED_SECTOR_LIVE_SYMBOLS,
     PriceObservation,
     equal_dollar_live_return,
     format_live_quotes_as_of,
-    latest_completed_nyse_session,
     live_relative_strength,
     live_return,
-    normalize_to_100,
+    live_session_pair,
+    normalize_pair_to_100,
     resolve_current_price,
     resolve_prior_close,
     sessions_aligned,
@@ -57,6 +58,7 @@ def load_live_quote_candidates(conn) -> list[dict[str, Any]]:
 
 
 def load_prior_close_bars(conn, *, session: date, symbols: Sequence[str]) -> list[dict[str, Any]]:
+    """Load exact-session closes from EQUITY_EOD and optional YAHOO_EOD fallback source."""
     if not symbols:
         return []
     if _view_exists(conn, "mi_v_equity_daily_closes"):
@@ -66,16 +68,16 @@ def load_prior_close_bars(conn, *, session: date, symbols: Sequence[str]) -> lis
             SELECT symbol, bar_date, adj_close_price, close_price, provider, source_id, adjustment_basis
             FROM mi_v_equity_daily_closes
             WHERE bar_date = :session AND symbol = ANY(:symbols)
+              AND source_id IN ('EQUITY_EOD', 'YAHOO_EOD')
             """,
             {"session": session, "symbols": list(symbols)},
         )
-    # Writer-path / tests may have raw bars without the curated view.
     return _rows(
         conn,
         """
         SELECT instrument_id AS symbol, bar_date, adj_close_price, close_price, provider, source_id, adjustment_basis
         FROM mi_market_bars
-        WHERE bar_interval = '1D' AND source_id = 'EQUITY_EOD'
+        WHERE bar_interval = '1D' AND source_id IN ('EQUITY_EOD', 'YAHOO_EOD')
           AND bar_date = :session AND instrument_id = ANY(:symbols)
         """,
         {"session": session, "symbols": list(symbols)},
@@ -89,6 +91,7 @@ def load_adjusted_history(
     start: date,
     end: date | None = None,
 ) -> list[dict[str, Any]]:
+    """Canonical EQUITY_EOD history only — never mixes YAHOO_EOD into longer windows."""
     if not symbols:
         return []
     end = end or date.today()
@@ -99,6 +102,7 @@ def load_adjusted_history(
             SELECT symbol, bar_date, adj_close_price, close_price, provider, source_id
             FROM mi_v_equity_daily_closes
             WHERE symbol = ANY(:symbols) AND bar_date >= :start AND bar_date <= :end
+              AND source_id = 'EQUITY_EOD'
             ORDER BY symbol, bar_date
             """,
             {"symbols": list(symbols), "start": start, "end": end},
@@ -121,18 +125,19 @@ def resolve_symbol_live(
     symbol: str,
     quote_candidates: Sequence[Mapping[str, Any]],
     prior_bars: Sequence[Mapping[str, Any]],
-    prior_session: date,
+    current_session: date,
+    baseline_session: date,
     now: datetime | None = None,
     max_age_seconds: int = DEFAULT_QUOTE_MAX_AGE_SECONDS,
 ) -> dict[str, Any]:
     current = resolve_current_price(
         quote_candidates,
         symbol=symbol,
-        expected_session=prior_session,
+        current_session=current_session,
         now=now,
         max_age_seconds=max_age_seconds,
     )
-    prior = resolve_prior_close(prior_bars, symbol=symbol, session=prior_session)
+    prior = resolve_prior_close(prior_bars, symbol=symbol, session=baseline_session)
     ret = None
     if current is not None and prior is not None:
         ret = live_return(current.price, prior.price)
@@ -141,7 +146,9 @@ def resolve_symbol_live(
         "live_return": ret,
         "current": current.as_dict() if current else None,
         "prior_close": prior.as_dict() if prior else None,
-        "prior_session": prior_session.isoformat(),
+        "current_session": current_session.isoformat(),
+        "baseline_session": baseline_session.isoformat(),
+        "prior_session": baseline_session.isoformat(),  # back-compat alias
         "available": ret is not None,
     }
 
@@ -174,7 +181,6 @@ def preferred_canonical_sector_rows(rows: Sequence[Mapping[str, Any]]) -> list[d
             continue
         etf = str(row.get("instrument_id") or "")
         expected = SECTOR_PROXIES.get(str(sector))
-        # Top-level table: only known sector ETF proxies (drop theme/legacy oddballs).
         if expected and etf and etf != expected:
             continue
         if not expected and etf and etf not in set(SECTOR_PROXIES.values()):
@@ -202,38 +208,73 @@ def equity_live_context(conn, *, now: datetime | None = None) -> dict[str, Any]:
     now_aware = now or datetime.now(timezone.utc)
     if now_aware.tzinfo is None:
         now_aware = now_aware.replace(tzinfo=timezone.utc)
-    prior_session = latest_completed_nyse_session(now_aware)
+    pair = live_session_pair(now_aware)
+    if pair is None:
+        return {
+            "current_session": None,
+            "baseline_session": None,
+            "prior_session": None,
+            "quotes_as_of": None,
+            "quotes_as_of_label": "Live quotes unavailable",
+            "quotes_available": False,
+            "required_count": len(REQUIRED_SECTOR_LIVE_SYMBOLS),
+            "fresh_count": 0,
+            "by_symbol": {},
+            "spy": None,
+            "note": "Non-NYSE-session day: live 1D is unavailable (no fabricated session).",
+        }
+    current_session = pair.current_session
+    baseline_session = pair.baseline_session
     symbols = sorted(set(UNIVERSE_SYMBOLS) | {BENCHMARK_SPY, "RSP"} | set(SECTOR_PROXIES.values()))
     quotes = load_live_quote_candidates(conn)
-    bars = load_prior_close_bars(conn, session=prior_session, symbols=symbols)
+    bars = load_prior_close_bars(conn, session=baseline_session, symbols=symbols)
     by_symbol: dict[str, dict[str, Any]] = {}
     for symbol in symbols:
         by_symbol[symbol] = resolve_symbol_live(
             symbol=symbol,
             quote_candidates=quotes,
             prior_bars=bars,
-            prior_session=prior_session,
+            current_session=current_session,
+            baseline_session=baseline_session,
             now=now_aware,
         )
     spy = by_symbol.get(BENCHMARK_SPY)
-    observation_times = [
-        datetime.fromisoformat(str((row.get("current") or {}).get("observation_ts")).replace("Z", "+00:00"))
-        for row in by_symbol.values()
-        if (row.get("current") or {}).get("observation_ts")
+    required = list(REQUIRED_SECTOR_LIVE_SYMBOLS)
+    fresh_symbols = [
+        sym
+        for sym in required
+        if (by_symbol.get(sym) or {}).get("current") is not None
     ]
+    observation_times = []
+    for sym in fresh_symbols:
+        raw = ((by_symbol.get(sym) or {}).get("current") or {}).get("observation_ts")
+        if not raw:
+            continue
+        observation_times.append(datetime.fromisoformat(str(raw).replace("Z", "+00:00")))
     quotes_as_of = max(observation_times) if observation_times else None
-    available = bool(observation_times)
+    fresh_count = len(fresh_symbols)
+    available = fresh_count > 0
     return {
-        "prior_session": prior_session.isoformat(),
+        "current_session": current_session.isoformat(),
+        "baseline_session": baseline_session.isoformat(),
+        "prior_session": baseline_session.isoformat(),
         "quotes_as_of": quotes_as_of.isoformat() if quotes_as_of else None,
-        "quotes_as_of_label": format_live_quotes_as_of(quotes_as_of, available=available),
+        "quotes_as_of_label": format_live_quotes_as_of(
+            quotes_as_of,
+            available=available,
+            fresh_count=fresh_count,
+            required_count=len(required),
+        ),
         "quotes_available": available,
+        "required_count": len(required),
+        "fresh_count": fresh_count,
         "by_symbol": by_symbol,
         "spy": spy,
         "note": (
-            "Live 1D uses current last / prior completed-session close. "
-            "Longer windows remain finalized EOD. Yahoo live is an unofficial fallback "
-            "(MI_YAHOO_LIVE_FALLBACK); never labeled as IBKR. INTERNAL_ONLY; no redistribution claim."
+            "Live 1D = current last / previous-session close. After 16:00 ET on session D, "
+            "baseline remains D-1 (never today's close). Longer windows remain finalized EOD. "
+            "Yahoo live/EOD are unofficial fallbacks (MI_YAHOO_LIVE_FALLBACK / MI_YAHOO_EOD_FALLBACK); "
+            "never labeled as IBKR. INTERNAL_ONLY."
         ),
     }
 
@@ -316,7 +357,7 @@ def attach_live_1d_to_subgroup_rows(
 
 
 def spy_rsp_chart_context(conn, *, lookback_days: int = 190, now: datetime | None = None) -> dict[str, Any]:
-    """Normalized SPY vs RSP (first visible point = 100) from stored daily closes."""
+    """Normalized SPY vs RSP: intersect common dates, then both = 100 on first common date."""
     end = (now or datetime.now(timezone.utc)).date()
     start = end - timedelta(days=lookback_days)
     rows = load_adjusted_history(conn, symbols=["SPY", "RSP"], start=start, end=end)
@@ -344,21 +385,16 @@ def spy_rsp_chart_context(conn, *, lookback_days: int = 190, now: datetime | Non
         by_sym[sym].append((day, value))
         if row.get("provider"):
             providers[sym].add(str(row["provider"]))
-    spy_n = normalize_to_100(by_sym["SPY"])
-    rsp_n = normalize_to_100(by_sym["RSP"])
-    # Align to common dates for display cleanliness.
-    spy_map = {d: v for d, v in spy_n}
-    rsp_map = {d: v for d, v in rsp_n}
-    common = sorted(set(spy_map) & set(rsp_map))
-    series = [{"date": d.isoformat(), "SPY": spy_map[d], "RSP": rsp_map[d]} for d in common]
-    as_of = common[-1].isoformat() if common else None
+    aligned = normalize_pair_to_100(by_sym["SPY"], by_sym["RSP"])
+    series = [{"date": d.isoformat(), "SPY": spy_v, "RSP": rsp_v} for d, spy_v, rsp_v in aligned]
+    as_of = aligned[-1][0].isoformat() if aligned else None
     return {
         "series": series,
         "as_of": as_of,
-        "start": common[0].isoformat() if common else None,
+        "start": aligned[0][0].isoformat() if aligned else None,
         "providers": {k: sorted(v) for k, v in providers.items()},
         "available": bool(series),
-        "note": "Normalized to 100 at the first common observation in the window. Cap-weight (SPY) vs equal-weight (RSP) S&P 500 proxies.",
+        "note": "Intersect common dates first; both series = 100 on the first common observation. Cap-weight (SPY) vs equal-weight (RSP).",
     }
 
 

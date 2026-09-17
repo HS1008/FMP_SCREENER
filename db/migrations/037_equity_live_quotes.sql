@@ -76,7 +76,8 @@ ORDER BY symbol, q.source_id, q.quote_ts DESC, q.id DESC;
 COMMENT ON VIEW mi_v_live_quotes_by_source IS
     'Latest last_price quote per symbol and source (IBKR_MARKET_DATA, YAHOO_LIVE). Resolver prefers IBKR when fresh.';
 
--- Daily adjusted closes for dashboard charting / prior-close resolution (EQUITY_EOD only).
+-- Daily adjusted closes for dashboard charting / prior-close resolution.
+-- EQUITY_EOD is canonical history; YAHOO_EOD is exact-session prior-close fallback only.
 CREATE OR REPLACE VIEW mi_v_equity_daily_closes AS
 SELECT
     b.instrument_id AS symbol,
@@ -93,7 +94,30 @@ SELECT
     b.con_id
 FROM mi_market_bars b
 WHERE b.bar_interval = '1D'
-  AND b.source_id = 'EQUITY_EOD';
+  AND b.source_id IN ('EQUITY_EOD', 'YAHOO_EOD');
 
 COMMENT ON VIEW mi_v_equity_daily_closes IS
-    'Curated EQUITY_EOD daily bars for read-only consumers. Provider column preserves IBKR vs Yahoo provenance.';
+    'Curated daily bars: EQUITY_EOD (canonical) plus YAHOO_EOD exact-session prior-close fallback. Longer windows should filter source_id=EQUITY_EOD.';
+
+INSERT INTO mi_source_registry (
+    source_id, provider, dataset, enabled, access_status, source_url, expected_cadence, usage_scope,
+    attribution, terms_notes, units_metadata, catalog_version, updated_at
+) VALUES (
+    'YAHOO_EOD',
+    'Yahoo Finance (yfinance, unofficial)',
+    'equity_daily_prior_close_fallback',
+    FALSE,
+    'OPTIONAL_FALLBACK',
+    '',
+    'D',
+    'INTERNAL_ONLY',
+    'Yahoo Finance via yfinance (unofficial; no SLA).',
+    'Exact-session prior-close fallback when IBKR EQUITY_EOD is missing. Never mixes into longer-horizon EQUITY_EOD history. Never labeled as IBKR.',
+    '{"price":"adjusted_close"}'::jsonb,
+    'equity_live_v1',
+    NOW()
+)
+ON CONFLICT (source_id) DO UPDATE SET
+    terms_notes = EXCLUDED.terms_notes,
+    attribution = EXCLUDED.attribution,
+    updated_at = NOW();

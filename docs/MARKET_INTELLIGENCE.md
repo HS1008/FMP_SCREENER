@@ -60,7 +60,8 @@ write endpoint, or writes from an AI actor.
 | Bond OAS / callable duration / floaters | NOT_IMPLEMENTED (flagged `UNSUPPORTED_NO_OPTION_MODEL`) | `bonds.py` | needs an option / floating-rate model |
 | IBKR market data (quotes) | IMPLEMENTED_AND_TESTED (Windows collector + ingest); live TWS handshake verified | `ibkr_collector/`, `ibkr_ingest/`, migration 016 | existing TWS session; delayed data if unentitled |
 | IBKR equity EOD (`ADJUSTED_LAST` daily bars) | IMPLEMENTED_AND_TESTED. Windows task `FMP_SCREENER_IBKR_EOD` weekdays 16:20 ET via collector venv + this repo; `RestartOnFailure` bounded to 3× every 12 minutes on nonzero exit. RSP added to dashboard EOD universe (not Stage 2). | `ibkr_collector/historical.py`, `ibkr_collector/eod_cli.py`, `ibkr_collector/service_windows.py`, migrations 030-032, 037 | existing TWS on the collector host; DigitalOcean uses `CollectorStoreAdapter` and never opens TWS; remote AI export remains INTERNAL_ONLY |
-| Equities live 1D RS (prior close → current) | IMPLEMENTED. Streamlit reads resolved PostgreSQL quotes/closes only. IBKR live preferred; optional Yahoo live fallback via `MI_YAHOO_LIVE_FALLBACK=1` (`YAHOO_LIVE`, never labeled IBKR). | `live_session.py`, `equity_live.py`, `yahoo_live_quotes.py`, migration 037 | Re-run `install-eod` after pull; refresh Windows watchlist for sector ETFs + RSP; grant new `mi_v_*` views to `mi_readonly` |
+| Equities live 1D RS (prior close → current) | IMPLEMENTED. Streamlit reads resolved PostgreSQL quotes/closes only. IBKR live preferred; optional Yahoo live fallback via `MI_YAHOO_LIVE_FALLBACK=1` (`YAHOO_LIVE`, RTH-only, stale/missing IBKR symbols only; never labeled IBKR). Exact-session prior-close fallback via `YAHOO_EOD` (`MI_YAHOO_EOD_FALLBACK`, inherits live flag). Baseline = previous NYSE session even after 16:00. Headline coverage = SPY + 11 sector ETFs. | `live_session.py`, `equity_live.py`, `yahoo_live_quotes.py`, `yahoo_eod_fallback.py`, migration 037 | Re-run `install-eod` after pull; set Yahoo flags on DO env if desired; refresh Windows watchlist for sector ETFs + RSP; grant new `mi_v_*` views to `mi_readonly` |
+| Weekday 10-minute source-aware catch-up | IMPLEMENTED. Mon–Fri 09:15–18:30 America/New_York heartbeat (`--due-configured`); each dataset independently due-checked; provider calls only when due; 18:30 final catch-up rebuilds analytics/morning; overlap prevented by oneshot + PG advisory lock. | `due_state.py`, `jobs.market_intelligence_refresh`, `deploy/market_intelligence/fmp-mi-refresh.*` | Re-install timers after pull (`install_market_intelligence_timers.sh --apply`) |
 | IBKR orders / account / positions | DISABLED_BY_POLICY | `adapters.py`, `ibkr_collector/readonly_client.py` | no order surface exists |
 | FINRA TRACE | DISABLED_BY_POLICY -> ENTITLEMENT_REQUIRED when enabled | `adapters.py` | `MI_TRACE_ENABLED` + FINRA credentials (still no client) |
 | SEC EDGAR reference | ON_DEMAND when `SEC_USER_AGENT` has a contact email; CONFIGURATION_REQUIRED otherwise | `adapters.py` | Contact email cannot be invented. Scheduled ingest is intentionally off |
@@ -178,10 +179,15 @@ Prerequisites already present: `/root/FMP_SCREENER` checkout with `venv`, Postgr
    * `venv/bin/python -m jobs.build_morning_context --json` and open `pages/16_Morning_Context`.
    Exit codes: 0 ok, 2 partial (JSON says which configured source failed), 75 lock contention.
 5. Timers: `scripts/install_market_intelligence_timers.sh` (dry run prints rendered units and
-   actions), then `--apply` (and `--with-api` for the AI context API). Schedule: weekdays 09:15 and
-   18:30 America/New_York (DST-aware, verified with `systemd-analyze calendar`), randomised delay,
-   `Persistent=true`. Overlap is impossible (oneshot unit + shared PostgreSQL advisory lock -> exit 75).
-   Nothing else on the host (dashboard service, cron lines, live QC sync) is modified. Verify with
+   actions), then `--apply` (and `--with-api` for the AI context API). Schedule: weekdays every
+   10 minutes from 09:15 through 18:30 America/New_York (`--due-configured`; DST-aware,
+   verified with `systemd-analyze calendar`), randomised delay, `Persistent=true`. Each tick
+   evaluates per-dataset due-state and only calls upstream providers when a dataset is due;
+   analytics/morning rebuild at the 18:30 final catch-up. Overlap is impossible (oneshot unit +
+   shared PostgreSQL advisory lock -> exit 75). Manual full run: `--all-configured`. Optional
+   Yahoo live RTH fallback: `MI_YAHOO_LIVE_FALLBACK=1` (stale/missing IBKR symbols only);
+   exact-session prior-close: `MI_YAHOO_EOD_FALLBACK` (inherits live flag when unset). Nothing
+   else on the host (dashboard service, cron lines, live QC sync) is modified. Verify with
    `systemctl list-timers fmp-mi-refresh.timer`, `systemctl status fmp-mi-refresh.service`, and the
    job log `outputs/market_intelligence_refresh.log` (stdout is appended there; secrets are never printed).
 6. AI context API smoke (localhost only):

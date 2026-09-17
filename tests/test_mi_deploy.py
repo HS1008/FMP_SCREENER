@@ -57,7 +57,7 @@ def test_apply_renders_units_idempotently_and_never_touches_other_units(fake_hos
     assert other.read_text() == "[Unit]\nDescription=existing dashboard\n"
     service = (fake_host["systemd"] / "fmp-mi-refresh.service").read_text()
     assert "__" not in re.sub(r"^#.*$", "", service, flags=re.M)
-    assert "ExecStart={0}/venv/bin/python -m jobs.market_intelligence_refresh --all-configured --json".format(fake_host["root"]) in service
+    assert "ExecStart={0}/venv/bin/python -m jobs.market_intelligence_refresh --due-configured --json".format(fake_host["root"]) in service
     assert "EnvironmentFile=-{0}".format(fake_host["env"]) in service
     api = (fake_host["systemd"] / "fmp-ai-context-api.service").read_text()
     assert "--host ${AI_CONTEXT_API_HOST}" in api and "AI_CONTEXT_API_HOST=127.0.0.1" in api
@@ -68,10 +68,16 @@ def test_apply_renders_units_idempotently_and_never_touches_other_units(fake_hos
 
 
 def test_timer_schedule_is_weekday_new_york_and_persistent():
+    from market_intelligence.due_state import catchup_calendar_lines
+
     timer = (TEMPLATES / "fmp-mi-refresh.timer").read_text()
-    assert timer.count("OnCalendar=Mon..Fri") == 3
+    lines = catchup_calendar_lines()
+    assert timer.count("OnCalendar=Mon..Fri") == len(lines)
+    assert "OnCalendar=Mon..Fri 09:15 America/New_York" in timer
     assert "OnCalendar=Mon..Fri 16:05 America/New_York" in timer
+    assert "OnCalendar=Mon..Fri 18:30 America/New_York" in timer
     assert "America/New_York" in timer and "Persistent=true" in timer
+    assert "due-state" in timer.lower() or "10 minutes" in timer.lower() or "catch-up" in timer.lower() or "catch-up" in (TEMPLATES / "fmp-mi-refresh.service").read_text().lower()
 
 
 def test_env_example_has_only_placeholders_and_documents_every_consumed_variable():
@@ -82,7 +88,7 @@ def test_env_example_has_only_placeholders_and_documents_every_consumed_variable
         cleaned = value.split("#")[0].strip().strip('"')
         assert cleaned in {"", "0", "1", "60", "external", "127.0.0.1", "8765", "5432", "fmp", "fmp_writer", "FMP Research ops@example.com", "/root/FMP_SCREENER/outputs/precomputed"} or "CHANGE_ME" in cleaned, (name, value)
     names = {n for n, _ in assigned}
-    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "MI_FMP_FREE", "MI_ALLOW_LEGACY_FMP", "MI_EQUITY_PROVIDER", "MI_TREASURY_ENABLED", "AI_GATEWAY_EXPORT_MODE", "AI_GATEWAY_REMOTE_VALUE_SOURCES", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE", "MI_OPENBB_ENABLED", "MI_OPENBB_OPTIONS_ENABLED", "MI_OPENBB_VIX_ENABLED", "MI_OPENBB_OPTIONS_RIGHTS_ACK", "MI_OPENBB_VIX_RIGHTS_ACK", "MI_OPENBB_CBOE_RIGHTS_ACK", "MI_OPENBB_INSTALL_EXTRA", "MI_OPENBB_INTRADAY_SNAPSHOTS", "MI_IBKR_OPTIONS_ENABLED"):
+    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "MI_FMP_FREE", "MI_ALLOW_LEGACY_FMP", "MI_EQUITY_PROVIDER", "MI_TREASURY_ENABLED", "AI_GATEWAY_EXPORT_MODE", "AI_GATEWAY_REMOTE_VALUE_SOURCES", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE", "MI_OPENBB_ENABLED", "MI_OPENBB_OPTIONS_ENABLED", "MI_OPENBB_VIX_ENABLED", "MI_OPENBB_OPTIONS_RIGHTS_ACK", "MI_OPENBB_VIX_RIGHTS_ACK", "MI_OPENBB_CBOE_RIGHTS_ACK", "MI_OPENBB_INSTALL_EXTRA", "MI_OPENBB_INTRADAY_SNAPSHOTS", "MI_IBKR_OPTIONS_ENABLED", "MI_YAHOO_LIVE_FALLBACK", "MI_YAHOO_EOD_FALLBACK"):
         assert required in names
     # The remote export policy must never be documented as owner-by-default.
     mode = dict(assigned).get("AI_GATEWAY_EXPORT_MODE", "").split("#")[0].strip()
@@ -151,7 +157,7 @@ def test_rendered_units_pass_systemd_verify_and_encode_lock_restart_and_port_sem
     timer = (fake_host["systemd"] / "fmp-mi-refresh.timer").read_text()
     # Overlap: a oneshot unit cannot be started twice concurrently by systemd, and the job itself
     # takes the shared PostgreSQL advisory lock (exit 75 = contention, treated as success for the unit).
-    assert "Type=oneshot" in refresh and "SuccessExitStatus=0 2 75" in refresh and "--all-configured" in refresh
+    assert "Type=oneshot" in refresh and "SuccessExitStatus=0 2 75" in refresh and "--due-configured" in refresh
     assert "TimeoutStartSec=" in refresh and "Restart=" not in refresh  # scheduled job: the timer re-runs it, no restart loop
     # API: localhost only on the documented port, restarts on failure, read-only filesystem, no capabilities.
     assert "Environment=AI_CONTEXT_API_HOST=127.0.0.1" in api and "Environment=AI_CONTEXT_API_PORT=8765" in api

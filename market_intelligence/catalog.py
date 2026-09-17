@@ -430,6 +430,17 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "units_metadata": {"price": "last_trade_or_regular_market"},
     },
     {
+        "source_id": "YAHOO_EOD",
+        "provider": "Yahoo Finance (yfinance, unofficial)",
+        "dataset": "equity_daily_prior_close_fallback",
+        "source_url": "",
+        "expected_cadence": "D",
+        "usage_scope": EXPORT_INTERNAL_ONLY,
+        "attribution": "Yahoo Finance via yfinance (unofficial; no SLA).",
+        "terms_notes": "Exact-session prior-close fallback when IBKR EQUITY_EOD is missing (MI_YAHOO_EOD_FALLBACK / inherits MI_YAHOO_LIVE_FALLBACK). Separate source so IBKR can supersede. Never mixes into longer-horizon EQUITY_EOD history. Streamlit never calls yfinance.",
+        "units_metadata": {"price": "adjusted_close"},
+    },
+    {
         "source_id": "OPENBB_CBOE_OPTIONS",
         "provider": "OpenBB / Cboe",
         "dataset": "cboe_delayed_options_chains",
