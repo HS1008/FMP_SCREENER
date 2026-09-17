@@ -115,8 +115,62 @@ def _yahoo_market_timestamp(info: Mapping[str, Any] | Any) -> datetime | None:
     return None
 
 
+def _yahoo_fast_info_price(info: Mapping[str, Any] | Any) -> float | None:
+    for key in ("last_price", "lastPrice", "regular_market_price", "regularMarketPrice"):
+        raw = info.get(key) if isinstance(info, Mapping) else getattr(info, key, None)
+        try:
+            if raw is not None and raw == raw:
+                return float(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _yahoo_1m_bar_pair(hist: Any) -> tuple[float | None, datetime | None]:
+    """Return (close, bar_ts) from the same latest 1-minute bar, or (None, None)."""
+    if hist is None or getattr(hist, "empty", True):
+        return None, None
+    try:
+        close = hist["Close"].dropna()
+    except Exception:  # noqa: BLE001
+        return None, None
+    if close.empty:
+        return None, None
+    price = float(close.iloc[-1])
+    idx = close.index[-1]
+    if hasattr(idx, "to_pydatetime"):
+        bar_ts = idx.to_pydatetime()
+    elif isinstance(idx, datetime):
+        bar_ts = idx
+    else:
+        return None, None
+    if bar_ts.tzinfo is None:
+        bar_ts = bar_ts.replace(tzinfo=timezone.utc)
+    return price, bar_ts
+
+
+def resolve_yahoo_observation_pair(
+    *,
+    fast_price: float | None,
+    fast_ts: datetime | None,
+    bar_price: float | None,
+    bar_ts: datetime | None,
+) -> tuple[float, datetime, str] | None:
+    """Keep price and timestamp atomic.
+
+    Path A: fast_info price + fast_info market timestamp.
+    Path B: 1-minute bar close + that same bar's timestamp.
+    Never mix fast_info price with a history timestamp (or vice versa).
+    """
+    if fast_price is not None and fast_ts is not None:
+        return float(fast_price), fast_ts, "fast_info"
+    if bar_price is not None and bar_ts is not None:
+        return float(bar_price), bar_ts, "1m_bar"
+    return None
+
+
 def fetch_yahoo_last_prices(symbols: Sequence[str]) -> list[dict[str, Any]]:
-    """Fetch last prices with trustworthy market timestamps. Skip if timestamp missing."""
+    """Fetch last prices with atomic (price, market timestamp) pairs. Skip incomplete pairs."""
     import yfinance as yf  # local import: optional dependency for this writer only
 
     out: list[dict[str, Any]] = []
@@ -130,37 +184,27 @@ def fetch_yahoo_last_prices(symbols: Sequence[str]) -> list[dict[str, Any]]:
                 info = dict(fast) if not isinstance(fast, dict) else fast
         except Exception:  # noqa: BLE001
             info = {}
-        last = None
-        for key in ("last_price", "lastPrice", "regular_market_price", "regularMarketPrice"):
-            raw = info.get(key) if isinstance(info, Mapping) else getattr(info, key, None)
-            try:
-                if raw is not None and raw == raw:
-                    last = float(raw)
-                    break
-            except (TypeError, ValueError):
-                continue
-        quote_ts = _yahoo_market_timestamp(info)
-        # Prefer 1-minute bar close + its index timestamp when fast_info lacks a market time
-        # or lacks a usable last.
-        if last is None or quote_ts is None:
+        fast_price = _yahoo_fast_info_price(info)
+        fast_ts = _yahoo_market_timestamp(info)
+        bar_price: float | None = None
+        bar_ts: datetime | None = None
+        # Only fetch 1m history when Path A is incomplete.
+        if fast_price is None or fast_ts is None:
             try:
                 hist = ticker.history(period="1d", interval="1m")
             except Exception:  # noqa: BLE001
                 hist = None
-            if hist is not None and not getattr(hist, "empty", True):
-                close = hist["Close"].dropna()
-                if not close.empty:
-                    if last is None:
-                        last = float(close.iloc[-1])
-                    idx = close.index[-1]
-                    if hasattr(idx, "to_pydatetime"):
-                        bar_ts = idx.to_pydatetime()
-                        if bar_ts.tzinfo is None:
-                            bar_ts = bar_ts.replace(tzinfo=timezone.utc)
-                        quote_ts = bar_ts
-        if last is None or quote_ts is None:
-            # No trustworthy observation time → do not store as live.
+            bar_price, bar_ts = _yahoo_1m_bar_pair(hist)
+        resolved = resolve_yahoo_observation_pair(
+            fast_price=fast_price,
+            fast_ts=fast_ts,
+            bar_price=bar_price,
+            bar_ts=bar_ts,
+        )
+        if resolved is None:
+            # No trustworthy atomic observation → do not store as live.
             continue
+        last, quote_ts, basis = resolved
         out.append(
             {
                 "symbol": symbol.upper(),
@@ -176,7 +220,7 @@ def fetch_yahoo_last_prices(symbols: Sequence[str]) -> list[dict[str, Any]]:
                     "fallback": True,
                     "rights": "INTERNAL_ONLY_UNVERIFIED",
                     "env_flag": YAHOO_LIVE_FALLBACK_ENV,
-                    "quote_ts_basis": "yahoo_market_or_1m_bar",
+                    "quote_ts_basis": basis,
                 },
             }
         )
@@ -349,6 +393,7 @@ __all__ = [
     "ingest_yahoo_live_quotes",
     "observation_timestamp",
     "refresh_yahoo_live_quotes",
+    "resolve_yahoo_observation_pair",
     "symbols_needing_yahoo_fallback",
     "yahoo_live_fallback_enabled",
 ]

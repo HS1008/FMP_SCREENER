@@ -190,6 +190,68 @@ def test_yahoo_retrieved_at_cannot_pass_freshness():
     assert resolve_current_price([stale_yahoo], symbol="XLE", current_session=current, now=now) is None
 
 
+def test_yahoo_observation_pair_fast_info_complete():
+    from market_intelligence.yahoo_live_quotes import resolve_yahoo_observation_pair
+
+    ts = datetime(2026, 9, 16, 15, 28, tzinfo=ET)
+    pair = resolve_yahoo_observation_pair(
+        fast_price=91.5,
+        fast_ts=ts,
+        bar_price=90.0,
+        bar_ts=datetime(2026, 9, 16, 15, 0, tzinfo=ET),
+    )
+    assert pair is not None
+    price, quote_ts, basis = pair
+    assert price == pytest.approx(91.5)
+    assert quote_ts == ts
+    assert basis == "fast_info"
+
+
+def test_yahoo_observation_pair_uses_bar_when_fast_incomplete():
+    from market_intelligence.yahoo_live_quotes import resolve_yahoo_observation_pair
+
+    bar_ts = datetime(2026, 9, 16, 15, 27, tzinfo=ET)
+    # Price without timestamp → Path B (bar pair), never fast price + bar ts.
+    pair = resolve_yahoo_observation_pair(
+        fast_price=91.5,
+        fast_ts=None,
+        bar_price=90.25,
+        bar_ts=bar_ts,
+    )
+    assert pair == (90.25, bar_ts, "1m_bar")
+    # Timestamp without price → also Path B.
+    pair2 = resolve_yahoo_observation_pair(
+        fast_price=None,
+        fast_ts=datetime(2026, 9, 16, 15, 28, tzinfo=ET),
+        bar_price=90.25,
+        bar_ts=bar_ts,
+    )
+    assert pair2 == (90.25, bar_ts, "1m_bar")
+
+
+def test_yahoo_observation_pair_skips_when_incomplete():
+    from market_intelligence.yahoo_live_quotes import resolve_yahoo_observation_pair
+
+    assert (
+        resolve_yahoo_observation_pair(
+            fast_price=91.5,
+            fast_ts=None,
+            bar_price=None,
+            bar_ts=None,
+        )
+        is None
+    )
+    assert (
+        resolve_yahoo_observation_pair(
+            fast_price=None,
+            fast_ts=datetime(2026, 9, 16, 15, 28, tzinfo=ET),
+            bar_price=90.0,
+            bar_ts=None,
+        )
+        is None
+    )
+
+
 def test_ingest_rejects_quote_ts_equal_retrieved_at():
     from market_intelligence.yahoo_live_quotes import ingest_yahoo_live_quotes
 

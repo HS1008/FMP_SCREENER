@@ -420,23 +420,30 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
     if getattr(args, "due_configured", False):
         from datetime import datetime, timezone
 
-        from market_intelligence.due_state import evaluate_due_steps, in_catchup_window, is_final_catchup
+        from market_intelligence.due_state import build_freshness_index, evaluate_due_steps, in_catchup_window, is_final_catchup
         from sqlalchemy import text
 
         now = datetime.now(timezone.utc)
-        latest_by_source: dict[str, Any] = {}
+        freshness_rows: list[Any] = []
         with engine.connect() as conn:
             try:
-                for row in conn.execute(text("SELECT source_id, latest_observation_date FROM mi_data_freshness")).mappings():
-                    latest_by_source[str(row["source_id"])] = row["latest_observation_date"]
+                freshness_rows = list(
+                    conn.execute(
+                        text("SELECT source_id, dataset, latest_observation_date FROM mi_data_freshness")
+                    ).mappings()
+                )
             except Exception:  # noqa: BLE001 - table may be absent on fresh DBs
-                latest_by_source = {}
+                freshness_rows = []
+        freshness = build_freshness_index(freshness_rows)
         configured_names = [s["step"] for s in the_plan["steps"] if s.get("action") == "ingest"]
+        fred_plan = next((s for s in the_plan["steps"] if s.get("step") == "fred"), None)
+        fred_series_ids = list(fred_plan.get("series") or []) if fred_plan else None
         decisions = evaluate_due_steps(
             now=now,
             env=env,
-            latest_by_source=latest_by_source,
+            freshness=freshness,
             configured_steps=configured_names,
+            fred_series_ids=fred_series_ids or None,
         )
         status["due_state"] = {
             "in_window": in_catchup_window(now),
@@ -451,6 +458,11 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                     step["action"] = "skip_not_due"
                     step["due_reason"] = decision.reason
                     step["due_outcome"] = decision.outcome_if_skip
+                elif decision is not None and decision.due and step["step"] == "fred":
+                    due_series = list((decision.details or {}).get("due_series") or [])
+                    if due_series:
+                        step["series"] = due_series
+                        step["due_reason"] = decision.reason
             elif step.get("action") == "compute" and not is_final_catchup(now):
                 # Avoid rebuilding analytics/morning every 10 minutes; only at 18:30 final catch-up.
                 step["action"] = "skip_not_due"
@@ -491,7 +503,26 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 from market_intelligence.ingest_fred import ingest_fred_catalog
 
                 client = fred_client_factory() if fred_client_factory else FredClient(fred_key)
-                report = ingest_fred_catalog(engine, client, series_ids=args.series or None, mode=args.mode, parent_run_id=parent_run_id, today=as_of)
+                # Due-configured narrows step["series"] to independently due FRED series only.
+                if getattr(args, "due_configured", False) and "series" in step:
+                    series_ids = list(step.get("series") or [])
+                else:
+                    series_ids = args.series or None
+                if series_ids is not None and len(series_ids) == 0:
+                    status["results"][name] = {
+                        "status": RUN_SKIPPED,
+                        "reason": "no_fred_series_due",
+                        "outcome": "SKIPPED_NOT_DUE",
+                    }
+                    continue
+                report = ingest_fred_catalog(
+                    engine,
+                    client,
+                    series_ids=series_ids,
+                    mode=args.mode,
+                    parent_run_id=parent_run_id,
+                    today=as_of,
+                )
                 status["results"][name] = report.as_dict()
                 if report.failed:
                     failures += 1
