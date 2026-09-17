@@ -160,3 +160,85 @@ def test_historical_provider_latest_does_not_mask_calendar_stale():
         upstream_latest=date(2024, 12, 31),
     )
     assert result.status == STALE
+
+
+def test_sofr_is_tplus1_not_same_day_treasury_policy():
+    from market_intelligence.calendars import NY_TZ
+    from market_intelligence.due_state import series_unit_due
+    from market_intelligence.freshness import expected_latest_published, policy_for
+
+    policy = policy_for(series_id="SOFR")
+    assert policy is not None
+    assert policy.same_day_available is False
+    assert policy.observation_lag_sessions == 1
+    assert policy.typical_release == time(8, 0)
+
+    before = datetime(2026, 9, 15, 7, 0, tzinfo=NY_TZ)  # Tuesday before 08:00
+    after = datetime(2026, 9, 15, 8, 30, tzinfo=NY_TZ)
+    late = datetime(2026, 9, 15, 16, 0, tzinfo=NY_TZ)
+    # Monday 14 Sep is prior session; Friday 11 Sep is the prior published print before Tue 08:00.
+    assert expected_latest_published(policy=policy, now=before) == date(2026, 9, 11)
+    assert expected_latest_published(policy=policy, now=after) == date(2026, 9, 14)
+    # After close must NOT flip to same-day Tuesday.
+    assert expected_latest_published(policy=policy, now=late) == date(2026, 9, 14)
+
+    weekend = datetime(2026, 9, 19, 12, 0, tzinfo=NY_TZ)  # Saturday
+    assert expected_latest_published(policy=policy, now=weekend) == date(2026, 9, 17)  # Thu (Fri publishes Mon)
+
+    # Before publish: latest=Fri is current; after publish with only Fri stored -> due for Mon.
+    assert assess_freshness(date(2026, 9, 11), "D", now=before, series_id="SOFR").status == LATEST_AVAILABLE
+    after_missing = assess_freshness(date(2026, 9, 11), "D", now=after, series_id="SOFR")
+    assert after_missing.status in {INGESTION_OVERDUE, AWAITING_RELEASE, STALE}
+    assert series_unit_due(
+        step="fred",
+        source_id="FRED",
+        series_id="SOFR",
+        latest_observation=date(2026, 9, 11),
+        now=after,
+    ).due is True
+    assert series_unit_due(
+        step="fred",
+        source_id="FRED",
+        series_id="SOFR",
+        latest_observation=date(2026, 9, 14),
+        now=after,
+    ).due is False
+
+
+def test_dff_is_tplus1_h15_afternoon_not_same_day():
+    from market_intelligence.calendars import NY_TZ
+    from market_intelligence.due_state import series_unit_due
+    from market_intelligence.freshness import expected_latest_published, policy_for
+
+    policy = policy_for(series_id="DFF")
+    assert policy is not None
+    assert policy.same_day_available is False
+    assert policy.observation_lag_sessions == 1
+    assert policy.typical_release == time(16, 15)
+
+    morning = datetime(2026, 9, 16, 10, 0, tzinfo=NY_TZ)  # Wed before H.15
+    evening = datetime(2026, 9, 16, 16, 30, tzinfo=NY_TZ)
+    # Before 16:15 Wed: Tuesday's print not yet expected on FRED → Monday.
+    assert expected_latest_published(policy=policy, now=morning) == date(2026, 9, 14)
+    assert expected_latest_published(policy=policy, now=evening) == date(2026, 9, 15)
+    # Must never expect calendar-same-day Wednesday.
+    assert expected_latest_published(policy=policy, now=evening) != date(2026, 9, 16)
+
+    assert assess_freshness(date(2026, 9, 14), "D", now=morning, series_id="DFF").status == LATEST_AVAILABLE
+    due = series_unit_due(
+        step="fred",
+        source_id="FRED",
+        series_id="DFF",
+        latest_observation=date(2026, 9, 14),
+        now=evening,
+    )
+    assert due.due is True
+    done = series_unit_due(
+        step="fred",
+        source_id="FRED",
+        series_id="DFF",
+        latest_observation=date(2026, 9, 15),
+        now=evening,
+    )
+    assert done.due is False
+    assert done.outcome_if_skip == "SKIPPED_ALREADY_CURRENT"
