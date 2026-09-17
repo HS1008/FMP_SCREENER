@@ -128,6 +128,19 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "reason": equity_adapter.reason,
             }
         )
+    from market_intelligence.live_session import YAHOO_LIVE_FALLBACK_ENV, yahoo_live_fallback_enabled
+
+    yahoo_on = yahoo_live_fallback_enabled(env)
+    if getattr(args, "yahoo_live", False) or (want_all and yahoo_on):
+        steps.append(
+            {
+                "step": "yahoo_live",
+                "source_id": "YAHOO_LIVE",
+                "configured": yahoo_on,
+                "action": "ingest" if yahoo_on else ("skip_unconfigured" if want_all else "fail_unconfigured"),
+                "reason": "Requires {0}=1. Unofficial yfinance fallback; no SLA; INTERNAL_ONLY.".format(YAHOO_LIVE_FALLBACK_ENV),
+            }
+        )
     from market_intelligence.openbb_provider.config import (
         OPENBB_OPTIONS_SOURCE_ID,
         OPENBB_VIX_SOURCE_ID,
@@ -233,6 +246,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
     parser.add_argument("--equity", action="store_true", help="Ingest independent equity/ETF daily bars")
+    parser.add_argument(
+        "--yahoo-live",
+        action="store_true",
+        help="Optional Yahoo live quote fallback ingest (requires MI_YAHOO_LIVE_FALLBACK=1; INTERNAL_ONLY, never labeled IBKR)",
+    )
     parser.add_argument("--options", action="store_true", help="Ingest OpenBB/Cboe delayed options chains (fails if not configured)")
     parser.add_argument("--vix", action="store_true", help="Ingest OpenBB/Cboe VX_EOD curve (fails if not configured)")
     parser.add_argument("--cftc", action="store_true", help="Ingest public CFTC Commitments of Traders")
@@ -258,8 +276,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.options, args.vix, args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--options/--vix/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, args.options, args.vix, args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--options/--vix/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -430,6 +448,14 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 report = ingest_equity_eod(engine, parent_run_id=parent_run_id, today=as_of, env=env)
                 status["results"][name] = report.as_dict()
                 if report.failed:
+                    failures += 1
+            elif name == "yahoo_live":
+                from market_intelligence.yahoo_live_quotes import refresh_yahoo_live_quotes
+
+                with engine.begin() as conn:
+                    result = refresh_yahoo_live_quotes(conn, env=env)
+                status["results"][name] = result
+                if result.get("status") not in {"OK", "SKIPPED"}:
                     failures += 1
             elif name == "options":
                 from market_intelligence.openbb_provider.ingest import ingest_openbb

@@ -59,7 +59,8 @@ write endpoint, or writes from an AI actor.
 | Bond analytics `bond_analytics_v2`: verified brackets + re-pricing tolerance, honest domains (`UNSUPPORTED_*` statuses), first-coupon stubs, LAST never labelled MID, Z-spread only with documented curve + repricing | IMPLEMENTED_AND_TESTED (analytical cross-checks) | `bonds.py`, `jobs.bond_analytics` | no bond terms/quotes are ingested: every bond is a skip until a source exists |
 | Bond OAS / callable duration / floaters | NOT_IMPLEMENTED (flagged `UNSUPPORTED_NO_OPTION_MODEL`) | `bonds.py` | needs an option / floating-rate model |
 | IBKR market data (quotes) | IMPLEMENTED_AND_TESTED (Windows collector + ingest); live TWS handshake verified | `ibkr_collector/`, `ibkr_ingest/`, migration 016 | existing TWS session; delayed data if unentitled |
-| IBKR equity EOD (`ADJUSTED_LAST` daily bars) | IMPLEMENTED_AND_TESTED. Windows task `FMP_SCREENER_IBKR_EOD` weekdays 16:20 local via collector venv + this repo. 2026-09-14 ET: 46/46 incremental, latest session 2026-09-14, server COMPLETE + finalized | `ibkr_collector/historical.py`, `ibkr_collector/eod_cli.py`, `ibkr_collector/service_windows.py`, migrations 030-032 | existing TWS on the collector host; DigitalOcean uses `CollectorStoreAdapter` and never opens TWS; remote AI export remains INTERNAL_ONLY |
+| IBKR equity EOD (`ADJUSTED_LAST` daily bars) | IMPLEMENTED_AND_TESTED. Windows task `FMP_SCREENER_IBKR_EOD` weekdays 16:20 ET via collector venv + this repo; `RestartOnFailure` bounded to 3× every 12 minutes on nonzero exit. RSP added to dashboard EOD universe (not Stage 2). | `ibkr_collector/historical.py`, `ibkr_collector/eod_cli.py`, `ibkr_collector/service_windows.py`, migrations 030-032, 037 | existing TWS on the collector host; DigitalOcean uses `CollectorStoreAdapter` and never opens TWS; remote AI export remains INTERNAL_ONLY |
+| Equities live 1D RS (prior close → current) | IMPLEMENTED. Streamlit reads resolved PostgreSQL quotes/closes only. IBKR live preferred; optional Yahoo live fallback via `MI_YAHOO_LIVE_FALLBACK=1` (`YAHOO_LIVE`, never labeled IBKR). | `live_session.py`, `equity_live.py`, `yahoo_live_quotes.py`, migration 037 | Re-run `install-eod` after pull; refresh Windows watchlist for sector ETFs + RSP; grant new `mi_v_*` views to `mi_readonly` |
 | IBKR orders / account / positions | DISABLED_BY_POLICY | `adapters.py`, `ibkr_collector/readonly_client.py` | no order surface exists |
 | FINRA TRACE | DISABLED_BY_POLICY -> ENTITLEMENT_REQUIRED when enabled | `adapters.py` | `MI_TRACE_ENABLED` + FINRA credentials (still no client) |
 | SEC EDGAR reference | ON_DEMAND when `SEC_USER_AGENT` has a contact email; CONFIGURATION_REQUIRED otherwise | `adapters.py` | Contact email cannot be invented. Scheduled ingest is intentionally off |
@@ -235,6 +236,9 @@ Prerequisites already present: `/root/FMP_SCREENER` checkout with `venv`, Postgr
       EMPTY is exit `2`. Scheduled `fetch-eod` (dashboard universe, `1 W`) is labelled
       `incremental`; `--backfill` is `backfill`; the five-symbol validation set is `smoke`.
       Uses client id 72 and `eod.lock`; does not share the quote collector lock.
+      Task XML includes bounded `RestartOnFailure` (3 retries, 12 minutes) for nonzero exits;
+      exit codes are preserved (never coerced to 0). Re-run `python -m ibkr_collector install-eod`
+      after pulling so the scheduler picks up the retry policy and RSP universe mapping.
       DigitalOcean `MI_EQUITY_PROVIDER=ibkr` / `ibkr_collector` reports finalized COMPLETE state
       and never opens TWS or promotes OPEN-batch raw bars. Do not enable production collection
       until a multi-session soak succeeds. Do not cancel FMP. Remote AI export of IBKR values

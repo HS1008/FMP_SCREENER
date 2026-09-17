@@ -69,6 +69,12 @@ def _eod_task_xml(python_exe: Path, repo: Path, user: str) -> str:
     <WakeToRun>false</WakeToRun>
     <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
     <Priority>7</Priority>
+    <!-- Bounded retries on nonzero exit (partial/TWS/config). Exit 0 does not restart.
+         eod.lock + IgnoreNew prevent concurrent duplicate collectors. -->
+    <RestartOnFailure>
+      <Interval>PT12M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
   </Settings>
   <Actions Context="Author">
     <Exec>
@@ -251,7 +257,9 @@ def install_eod() -> int:
         return created.returncode
     sys.stdout.write(
         "Installed task {0} (weekdays 16:20 America/New_York via Eastern Standard Time host clock, "
-        "current user, StartWhenAvailable).\n".format(EOD_TASK_NAME)
+        "current user, StartWhenAvailable, RestartOnFailure up to 3 times every 12 minutes on nonzero exit).\n".format(
+            EOD_TASK_NAME
+        )
     )
     return 0
 

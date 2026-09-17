@@ -36,6 +36,8 @@ SECTOR_PROXIES: dict[str, str] = {
 }
 
 BENCHMARK_SPY = "SPY"
+# Equal-weight S&P 500 ETF for dashboard comparison charts only (not Stage 2 research).
+EQUAL_WEIGHT_SPX = "RSP"
 
 # Industry ETF comparisons we actually have as listed ETFs. Empty means explicit unavailable.
 INDUSTRY_PROXIES: dict[str, dict[str, str]] = {
@@ -103,6 +105,7 @@ UNIVERSE_SYMBOLS: tuple[str, ...] = tuple(
     sorted(
         {
             BENCHMARK_SPY,
+            EQUAL_WEIGHT_SPX,
             *SECTOR_PROXIES.values(),
             *(proxy for mapping in INDUSTRY_PROXIES.values() for proxy in mapping.values()),
             *(m for basket in ALL_BASKETS for m in basket.members),
@@ -119,6 +122,7 @@ def baskets_for_sector(sector: str) -> tuple[BasketDef, ...]:
 __all__ = [
     "ALL_BASKETS",
     "BENCHMARK_SPY",
+    "EQUAL_WEIGHT_SPX",
     "BasketDef",
     "INDUSTRY_ETF_COMPARISONS",
     "INDUSTRY_PROXIES",

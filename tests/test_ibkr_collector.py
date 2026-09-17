@@ -210,6 +210,9 @@ def test_eod_task_xml_is_weekday_1620_with_client_72():
     assert "fetch-eod --client-id 72" in xml
     assert "<Monday />" in xml and "<Friday />" in xml
     assert "StartWhenAvailable>true" in xml
+    assert "RestartOnFailure" in xml
+    assert "PT12M" in xml
+    assert "<Count>3</Count>" in xml
 
 
 def test_uninstall_removes_collector_and_eod_tasks(monkeypatch):

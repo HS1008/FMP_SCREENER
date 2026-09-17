@@ -915,14 +915,25 @@ def render_credit_overview() -> None:
 # ---- Sectors ---------------------------------------------------------------------------
 
 def render_sector_rotation_v2() -> None:
+    from market_intelligence.equity_live import (
+        attach_live_1d_to_sector_rows,
+        attach_live_1d_to_subgroup_rows,
+        preferred_canonical_sector_rows,
+        subgroup_rows_for_parent,
+    )
+
     sectors = load_or_stop("sectors_context")
+    live = load_or_stop("equity_live_context")
+    chart = load_or_stop("spy_rsp_chart_context")
     datasets = sectors.get("datasets") or {}
-    rs_rows = datasets.get("ETF_RS_VS_SPY") or []
+    raw_rs = datasets.get("ETF_RS_VS_SPY") or []
+    rs_rows = attach_live_1d_to_sector_rows(preferred_canonical_sector_rows(raw_rs), live)
     page_header(
         "Equities & Sectors",
-        "Sector comparison from stored snapshots. ETF proxies versus SPY unless another benchmark is selected.",
+        "Sector comparison from stored snapshots. Live 1D uses current last vs prior completed session; longer windows stay finalized EOD.",
         fred=False,
         as_of=compact_as_of([row.get("as_of") for row in rs_rows])[0],
+        live_quotes_label=live.get("quotes_as_of_label") or "Live quotes unavailable",
     )
     if not datasets:
         st.info("No sector snapshots stored.")
@@ -931,79 +942,116 @@ def render_sector_rotation_v2() -> None:
     if not pit.get("available"):
         st.caption("Point-in-time constituent internals are not ingested. Current-universe breadth below is a snapshot, not PIT.")
 
+    if chart.get("available") and chart.get("series"):
+        st.subheader("SPY vs RSP")
+        frame = pd.DataFrame(chart["series"])
+        frame["date"] = pd.to_datetime(frame["date"])
+        try:
+            import plotly.graph_objects as go
+
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=frame["date"], y=frame["SPY"], name="SPY", mode="lines"))
+            fig.add_trace(go.Scatter(x=frame["date"], y=frame["RSP"], name="RSP", mode="lines"))
+            fig.update_layout(
+                height=280,
+                margin=dict(l=10, r=10, t=30, b=10),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
+                yaxis_title="Indexed (start = 100)",
+                xaxis_title=None,
+            )
+            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
+        except Exception:  # noqa: BLE001 - plotly optional fallback
+            st.line_chart(frame.set_index("date")[["SPY", "RSP"]])
+        st.caption(
+            "Cap-weight (SPY) vs equal-weight (RSP) S&P 500 proxies, normalized to 100 at the first common observation. "
+            "Data through {0}. Stored EQUITY_EOD closes only.".format(chart.get("as_of") or "—")
+        )
+    else:
+        st.caption("SPY vs RSP chart unavailable until both series have stored EQUITY_EOD history (RSP is in the dashboard EOD universe).")
+
     if rs_rows:
-        benchmarks = sorted({row.get("benchmark") for row in rs_rows if row.get("benchmark")})
-        benchmark = st.selectbox("Benchmark", benchmarks) if len(benchmarks) > 1 else (benchmarks[0] if benchmarks else "SPY")
-        rows = [row for row in rs_rows if row.get("benchmark") == benchmark]
-        metric = st.radio("Heatmap metric", ["Relative strength vs benchmark", "Absolute ETF return"], horizontal=True, key="sector_metric")
-        as_ofs = sorted({row["as_of"] for row in rows if row.get("as_of")})
-        basis = rows[0].get("return_basis") if rows else "—"
-        st.caption("Benchmark {0} · as of {1} · {2} · ETF proxy, not a constituent aggregate.".format(benchmark, ", ".join(as_ofs), basis))
+        metric = st.radio(
+            "Metric",
+            ["Relative Strength", "Absolute Return"],
+            horizontal=True,
+            key="sector_metric",
+            index=0,
+        )
+        as_ofs = sorted({str(row["as_of"]) for row in rs_rows if row.get("as_of")})
+        basis = rs_rows[0].get("return_basis") if rs_rows else "—"
+        st.caption(
+            "Benchmark SPY · EOD as of {0} · {1} · ETF proxy, not a constituent aggregate. "
+            "Live 1D is session-current; 1W+ are finalized historical windows.".format(", ".join(as_ofs), basis)
+        )
         if metric.startswith("Relative"):
             frame = pd.DataFrame(
                 [
                     {
-                        "Sector": row["sector_key"],
-                        "Kind": row["entity_kind"],
+                        "Sector": row.get("canonical_sector") or row["sector_key"],
                         "ETF": row["instrument_id"],
-                        "As of": row["as_of"],
-                        "1D RS": (row["metrics"] or {}).get("rs_chg_1d"),
+                        "Live 1D RS": (row["metrics"] or {}).get("live_rs_chg_1d"),
                         "1W RS": (row["metrics"] or {}).get("rs_chg_1w"),
                         "1M RS": (row["metrics"] or {}).get("rs_chg_1m"),
                         "3M RS": (row["metrics"] or {}).get("rs_chg_3m"),
                         "6M RS": (row["metrics"] or {}).get("rs_chg_6m"),
                         "12M RS": (row["metrics"] or {}).get("rs_chg_12m"),
                     }
-                    for row in rows
+                    for row in rs_rows
                 ]
             )
-            value_cols = [name for name in ("1D RS", "1W RS", "1M RS", "3M RS", "6M RS", "12M RS") if name in frame.columns]
-            st.caption("Relative strength = (1 + asset return) / (1 + benchmark return) − 1 on aligned sessions (adjusted-price ratio). Not arithmetic excess return.")
+            value_cols = [name for name in ("Live 1D RS", "1W RS", "1M RS", "3M RS", "6M RS", "12M RS") if name in frame.columns]
+            st.caption(
+                "Live 1D RS = (1 + live asset return) / (1 + live SPY return) − 1. "
+                "Longer RS windows use finalized adjusted closes on aligned sessions."
+            )
         else:
             frame = pd.DataFrame(
                 [
                     {
-                        "Sector": row["sector_key"],
-                        "Kind": row["entity_kind"],
+                        "Sector": row.get("canonical_sector") or row["sector_key"],
                         "ETF": row["instrument_id"],
-                        "As of": row["as_of"],
-                        "1D return": (row["metrics"] or {}).get("ret_1d"),
-                        "1W return": (row["metrics"] or {}).get("ret_1w"),
-                        "1M return": (row["metrics"] or {}).get("ret_1m"),
-                        "3M return": (row["metrics"] or {}).get("ret_3m"),
-                        "12M return": (row["metrics"] or {}).get("ret_12m"),
+                        "Live 1D Return": (row["metrics"] or {}).get("live_ret_1d"),
+                        "1W Return": (row["metrics"] or {}).get("ret_1w"),
+                        "1M Return": (row["metrics"] or {}).get("ret_1m"),
+                        "3M Return": (row["metrics"] or {}).get("ret_3m"),
+                        "6M Return": (row["metrics"] or {}).get("ret_6m"),
+                        "12M Return": (row["metrics"] or {}).get("ret_12m"),
                     }
-                    for row in rows
+                    for row in rs_rows
                 ]
             )
-            value_cols = [name for name in ("1D return", "1W return", "1M return", "3M return", "12M return") if name in frame.columns]
-            st.caption("Absolute ETF price returns on adjusted close. Missing values are blank, not zero. Dividend treatment is not proven from the vendor name alone.")
+            value_cols = [
+                name
+                for name in ("Live 1D Return", "1W Return", "1M Return", "3M Return", "6M Return", "12M Return")
+                if name in frame.columns
+            ]
+            st.caption("Live 1D Return = current last / prior completed-session close − 1. Longer windows stay finalized EOD.")
         order = {name: i for i, name in enumerate(CANONICAL_SECTORS)}
         frame["_o"] = frame["Sector"].map(lambda name: order.get(name, 99))
         frame = frame.sort_values(["_o", "Sector"]).drop(columns="_o")
         st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
         heatmap_legend(scale_note="each column uses its own near-zero band")
 
-        names = [row["sector_key"] for row in rows]
+        names = [row.get("canonical_sector") or row["sector_key"] for row in rs_rows]
         chosen = st.selectbox("Sector drilldown", names, key="sector_drilldown")
-        selected = next((row for row in rows if row["sector_key"] == chosen), rows[0])
+        selected = next((row for row in rs_rows if (row.get("canonical_sector") or row["sector_key"]) == chosen), rs_rows[0])
         metrics = selected.get("metrics") or {}
         cols = st.columns(6)
-        cols[0].metric("1D ETF return", fmt_signed(metrics.get("ret_1d"), "fraction") if metrics.get("ret_1d") is not None else "—")
-        cols[1].metric("1D RS vs {0}".format(benchmark), fmt_signed(metrics.get("rs_chg_1d"), "fraction") if metrics.get("rs_chg_1d") is not None else "—")
-        cols[2].metric("1M RS vs {0}".format(benchmark), fmt_signed(metrics.get("rs_chg_1m"), "fraction") if metrics.get("rs_chg_1m") is not None else "—")
+        cols[0].metric("Live 1D return", fmt_signed(metrics.get("live_ret_1d"), "fraction") if metrics.get("live_ret_1d") is not None else "—")
+        cols[1].metric("Live 1D RS vs SPY", fmt_signed(metrics.get("live_rs_chg_1d"), "fraction") if metrics.get("live_rs_chg_1d") is not None else "—")
+        cols[2].metric("1M RS vs SPY", fmt_signed(metrics.get("rs_chg_1m"), "fraction") if metrics.get("rs_chg_1m") is not None else "—")
         cols[3].metric("1M ETF return", fmt_signed(metrics.get("ret_1m"), "fraction") if metrics.get("ret_1m") is not None else "—")
         cols[4].metric("vs 50DMA", fmt_signed(metrics.get("pct_vs_50dma"), "fraction") if metrics.get("pct_vs_50dma") is not None else "—")
         cols[5].metric("vs 200DMA", fmt_signed(metrics.get("pct_vs_200dma"), "fraction") if metrics.get("pct_vs_200dma") is not None else "—")
         stale = (selected.get("coverage") or {}).get("price_status")
         if stale == "STALE":
-            st.warning("{0} last price predates the bundle as-of; windowed metrics stay blank rather than being relabelled current.".format(selected.get("instrument_id")))
+            st.warning("{0} last EOD price predates the bundle as-of; windowed metrics stay blank rather than being relabelled current.".format(selected.get("instrument_id")))
 
-        with st.expander("ETF trend and risk"):
+        with st.expander("ETF trend and risk (finalized EOD)"):
             trend = pd.DataFrame(
                 [
                     {
-                        "Sector": row["sector_key"],
+                        "Sector": row.get("canonical_sector") or row["sector_key"],
                         "ETF": row["instrument_id"],
                         "1M return": (row["metrics"] or {}).get("ret_1m"),
                         "3M return": (row["metrics"] or {}).get("ret_3m"),
@@ -1011,7 +1059,7 @@ def render_sector_rotation_v2() -> None:
                         "vs 50DMA": (row["metrics"] or {}).get("pct_vs_50dma"),
                         "vs 200DMA": (row["metrics"] or {}).get("pct_vs_200dma"),
                     }
-                    for row in rows
+                    for row in rs_rows
                 ]
             )
             st.dataframe(styled_heatmap(trend, ["1M return", "3M return", "12M return", "vs 50DMA", "vs 200DMA"]), use_container_width=True, hide_index=True)
@@ -1023,42 +1071,144 @@ def render_sector_rotation_v2() -> None:
         with st.expander("Current-universe breadth (not point-in-time)"):
             st.warning("CURRENT_UNIVERSE_CONTEXT_ONLY: constituent metrics use the current FMP profile universe and current market caps. Research-ineligible; not point-in-time.")
             st.dataframe(
-                pd.DataFrame([{"Sector": row["sector_key"], "As of": row["as_of"], "Universe": (row.get("coverage") or {}).get("universe_size"), "% > 50DMA": fmt((row["metrics"] or {}).get("pct_above_50dma"), "fraction").replace("+", ""), "% > 200DMA": fmt((row["metrics"] or {}).get("pct_above_200dma"), "fraction").replace("+", ""), "EW std": fmt((row["metrics"] or {}).get("equal_weight_std"), None, digits=3), "CW std": fmt((row["metrics"] or {}).get("cap_weight_std"), None, digits=3), "Top5 weight": fmt((row["metrics"] or {}).get("top5_weight"), "fraction").replace("+", "")} for row in disp]),
+                pd.DataFrame(
+                    [
+                        {
+                            "Sector": row["sector_key"],
+                            "As of": row["as_of"],
+                            "Universe": (row.get("coverage") or {}).get("universe_size"),
+                            "% > 50DMA": fmt((row["metrics"] or {}).get("pct_above_50dma"), "fraction").replace("+", ""),
+                            "% > 200DMA": fmt((row["metrics"] or {}).get("pct_above_200dma"), "fraction").replace("+", ""),
+                            "EW std": fmt((row["metrics"] or {}).get("equal_weight_std"), None, digits=3),
+                            "CW std": fmt((row["metrics"] or {}).get("cap_weight_std"), None, digits=3),
+                            "Top5 weight": fmt((row["metrics"] or {}).get("top5_weight"), "fraction").replace("+", ""),
+                        }
+                        for row in disp
+                    ]
+                ),
                 use_container_width=True,
                 hide_index=True,
             )
 
-    st.subheader("Industry and custom subgroups")
+    st.subheader("Industry & Subgroup Leadership")
+    st.warning(
+        "Current-context baskets and industry rows are NOT point-in-time and are not appropriate for trusted historical research."
+    )
     industries = load_or_stop("industries_context")
     ind_datasets = industries.get("datasets") or {}
     if not ind_datasets:
         st.info("No industry or subgroup snapshots stored. A meaningful subgroup is shown as unavailable rather than guessed.")
+        return
+
+    parent_options = sorted(
+        {
+            parent
+            for dataset_name, by_parent in ind_datasets.items()
+            if dataset_name in {"INDUSTRY_RS_VS_SECTOR_ETF", "THEME_RS", "SUBGROUP_UNAVAILABLE"}
+            for parent in (by_parent or {})
+        }
+        | set(CANONICAL_SECTORS)
+    )
+    # Prefer canonical sector labels first in the selector.
+    parent_options = [p for p in CANONICAL_SECTORS if p in parent_options] + [
+        p for p in parent_options if p not in CANONICAL_SECTORS
+    ]
+    parent = st.selectbox("Sector / Theme", parent_options, key="industry_parent")
+    sub_metric = st.radio(
+        "Metric",
+        ["Relative Strength", "Absolute Returns"],
+        horizontal=True,
+        key="industry_metric",
+        index=0,
+    )
+    items, unavailable = subgroup_rows_for_parent(industries, parent)
+    items = attach_live_1d_to_subgroup_rows(items, live, parent_sector=parent)
+    if not items and unavailable:
+        st.info("No curated subgroup is defined for this sector. Coverage is not guessed.")
+        frame = pd.DataFrame(
+            [
+                {
+                    "Sector": row.get("parent_sector_key") or parent,
+                    "Group": row["industry_key"],
+                    "As of": row["as_of"],
+                    "Status": (row.get("coverage") or {}).get("status") or "UNAVAILABLE",
+                }
+                for row in unavailable
+            ]
+        )
+        st.dataframe(frame, use_container_width=True, hide_index=True)
+        return
+    if not items:
+        st.info("No industry or subgroup rows for this selection.")
+        return
+
+    if sub_metric.startswith("Relative"):
+        frame = pd.DataFrame(
+            [
+                {
+                    "Group": row["industry_key"],
+                    "Members / ETF": ", ".join((row.get("coverage") or {}).get("membership") or [])
+                    or row.get("instrument_id")
+                    or "—",
+                    "Live 1D RS": (row["metrics"] or {}).get("live_rs_chg_1d"),
+                    "1W RS": (row["metrics"] or {}).get("rs_chg_1w"),
+                    "1M RS": (row["metrics"] or {}).get("rs_chg_1m"),
+                    "3M RS": (row["metrics"] or {}).get("rs_chg_3m"),
+                    "6M RS": (row["metrics"] or {}).get("rs_chg_6m"),
+                    "12M RS": (row["metrics"] or {}).get("rs_chg_12m"),
+                }
+                for row in items
+            ]
+        )
+        value_cols = [c for c in ("Live 1D RS", "1W RS", "1M RS", "3M RS", "6M RS", "12M RS") if c in frame.columns]
+        st.caption("Subgroup Live 1D RS is versus the parent sector ETF live return (for example Financials → XLF).")
     else:
-        dataset = st.selectbox("Industry dataset", sorted(ind_datasets), key="industry_dataset")
-        parents = sorted(ind_datasets[dataset])
-        parent = st.selectbox("Sector / theme", parents, key="industry_parent")
-        items = ind_datasets[dataset][parent]
-        if dataset == "SUBGROUP_UNAVAILABLE":
-            st.info("No curated subgroup is defined for this sector. Coverage is not guessed.")
-            frame = pd.DataFrame([{"Sector": row.get("parent_sector_key") or parent, "Group": row["industry_key"], "As of": row["as_of"], "Status": (row.get("coverage") or {}).get("status") or "UNAVAILABLE"} for row in items])
-            st.dataframe(frame, use_container_width=True, hide_index=True)
-        elif dataset in {"INDUSTRY_RS_VS_SECTOR_ETF", "THEME_RS"}:
-            frame = pd.DataFrame([{"Group": row["industry_key"], "Id": row["instrument_id"], "As of": row["as_of"], "Benchmark": row["benchmark"], "1D ret": (row["metrics"] or {}).get("ret_1d"), "1D RS": (row["metrics"] or {}).get("rs_chg_1d"), "1W RS": (row["metrics"] or {}).get("rs_chg_1w"), "1M RS": (row["metrics"] or {}).get("rs_chg_1m"), "3M RS": (row["metrics"] or {}).get("rs_chg_3m"), "Coverage": (row.get("coverage") or {}).get("coverage")} for row in items])
-            st.dataframe(styled_heatmap(frame, ["1D ret", "1D RS", "1W RS", "1M RS", "3M RS"]), use_container_width=True, hide_index=True)
-            st.caption("Custom baskets are daily-rebalanced equal-dollar return indexes (current-context membership, not PIT). SMH/XSD are ETF comparisons, not exclusive subindustries. XLK remains the Technology comparison.")
-            chosen_g = st.selectbox("Group membership", [row["industry_key"] for row in items], key="industry_member")
-            detail = next((row for row in items if row["industry_key"] == chosen_g), items[0])
-            cov = detail.get("coverage") or {}
-            st.caption("Members: {0} · used: {1} · missing: {2} · method: {3}".format(
-                ", ".join(cov.get("membership") or []) or "—",
-                ", ".join(cov.get("members_used") or []) or "—",
-                ", ".join(cov.get("members_missing") or []) or "—",
-                cov.get("weighting") or detail.get("return_basis") or "—",
-            ))
-        else:
-            frame = pd.DataFrame([{"Industry": row["industry_key"], "As of": row["as_of"], "Companies": (row["metrics"] or {}).get("company_count"), "EW 1M": (row["metrics"] or {}).get("equal_weight_return_1m"), "CW 1M (current caps)": (row["metrics"] or {}).get("cap_weight_return_1m")} for row in items])
-            st.dataframe(styled_heatmap(frame, ["EW 1M", "CW 1M (current caps)"]), use_container_width=True, hide_index=True)
-        heatmap_legend()
+        frame = pd.DataFrame(
+            [
+                {
+                    "Group": row["industry_key"],
+                    "Members / ETF": ", ".join((row.get("coverage") or {}).get("membership") or [])
+                    or row.get("instrument_id")
+                    or "—",
+                    "Live 1D Return": (row["metrics"] or {}).get("live_ret_1d"),
+                    "1W Return": (row["metrics"] or {}).get("ret_1w"),
+                    "1M Return": (row["metrics"] or {}).get("ret_1m"),
+                    "3M Return": (row["metrics"] or {}).get("ret_3m"),
+                    "6M Return": (row["metrics"] or {}).get("ret_6m"),
+                    "12M Return": (row["metrics"] or {}).get("ret_12m"),
+                }
+                for row in items
+            ]
+        )
+        value_cols = [
+            c for c in ("Live 1D Return", "1W Return", "1M Return", "3M Return", "6M Return", "12M Return") if c in frame.columns
+        ]
+    # Drop columns that are entirely missing so we only show supported horizons.
+    keep = ["Group", "Members / ETF"] + [
+        c for c in value_cols if frame[c].notna().any()
+    ]
+    frame = frame[keep]
+    value_cols = [c for c in value_cols if c in frame.columns]
+    st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
+    st.caption(
+        "Custom baskets are daily-rebalanced equal-dollar indexes (current-context membership, not PIT). "
+        "Missing required members leave Live 1D blank rather than changing composition. "
+        "SMH/XSD and other ETF comparisons are not exclusive subindustries."
+    )
+    chosen_g = st.selectbox("Group details", [row["industry_key"] for row in items], key="industry_member")
+    detail = next((row for row in items if row["industry_key"] == chosen_g), items[0])
+    cov = detail.get("coverage") or {}
+    st.caption(
+        "Members: {0} · used: {1} · missing: {2} · live used: {3} · live missing: {4} · method: {5}".format(
+            ", ".join(cov.get("membership") or []) or "—",
+            ", ".join(cov.get("members_used") or []) or "—",
+            ", ".join(cov.get("members_missing") or []) or "—",
+            ", ".join(cov.get("live_members_used") or []) or "—",
+            ", ".join(cov.get("live_members_missing") or []) or "—",
+            cov.get("weighting") or detail.get("return_basis") or "—",
+        )
+    )
+    heatmap_legend()
 
 
 # ---- PIT / methodology ------------------------------------------------------------------

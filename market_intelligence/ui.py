@@ -49,7 +49,16 @@ def _safe_page_config(title: str) -> None:
         pass
 
 
-def page_header(title: str, caption: str | None = None, *, fred: bool = True, as_of: str | None = None, freshness: str | None = None, warning: str | None = None) -> None:
+def page_header(
+    title: str,
+    caption: str | None = None,
+    *,
+    fred: bool = True,
+    as_of: str | None = None,
+    freshness: str | None = None,
+    warning: str | None = None,
+    live_quotes_label: str | None = None,
+) -> None:
     _safe_page_config(title)
     head = st.columns([5.2, 1.6, 1.0])
     with head[0]:
@@ -57,6 +66,8 @@ def page_header(title: str, caption: str | None = None, *, fred: bool = True, as
         if caption:
             st.caption(caption)
     with head[1]:
+        if live_quotes_label:
+            st.caption(live_quotes_label)
         if as_of or freshness:
             st.caption("As of {0}".format(as_of or "—"))
             if freshness:

@@ -419,6 +419,17 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "units_metadata": {"price": "adjusted_close"},
     },
     {
+        "source_id": "YAHOO_LIVE",
+        "provider": "Yahoo Finance (yfinance, unofficial)",
+        "dataset": "live_quotes_fallback",
+        "source_url": "",
+        "expected_cadence": "INTRADAY",
+        "usage_scope": EXPORT_INTERNAL_ONLY,
+        "attribution": "Yahoo Finance via yfinance (unofficial; no SLA).",
+        "terms_notes": "Optional live-quote fallback when IBKR quotes are missing or stale (MI_YAHOO_LIVE_FALLBACK=1). Never labeled as IBKR. No redistribution rights claimed. Streamlit never calls yfinance.",
+        "units_metadata": {"price": "last_trade_or_regular_market"},
+    },
+    {
         "source_id": "OPENBB_CBOE_OPTIONS",
         "provider": "OpenBB / Cboe",
         "dataset": "cboe_delayed_options_chains",
