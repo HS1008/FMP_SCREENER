@@ -60,6 +60,10 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
             legacy_root = None
     legacy_configured = bool(legacy_root and os.path.isdir(legacy_root))
     want_all = bool(args.all_configured)
+    want_due = bool(getattr(args, "due_configured", False))
+    # Due-configured plans the same configured sources as --all-configured, then filters by due-state.
+    if want_due:
+        want_all = True
     steps: list[dict[str, Any]] = []
     if args.fred or want_all:
         steps.append(
@@ -126,6 +130,30 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "provider": equity_adapter.source_id,
                 "action": "ingest" if equity_ok else ("skip_unconfigured" if want_all else "fail_unconfigured"),
                 "reason": equity_adapter.reason,
+            }
+        )
+    from market_intelligence.live_session import YAHOO_LIVE_FALLBACK_ENV, yahoo_eod_fallback_enabled, yahoo_live_fallback_enabled
+
+    yahoo_on = yahoo_live_fallback_enabled(env)
+    if getattr(args, "yahoo_live", False) or (want_all and yahoo_on):
+        steps.append(
+            {
+                "step": "yahoo_live",
+                "source_id": "YAHOO_LIVE",
+                "configured": yahoo_on,
+                "action": "ingest" if yahoo_on else ("skip_unconfigured" if want_all else "fail_unconfigured"),
+                "reason": "Requires {0}=1. Unofficial yfinance fallback; no SLA; INTERNAL_ONLY.".format(YAHOO_LIVE_FALLBACK_ENV),
+            }
+        )
+    yahoo_eod_on = yahoo_eod_fallback_enabled(env)
+    if getattr(args, "yahoo_eod", False) or (want_all and yahoo_eod_on):
+        steps.append(
+            {
+                "step": "yahoo_eod",
+                "source_id": "YAHOO_EOD",
+                "configured": yahoo_eod_on,
+                "action": "ingest" if yahoo_eod_on else ("skip_unconfigured" if want_all else "fail_unconfigured"),
+                "reason": "Exact-session prior-close fallback when IBKR EQUITY_EOD bar is missing. Separate YAHOO_EOD source.",
             }
         )
     from market_intelligence.openbb_provider.config import (
@@ -233,6 +261,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
     parser.add_argument("--equity", action="store_true", help="Ingest independent equity/ETF daily bars")
+    parser.add_argument(
+        "--yahoo-live",
+        action="store_true",
+        help="Optional Yahoo live quote fallback ingest (requires MI_YAHOO_LIVE_FALLBACK=1; INTERNAL_ONLY, never labeled IBKR)",
+    )
+    parser.add_argument(
+        "--yahoo-eod",
+        action="store_true",
+        help="Optional Yahoo exact-session prior-close fallback (YAHOO_EOD; never mixes into EQUITY_EOD history)",
+    )
     parser.add_argument("--options", action="store_true", help="Ingest OpenBB/Cboe delayed options chains (fails if not configured)")
     parser.add_argument("--vix", action="store_true", help="Ingest OpenBB/Cboe VX_EOD curve (fails if not configured)")
     parser.add_argument("--cftc", action="store_true", help="Ingest public CFTC Commitments of Traders")
@@ -242,6 +280,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--build-analytics", action="store_true", help="Recompute versioned analytics")
     parser.add_argument("--build-morning", action="store_true", help="Build and publish a morning context snapshot")
     parser.add_argument("--all-configured", action="store_true", help="Run every configured step; disabled sources are explicit skips")
+    parser.add_argument(
+        "--due-configured",
+        action="store_true",
+        help="Weekday catch-up mode: evaluate due-state and ingest only datasets that are due (09:15–18:30 ET heartbeat)",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Validate configuration and plan only (no provider calls, no DB writes)")
     parser.add_argument("--probe-config", action="store_true", help="Read-only probe of configuration and DB reachability")
     parser.add_argument("--mode", choices=("incremental", "full"), default="incremental")
@@ -258,8 +301,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.options, args.vix, args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--options/--vix/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -374,6 +417,59 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
         record_individual_trace_limitation(conn)
         parent_run_id = start_run(conn, source_id="ORCHESTRATOR", dataset="market_intelligence_refresh")
 
+    if getattr(args, "due_configured", False):
+        from datetime import datetime, timezone
+
+        from market_intelligence.due_state import build_freshness_index, evaluate_due_steps, in_catchup_window, is_final_catchup
+        from sqlalchemy import text
+
+        now = datetime.now(timezone.utc)
+        freshness_rows: list[Any] = []
+        with engine.connect() as conn:
+            try:
+                freshness_rows = list(
+                    conn.execute(
+                        text("SELECT source_id, dataset, latest_observation_date FROM mi_data_freshness")
+                    ).mappings()
+                )
+            except Exception:  # noqa: BLE001 - table may be absent on fresh DBs
+                freshness_rows = []
+        freshness = build_freshness_index(freshness_rows)
+        configured_names = [s["step"] for s in the_plan["steps"] if s.get("action") == "ingest"]
+        fred_plan = next((s for s in the_plan["steps"] if s.get("step") == "fred"), None)
+        fred_series_ids = list(fred_plan.get("series") or []) if fred_plan else None
+        decisions = evaluate_due_steps(
+            now=now,
+            env=env,
+            freshness=freshness,
+            configured_steps=configured_names,
+            fred_series_ids=fred_series_ids or None,
+        )
+        status["due_state"] = {
+            "in_window": in_catchup_window(now),
+            "final_catchup": is_final_catchup(now),
+            "decisions": [d.as_dict() for d in decisions],
+        }
+        due_map = {d.step: d for d in decisions}
+        for step in the_plan["steps"]:
+            if step.get("action") == "ingest":
+                decision = due_map.get(step["step"])
+                if decision is not None and not decision.due:
+                    step["action"] = "skip_not_due"
+                    step["due_reason"] = decision.reason
+                    step["due_outcome"] = decision.outcome_if_skip
+                elif decision is not None and decision.due and step["step"] == "fred":
+                    due_series = list((decision.details or {}).get("due_series") or [])
+                    if due_series:
+                        step["series"] = due_series
+                        step["due_reason"] = decision.reason
+            elif step.get("action") == "compute" and not is_final_catchup(now):
+                # Avoid rebuilding analytics/morning every 10 minutes; only at 18:30 final catch-up.
+                step["action"] = "skip_not_due"
+                step["due_reason"] = "compute_deferred_to_final_catchup"
+                step["due_outcome"] = "SKIPPED_NOT_DUE"
+                step["source_id"] = step.get("source_id") or step["step"].upper()
+
     for step in the_plan["steps"]:
         name = step["step"]
         if step.get("action") == "skip_unconfigured":
@@ -381,6 +477,21 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             with engine.begin() as conn:
                 rid = start_run(conn, source_id=step["source_id"], dataset=name, parent_run_id=parent_run_id)
                 finish_run(conn, rid, status=RUN_SKIPPED, details={"reason": "not configured"})
+            continue
+        if step.get("action") == "skip_not_due":
+            status["results"][name] = {
+                "status": RUN_SKIPPED,
+                "reason": step.get("due_reason") or "not due",
+                "outcome": step.get("due_outcome") or "SKIPPED_NOT_DUE",
+            }
+            with engine.begin() as conn:
+                rid = start_run(conn, source_id=step["source_id"], dataset=name, parent_run_id=parent_run_id)
+                finish_run(
+                    conn,
+                    rid,
+                    status=RUN_SKIPPED,
+                    details={"reason": step.get("due_reason"), "outcome": step.get("due_outcome")},
+                )
             continue
         if step.get("action") == "fail_unconfigured":
             status["results"][name] = {"status": RUN_FAILED, "reason": "explicitly requested source is not configured"}
@@ -392,7 +503,26 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 from market_intelligence.ingest_fred import ingest_fred_catalog
 
                 client = fred_client_factory() if fred_client_factory else FredClient(fred_key)
-                report = ingest_fred_catalog(engine, client, series_ids=args.series or None, mode=args.mode, parent_run_id=parent_run_id, today=as_of)
+                # Due-configured narrows step["series"] to independently due FRED series only.
+                if getattr(args, "due_configured", False) and "series" in step:
+                    series_ids = list(step.get("series") or [])
+                else:
+                    series_ids = args.series or None
+                if series_ids is not None and len(series_ids) == 0:
+                    status["results"][name] = {
+                        "status": RUN_SKIPPED,
+                        "reason": "no_fred_series_due",
+                        "outcome": "SKIPPED_NOT_DUE",
+                    }
+                    continue
+                report = ingest_fred_catalog(
+                    engine,
+                    client,
+                    series_ids=series_ids,
+                    mode=args.mode,
+                    parent_run_id=parent_run_id,
+                    today=as_of,
+                )
                 status["results"][name] = report.as_dict()
                 if report.failed:
                     failures += 1
@@ -430,6 +560,23 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 report = ingest_equity_eod(engine, parent_run_id=parent_run_id, today=as_of, env=env)
                 status["results"][name] = report.as_dict()
                 if report.failed:
+                    failures += 1
+            elif name == "yahoo_live":
+                from market_intelligence.yahoo_live_quotes import refresh_yahoo_live_quotes
+
+                with engine.begin() as conn:
+                    result = refresh_yahoo_live_quotes(conn, env=env)
+                status["results"][name] = result
+                if result.get("status") not in {"OK", "SKIPPED"}:
+                    failures += 1
+            elif name == "yahoo_eod":
+                from market_intelligence.yahoo_eod_fallback import refresh_yahoo_prior_closes
+                from market_intelligence.yahoo_live_quotes import dashboard_live_symbols
+
+                with engine.begin() as conn:
+                    result = refresh_yahoo_prior_closes(conn, symbols=dashboard_live_symbols(), env=env)
+                status["results"][name] = result
+                if result.get("status") not in {"OK", "SKIPPED"}:
                     failures += 1
             elif name == "options":
                 from market_intelligence.openbb_provider.ingest import ingest_openbb

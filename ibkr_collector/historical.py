@@ -40,6 +40,7 @@ PHASE3_SYMBOLS = ("SPY", "XLK", "XLE", "SMH", "NVDA")
 # SMART + USD + this primaryExchange. Ambiguous leftovers fail closed.
 PRIMARY_EXCHANGE: dict[str, str] = {
     "SPY": "ARCA",
+    "RSP": "ARCA",
     "XLC": "ARCA",
     "XLY": "ARCA",
     "XLP": "ARCA",

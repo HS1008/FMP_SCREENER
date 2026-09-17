@@ -10,12 +10,26 @@ from typing import Any
 
 from ibkr_collector import DEFAULT_CLIENT_ID, DEFAULT_TWS_HOST, DEFAULT_TWS_PORT
 
+# Live quote subscriptions for Equities & Sectors (IBKR preferred). Operator
+# config.json watchlists still override this default when present.
 DEFAULT_WATCHLIST: tuple[dict[str, str], ...] = (
     {"symbol": "SPY", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "RSP", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
     {"symbol": "QQQ", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "NASDAQ"},
     {"symbol": "IWM", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
     {"symbol": "TLT", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "NASDAQ"},
     {"symbol": "HYG", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLC", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLY", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLP", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLE", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLF", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLV", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLI", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLB", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLRE", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLK", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
+    {"symbol": "XLU", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
 )
 
 

@@ -660,6 +660,18 @@ def sectors_context(conn) -> dict[str, Any]:
     }
 
 
+def equity_live_context(conn) -> dict[str, Any]:
+    from market_intelligence.equity_live import equity_live_context as _equity_live_context
+
+    return _equity_live_context(conn)
+
+
+def spy_rsp_chart_context(conn) -> dict[str, Any]:
+    from market_intelligence.equity_live import spy_rsp_chart_context as _spy_rsp_chart_context
+
+    return _spy_rsp_chart_context(conn)
+
+
 def pit_sector_context(conn, *, history_limit: int = MAX_HISTORY_ROWS) -> dict[str, Any]:
     """PIT sector internals (isolated QS producer -> hash-verified artifact -> canonical rows).
 
@@ -1198,6 +1210,8 @@ __all__ = [
     "snapshot_age",
     "ibkr_collector_status",
     "ibkr_quotes_latest",
+    "equity_live_context",
+    "spy_rsp_chart_context",
     "industries_context",
     "industry_latest",
     "macro_context",

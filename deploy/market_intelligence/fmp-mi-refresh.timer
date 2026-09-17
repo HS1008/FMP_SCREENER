@@ -1,14 +1,68 @@
-# Two weekday runs in New York time: after the 08:30 ET macro releases settle, and after the
-# Treasury/ICE daily closes are published (typically by ~18:00 ET). Weekends are skipped;
-# holiday-aware staleness is judged by the freshness assessor, not by the timer.
+# Weekday catch-up window in America/New_York: every 10 minutes from 09:15 through 18:30.
+# Each tick runs a due-state evaluation; provider calls occur only for datasets that are due.
+# Persistent=true catches up after host restarts. DST is handled by the America/New_York calendar.
 [Unit]
-Description=Schedule FMP Market Intelligence refresh
+Description=Schedule FMP Market Intelligence due-state catch-up refresh
 
 [Timer]
 OnCalendar=Mon..Fri 09:15 America/New_York
+OnCalendar=Mon..Fri 09:25 America/New_York
+OnCalendar=Mon..Fri 09:35 America/New_York
+OnCalendar=Mon..Fri 09:45 America/New_York
+OnCalendar=Mon..Fri 09:55 America/New_York
+OnCalendar=Mon..Fri 10:05 America/New_York
+OnCalendar=Mon..Fri 10:15 America/New_York
+OnCalendar=Mon..Fri 10:25 America/New_York
+OnCalendar=Mon..Fri 10:35 America/New_York
+OnCalendar=Mon..Fri 10:45 America/New_York
+OnCalendar=Mon..Fri 10:55 America/New_York
+OnCalendar=Mon..Fri 11:05 America/New_York
+OnCalendar=Mon..Fri 11:15 America/New_York
+OnCalendar=Mon..Fri 11:25 America/New_York
+OnCalendar=Mon..Fri 11:35 America/New_York
+OnCalendar=Mon..Fri 11:45 America/New_York
+OnCalendar=Mon..Fri 11:55 America/New_York
+OnCalendar=Mon..Fri 12:05 America/New_York
+OnCalendar=Mon..Fri 12:15 America/New_York
+OnCalendar=Mon..Fri 12:25 America/New_York
+OnCalendar=Mon..Fri 12:35 America/New_York
+OnCalendar=Mon..Fri 12:45 America/New_York
+OnCalendar=Mon..Fri 12:55 America/New_York
+OnCalendar=Mon..Fri 13:05 America/New_York
+OnCalendar=Mon..Fri 13:15 America/New_York
+OnCalendar=Mon..Fri 13:25 America/New_York
+OnCalendar=Mon..Fri 13:35 America/New_York
+OnCalendar=Mon..Fri 13:45 America/New_York
+OnCalendar=Mon..Fri 13:55 America/New_York
+OnCalendar=Mon..Fri 14:05 America/New_York
+OnCalendar=Mon..Fri 14:15 America/New_York
+OnCalendar=Mon..Fri 14:25 America/New_York
+OnCalendar=Mon..Fri 14:35 America/New_York
+OnCalendar=Mon..Fri 14:45 America/New_York
+OnCalendar=Mon..Fri 14:55 America/New_York
+OnCalendar=Mon..Fri 15:05 America/New_York
+OnCalendar=Mon..Fri 15:15 America/New_York
+OnCalendar=Mon..Fri 15:25 America/New_York
+OnCalendar=Mon..Fri 15:35 America/New_York
+OnCalendar=Mon..Fri 15:45 America/New_York
+OnCalendar=Mon..Fri 15:55 America/New_York
 OnCalendar=Mon..Fri 16:05 America/New_York
+OnCalendar=Mon..Fri 16:15 America/New_York
+OnCalendar=Mon..Fri 16:25 America/New_York
+OnCalendar=Mon..Fri 16:35 America/New_York
+OnCalendar=Mon..Fri 16:45 America/New_York
+OnCalendar=Mon..Fri 16:55 America/New_York
+OnCalendar=Mon..Fri 17:05 America/New_York
+OnCalendar=Mon..Fri 17:15 America/New_York
+OnCalendar=Mon..Fri 17:25 America/New_York
+OnCalendar=Mon..Fri 17:35 America/New_York
+OnCalendar=Mon..Fri 17:45 America/New_York
+OnCalendar=Mon..Fri 17:55 America/New_York
+OnCalendar=Mon..Fri 18:05 America/New_York
+OnCalendar=Mon..Fri 18:15 America/New_York
+OnCalendar=Mon..Fri 18:25 America/New_York
 OnCalendar=Mon..Fri 18:30 America/New_York
-RandomizedDelaySec=300
+RandomizedDelaySec=60
 Persistent=true
 Unit=fmp-mi-refresh.service
 

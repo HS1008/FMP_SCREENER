@@ -558,17 +558,18 @@ def test_eod_lock_is_separate_from_quote_lock(tmp_path):
 
 
 def test_full_partial_and_empty_universe_coverage_exit_codes():
+    n = len(UNIVERSE_SYMBOLS)
     ok_rows = [_ok_result(symbol, [_raw_bar(date(2026, 9, 10), 10.0 + i)], con_id=1000 + i) for i, symbol in enumerate(UNIVERSE_SYMBOLS)]
     full = coverage_summary(ok_rows, requested=list(UNIVERSE_SYMBOLS))
     assert full["overall"] == "FULL_SUCCESS"
-    assert full["successful"] == 46
+    assert full["successful"] == n
     assert full["failed"] == 0
     assert exit_code_for_coverage(full) == 0
     partial_rows = list(ok_rows)
     partial_rows[-1] = SymbolFetchResult(symbol=UNIVERSE_SYMBOLS[-1], status=STATUS_TIMEOUT)
     partial = coverage_summary(partial_rows, requested=list(UNIVERSE_SYMBOLS))
     assert partial["overall"] == "PARTIAL_SUCCESS"
-    assert partial["successful"] == 45
+    assert partial["successful"] == n - 1
     assert partial["failed_symbols"][UNIVERSE_SYMBOLS[-1]] == STATUS_TIMEOUT
     assert exit_code_for_coverage(partial) == 1
     empty = coverage_summary(
@@ -577,7 +578,7 @@ def test_full_partial_and_empty_universe_coverage_exit_codes():
     )
     assert empty["overall"] == "FAILED"
     assert empty["successful"] == 0
-    assert empty["failed"] == 46
+    assert empty["failed"] == n
     assert exit_code_for_coverage(empty) == 2
 
 

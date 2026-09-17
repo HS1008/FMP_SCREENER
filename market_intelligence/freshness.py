@@ -20,7 +20,6 @@ from market_intelligence.calendars import (
     NY_TZ,
     is_session,
     last_completed_session,
-    next_session,
     previous_session,
     sessions_between,
 )
@@ -74,6 +73,8 @@ class FreshnessPolicy:
     reference_lag_days: int = 0
     same_day_available: bool = False
     week_ending: str | None = None
+    # For overnight reference rates: observation date trails the publish day by N sessions.
+    observation_lag_sessions: int = 0
     notes: str = ""
 
 
@@ -87,6 +88,25 @@ def _daily_treasury() -> FreshnessPolicy:
         stale_sessions=3,
         same_day_available=True,
         notes="Treasury par yields: indicative quotations near 15:30 ET; not a guaranteed API publish time.",
+    )
+
+
+def _overnight_reference_rate(*, typical_release: time, notes: str) -> FreshnessPolicy:
+    """Overnight money-market reference rates: observation date is T-1 vs publish day.
+
+    SOFR / EFFR (and FRED DFF via H.15) publish the prior business day's rate on the
+    next business morning/afternoon — never a same-calendar-day observation.
+    """
+    return FreshnessPolicy(
+        calendar=CAL_US_FEDERAL,
+        cadence="D",
+        typical_release=typical_release,
+        publication_guaranteed=False,
+        overdue_sessions=1,
+        stale_sessions=3,
+        same_day_available=False,
+        observation_lag_sessions=1,
+        notes=notes,
     )
 
 
@@ -122,8 +142,17 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
         "UST_NOM_1Y", "UST_NOM_2Y", "UST_NOM_3Y", "UST_NOM_5Y", "UST_NOM_7Y", "UST_NOM_10Y",
         "UST_NOM_20Y", "UST_NOM_30Y",
         "UST_REAL_5Y", "UST_REAL_7Y", "UST_REAL_10Y", "UST_REAL_20Y", "UST_REAL_30Y",
-        "DFF", "SOFR",
     )},
+    # Overnight reference rates: observation date is the prior business day; never same-day.
+    # SOFR: NY Fed ~08:00 ET for prior session. DFF via FRED/H.15: ~16:15 ET for prior session.
+    "SOFR": _overnight_reference_rate(
+        typical_release=time(8, 0),
+        notes="SOFR: NY Fed publishes prior business day's rate ~08:00 ET (T+1). Not same-day.",
+    ),
+    "DFF": _overnight_reference_rate(
+        typical_release=time(16, 15),
+        notes="EFFR/DFF: prior business day's effective rate; FRED/H.15 typically ~16:15 ET (T+1). Not same-day.",
+    ),
     **{sid: FreshnessPolicy(calendar=CAL_NYSE, cadence="D", typical_release=time(16, 0), overdue_sessions=1, stale_sessions=3, same_day_available=True, notes="US equity/ETF last completed session.") for sid in (
         "SPY", "XLK", "XLF", "XLE", "XLY", "XLP", "XLV", "XLI", "XLB", "XLU", "XLRE", "XLC", "SMH", "XSD",
         "equity_eod", "precomputed_sector_bundles",
@@ -263,6 +292,17 @@ def expected_latest_published(
         close = policy.typical_release or time(16, 0)
         if policy.publication_guaranteed:
             return last_completed_session(local, policy.calendar, session_close=close)
+        lag = max(int(policy.observation_lag_sessions or 0), 0)
+        if lag >= 1:
+            # Overnight T+1 rates: after release on session day D, expect prior session;
+            # before release (or on non-session days), expect one additional session back.
+            steps = lag
+            if (not is_session(today, policy.calendar)) or local.timetz().replace(tzinfo=None) < close:
+                steps += 1
+            cursor = today
+            for _ in range(steps):
+                cursor = previous_session(cursor, policy.calendar)
+            return cursor
         # Not a guaranteed publish time: after the typical window the previous
         # completed session is expected; before it, the session before that may
         # still be the latest *available* print.

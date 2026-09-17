@@ -10,9 +10,10 @@ Type=oneshot
 User=__USER__
 WorkingDirectory=__ROOT__
 EnvironmentFile=-__ENV_FILE__
-# --all-configured: unconfigured sources are explicit skips, never failures.
+# --due-configured: weekday catch-up heartbeat; provider calls only when a dataset is due.
 # Exit 0 ok, 2 partial (some configured source failed), 75 lock contention (another writer holds the lock).
-ExecStart=__ROOT__/venv/bin/python -m jobs.market_intelligence_refresh --all-configured --json
+# Outside 09:15–18:30 ET the job exits 0 with SKIPPED_NOT_DUE. Use --all-configured for a full manual run.
+ExecStart=__ROOT__/venv/bin/python -m jobs.market_intelligence_refresh --due-configured --json
 SuccessExitStatus=0 2 75
 TimeoutStartSec=45min
 Nice=10

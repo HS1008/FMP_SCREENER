@@ -43,7 +43,7 @@ from market_intelligence.read_models import (
 )
 from market_intelligence.readonly_db import ReadOnlyUnavailable, readonly_connection
 from market_intelligence.sector_mapping import CANONICAL_SECTORS, CLASSIFICATION_VERSION
-from market_intelligence.source_resolve import TIE_PREFERENCE, prefer_rows_by_group
+from market_intelligence.source_resolve import TIE_PREFERENCE
 from market_intelligence.taxonomy import (
     ALL_BASKETS,
     INDUSTRY_PROXIES,
@@ -351,22 +351,12 @@ def _preferred_sector_rows(sectors: dict[str, Any]) -> tuple[list[dict[str, Any]
 
     Retrieval time is ignored. EQUITY_EOD beats FMP_LEGACY only on a same-date tie.
     A newer FMP_LEGACY row beats stale EQUITY_EOD. Null dates are dropped.
+    Canonical SECTOR rows only (themes excluded from the top-level sector table).
     """
+    from market_intelligence.equity_live import preferred_canonical_sector_rows
+
     rows = list((sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or [])
-    prepared: list[dict[str, Any]] = []
-    for row in rows:
-        item = dict(row)
-        if not item.get("canonical_sector") and item.get("sector_key"):
-            item["canonical_sector"] = item.get("sector_key")
-        prepared.append(item)
-    chosen_maps = prefer_rows_by_group(
-        prepared,
-        group_key="canonical_sector",
-        date_keys=("as_of", "observation_date"),
-        source_key="source_id",
-        preference=TIE_PREFERENCE,
-    )
-    chosen = [dict(row) for row in chosen_maps]
+    chosen = preferred_canonical_sector_rows(rows)
     sources = sorted({str(r.get("source_id")) for r in chosen if r.get("source_id")})
     primary = None
     if sources:
