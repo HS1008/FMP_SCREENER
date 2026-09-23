@@ -27,6 +27,7 @@ FAMILY_LABELS = {
     "PAIRS_STAT_ARB": "Pairs",
     "CROSS_SECTIONAL_PIT": "Cross-Sectional",
     "CROSS_SECTIONAL_FACTOR": "Cross-Sectional Factor",
+    "HIGH_BETA_ROTATION": "High-beta rotation",
 }
 ASSET_LABELS = {
     "BOND_ETF": "Bond ETF",
@@ -40,6 +41,7 @@ MODE_LABELS = {
     "ML_DISCOVERY": "ML Discovery",
     "MANUAL": "Manual",
     "AUTO": "Auto",
+    "HIGH_BETA_ROTATION": "High-beta rotation",
 }
 MODEL_LABELS = {
     "elasticnet": "ElasticNet",
