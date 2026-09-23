@@ -111,11 +111,19 @@ def load_platform_run_ids(engine, strategy_id: str) -> list[str]:
 
 
 HBR_RUN_IDS_SQL = """
-SELECT DISTINCT research_run_id
+SELECT research_run_id
 FROM research_runs
 WHERE research_kind = 'high_beta_rotation_rule_v1'
   AND strategy_id = :strategy_id
-ORDER BY 1
+ORDER BY research_run_id
+"""
+
+HBR_RUN_ROWS_SQL = """
+SELECT research_run_id, run_status, first_seen_at, last_seen_at
+FROM research_runs
+WHERE research_kind = 'high_beta_rotation_rule_v1'
+  AND strategy_id = :strategy_id
+ORDER BY research_run_id
 """
 
 HBR_ARTIFACTS_SQL = """
@@ -133,6 +141,39 @@ def load_hbr_run_ids(engine, strategy_id: str) -> list[str]:
     if rows is None or rows.empty:
         return []
     return [str(value) for value in rows["research_run_id"].dropna().astype(str).tolist() if value]
+
+
+def _present(value: Any) -> Any:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text in {"", "NaT", "None", "nan"}:
+        return None
+    return value
+
+
+def load_hbr_run_rows(engine, strategy_id: str) -> list[dict[str, Any]]:
+    """Run identity rows. Recency is select_hbr_run, not this SQL order."""
+    if not strategy_id:
+        return []
+    rows = read_sql(engine, HBR_RUN_ROWS_SQL, {"strategy_id": strategy_id})
+    if rows is None or rows.empty:
+        return []
+    loaded: list[dict[str, Any]] = []
+    for _, row in rows.iterrows():
+        run_id = row.get("research_run_id")
+        if run_id is None or str(run_id).strip() == "":
+            continue
+        status = row.get("run_status")
+        loaded.append(
+            {
+                "research_run_id": str(run_id),
+                "run_status": None if status is None or str(status).strip() == "" else str(status),
+                "first_seen_at": _present(row.get("first_seen_at")),
+                "last_seen_at": _present(row.get("last_seen_at")),
+            }
+        )
+    return loaded
 
 
 def load_hbr_artifact_rows(engine, research_run_id: str) -> list[dict[str, Any]]:
@@ -317,8 +358,10 @@ HBR_STRATEGY_ROWS_SQL = """
                 strategy_id AS name,
                 'research' AS environment,
                 CASE
-                    WHEN COALESCE(run_status, '') IN ('', 'HUMAN_REVIEW_REQUIRED', 'RESEARCH_COMPLETE')
+                    WHEN COALESCE(run_status, '') IN ('COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE')
                     THEN 'COMPLETE'
+                    WHEN COALESCE(run_status, '') = ''
+                    THEN 'INCOMPLETE'
                     ELSE run_status
                 END AS status,
                 NULL::varchar AS qc_project_id,

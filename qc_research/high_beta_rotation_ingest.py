@@ -13,6 +13,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+from sqlalchemy import text
+
 from qc_research.contracts.hashing import (
     ArtifactHashError,
     payload_for_hash,
@@ -94,22 +96,74 @@ def _finite(value: Any, path: str) -> None:
     raise IngestError("unsupported type {0} at {1}".format(type(value).__name__, path or "<root>"))
 
 
-def _reject_dates(value: Any, path: str) -> None:
+_METADATA_DATE_KEYS = {
+    "generated_at",
+    "created_at",
+    "synced_at",
+    "updated_at",
+    "first_seen_at",
+    "last_seen_at",
+    "ingested_at",
+    "commit_timestamp",
+    "artifact_created_at",
+}
+_OBSERVATION_DATE_KEYS = {
+    "performance_start",
+    "performance_end",
+    "session",
+    "sessions",
+    "start",
+    "end",
+    "label_end",
+    "signal_session",
+    "trade_session",
+    "history_start",
+    "history_end",
+    "backtest_start",
+    "backtest_end",
+    "as_of",
+    "ex_date",
+    "delist_session",
+    "window_start",
+    "window_end",
+}
+
+
+def _observation_key(key: str) -> bool:
+    if not key or key in _METADATA_DATE_KEYS or key in _HOLDOUT_KEYS:
+        return False
+    if key in _OBSERVATION_DATE_KEYS:
+        return True
+    return key.endswith("_session") or key.endswith("_date")
+
+
+def _reject_dates(value: Any, path: str, key: str = "") -> None:
+    """Reject sealed market dates. Leave ingestion and commit timestamps alone."""
+    if key in _METADATA_DATE_KEYS:
+        return
+    if key in _HOLDOUT_KEYS and value == HOLDOUT_START:
+        return
+    observe = _observation_key(key)
     if isinstance(value, str):
+        if not observe:
+            return
         for found in _ISO_DATE.findall(value):
             if found >= HOLDOUT_START:
-                raise IngestError("date {0} at {1} is inside the sealed window".format(found, path or "<root>"))
+                raise IngestError(
+                    "market or research date {0} at {1} is inside the sealed window".format(
+                        found, path or key or "<root>"
+                    )
+                )
         return
     if isinstance(value, list):
+        child_key = "session" if key == "sessions" else (key if observe else "")
         for index, item in enumerate(value):
-            _reject_dates(item, "{0}[{1}]".format(path, index))
+            _reject_dates(item, "{0}[{1}]".format(path, index), child_key)
         return
     if isinstance(value, dict):
-        for key, item in value.items():
-            child = "{0}.{1}".format(path, key) if path else str(key)
-            if key in _HOLDOUT_KEYS and item == HOLDOUT_START:
-                continue
-            _reject_dates(item, child)
+        for child_key, item in value.items():
+            child = "{0}.{1}".format(path, child_key) if path else str(child_key)
+            _reject_dates(item, child, str(child_key))
 
 
 def _artifact_key(run_id: str, artifact_type: str, digest: str) -> str:
@@ -374,14 +428,70 @@ ON CONFLICT (strategy_id) DO UPDATE SET
 """
 
 
+SELECT_RUN_LOCK_SQL = """
+SELECT research_kind, run_status
+FROM research_runs
+WHERE research_run_id = :research_run_id
+FOR UPDATE
+"""
+
+SELECT_ARTIFACT_LOCK_SQL = """
+SELECT artifact_key, artifact_type, sha256
+FROM research_artifacts
+WHERE research_run_id = :research_run_id
+FOR UPDATE
+"""
+
+
+def _mapping_rows(result: Any) -> list[dict[str, Any]]:
+    if result is None:
+        return []
+    mappings = getattr(result, "mappings", None)
+    if mappings is None:
+        return []
+    return [dict(row) for row in mappings()]
+
+
+def load_prior_locked(conn: Any, run_id: str) -> PriorState:
+    """Read and lock the existing run before deciding whether a write is new."""
+    conn.execute(
+        text("SELECT pg_advisory_xact_lock(hashtext(:research_run_id)::bigint)"),
+        {"research_run_id": run_id},
+    )
+    run_rows = _mapping_rows(conn.execute(text(SELECT_RUN_LOCK_SQL), {"research_run_id": run_id}))
+    artifact_rows = _mapping_rows(
+        conn.execute(text(SELECT_ARTIFACT_LOCK_SQL), {"research_run_id": run_id})
+    )
+    state = PriorState()
+    if run_rows:
+        state.run_kinds[run_id] = str(run_rows[0].get("research_kind") or "")
+        state.run_status[run_id] = str(run_rows[0].get("run_status") or "")
+    for row in artifact_rows:
+        key = str(row.get("artifact_key") or "")
+        if key:
+            state.artifact_sha[key] = str(row.get("sha256") or "")
+    return state
+
+
 def ingest_hbr_bundle(conn: Any, bundle: Mapping[str, Any], *, prior: PriorState | None = None) -> dict[str, Any]:
-    """Validate, then write. A validation error performs no executes."""
-    state = prior or PriorState()
+    """Validate, then write. Production locks the run when prior is omitted."""
+    if prior is not None:
+        return _write_bundle(conn, bundle, prior)
+    validate_bundle(bundle, PriorState())
+    begin = getattr(conn, "begin", None)
+    if begin is None:
+        raise IngestError("production ingest requires a transactional connection that can lock existing rows")
+    with conn.begin():
+        state = load_prior_locked(conn, str(bundle.get("research_run_id") or ""))
+        return _write_bundle(conn, bundle, state)
+
+
+def _write_bundle(conn: Any, bundle: Mapping[str, Any], state: PriorState) -> dict[str, Any]:
     validate_bundle(bundle, state)
     record = dict(bundle)
     run_id = str(record["research_run_id"])
     conn.execute(
-        UPSERT_RUN_SQL,
+        text(UPSERT_RUN_SQL),
         {
             "research_run_id": run_id,
             "strategy_id": STRATEGY_ID,
@@ -410,7 +520,7 @@ def ingest_hbr_bundle(conn: Any, bundle: Mapping[str, Any], *, prior: PriorState
             skipped.append(key)
             continue
         conn.execute(
-            INSERT_ARTIFACT_SQL,
+            text(INSERT_ARTIFACT_SQL),
             {
                 "artifact_key": key,
                 "research_run_id": run_id,
@@ -423,7 +533,7 @@ def ingest_hbr_bundle(conn: Any, bundle: Mapping[str, Any], *, prior: PriorState
         )
         written.append(key)
     conn.execute(
-        REGISTER_STRATEGY_SQL,
+        text(REGISTER_STRATEGY_SQL),
         {
             "strategy_id": STRATEGY_ID,
             "name": "High-beta rotation",

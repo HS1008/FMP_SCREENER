@@ -29,6 +29,7 @@ from qc_research.ml_monitor_ui import (
 from qc_research.high_beta_rotation_monitor import (
     build_hbr_monitor_view,
     format_hbr_metric,
+    select_hbr_run,
 )
 from qc_research.read_models.monitor_queries import (
     format_ops_identity_caption,
@@ -36,7 +37,7 @@ from qc_research.read_models.monitor_queries import (
     load_backtests_frame,
     load_equity_history_frame,
     load_hbr_artifact_rows,
-    load_hbr_run_ids,
+    load_hbr_run_rows,
     load_latest_positions_frame,
     load_latest_snapshot_row,
     load_ops_identity,
@@ -631,6 +632,12 @@ def _render_hbr_section(view):
     """Display a stored high-beta rotation view. No writes and no launches."""
     st.markdown("### High-beta rotation")
     st.caption(view.get("historical_label") or "")
+    st.write(
+        "Research status: {0} ({1}).".format(
+            view.get("run_status") or "unavailable",
+            view.get("evidence_status") or "unavailable",
+        )
+    )
     st.info(
         "Economic rating: {0}. {1}. This section reads stored research only.".format(
             view.get("economic_rating") or "UNRATED",
@@ -782,10 +789,10 @@ def _render_live_monitor_body(
     # =========================================================
 
     show_hbr = False
-    hbr_run_ids: list[str] = []
+    hbr_run = None
     try:
-        hbr_run_ids = load_hbr_run_ids(engine, strategy_id)
-        show_hbr = bool(hbr_run_ids)
+        hbr_run = select_hbr_run(load_hbr_run_rows(engine, strategy_id))
+        show_hbr = hbr_run is not None
     except Exception:
         logger.exception(
             "Strategy Monitor failed to read high-beta rotation ids for strategy_id=%s",
@@ -796,11 +803,15 @@ def _render_live_monitor_body(
             "A query failure is not treated as missing research."
         )
         show_hbr = False
-    if show_hbr:
+    if show_hbr and hbr_run is not None:
         try:
-            hbr_run_id = hbr_run_ids[-1]
+            hbr_run_id = str(hbr_run["research_run_id"])
             hbr_view = build_hbr_monitor_view(
-                {"strategy_id": strategy_id, "research_run_id": hbr_run_id},
+                {
+                    "strategy_id": strategy_id,
+                    "research_run_id": hbr_run_id,
+                    "run_status": hbr_run.get("run_status"),
+                },
                 load_hbr_artifact_rows(engine, hbr_run_id),
             )
             _render_hbr_section(hbr_view)

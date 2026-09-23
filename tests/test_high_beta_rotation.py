@@ -11,14 +11,18 @@ import pytest
 from qc_research.contracts.hashing import canonical_dumps, payload_for_hash, sha256_payload
 from qc_research.high_beta_rotation_ingest import (
     BLOCKED_RUN_ID,
+    REQUIRED_COMPLETE_KINDS,
     IngestError,
     PriorState,
     blocked_transport_bundle,
     ingest_hbr_bundle,
 )
 from qc_research.high_beta_rotation_monitor import (
+    REQUIRED_COMPLETE_EVIDENCE,
     build_hbr_monitor_view,
+    evidence_status_for_run,
     format_hbr_metric,
+    select_hbr_run,
 )
 from qc_research.read_models.monitor_queries import (
     HBR_STRATEGY_ROWS_SQL,
@@ -36,8 +40,61 @@ class FakeConn:
     def __init__(self):
         self.calls = []
 
+    def begin(self):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
     def execute(self, statement, params=None):
         self.calls.append((str(statement), params))
+        return _EmptyResult()
+
+
+class _EmptyResult:
+    def mappings(self):
+        return []
+
+
+class LockConn(FakeConn):
+    """Production path with an existing COMPLETE artifact and no caller PriorState."""
+
+    def __init__(self):
+        super().__init__()
+        self.artifact_inserts = 0
+
+    def execute(self, statement, params=None):
+        sql = str(statement)
+        self.calls.append((sql, params))
+        if "INSERT INTO research_artifacts" in sql:
+            self.artifact_inserts += 1
+        return _LockResult(sql)
+
+
+class _LockResult:
+    def __init__(self, sql):
+        self.sql = sql
+
+    def mappings(self):
+        if "FROM research_runs" in self.sql and "FOR UPDATE" in self.sql:
+            return [
+                {
+                    "research_kind": "high_beta_rotation_rule_v1",
+                    "run_status": "COMPLETE",
+                }
+            ]
+        if "FROM research_artifacts" in self.sql and "FOR UPDATE" in self.sql:
+            return [
+                {
+                    "artifact_key": "{0}|run_summary|old".format(BLOCKED_RUN_ID),
+                    "artifact_type": "run_summary",
+                    "sha256": "old",
+                }
+            ]
+        return []
 
 
 def test_monitor_module_is_read_only():
@@ -198,3 +255,121 @@ def test_monitor_keeps_null_distinct_from_zero():
     assert canonical_dumps(body) == json.dumps(
         body, sort_keys=True, separators=(",", ":"), ensure_ascii=True, allow_nan=False
     )
+    assert view["evidence_status"] == "blocked_incomplete"
+
+
+def test_status_sql_keeps_review_and_blank_distinct_from_complete():
+    assert "HUMAN_REVIEW_REQUIRED" in PLATFORM_STRATEGY_ROWS_SQL
+    assert "HUMAN_REVIEW_REQUIRED" not in HBR_STRATEGY_ROWS_SQL
+    assert "THEN 'INCOMPLETE'" in HBR_STRATEGY_ROWS_SQL
+    assert "NON_HOLDOUT_COMPLETE" in HBR_STRATEGY_ROWS_SQL
+    assert "hbr_run_ids[-1]" not in PAGE
+    assert "select_hbr_run" in PAGE
+    assert REQUIRED_COMPLETE_EVIDENCE == REQUIRED_COMPLETE_KINDS
+    assert evidence_status_for_run("HUMAN_REVIEW_REQUIRED") == "human_review_required"
+    assert evidence_status_for_run("BLOCKED_TRANSPORT") == "blocked_incomplete"
+    assert evidence_status_for_run("") == "incomplete"
+    assert evidence_status_for_run("COMPLETE", {}) == "incomplete"
+    assert evidence_status_for_run("RESEARCH_COMPLETE", {kind: {} for kind in REQUIRED_COMPLETE_EVIDENCE}) == "complete"
+
+
+def test_run_selection_uses_timestamps_not_lexical_ids():
+    chosen = select_hbr_run(
+        [
+            {
+                "research_run_id": "HBR_Z",
+                "run_status": "COMPLETE",
+                "first_seen_at": "2024-01-01T00:00:00Z",
+                "last_seen_at": "2024-01-02T00:00:00Z",
+            },
+            {
+                "research_run_id": "HBR_A",
+                "run_status": "BLOCKED_TRANSPORT",
+                "first_seen_at": "2024-06-01T00:00:00Z",
+                "last_seen_at": "2024-06-02T00:00:00Z",
+            },
+        ]
+    )
+    assert chosen is not None
+    assert chosen["research_run_id"] == "HBR_A"
+    tie = select_hbr_run(
+        [
+            {
+                "research_run_id": "HBR_B",
+                "last_seen_at": "2024-06-02T00:00:00Z",
+                "first_seen_at": "2024-06-01T00:00:00Z",
+            },
+            {
+                "research_run_id": "HBR_A",
+                "last_seen_at": "2024-06-02T00:00:00Z",
+                "first_seen_at": "2024-06-01T00:00:00Z",
+            },
+        ]
+    )
+    assert tie is not None
+    assert tie["research_run_id"] == "HBR_A"
+
+
+def _rehash(payload: dict) -> dict:
+    body = dict(payload)
+    body.pop("artifact_sha256", None)
+    body["artifact_sha256"] = sha256_payload(payload_for_hash(body))
+    return body
+
+
+def test_metadata_timestamps_are_not_market_dates_and_prose_is_not_scanned():
+    bundle = blocked_transport_bundle("spec-hash")
+    summary = bundle["artifacts"]["run_summary"]
+    summary["generated_at"] = "2026-09-23T00:00:00Z"
+    summary["limitation"] = "prose may mention 2025-06-01 without being an observation"
+    bundle["artifacts"]["run_summary"] = _rehash(summary)
+    bundle["created_at"] = "2026-09-23T00:00:00Z"
+    conn = FakeConn()
+    written = ingest_hbr_bundle(conn, bundle)
+    assert written["written_artifacts"]
+    joined = " ".join(sql for sql, _ in conn.calls)
+    assert "pg_advisory_xact_lock" in joined
+    assert "FOR UPDATE" in joined
+    assert joined.index("FOR UPDATE") < joined.index("INSERT INTO research_artifacts")
+
+
+def test_locked_complete_run_refuses_a_new_sha_without_prior_state():
+    bundle = blocked_transport_bundle("spec-hash")
+    conn = LockConn()
+    with pytest.raises(IngestError, match="COMPLETE"):
+        ingest_hbr_bundle(conn, bundle)
+    assert conn.artifact_inserts == 0
+
+
+def test_postgres_lock_refuses_parallel_complete_sha(pg_engine):
+    from sqlalchemy import text
+
+    bundle = blocked_transport_bundle("spec-hash")
+    with pg_engine.connect() as conn:
+        first = ingest_hbr_bundle(conn, bundle)
+    assert first["written_artifacts"]
+    with pg_engine.begin() as conn:
+        conn.execute(
+            text(
+                "UPDATE research_runs SET run_status = 'COMPLETE' "
+                "WHERE research_run_id = :research_run_id"
+            ),
+            {"research_run_id": BLOCKED_RUN_ID},
+        )
+        before = conn.execute(
+            text("SELECT COUNT(*) FROM research_artifacts WHERE research_run_id = :research_run_id"),
+            {"research_run_id": BLOCKED_RUN_ID},
+        ).scalar()
+    changed = deepcopy(bundle)
+    summary = changed["artifacts"]["run_summary"]
+    summary["generated_at"] = "2026-09-23T00:00:00Z"
+    changed["artifacts"]["run_summary"] = _rehash(summary)
+    with pg_engine.connect() as conn:
+        with pytest.raises(IngestError, match="COMPLETE"):
+            ingest_hbr_bundle(conn, changed)
+    with pg_engine.connect() as conn:
+        after = conn.execute(
+            text("SELECT COUNT(*) FROM research_artifacts WHERE research_run_id = :research_run_id"),
+            {"research_run_id": BLOCKED_RUN_ID},
+        ).scalar()
+    assert after == before

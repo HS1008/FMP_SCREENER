@@ -24,14 +24,67 @@ MAIN_METRICS = (
 )
 
 
-def _status_for_run(run_status: str) -> str:
-    text = run_status.upper()
+REQUIRED_COMPLETE_EVIDENCE = (
+    "strategy_spec",
+    "run_manifest",
+    "run_summary",
+    "selection_ledger",
+    "event_ledger",
+    "fill_ledger",
+    "risk_diagnostics",
+    "rotation_diagnostics",
+    "signal_health",
+    "benchmark_diagnostics",
+    "annual_results",
+    "cost_stress",
+    "assessment",
+)
+_COMPLETE_TOKENS = {"COMPLETE", "RESEARCH_COMPLETE", "NON_HOLDOUT_COMPLETE"}
+
+
+def _stamp_text(value: object) -> str:
+    if value is None:
+        return ""
+    text = str(value).strip()
+    if text in {"", "NaT", "None", "nan"}:
+        return ""
+    return text
+
+
+def select_hbr_run(rows: list[Mapping[str, Any]] | None) -> Mapping[str, Any] | None:
+    """Latest research attempt. Lexical run id is only a stable tie-break.
+
+    Precedence is last_seen_at, then first_seen_at, then the smallest
+    research_run_id. A newer blocked run stays ahead of an older complete run.
+    """
+    candidates = [
+        row
+        for row in (rows or [])
+        if str(row.get("research_run_id") or "").strip()
+    ]
+    if not candidates:
+        return None
+    ordered = sorted(candidates, key=lambda row: str(row.get("research_run_id") or ""))
+    return max(
+        ordered,
+        key=lambda row: (_stamp_text(row.get("last_seen_at")), _stamp_text(row.get("first_seen_at"))),
+    )
+
+
+def evidence_status_for_run(run_status: str, artifacts: Mapping[str, Any] | None = None) -> str:
+    """Honest research state. Complete requires the stored evidence contract."""
+    text = str(run_status or "").strip().upper()
+    indexed = artifacts or {}
     if text == "BLOCKED_TRANSPORT":
-        return "blocked_transport"
-    if text in {"INCOMPLETE", "FAILED", "ERROR"}:
+        return "blocked_incomplete"
+    if text == "HUMAN_REVIEW_REQUIRED":
+        return "human_review_required"
+    if text in _COMPLETE_TOKENS:
+        if all(kind in indexed for kind in REQUIRED_COMPLETE_EVIDENCE):
+            return "complete"
         return "incomplete"
-    if text in {"COMPLETE", "RESEARCH_COMPLETE", "NON_HOLDOUT_COMPLETE"}:
-        return "observed"
+    if text in {"", "INCOMPLETE", "FAILED", "ERROR"}:
+        return "incomplete"
     return "unavailable"
 
 
@@ -81,7 +134,7 @@ def build_hbr_monitor_view(
     summary = indexed.get("run_summary") or {}
     assessment = indexed.get("assessment") or {}
     run_status = str(record.get("run_status") or summary.get("run_status") or "")
-    evidence_status = _status_for_run(run_status)
+    evidence_status = evidence_status_for_run(run_status, indexed)
     if not record and not indexed:
         evidence_status = "unavailable"
     variants = summary.get("variants")
