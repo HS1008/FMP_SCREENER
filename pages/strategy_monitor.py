@@ -638,6 +638,13 @@ def _render_hbr_section(view):
             view.get("evidence_status") or "unavailable",
         )
     )
+    ambiguous = view.get("ambiguous_artifacts") or []
+    if ambiguous:
+        st.caption(
+            "These artifact kinds have more than one stored version and need an explicit hash: {0}.".format(
+                ", ".join(str(kind) for kind in ambiguous)
+            )
+        )
     st.info(
         "Economic rating: {0}. {1}. This section reads stored research only.".format(
             view.get("economic_rating") or "UNRATED",

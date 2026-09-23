@@ -112,25 +112,66 @@ def _series(value: Any, *, evidence_status: str) -> dict[str, Any]:
     return {"rows": value, "status": "observed"}
 
 
-def _artifacts_by_type(artifacts: list[Mapping[str, Any]] | None) -> dict[str, Mapping[str, Any]]:
-    indexed: dict[str, Mapping[str, Any]] = {}
+def _payload_of(row: Mapping[str, Any]) -> dict[str, Any] | None:
+    payload = row.get("payload") if isinstance(row.get("payload"), dict) else row
+    if not isinstance(payload, dict):
+        return None
+    return dict(payload)
+
+
+def _row_sha(row: Mapping[str, Any], payload: Mapping[str, Any]) -> str:
+    digest = row.get("sha256") or payload.get("artifact_sha256") or ""
+    return str(digest)
+
+
+def select_hbr_artifacts(
+    artifacts: list[Mapping[str, Any]] | None,
+    *,
+    versions: Mapping[str, str] | None = None,
+) -> tuple[dict[str, Mapping[str, Any]], list[str]]:
+    """Pick one payload per kind. Duplicates need an explicit sha, not file order."""
+    grouped: dict[str, list[tuple[Mapping[str, Any], dict[str, Any]]]] = {}
+    order: list[str] = []
     for row in artifacts or []:
-        payload = row.get("payload") if isinstance(row.get("payload"), dict) else row
-        if not isinstance(payload, dict):
+        payload = _payload_of(row)
+        if payload is None:
             continue
         kind = str(row.get("artifact_type") or payload.get("artifact_type") or "")
-        if kind:
-            indexed[kind] = payload
-    return indexed
+        if not kind:
+            continue
+        if kind not in grouped:
+            order.append(kind)
+            grouped[kind] = []
+        grouped[kind].append((row, payload))
+    chosen: dict[str, Mapping[str, Any]] = {}
+    ambiguous: list[str] = []
+    requested = {str(kind): str(digest) for kind, digest in dict(versions or {}).items()}
+    for kind in order:
+        rows = grouped[kind]
+        if kind in requested:
+            wanted = requested[kind]
+            matches = [payload for row, payload in rows if _row_sha(row, payload) == wanted]
+            if len(matches) == 1:
+                chosen[kind] = matches[0]
+            else:
+                ambiguous.append(kind)
+            continue
+        if len(rows) == 1:
+            chosen[kind] = rows[0][1]
+            continue
+        ambiguous.append(kind)
+    return chosen, ambiguous
 
 
 def build_hbr_monitor_view(
     run: Mapping[str, Any] | None,
     artifacts: list[Mapping[str, Any]] | None = None,
+    *,
+    versions: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     """Compact historical summary. Nulls stay null. Zero stays zero."""
     record = dict(run or {})
-    indexed = _artifacts_by_type(artifacts)
+    indexed, ambiguous = select_hbr_artifacts(artifacts, versions=versions)
     summary = indexed.get("run_summary") or {}
     assessment = indexed.get("assessment") or {}
     run_status = str(record.get("run_status") or summary.get("run_status") or "")
@@ -172,6 +213,7 @@ def build_hbr_monitor_view(
         "exposures": _series(summary.get("exposures"), evidence_status=evidence_status),
         "rotation_efficacy": _series(summary.get("rotation_efficacy"), evidence_status=evidence_status),
         "signal_health": _series(summary.get("signal_health"), evidence_status=evidence_status),
+        "ambiguous_artifacts": ambiguous,
         "read_only": True,
         "launches_backtests": False,
         "writes_state": False,

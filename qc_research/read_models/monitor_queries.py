@@ -127,10 +127,10 @@ ORDER BY research_run_id
 """
 
 HBR_ARTIFACTS_SQL = """
-SELECT artifact_type, payload_json, sha256
+SELECT artifact_key, artifact_type, payload_json, sha256
 FROM research_artifacts
 WHERE research_run_id = :research_run_id
-ORDER BY artifact_type
+ORDER BY artifact_type, artifact_key
 """
 
 
@@ -184,6 +184,7 @@ def load_hbr_artifact_rows(engine, research_run_id: str) -> list[dict[str, Any]]
     for _, row in rows.iterrows():
         loaded.append(
             {
+                "artifact_key": row.get("artifact_key"),
                 "artifact_type": row.get("artifact_type"),
                 "sha256": row.get("sha256"),
                 "payload": as_payload(row.get("payload_json")) or {},

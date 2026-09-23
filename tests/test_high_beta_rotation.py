@@ -7,8 +7,10 @@ from copy import deepcopy
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
 from qc_research.contracts.hashing import canonical_dumps, payload_for_hash, sha256_payload
+import qc_research.high_beta_rotation_cli as hbr_cli
 from qc_research.high_beta_rotation_ingest import (
     BLOCKED_RUN_ID,
     REQUIRED_COMPLETE_KINDS,
@@ -22,6 +24,7 @@ from qc_research.high_beta_rotation_monitor import (
     build_hbr_monitor_view,
     evidence_status_for_run,
     format_hbr_metric,
+    select_hbr_artifacts,
     select_hbr_run,
 )
 from qc_research.read_models.monitor_queries import (
@@ -342,8 +345,6 @@ def test_locked_complete_run_refuses_a_new_sha_without_prior_state():
 
 
 def test_postgres_lock_refuses_parallel_complete_sha(pg_engine):
-    from sqlalchemy import text
-
     bundle = blocked_transport_bundle("spec-hash")
     with pg_engine.connect() as conn:
         first = ingest_hbr_bundle(conn, bundle)
@@ -373,3 +374,41 @@ def test_postgres_lock_refuses_parallel_complete_sha(pg_engine):
             {"research_run_id": BLOCKED_RUN_ID},
         ).scalar()
     assert after == before
+
+
+def test_duplicate_artifact_versions_need_an_explicit_hash():
+    first = {
+        "artifact_type": "run_summary",
+        "sha256": "aaa",
+        "payload": {"artifact_type": "run_summary", "variants": {"HBR_MAIN": {"cagr": 0.1}}},
+    }
+    second = {
+        "artifact_type": "run_summary",
+        "sha256": "bbb",
+        "payload": {"artifact_type": "run_summary", "variants": {"HBR_MAIN": {"cagr": 0.2}}},
+    }
+    indexed, ambiguous = select_hbr_artifacts([first, second])
+    assert ambiguous == ["run_summary"]
+    assert "run_summary" not in indexed
+    chosen, clear = select_hbr_artifacts([first, second], versions={"run_summary": "bbb"})
+    assert clear == []
+    assert chosen["run_summary"]["variants"]["HBR_MAIN"]["cagr"] == 0.2
+    view = build_hbr_monitor_view({"run_status": "COMPLETE"}, [first, second])
+    assert view["ambiguous_artifacts"] == ["run_summary"]
+    assert view["metrics"]["cagr"]["status"] != "observed"
+    explicit = build_hbr_monitor_view(
+        {"run_status": "COMPLETE"},
+        [first, second],
+        versions={"run_summary": "aaa"},
+    )
+    assert explicit["metrics"]["cagr"]["value"] == 0.1
+
+
+def test_hbr_cli_refuses_to_open_a_database_without_a_writer(monkeypatch, tmp_path):
+    monkeypatch.setattr(hbr_cli, "writer_url", lambda: None)
+    bundle = tmp_path / "bundle.json"
+    bundle.write_text("{}", encoding="utf-8")
+    assert hbr_cli.main([str(bundle)]) == 2
+    platform = (ROOT / "qc_research" / "platform_ingest.py").read_text(encoding="utf-8")
+    assert "ingest_hbr_bundle" not in platform
+    assert "high_beta_rotation_cli" not in platform
