@@ -213,12 +213,165 @@ def _render_commodities_panel(cats: dict[str, Any], *, heading: str = "Commoditi
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+
+def _cboe_metric_row(latest: list[dict[str, Any]], metric_id: str) -> dict[str, Any] | None:
+    for row in latest:
+        if row.get("metric_id") == metric_id:
+            return row
+    return None
+
+
+def _cboe_ok_value(row: dict[str, Any] | None) -> Any:
+    if not row or row.get("status") != "OK":
+        return None
+    return row.get("value")
+
+
+def _render_cboe_core_panel(core: dict[str, Any] | None) -> None:
+    st.subheader("Cboe core volatility (LiveVol)")
+    st.caption(
+        "Direct LiveVol All Access metrics stored in PostgreSQL. Provider observation time and ingestion time are separate. "
+        "VIX index term structure is not a VIX futures curve and is never labeled contango or backwardation. Not a trading recommendation."
+    )
+    if not core or not core.get("available"):
+        st.info((core or {}).get("reason") or "Cboe core volatility views are not published yet.")
+        return
+    latest = list(core.get("latest") or [])
+    history = list(core.get("history") or [])
+    health = list(core.get("health") or [])
+    if not latest:
+        st.info("No LiveVol core metrics stored yet.")
+        return
+    stale = [row for row in health if str(row.get("freshness_status") or "").upper() == "STALE"]
+    failed = [row for row in health if str(row.get("transport_status") or "").upper() in {"FAILED", "AUTH_FAILED", "ENTITLEMENT_REQUIRED", "TRIAL_LIMIT", "RATE_LIMITED", "UNAVAILABLE", "PARTIAL"}]
+    if stale or failed:
+        st.warning("Stored LiveVol snapshot is not a live quote. See Data Health for auth, trial, or publication lag.")
+    vix = _cboe_metric_row(latest, "VIX_SPOT")
+    skew = _cboe_metric_row(latest, "SPX_25D_SKEW")
+    spread = _cboe_metric_row(latest, "SPX_IV30_MINUS_SPX_RV20") or _cboe_metric_row(latest, "VIX_MINUS_SPX_RV20")
+    slope = _cboe_metric_row(latest, "VIX_INDEX_FRONT_TO_BACK")
+    detail = (vix or {}).get("detail_json") or {}
+    if isinstance(detail, str):
+        import json as _json
+        detail = _json.loads(detail)
+    observed = (vix or {}).get("provider_observation_ts") or (detail or {}).get("observation_ts")
+    ingested = (vix or {}).get("ingested_at")
+    st.caption("Provider observation: {0}".format(observed or "unavailable"))
+    st.caption("Ingested: {0}".format(ingested or "unavailable"))
+    curve_state = (slope or {}).get("detail_json") or {}
+    if isinstance(curve_state, str):
+        import json as _json
+        curve_state = _json.loads(curve_state)
+    state_name = curve_state.get("curve_state") if isinstance(curve_state, dict) else None
+    state_label = {"upward_sloping": "Upward-sloping", "downward_sloping": "Downward-sloping", "flat": "Flat"}.get(state_name, "Unavailable")
+    cols = st.columns(4)
+    cols[0].metric("VIX", fmt(_cboe_ok_value(vix), "vol_points"), fmt_signed((detail or {}).get("change_1d"), None) if _cboe_ok_value(vix) is not None and (detail or {}).get("change_1d") is not None else None)
+    cols[1].metric("25Δ SPX skew", fmt(_cboe_ok_value(skew), "vol_points"))
+    spread_label = "IV − RV"
+    if spread and spread.get("metric_id") == "VIX_MINUS_SPX_RV20" and spread.get("status") == "OK":
+        spread_label = "VIX − RV20"
+    elif spread and spread.get("metric_id") == "SPX_IV30_MINUS_SPX_RV20" and spread.get("status") == "OK":
+        spread_label = "IV30 − RV20"
+    cols[2].metric(spread_label, fmt(_cboe_ok_value(spread), "vol_points"))
+    cols[3].metric("VIX index curve", state_label if _cboe_ok_value(slope) is not None else "Unavailable")
+    st.markdown("**VIX index term structure**")
+    st.caption("Volatility-index tenors (VIX9D, VIX, VIX3M, VIX6M, VIX1Y). Distinct from the VX futures curve below.")
+    tenor_ids = {"9D": "VIX_9D", "1M": "VIX_1M", "3M": "VIX_3M", "6M": "VIX_6M", "1Y": "VIX_1Y"}
+    curve_rows = []
+    for tenor, metric_id in tenor_ids.items():
+        row = _cboe_metric_row(latest, metric_id)
+        level = _cboe_ok_value(row)
+        if level is None:
+            continue
+        curve_rows.append({"tenor": tenor, "implied_vol": float(level)})
+    if len(curve_rows) >= 2:
+        st.line_chart(pd.DataFrame(curve_rows).set_index("tenor"))
+        if vix and vix.get("as_of"):
+            st.caption("Observation date {0}.".format(vix.get("as_of")))
+    else:
+        st.info("No VIX index term structure stored.")
+    st.markdown("**25Δ SPX skew**")
+    put = _cboe_metric_row(latest, "SPX_25D_PUT_IV")
+    call = _cboe_metric_row(latest, "SPX_25D_CALL_IV")
+    skew_detail = (skew or {}).get("detail_json") or {}
+    if isinstance(skew_detail, str):
+        import json as _json
+        skew_detail = _json.loads(skew_detail)
+    if _cboe_ok_value(skew) is None:
+        reason = (skew_detail or {}).get("reason") if isinstance(skew_detail, dict) else None
+        st.info("25Δ SPX skew is unavailable{0}.".format("" if not reason else " ({0})".format(reason)))
+    else:
+        st.caption("Downside puts are priced {0} vol points above equivalent calls.".format(fmt(_cboe_ok_value(skew), "vol_points")))
+        put_ev = (skew_detail or {}).get("put") or {}
+        call_ev = (skew_detail or {}).get("call") or {}
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Put IV": fmt(_cboe_ok_value(put), "vol_points"),
+                        "Call IV": fmt(_cboe_ok_value(call), "vol_points"),
+                        "Skew": fmt(_cboe_ok_value(skew), "vol_points"),
+                        "Expiry": (skew_detail or {}).get("expiry") or "—",
+                        "DTE": (skew_detail or {}).get("dte") if (skew_detail or {}).get("dte") is not None else "—",
+                        "Put strike": put_ev.get("strike") if put_ev else "—",
+                        "Call strike": call_ev.get("strike") if call_ev else "—",
+                        "Put Δ": put_ev.get("delta") if put_ev else "—",
+                        "Call Δ": call_ev.get("delta") if call_ev else "—",
+                        "Underlying": (skew_detail or {}).get("underlying_level") if (skew_detail or {}).get("underlying_level") is not None else "—",
+                        "Method": (skew_detail or {}).get("method") or "—",
+                        "Status": (skew or {}).get("status") or "—",
+                    }
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    st.markdown("**Implied minus realized**")
+    iv_row = _cboe_metric_row(latest, "SPX_IV30") or _cboe_metric_row(latest, "VIX_SPOT")
+    rv_row = _cboe_metric_row(latest, "SPX_REALIZED_VOL_20D")
+    if _cboe_ok_value(spread) is None:
+        st.info("IV minus realized volatility is unavailable.")
+    else:
+        construction = spread.get("metric_id")
+        if construction == "SPX_IV30_MINUS_SPX_RV20":
+            st.caption("30-day average SPX implied volatility is {0} vol points versus 20-day SPX realized volatility. This is not VIX.".format(fmt(_cboe_ok_value(spread), "vol_points")))
+        else:
+            st.caption("VIX is {0} vol points versus 20-day SPX realized volatility. This is not ATM implied volatility.".format(fmt(_cboe_ok_value(spread), "vol_points")))
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Implied": fmt(_cboe_ok_value(iv_row), "vol_points"),
+                        "RV20": fmt(_cboe_ok_value(rv_row), "vol_points"),
+                        "Spread": fmt(_cboe_ok_value(spread), "vol_points"),
+                        "Construction": construction,
+                    }
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    spread_id = spread.get("metric_id") if spread else "SPX_IV30_MINUS_SPX_RV20"
+    spread_history = [row for row in history if row.get("metric_id") == spread_id and row.get("value") is not None]
+    if spread_history:
+        history_chart(spread_history, x="as_of", y="value", title="IV minus realized", units="vol points")
+    vix_history = [row for row in history if row.get("metric_id") == "VIX_SPOT" and row.get("value") is not None]
+    if vix_history:
+        history_chart(vix_history, x="as_of", y="value", title="VIX", units="vol points")
+
+
 def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
-    st.subheader("Options and volatility")
-    st.caption("Stored PostgreSQL option snapshots only. Delay label is provider-specific (not hardcoded Cboe). Not a live quote. GEX is an OI-derived gamma-exposure proxy (estimated, CALL_PLUS_PUT_MINUS_V1), not observed dealer inventory. IBKR OPRA is gated until the TWS API delivers NBBO.")
-    if not ctx or (not ctx.get("symbols") and not ctx.get("vix")):
+    _render_cboe_core_panel((ctx or {}).get("cboe_core"))
+    st.subheader("Stored option chains and VX futures")
+    st.caption("OpenBB/Cboe delayed chain snapshots and VX futures EOD when published. Delay label is provider-specific. GEX is an OI-derived gamma-exposure proxy (estimated, CALL_PLUS_PUT_MINUS_V1), not observed dealer inventory. IBKR OPRA is gated until the TWS API delivers NBBO. Distinct from the LiveVol VIX index term structure above.")
+    has_openbb = bool(ctx and (ctx.get("symbols") or ctx.get("vix")))
+    has_core = bool(ctx and (ctx.get("cboe_core") or {}).get("latest"))
+    if not has_openbb and not has_core:
         st.info(ctx.get("reason") if ctx else "Options schema is not available. This optional source is not a platform outage.")
         open_registered_page("data_health", "Open Data Health")
+        return
+    if not has_openbb:
+        st.info("No OpenBB chain or VX futures snapshots stored. LiveVol core metrics above may still be available.")
         return
     symbols = ctx.get("symbols") or []
     if symbols:
@@ -273,7 +426,7 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
         cols[1].metric("VX M2", _fmt_or_dash((vix.get("m2") or {}).get("price"), None), (vix.get("m2") or {}).get("expiration"))
         cols[2].metric("M2−M1", _fmt_or_dash(vix.get("m2_minus_m1_points"), None))
         cols[3].metric("Front shape", str(vix.get("front_shape") or "—"))
-        st.caption("VX_EOD 4 p.m. ET levels on {0}. Not official settlement. Not live quotes. Front-curve shape only.".format(vix.get("observation_date") or "unknown date"))
+        st.caption("VIX FUTURES TERM STRUCTURE — VX_EOD 4 p.m. ET levels on {0}. Not official settlement. Not live quotes. Front-curve shape only. Contango/backwardation language applies only to this futures curve, not to the VIX index tenors above.".format(vix.get("observation_date") or "unknown date"))
         points = vix.get("points") or []
         if points:
             st.dataframe(pd.DataFrame([{"Expiry": p.get("expiration"), "Precision": p.get("precision"), "Price": p.get("price")} for p in points]), use_container_width=True, hide_index=True)
@@ -282,7 +435,7 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
 def render_options_volatility() -> None:
     page_header(
         "Options & Volatility",
-        "ATM IV, skew, put/call, expected move, and the GEX proxy from stored snapshots only. Spot VIX is distinct from a VIX futures curve.",
+        "LiveVol core regime metrics plus stored OpenBB option chains and VX futures. Spot VIX index levels are distinct from a VIX futures curve.",
         fred=False,
     )
     result = load_optional("options_volatility_context", default={})

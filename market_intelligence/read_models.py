@@ -1175,6 +1175,31 @@ def term_structure_display_rows(points: list[dict[str, Any]] | None) -> list[dic
     return rows
 
 
+
+def _cboe_core_context(conn) -> dict[str, Any]:
+    """Direct LiveVol Cboe core metrics from mi_metric_snapshots. Never calls Cboe."""
+    if not _view_exists(conn, "mi_v_cboe_vol_latest"):
+        return {"available": False, "reason": "Cboe volatility views are not applied yet.", "latest": [], "history": [], "health": []}
+    latest = _rows(conn, "SELECT * FROM mi_v_cboe_vol_latest ORDER BY metric_id")
+    history = _rows(
+        conn,
+        """
+        SELECT * FROM mi_v_cboe_vol_history
+        WHERE metric_id IN ('VIX_SPOT', 'SPX_IV30_MINUS_SPX_RV20', 'VIX_MINUS_SPX_RV20', 'SPX_REALIZED_VOL_20D', 'SPX_IV30')
+        ORDER BY metric_id, as_of
+        """,
+    )
+    health = _rows(
+        conn,
+        """
+        SELECT * FROM mi_v_source_health
+        WHERE source_id = 'CBOE_ALL_ACCESS'
+        ORDER BY freshness_dataset
+        """,
+    )
+    return {"available": True, "reason": None, "latest": latest, "history": history, "health": health}
+
+
 def options_volatility_context(conn) -> dict[str, Any]:
     """Stored options / VIX analytics only. Never calls OpenBB."""
     if not _view_exists(conn, "mi_v_options_latest"):
@@ -1242,15 +1267,19 @@ def options_volatility_context(conn) -> dict[str, Any]:
             "not_live_quotes": True,
         }
     status = "OK" if symbols or vix else "UNAVAILABLE"
+    cboe_core = _cboe_core_context(conn)
+    if cboe_core.get("latest"):
+        status = "OK"
     return {
         "status": status,
-        "reason": None if status == "OK" else "No published OpenBB/Cboe snapshots. Source stays optional and is not a platform outage.",
+        "reason": None if status == "OK" else "No published OpenBB/Cboe or LiveVol core snapshots. Source stays optional and is not a platform outage.",
         "export_scope": EXPORT_INTERNAL_ONLY,
         "source_id": "OPENBB_CBOE_OPTIONS",
         "attribution": CBOE_ATTRIBUTION,
         "terms_notes": CBOE_TERMS_NOTES,
         "symbols": symbols,
         "vix": vix,
+        "cboe_core": cboe_core,
         "last_attempts": attempts,
     }
 

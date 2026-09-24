@@ -463,6 +463,17 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
         "units_metadata": {"price": "index_points", "expiration": "month"},
     },
     {
+        "source_id": "CBOE_ALL_ACCESS",
+        "provider": "Cboe",
+        "dataset": "cboe_volatility",
+        "source_url": "https://api.livevol.com/v1/docs/Help",
+        "expected_cadence": "D",
+        "usage_scope": EXPORT_INTERNAL_ONLY,
+        "attribution": "Cboe LiveVol All Access. Volatility-index levels are not VIX futures.",
+        "terms_notes": "Writer ingestion only. MI_CBOE_ENABLED is required. Streamlit does not call Cboe. Distinct from OPENBB_CBOE_OPTIONS / OPENBB_CBOE_VIX. Trial point budget is enforced per run.",
+        "units_metadata": {"vol": "vol_points", "rv": "sample_std_log_return_ann_252"},
+    },
+    {
         "source_id": "IBKR_OPTIONS",
         "provider": "Interactive Brokers TWS",
         "dataset": "ibkr_bounded_option_chains",

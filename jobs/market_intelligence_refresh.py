@@ -185,6 +185,22 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "reason": openbb_probe.vix.reason,
             }
         )
+    from market_intelligence.cboe_client import SOURCE_ID as CBOE_SOURCE_ID
+    from market_intelligence.cboe_client import credentials_from_env as cboe_credentials
+    from market_intelligence.cboe_client import enabled_from_env as cboe_on
+
+    want_cboe = bool(getattr(args, "cboe", False))
+    if want_cboe or want_all:
+        cboe_id, cboe_secret = cboe_credentials(env)
+        cboe_ok = bool(cboe_id and cboe_secret) and cboe_on(env)
+        steps.append(
+            {
+                "step": "cboe",
+                "source_id": CBOE_SOURCE_ID,
+                "configured": cboe_ok,
+                "action": "ingest" if cboe_ok else ("skip_unconfigured" if want_all or not want_cboe else "fail_unconfigured"),
+            }
+        )
     cftc_on = str(env.get("MI_CFTC_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
     if getattr(args, "cftc", False) or want_all:
         steps.append(
@@ -273,6 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--options", action="store_true", help="Ingest OpenBB/Cboe delayed options chains (fails if not configured)")
     parser.add_argument("--vix", action="store_true", help="Ingest OpenBB/Cboe VX_EOD curve (fails if not configured)")
+    parser.add_argument("--cboe", action="store_true", help="Ingest direct LiveVol VIX/skew/IV-RV (requires MI_CBOE_ENABLED)")
     parser.add_argument("--cftc", action="store_true", help="Ingest public CFTC Commitments of Traders")
     parser.add_argument("--eia", action="store_true", help="Ingest EIA weekly energy statistics (requires EIA_API_KEY)")
     parser.add_argument("--openfigi", action="store_true", help="Resolve a bounded OpenFIGI mapping batch (requires MI_OPENFIGI_ENABLED)")
@@ -301,8 +318,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "cboe", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--cboe/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -398,7 +415,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             continue  # Windows collector owns this row; FRED refresh must not clobber it
         if source_id in {FINRA_QUERY_SOURCE_ID, FINRA_TRACE_SOURCE_ID}:
             continue
-        if source_id in {OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID, "CFTC_COT", "EIA_ENERGY", "OPENFIGI"}:
+        if source_id in {OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID, "CBOE_ALL_ACCESS", "CFTC_COT", "EIA_ENERGY", "OPENFIGI"}:
             enabled[source_id] = bool(probe.enabled)
             access[source_id] = probe.access_status
             continue
@@ -591,6 +608,15 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 report = ingest_openbb(engine, parent_run_id=parent_run_id, today=as_of, env=env, include_options=False, include_vix=True)
                 status["results"][name] = report.as_dict()
                 if report.failed:
+                    failures += 1
+            elif name == "cboe":
+                from market_intelligence.cboe_client import CboeClient, credentials_from_env as cboe_credentials
+                from market_intelligence.ingest_cboe import ingest_cboe
+
+                client_id, client_secret = cboe_credentials(env)
+                report = ingest_cboe(engine, CboeClient(client_id, client_secret), parent_run_id=parent_run_id, today=as_of)
+                status["results"][name] = report
+                if report.get("failed"):
                     failures += 1
             elif name == "cftc":
                 from market_intelligence.ingest_cftc import ingest_cftc

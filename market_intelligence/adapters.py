@@ -311,6 +311,27 @@ class OpenBBCboeOptionsAdapter:
         return probe_openbb(env).options
 
 
+class CboeAllAccessAdapter:
+    """Direct Cboe LiveVol All Access. Credential presence is not activation. Streamlit never calls this."""
+
+    source_id = "CBOE_ALL_ACCESS"
+    ENABLE_FLAG = "MI_CBOE_ENABLED"
+    CREDENTIAL_ENV = ("CBOE_CLIENT_ID", "CBOE_CLIENT_SECRET")
+    CAPABILITIES = {
+        "auth": "OAuth client_credentials at id.livevol.com",
+        "vix": "underlying-quotes index levels",
+        "vix_term_structure": "VIX index tenors, not futures",
+        "spx_skew": "filtered SPX 25-delta snapshot",
+        "iv_rv": "iv30 or VIX minus SPX RV20",
+    }
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        from market_intelligence.cboe_client import probe_status
+
+        status, reason, enabled = probe_status(env)
+        return AdapterStatus(self.source_id, status, enabled, reason, self.CREDENTIAL_ENV + (self.ENABLE_FLAG,), dict(self.CAPABILITIES))
+
+
 class OpenBBCboeVixAdapter:
     source_id = "OPENBB_CBOE_VIX"
     CAPABILITIES = {
@@ -579,6 +600,7 @@ ADAPTERS = (
     OpenFIGIAdapter(),
     OpenBBCboeOptionsAdapter(),
     OpenBBCboeVixAdapter(),
+    CboeAllAccessAdapter(),
     IBKROptionsAdapter(),
     IBKROptionsStorageAdapter(),
     MsrbEmmaAdapter(),
@@ -620,6 +642,7 @@ __all__ = [
     "MsrbEmmaAdapter",
     "OpenBBCboeOptionsAdapter",
     "OpenBBCboeVixAdapter",
+    "CboeAllAccessAdapter",
     "OpenFIGIAdapter",
     "TraceAdapter",
     "probe_all",

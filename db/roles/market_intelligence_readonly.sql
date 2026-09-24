@@ -121,6 +121,13 @@ GRANT SELECT ON mi_v_strategy_oos_windows TO mi_readonly;
 GRANT SELECT ON mi_v_strategy_artifact_status TO mi_readonly;
 \endif
 
+
+SELECT EXISTS (SELECT 1 FROM information_schema.views WHERE table_name = 'mi_v_cboe_vol_latest') AS has_cboe_vol \gset
+\if :has_cboe_vol
+GRANT SELECT ON mi_v_cboe_vol_latest TO mi_readonly;
+GRANT SELECT ON mi_v_cboe_vol_history TO mi_readonly;
+\endif
+
 -- Defensive session defaults for the role (defaults, not privileges: a session can still
 -- SET them back, which is why the GRANT surface above is what enforces read-only).
 ALTER ROLE mi_readonly SET default_transaction_read_only = on;
