@@ -556,6 +556,161 @@ def rates_context(conn) -> dict[str, Any]:
     }
 
 
+def _nominal_series_tenor_sql() -> tuple[str, list[str], int]:
+    from market_intelligence.curve_compare import nominal_curve_series
+
+    values: list[str] = []
+    series_ids: list[str] = []
+    mapping = nominal_curve_series()
+    for tenor, alts in mapping.items():
+        for series_id in alts:
+            safe_series = series_id.replace("'", "")
+            safe_tenor = tenor.replace("'", "")
+            values.append("('{0}', '{1}')".format(safe_series, safe_tenor))
+            series_ids.append(series_id)
+    return ", ".join(values), series_ids, len(mapping)
+
+
+def _complete_curve_dates(conn, *, ceiling: date | None) -> list[date]:
+    values_sql, _series_ids, required = _nominal_series_tenor_sql()
+    rows = _rows(
+        conn,
+        """
+        WITH series_tenor(series_id, tenor) AS (
+            VALUES {values}
+        ),
+        obs AS (
+            SELECT o.observation_date, st.tenor
+            FROM mi_v_macro_observations_current o
+            INNER JOIN series_tenor st ON st.series_id = o.series_id
+            WHERE o.value IS NOT NULL
+              AND (CAST(:ceiling AS date) IS NULL OR o.observation_date <= CAST(:ceiling AS date))
+            GROUP BY o.observation_date, st.tenor
+        )
+        SELECT observation_date
+        FROM obs
+        GROUP BY observation_date
+        HAVING COUNT(*) = :required
+        ORDER BY observation_date
+        """.format(values=values_sql),
+        {"ceiling": ceiling, "required": required},
+    )
+    dates: list[date] = []
+    for row in rows:
+        parsed = row.get("observation_date")
+        if isinstance(parsed, date):
+            dates.append(parsed)
+        elif parsed:
+            dates.append(date.fromisoformat(str(parsed)[:10]))
+    return dates
+
+
+def treasury_complete_curve_bounds(conn, not_after: str | None = None) -> dict[str, Any]:
+    """Earliest and latest complete nominal curve dates on or before ``not_after``."""
+    from market_intelligence.curve_compare import parse_curve_date
+
+    ceiling = parse_curve_date(not_after)
+    dates = _complete_curve_dates(conn, ceiling=ceiling)
+    return {
+        "earliest_complete_date": dates[0].isoformat() if dates else None,
+        "latest_complete_date": dates[-1].isoformat() if dates else None,
+    }
+
+
+def complete_treasury_curve_on_or_before(conn, target_date: str, not_after: str | None = None) -> dict[str, Any]:
+    """One same-date complete Treasury curve on or before ``target_date``.
+
+    Prefers the Treasury XML series over the FRED equivalent when both exist on
+    that date. Does not mix maturities from different observation dates.
+    """
+    from market_intelligence.curve_compare import (
+        REASON_AFTER_CURRENT,
+        empty_curve_lookup,
+        nominal_curve_series,
+        parse_curve_date,
+        resolve_complete_date,
+    )
+    from market_intelligence.source_resolve import resolve_observation
+    from market_intelligence.treasury_xml import COMPLETE_NOMINAL_TENORS
+
+    target = parse_curve_date(target_date)
+    ceiling = parse_curve_date(not_after)
+    if target is None:
+        return empty_curve_lookup(reason="invalid_target_date")
+    dates = _complete_curve_dates(conn, ceiling=ceiling)
+    earliest = dates[0] if dates else None
+    latest = dates[-1] if dates else None
+    resolved = resolve_complete_date(dates, target, not_after=ceiling)
+    if not resolved["found"]:
+        return empty_curve_lookup(
+            requested=target,
+            reason=resolved["reason"],
+            earliest=earliest,
+            latest=latest,
+        )
+    effective: date = resolved["effective_date"]
+    _values_sql, series_ids, _required = _nominal_series_tenor_sql()
+    rows = _rows(
+        conn,
+        """
+        SELECT o.series_id, o.observation_date, o.value, s.source_id
+        FROM mi_v_macro_observations_current o
+        INNER JOIN mi_v_macro_series s ON s.series_id = o.series_id
+        WHERE o.observation_date = :day
+          AND o.series_id = ANY(:series_ids)
+          AND o.value IS NOT NULL
+        """,
+        {"day": effective, "series_ids": series_ids},
+    )
+    by_tenor: dict[str, list[dict[str, Any]]] = {tenor: [] for tenor in COMPLETE_NOMINAL_TENORS}
+    series_to_tenor = {series_id: tenor for tenor, alts in nominal_curve_series().items() for series_id in alts}
+    for row in rows:
+        tenor = series_to_tenor.get(str(row.get("series_id") or ""))
+        if tenor is None or row.get("value") is None:
+            continue
+        source_id = row.get("source_id") or ("TREASURY" if str(row.get("series_id") or "").startswith("UST_") else "FRED")
+        by_tenor[tenor].append(
+            {
+                "series_id": row.get("series_id"),
+                "source_id": source_id,
+                "observation_date": effective,
+                "value": row.get("value"),
+            }
+        )
+    curve: list[dict[str, Any]] = []
+    for tenor in COMPLETE_NOMINAL_TENORS:
+        canonical = CURVE_TENORS[tenor]
+        picked = resolve_observation(canonical, by_tenor.get(tenor) or [])
+        if picked is None or picked.observation_date != effective:
+            return empty_curve_lookup(requested=target, reason="incomplete_curve_rejected", earliest=earliest, latest=latest)
+        curve.append(
+            {
+                "tenor": tenor,
+                "series_id": canonical,
+                "provider_series_id": picked.series_id,
+                "yield_pct": picked.value,
+                "observation_date": effective.isoformat(),
+                "source_id": picked.source_id,
+                "fallback": picked.fallback or picked.source_id != "TREASURY",
+            }
+        )
+    if {row["observation_date"] for row in curve} != {effective.isoformat()}:
+        return empty_curve_lookup(requested=target, reason="mixed_date_rejected", earliest=earliest, latest=latest)
+    source_ids = sorted({row["source_id"] for row in curve if row.get("source_id")})
+    return {
+        "requested_date": target.isoformat(),
+        "effective_date": effective.isoformat(),
+        "fallback": bool(resolved["fallback"]),
+        "found": True,
+        "reason": None if resolved["reason"] is None else resolved["reason"],
+        "curve": curve,
+        "source_ids": source_ids,
+        "earliest_complete_date": earliest.isoformat() if earliest else None,
+        "latest_complete_date": latest.isoformat() if latest else None,
+        "rejected_after_current": resolved["reason"] == REASON_AFTER_CURRENT,
+    }
+
+
 def credit_context(conn) -> dict[str, Any]:
     rows = credit_latest(conn)
     buckets = []
@@ -1221,7 +1376,9 @@ __all__ = [
     "morning_index",
     "morning_latest",
     "observation_history",
+    "complete_treasury_curve_on_or_before",
     "rates_context",
+    "treasury_complete_curve_bounds",
     "recent_runs",
     "research_ideas",
     "sector_latest",

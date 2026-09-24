@@ -7,6 +7,7 @@ fabricating numbers. Missing values render as "—".
 
 from __future__ import annotations
 
+from datetime import date, timedelta
 from typing import Any
 
 import pandas as pd
@@ -16,6 +17,18 @@ from market_intelligence.bond_ladder import LadderBond, aggregate_ladder, theore
 from market_intelligence.bond_tax import ASSET_CORPORATE, ASSET_MUNI, ASSET_TREASURY, BondTaxInputs, TaxAssumptions, compare_three, muni_treasury_ratio
 from market_intelligence.bonds import interpolate_par_yield
 from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
+from market_intelligence.curve_compare import (
+    AFTER_CURRENT_MESSAGE,
+    COMPARE_CUSTOM,
+    COMPARE_NONE,
+    COMPARE_OPTIONS,
+    NO_CURVE_MESSAGE,
+    REASON_AFTER_CURRENT,
+    comparison_target,
+    format_curve_date,
+    parse_curve_date,
+    source_display,
+)
 from market_intelligence.freshness import is_current_status
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
@@ -32,7 +45,6 @@ from market_intelligence.ui import (
     freshness_chip,
     heatmap_legend,
     history_chart,
-    implied_prior_yield,
     load_optional,
     load_or_stop,
     page_header,
@@ -689,6 +701,76 @@ def render_macro_overview() -> None:
 
 # ---- Rates ---------------------------------------------------------------------------
 
+def _render_current_curve_banner(rates: dict[str, Any], *, current_date: date | None, mixed: bool) -> None:
+    source = source_display(rates.get("source_ids"))
+    if rates.get("fallback") and "FRED" not in source:
+        source = "{0}, FRED".format(source) if source != "—" else "FRED"
+    complete = "Yes" if current_date is not None and not mixed else "No"
+    st.markdown("**Current Treasury Curve**")
+    st.markdown("## {0}".format(format_curve_date(current_date)))
+    st.caption("Source: {0}".format(source))
+    st.caption("Complete curve: {0}".format(complete))
+
+
+def _custom_comparison_date(current_date: date | None) -> date | None:
+    if current_date is None:
+        st.info("A custom comparison needs a complete current Treasury curve.")
+        return None
+    bounds = load_or_stop("treasury_complete_curve_bounds", current_date.isoformat())
+    earliest = parse_curve_date((bounds or {}).get("earliest_complete_date"))
+    latest = parse_curve_date((bounds or {}).get("latest_complete_date")) or current_date
+    latest = min(latest, current_date)
+    if earliest is None or earliest > latest:
+        st.info(NO_CURVE_MESSAGE)
+        return None
+    default = min(latest, max(earliest, current_date - timedelta(days=7)))
+    picked = st.date_input(
+        "Comparison date",
+        value=default,
+        min_value=earliest,
+        max_value=latest,
+        key="rates_custom_date",
+        help="Type a date or use the calendar. Weekends and holidays use the prior complete Treasury curve.",
+    )
+    return parse_curve_date(picked)
+
+
+def _load_comparison_curve(mode: str, current_date: date | None, custom_date: date | None) -> dict[str, Any] | None:
+    if current_date is None:
+        return None
+    target = comparison_target(mode, current_date, custom_date)
+    if target is None:
+        return None
+    return load_or_stop("complete_treasury_curve_on_or_before", target.isoformat(), current_date.isoformat())
+
+
+def _render_comparison_note(comparison: dict[str, Any] | None, *, current_date: date | None) -> None:
+    if not comparison:
+        return
+    if not comparison.get("found"):
+        if comparison.get("reason") == REASON_AFTER_CURRENT:
+            st.info(AFTER_CURRENT_MESSAGE)
+        else:
+            st.info(NO_CURVE_MESSAGE)
+        return
+    st.caption("{0} — Current · {1} — Comparison".format(format_curve_date(current_date), format_curve_date(comparison.get("effective_date"))))
+    if comparison.get("fallback"):
+        st.caption("Requested date: {0}".format(format_curve_date(comparison.get("requested_date"))))
+        st.caption("Using nearest prior complete curve: {0}".format(format_curve_date(comparison.get("effective_date"))))
+
+
+def _comparison_frame(rows: list[dict[str, Any]]) -> pd.DataFrame | None:
+    present = [row for row in rows if row.get("yield_pct") is not None and row.get("observation_date")]
+    if not present:
+        return None
+    dates = {str(row.get("observation_date"))[:10] for row in present}
+    if len(dates) != 1:
+        return None
+    frame = pd.DataFrame(present)
+    frame["tenor_order"] = frame["tenor"].map({tenor: i for i, tenor in enumerate(CURVE_TENORS)})
+    return frame.sort_values("tenor_order")
+
+
 def render_rates_curve() -> None:
     rates = load_or_stop("rates_context")
     curve = rates.get("curve") or []
@@ -699,32 +781,31 @@ def render_rates_curve() -> None:
         as_of=compact_as_of([row.get("observation_date") for row in present])[0],
         warning="Tenors have different observation dates: {0}. Connected curve withheld.".format(", ".join(rates.get("curve_observation_dates") or [])) if rates.get("curve_dates_mixed") else None,
     )
-    st.caption(
-        "Complete curve date {0} · sources {1}{2}".format(
-            rates.get("complete_curve_date") or "—",
-            ", ".join(rates.get("source_ids") or []) or "—",
-            " · FRED fallback" if rates.get("fallback") else "",
-        )
-    )
+    current_date = parse_curve_date(rates.get("complete_curve_date"))
+    mixed = bool(rates.get("curve_dates_mixed"))
+    _render_current_curve_banner(rates, current_date=current_date, mixed=mixed)
     if not present:
         st.info("No Treasury curve observations stored.")
         return
     frame = pd.DataFrame(present)
     frame["tenor_order"] = frame["tenor"].map({tenor: i for i, tenor in enumerate(CURVE_TENORS)})
     frame = frame.sort_values("tenor_order")
-    compare = st.radio("Compare with", ["None", "Prior session", "1 week", "1 month"], horizontal=True, key="rates_compare")
-    change_key = {"Prior session": "chg_prev_bps", "1 week": "chg_1w_bps", "1 month": "chg_1m_bps"}.get(compare)
-    mixed = bool(rates.get("curve_dates_mixed"))
+    compare = st.radio("Compare with", list(COMPARE_OPTIONS), horizontal=True, key="rates_compare")
+    custom_date = _custom_comparison_date(current_date) if compare == COMPARE_CUSTOM else None
+    comparison = _load_comparison_curve(compare, current_date, custom_date) if compare != COMPARE_NONE and not mixed else None
+    _render_comparison_note(comparison, current_date=current_date)
     try:
         import plotly.graph_objects as go
 
         fig = go.Figure()
         mode = "markers" if mixed else "lines+markers"
-        fig.add_trace(go.Scatter(x=frame["tenor"], y=frame["yield_pct"], mode=mode, name="Latest yield (%)" if not mixed else "Latest per tenor (dates differ)"))
-        if change_key and not mixed:
-            prior = [implied_prior_yield(row.get("yield_pct"), row.get(change_key)) for row in frame.to_dict("records")]
-            if any(value is not None for value in prior):
-                fig.add_trace(go.Scatter(x=frame["tenor"], y=prior, mode="lines+markers", name=compare, line=dict(dash="dash")))
+        current_name = "{0} — Current".format(format_curve_date(current_date)) if current_date and not mixed else ("Latest per tenor (dates differ)" if mixed else "Current")
+        fig.add_trace(go.Scatter(x=frame["tenor"], y=frame["yield_pct"], mode=mode, name=current_name))
+        if comparison and comparison.get("found") and not mixed:
+            comp_frame = _comparison_frame(comparison.get("curve") or [])
+            if comp_frame is not None and not comp_frame.empty:
+                comp_name = "{0} — Comparison".format(format_curve_date(comparison.get("effective_date")))
+                fig.add_trace(go.Scatter(x=comp_frame["tenor"], y=comp_frame["yield_pct"], mode="lines+markers", name=comp_name, line=dict(dash="dash")))
         fig.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="percent", legend=dict(orientation="h"))
         st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
     except ImportError:  # pragma: no cover
