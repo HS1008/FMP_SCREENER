@@ -1,0 +1,51 @@
+:host {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  background: var(--st-background-color, transparent);
+  color: var(--st-text-color, inherit);
+  font-family: var(--st-font, "Source Sans Pro", "Source Sans", sans-serif);
+  touch-action: pan-y;
+}
+
+#toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 48px;
+  padding: 2px 2px 8px;
+  box-sizing: border-box;
+}
+
+#readout-date {
+  font-size: 13px;
+  line-height: 1.2;
+  opacity: 0.78;
+}
+
+#readout-value {
+  font-size: 20px;
+  line-height: 1.25;
+  font-weight: 650;
+}
+
+#reset {
+  flex: 0 0 auto;
+  min-height: 44px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+}
+
+#chart,
+#chart canvas {
+  width: 100%;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}
