@@ -117,6 +117,18 @@ jobs:
             echo "FAIL: EIA_API_KEY, OPENFIGI_API_KEY, SEC_USER_AGENT, and CBOE credentials repository secrets are all empty"
             exit 3
           fi
+          # Sync provisioner scripts so the host can accept Cboe key-file flags
+          # before main is merged (host checkout may lag the workflow branch).
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "$DO_USER@$DO_HOST" \
+            'mkdir -p /root/FMP_SCREENER/tmp_cboe_provision /root/FMP_SCREENER/scripts'
+          scp -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            scripts/provision_digitalocean_mi_secrets.sh \
+            scripts/protected_env.py \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/tmp_cboe_provision/"
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "$DO_USER@$DO_HOST" \
+            'cp -f /root/FMP_SCREENER/tmp_cboe_provision/provision_digitalocean_mi_secrets.sh /root/FMP_SCREENER/scripts/ && \
+             cp -f /root/FMP_SCREENER/tmp_cboe_provision/protected_env.py /root/FMP_SCREENER/scripts/ && \
+             chmod 755 /root/FMP_SCREENER/scripts/provision_digitalocean_mi_secrets.sh'
           rotate_arg=""
           if [ "${ROTATE:-false}" = "true" ]; then
             rotate_arg="--rotate"
