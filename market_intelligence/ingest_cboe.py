@@ -30,6 +30,8 @@ from market_intelligence.cboe_client import (
     CboeBudgetError,
     CboeClient,
     CboeError,
+    CboeRateLimitError,
+    CboeTrialLimitError,
     prior_weekdays,
     session_date,
 )
@@ -87,24 +89,37 @@ def ingest_cboe(engine, client: CboeClient, *, parent_run_id: str | None = None,
     return report
 
 
+def fetch_index_quotes(client: CboeClient, as_of: date) -> tuple[dict[str, dict[str, Any]], date]:
+    """Return index snapshots, walking prior weekdays when the current session has no VIX level.
+
+    Delayed same-session last-trade fields are SIP/CGIF-gated and may be null. Historical
+    dates on the same host return EOD snapshots. Transport errors skip to the next day;
+    a parsed payload without a VIX level is kept only if no later session has one.
+    """
+    last_exc: CboeError | None = None
+    empty: tuple[dict[str, dict[str, Any]], date] | None = None
+    for day in [as_of] + list(reversed(prior_weekdays(as_of, 5))):
+        try:
+            payload = client.underlying_quotes(list(INDEX_SYMBOLS), day, session_date=as_of)
+        except (CboeBudgetError, CboeTrialLimitError, CboeRateLimitError):
+            raise
+        except CboeError as exc:
+            last_exc = exc
+            continue
+        snaps = index_snapshots(payload, quote_date=day)
+        if (snaps.get("VIX") or {}).get("level") is not None:
+            return snaps, day
+        if empty is None:
+            empty = (snaps, day)
+    if empty is not None:
+        return empty
+    raise last_exc or CboeError("UNAVAILABLE", "underlying_quotes_unavailable")
+
+
 def _ingest_indices(engine, client: CboeClient, as_of: date, parent_run_id: str | None, report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     run_id = _open(engine, "vix", parent_run_id, as_of)
     try:
-        payload = None
-        quote_day = as_of
-        last_exc: CboeError | None = None
-        for day in [as_of] + list(prior_weekdays(as_of, 5)):
-            try:
-                payload = client.underlying_quotes(list(INDEX_SYMBOLS), day, session_date=as_of)
-                quote_day = day
-                last_exc = None
-                break
-            except CboeError as exc:
-                last_exc = exc
-                continue
-        if payload is None:
-            raise last_exc or CboeError("UNAVAILABLE", "underlying_quotes_unavailable")
-        snaps = index_snapshots(payload, quote_date=quote_day)
+        snaps, quote_day = fetch_index_quotes(client, as_of)
         _maybe_backfill(engine, client, as_of, snaps)
         rows = _index_rows(snaps, quote_day)
         written = _write_rows(engine, rows, run_id)

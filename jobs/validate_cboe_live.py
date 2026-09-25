@@ -60,6 +60,17 @@ def _emit(payload: dict[str, Any], *, as_json: bool) -> None:
             print("{0}={1}".format(key, value))
 
 
+def validation_outcome(report: dict[str, Any]) -> tuple[str, int]:
+    """Auth + views + at least one OK metric. Incomplete-only rows are not a pass."""
+    hard = report.get("auth") not in {"SUCCEEDED", "READY"} or not report.get("views_ok")
+    if hard or not report.get("metrics_ok"):
+        return "FAILED", EXIT_FAIL
+    status = "OK"
+    if report.get("entitlement") not in {None, "READY", "SUCCEEDED"}:
+        status = "PARTIAL"
+    return status, EXIT_OK
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", action="store_true")
@@ -81,7 +92,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_REFUSED
 
     from jobs.apply_migrations import apply_migrations
-    from market_intelligence.cboe_client import CboeClient, CboeError, UNDERLYING_QUOTES, session_date
+    from market_intelligence.cboe_client import CboeClient, CboeError, UNDERLYING_QUOTES, prior_weekdays, session_date
     from market_intelligence.ingest_cboe import ingest_cboe
     from sqlalchemy import create_engine, text
     from sqlalchemy.engine import make_url
@@ -166,12 +177,9 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             # Smallest live schema proof: VIX spot via documented underlying-quotes.
-            # Prefer prior weekday when the current session is not yet published on delayed.
-            from market_intelligence.cboe_client import prior_weekdays
-
-            probe_dates = [as_of] + list(prior_weekdays(as_of, 3))
+            # Delayed same-session last-trade can be SIP-gated; prior weekdays are historical EOD.
             last_exc: CboeError | None = None
-            for probe_day in probe_dates:
+            for probe_day in [as_of] + list(reversed(prior_weekdays(as_of, 3))):
                 try:
                     payload = client.underlying_quotes(["VIX"], probe_day, session_date=as_of)
                     report["endpoint_status"] = "SUCCEEDED"
@@ -229,25 +237,9 @@ def main(argv: list[str] | None = None) -> int:
             if not row["has_obs"] or not row["has_ingest"]:
                 report.setdefault("lineage_gaps", []).append(row["metric_id"])
 
-        hard = report["auth"] not in {"SUCCEEDED", "READY"} or not report["views_ok"]
-        # Auth + views prove the writer path. OK metrics are preferred; incomplete rows still
-        # count as a bounded live validation when entitlement/session data is partial.
-        if hard:
-            report["status"] = "FAILED"
-            _emit(report, as_json=args.json)
-            return EXIT_FAIL
-        if report["metrics_ok"]:
-            report["status"] = "OK"
-        elif report["metrics_incomplete"] or report.get("endpoint_status") == "SUCCEEDED":
-            report["status"] = "PARTIAL"
-        else:
-            report["status"] = "FAILED"
-            _emit(report, as_json=args.json)
-            return EXIT_FAIL
-        if report.get("entitlement") not in {None, "READY", "SUCCEEDED"} and report["status"] == "OK":
-            report["status"] = "PARTIAL"
+        report["status"], code = validation_outcome(report)
         _emit(report, as_json=args.json)
-        return EXIT_OK
+        return code
     finally:
         if engine is not None:
             engine.dispose()

@@ -2,29 +2,40 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from datetime import date
 from pathlib import Path
 
 import pytest
 
+from jobs.validate_cboe_live import EXIT_FAIL, EXIT_OK, validation_outcome
 from market_intelligence import cboe_analytics as vol
 from market_intelligence.cboe_client import (
+    API_ROOT_DELAYED,
+    API_ROOT_LIVE,
+    UNDERLYING_QUOTES,
     CboeAuthError,
     CboeClient,
+    CboeError,
     CboeMalformedPayload,
     CboeRateLimitError,
     CboeTrialLimitError,
+    parse_cboe_body,
     probe_status,
+    request_point_cost,
 )
+from market_intelligence.ingest_cboe import fetch_index_quotes
 
 ROOT = Path(__file__).resolve().parents[1]
 AS_OF = date(2026, 9, 24)
 
 
 class _Resp:
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, headers=None, status=200):
         self._body = body
+        self.headers = headers or {}
+        self.status = status
 
     def read(self):
         return self._body
@@ -319,3 +330,109 @@ def test_options_page_renders_null_as_blank(monkeypatch):
     assert "—" in text_blob or "unavailable" in text_blob.lower()
     assert "0.00" not in text_blob
     assert "not a live quote" in text_blob.lower() or "not a live" in text_blob.lower()
+
+
+def _token_then(body: bytes, headers=None):
+    def opener(request, timeout):
+        if request.get_method() == "POST":
+            return _Resp(b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}')
+        return _Resp(body, headers=headers)
+
+    return opener
+
+
+def test_underlying_quotes_accepts_documented_xml():
+    xml = (
+        b'<symbols xmlns:i="http://www.w3.org/2001/XMLSchema-instance">'
+        b"<symbol><symbol>VIX</symbol>"
+        b"<underlying_last_trade_price>16.5</underlying_last_trade_price>"
+        b"<timestamp>15:59:00.000</timestamp></symbol></symbols>"
+    )
+    client = _client(_token_then(xml, {"Content-Type": "application/xml"}))
+    rows = client.underlying_quotes(["VIX"], AS_OF, session_date=AS_OF)
+    assert rows[0]["symbol"] == "VIX"
+    assert rows[0]["underlying_last_trade_price"] == 16.5
+    assert client.requests_made == 1
+    assert client.points_used == 8
+
+
+def test_underlying_quotes_decodes_gzip_json():
+    raw = gzip.compress(b'[{"symbol":"VIX","underlying_last_trade_price":16.5}]')
+    client = _client(_token_then(raw, {"Content-Type": "application/json", "Content-Encoding": "gzip"}))
+    rows = client.underlying_quotes(["VIX"], AS_OF, session_date=AS_OF)
+    assert rows[0]["symbol"] == "VIX"
+    assert rows[0]["underlying_last_trade_price"] == 16.5
+
+
+def test_html_body_is_unavailable_with_diagnostic():
+    with pytest.raises(CboeMalformedPayload) as exc:
+        parse_cboe_body(b"<html>blocked</html>", content_type="text/html")
+    assert exc.value.capability == "UNAVAILABLE"
+    assert "HTML" in str(exc.value)
+
+
+def test_empty_body_is_unavailable():
+    with pytest.raises(CboeMalformedPayload) as exc:
+        parse_cboe_body(b"", content_type="application/json")
+    assert "empty" in str(exc.value)
+
+
+def test_delayed_same_session_costs_eight_points():
+    assert request_point_cost(UNDERLYING_QUOTES, historical=False, api_root=API_ROOT_DELAYED) == 8
+    assert request_point_cost(UNDERLYING_QUOTES, historical=True, api_root=API_ROOT_DELAYED) == 3
+    assert request_point_cost(UNDERLYING_QUOTES, historical=False, api_root=API_ROOT_LIVE) == 4
+
+
+def test_fetch_index_quotes_skips_null_vix_to_prior_session():
+    class _Fake:
+        def underlying_quotes(self, symbols, quote_date, *, session_date):
+            if quote_date == AS_OF:
+                return [{"symbol": "VIX", "underlying_last_trade_price": None, "timestamp": "15:59:00"}]
+            return [{"symbol": "VIX", "underlying_last_trade_price": 17.2, "timestamp": "15:59:00"}]
+
+    snaps, quote_day = fetch_index_quotes(_Fake(), AS_OF)
+    assert quote_day == date(2026, 9, 23)
+    assert snaps["VIX"]["level"] == 17.2
+
+
+def test_fetch_index_quotes_skips_transport_error():
+    class _Fake:
+        def underlying_quotes(self, symbols, quote_date, *, session_date):
+            if quote_date == AS_OF:
+                raise CboeError("UNAVAILABLE", "Cboe response was not JSON")
+            return [{"symbol": "VIX", "underlying_last_trade_price": 18.0, "timestamp": "15:59:00"}]
+
+    snaps, quote_day = fetch_index_quotes(_Fake(), AS_OF)
+    assert quote_day < AS_OF
+    assert snaps["VIX"]["level"] == 18.0
+
+
+def test_live_validation_requires_ok_metrics():
+    status, code = validation_outcome(
+        {
+            "auth": "SUCCEEDED",
+            "views_ok": True,
+            "metrics_ok": [],
+            "metrics_incomplete": [{"metric_id": "SPX_REALIZED_VOL_20D", "status": "INCOMPLETE"}],
+            "entitlement": "UNAVAILABLE",
+        }
+    )
+    assert status == "FAILED" and code == EXIT_FAIL
+    status, code = validation_outcome(
+        {
+            "auth": "SUCCEEDED",
+            "views_ok": True,
+            "metrics_ok": ["VIX_SPOT"],
+            "entitlement": "READY",
+        }
+    )
+    assert status == "OK" and code == EXIT_OK
+    status, code = validation_outcome(
+        {
+            "auth": "SUCCEEDED",
+            "views_ok": True,
+            "metrics_ok": ["VIX_SPOT"],
+            "entitlement": "UNAVAILABLE",
+        }
+    )
+    assert status == "PARTIAL" and code == EXIT_OK
