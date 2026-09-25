@@ -64,6 +64,7 @@ jobs:
             market_intelligence/pages_ui.py \
             market_intelligence/page_registry.py \
             jobs/market_intelligence_refresh.py \
+            jobs/probe_cboe_entitlement.py \
             db/migrations/038_cboe_volatility.sql \
             db/roles/market_intelligence_readonly.sql \
             db/roles/dashboard_readonly.sql \
@@ -81,6 +82,7 @@ jobs:
           cp -f tmp_cboe_sync/pages_ui.py market_intelligence/
           cp -f tmp_cboe_sync/page_registry.py market_intelligence/
           cp -f tmp_cboe_sync/market_intelligence_refresh.py jobs/
+          cp -f tmp_cboe_sync/probe_cboe_entitlement.py jobs/
           cp -f tmp_cboe_sync/038_cboe_volatility.sql db/migrations/
           cp -f tmp_cboe_sync/market_intelligence_readonly.sql db/roles/
           cp -f tmp_cboe_sync/dashboard_readonly.sql db/roles/
@@ -154,6 +156,16 @@ jobs:
             if [ -f db/roles/dashboard_readonly.sql ]; then
               psql "${MI_ADMIN_DATABASE_URL:-$ADMIN_DATABASE_URL}" -v ON_ERROR_STOP=1 -f db/roles/dashboard_readonly.sql || true
             fi
+          fi
+          echo "=== Cboe entitlement probe (bounded) ==="
+          set +e
+          python -m jobs.probe_cboe_entitlement
+          probe_rc=$?
+          set -e
+          echo "probe_exit_code=${probe_rc}"
+          if [ "$probe_rc" -eq 2 ] || [ "$probe_rc" -eq 3 ]; then
+            echo "FAIL: Cboe auth/config probe failed"
+            exit "$probe_rc"
           fi
           set +e
           python -m jobs.market_intelligence_refresh --cboe --json > /tmp/cboe_ingest_report.json 2>/tmp/cboe_ingest_stderr.txt

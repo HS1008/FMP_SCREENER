@@ -315,6 +315,8 @@ class CboeClient:
                 delay *= 2
                 continue
             if not raw or not raw.strip():
+                # LiveVol returns HTTP 204 when the request is accepted but no rows
+                # match the symbol/date (common on trial when a product/date is empty).
                 raise CboeUnavailableError(
                     STATUS_UNAVAILABLE,
                     "Cboe returned empty body (status={0}, content_type={1}, bytes=0)".format(
