@@ -194,7 +194,7 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "source_id": YAHOO_VOL_SOURCE_ID,
                 "configured": True,
                 "action": "ingest",
-                "reason": "Free Yahoo closes for VIX, SKEW, VIX-family tenors, and GSPC RV20.",
+                "reason": "Free Yahoo closes for VIX, SKEW, VIX index tenors including ^VIX1D, and GSPC RV21.",
             }
         )
     cftc_on = str(env.get("MI_CFTC_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
@@ -285,7 +285,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--options", action="store_true", help="Ingest OpenBB/Cboe delayed options chains (fails if not configured)")
     parser.add_argument("--vix", action="store_true", help="Ingest OpenBB/Cboe VX_EOD curve (fails if not configured)")
-    parser.add_argument("--yahoo-vol", action="store_true", help="Ingest Yahoo VIX, SKEW, VIX-family tenors, and GSPC RV20")
+    parser.add_argument("--yahoo-vol", action="store_true", help="Ingest Yahoo VIX, SKEW, VIX index tenors including ^VIX1D, and GSPC RV21")
     parser.add_argument("--cftc", action="store_true", help="Ingest public CFTC Commitments of Traders")
     parser.add_argument("--eia", action="store_true", help="Ingest EIA weekly energy statistics (requires EIA_API_KEY)")
     parser.add_argument("--openfigi", action="store_true", help="Resolve a bounded OpenFIGI mapping batch (requires MI_OPENFIGI_ENABLED)")

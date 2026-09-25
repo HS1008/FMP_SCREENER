@@ -27,6 +27,15 @@ from market_intelligence.freshness import (
     recent_success,
 )
 from market_intelligence.nulls import normalize_payload
+from market_intelligence.yahoo_vol import (
+    METRIC_RV,
+    METRIC_SPREAD,
+    TENOR_AXIS,
+    TENOR_METRIC_IDS,
+    common_curve_dates_from_history,
+    curve_levels_on_date,
+    resolve_curve_date,
+)
 
 MAX_HISTORY_ROWS = 4000
 
@@ -1198,17 +1207,24 @@ def _yahoo_vol_detail(row: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def yahoo_vol_core(conn) -> dict[str, Any]:
-    """Yahoo-backed VIX / SKEW / term / VIX−RV20 from stored metrics. Never calls Yahoo."""
+    """Yahoo-backed VIX / SKEW / term / implied−realized from stored metrics. Never calls Yahoo."""
     if not _view_exists(conn, "mi_v_yahoo_vol_latest"):
         return {"status": "UNAVAILABLE", "reason": "yahoo volatility views are not applied", "latest": [], "history": {}, "freshness": []}
     latest = _rows(conn, "SELECT * FROM mi_v_yahoo_vol_latest ORDER BY metric_id")
+    history_ids = (
+        "VIX_SPOT",
+        "SKEW_INDEX",
+        METRIC_SPREAD,
+        METRIC_RV,
+        *TENOR_METRIC_IDS,
+    )
     history_rows = _rows(
         conn,
         """
         SELECT * FROM mi_v_yahoo_vol_history
         WHERE metric_id IN (
-            'VIX_SPOT', 'SKEW_INDEX', 'VIX_MINUS_GSPC_RV20', 'GSPC_REALIZED_VOL_20D',
-            'VIX_9D', 'VIX_1M', 'VIX_3M', 'VIX_6M', 'VIX_1Y'
+            'VIX_SPOT', 'SKEW_INDEX', 'VIX_MINUS_GSPC_RV21', 'GSPC_REALIZED_VOL_21D',
+            'VIX_1D', 'VIX_9D', 'VIX_1M', 'VIX_3M', 'VIX_6M', 'VIX_1Y'
         )
         ORDER BY metric_id, as_of
         """,
@@ -1234,30 +1250,15 @@ def yahoo_vol_core(conn) -> dict[str, Any]:
     )
     vix = _yahoo_vol_metric(latest, "VIX_SPOT")
     skew = _yahoo_vol_metric(latest, "SKEW_INDEX")
-    spread = _yahoo_vol_metric(latest, "VIX_MINUS_GSPC_RV20")
-    rv = _yahoo_vol_metric(latest, "GSPC_REALIZED_VOL_20D")
+    spread = _yahoo_vol_metric(latest, METRIC_SPREAD)
+    rv = _yahoo_vol_metric(latest, METRIC_RV)
     slope = _yahoo_vol_metric(latest, "VIX_INDEX_FRONT_TO_BACK")
     slope_detail = _yahoo_vol_detail(slope)
-    tenors = []
-    for metric_id, label in (
-        ("VIX_9D", "9D"),
-        ("VIX_1M", "1M"),
-        ("VIX_3M", "3M"),
-        ("VIX_6M", "6M"),
-        ("VIX_1Y", "1Y"),
-    ):
-        row = _yahoo_vol_metric(latest, metric_id)
-        detail = _yahoo_vol_detail(row)
-        tenors.append(
-            {
-                "tenor": label,
-                "metric_id": metric_id,
-                "value": None if not row or row.get("status") != "OK" else row.get("value"),
-                "as_of": None if not row else row.get("as_of"),
-                "yahoo_ticker": detail.get("yahoo_ticker"),
-                "status": None if not row else row.get("status"),
-            }
-        )
+    curve_days = common_curve_dates_from_history(history)
+    curve_dates = [day.isoformat() for day in curve_days]
+    latest_curve = resolve_curve_date(None, curve_days)
+    tenors = curve_levels_on_date(history, latest_curve)
+    unavailable = [point["tenor"] for point in tenors if point.get("value") is None]
     status = "OK" if any(row.get("status") == "OK" and row.get("value") is not None for row in latest) else "UNAVAILABLE"
     return {
         "status": status,
@@ -1270,16 +1271,19 @@ def yahoo_vol_core(conn) -> dict[str, Any]:
         "vix": vix,
         "skew": skew,
         "spread": spread,
-        "rv20": rv,
+        "rv21": rv,
         "slope": slope,
         "curve_state": slope_detail.get("curve_state"),
-        "unavailable_tenors": slope_detail.get("unavailable_tenors") or [],
-        "curve_observation_date": slope_detail.get("curve_observation_date") or (None if not slope else slope.get("as_of")),
+        "unavailable_tenors": unavailable,
+        "curve_dates": curve_dates,
+        "curve_observation_date": None if latest_curve is None else latest_curve.isoformat(),
+        "tenor_axis": list(TENOR_AXIS),
         "front_tenor": slope_detail.get("front_tenor") or "9D",
         "back_tenor": slope_detail.get("back_tenor") or "1Y",
         "tenors": tenors,
         "underlying_rv": "GSPC",
-        "window": 20,
+        "window": 21,
+        "history_metric_ids": list(history_ids),
     }
 
 
