@@ -192,8 +192,8 @@ def main(argv: list[str] | None = None) -> int:
                 text(
                     """
                     SELECT metric_id, status, value IS NOT NULL AS has_value,
-                           inputs_retrieved_max IS NOT NULL AS has_obs,
-                           computed_at IS NOT NULL AS has_ingest
+                           provider_observation_ts IS NOT NULL AS has_obs,
+                           ingested_at IS NOT NULL AS has_ingest
                     FROM mi_v_cboe_vol_latest
                     ORDER BY metric_id
                     """
