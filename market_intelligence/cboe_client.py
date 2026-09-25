@@ -21,12 +21,14 @@ No scope is documented for the client-credentials flow, so none is sent.
 from __future__ import annotations
 
 import base64
+import gzip
 import json
 import os
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
@@ -197,7 +199,7 @@ class CboeClient:
         payload = self._request_json(
             url,
             method="GET",
-            headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+            headers={"Authorization": "Bearer " + token, "Accept": "application/json, application/xml"},
             data=None,
         )
         self.points_used += cost
@@ -243,12 +245,14 @@ class CboeClient:
     def _request_json(self, url: str, *, method: str, headers: dict[str, str], data: bytes | None) -> Any:
         delay = 0.4
         last: CboeError | None = None
-        merged = {"User-Agent": USER_AGENT, "Accept": "application/json", **headers}
+        merged = {"User-Agent": USER_AGENT, "Accept": "application/json, application/xml", **headers}
         for attempt in range(1, self.max_attempts + 1):
             request = urllib.request.Request(url, data=data, headers=merged, method=method)
             try:
                 with self._opener(request, timeout=self.timeout_s) as response:
                     raw = response.read()
+                    content_type = _response_header(response, "Content-Type")
+                    content_encoding = _response_header(response, "Content-Encoding")
             except urllib.error.HTTPError as exc:
                 body = _read_error_body(exc)
                 err = error_for_status(int(exc.code), body)
@@ -272,21 +276,7 @@ class CboeClient:
                 self.sleep(delay)
                 delay *= 2
                 continue
-            try:
-                parsed = json.loads(raw.decode("utf-8"))
-            except (UnicodeError, json.JSONDecodeError) as exc:
-                preview = raw[:80].decode("utf-8", "replace").replace("\n", " ")
-                if "cloudflare" in preview.lower() or "cf-ray" in preview.lower() or preview.lstrip().startswith("<!"):
-                    raise CboeUnavailableError(
-                        STATUS_UNAVAILABLE,
-                        "Cboe edge returned a non-API page (possible IP/WAF block)",
-                        http_status=None,
-                    ) from exc
-                raise CboeMalformedPayload(
-                    STATUS_UNAVAILABLE,
-                    "Cboe response was not JSON ({0})".format(preview[:60]),
-                ) from exc
-            return parsed
+            return parse_cboe_body(raw, content_type=content_type, content_encoding=content_encoding)
         raise last or CboeUnavailableError(STATUS_UNAVAILABLE, "Cboe request failed")
 
 
@@ -355,6 +345,143 @@ def error_for_status(status: int, body: str) -> CboeError:
 
 def _retryable(err: CboeError) -> bool:
     return isinstance(err, (CboeRateLimitError, CboeUnavailableError)) and not isinstance(err, CboeTrialLimitError)
+
+
+def _response_header(response: Any, name: str) -> str:
+    headers = getattr(response, "headers", None)
+    if headers is None:
+        return ""
+    getter = getattr(headers, "get", None)
+    if not callable(getter):
+        return ""
+    value = getter(name) or getter(name.lower()) or ""
+    return str(value)
+
+
+def decode_http_body(raw: bytes, content_encoding: str = "") -> bytes:
+    if not raw:
+        return b""
+    encoding = (content_encoding or "").lower()
+    if "gzip" in encoding or raw[:2] == b"\x1f\x8b":
+        try:
+            return gzip.decompress(raw)
+        except OSError as exc:
+            raise CboeMalformedPayload(STATUS_UNAVAILABLE, "Cboe gzip body was malformed") from exc
+    return raw
+
+
+def body_kind(raw: bytes, content_type: str = "") -> str:
+    ctype = (content_type or "").lower()
+    if not raw or not raw.strip():
+        return "empty"
+    start = raw.lstrip().lower()
+    if "html" in ctype or start.startswith(b"<!doctype html") or start.startswith(b"<html"):
+        return "html"
+    if start.startswith(b"<?xml") or start.startswith(b"<"):
+        return "xml"
+    if start[:1] in {b"{", b"["}:
+        return "json"
+    if "xml" in ctype:
+        return "xml"
+    if "json" in ctype:
+        return "json"
+    return "binary"
+
+
+def _local_tag(tag: str) -> str:
+    if "}" in tag:
+        return tag.rsplit("}", 1)[-1]
+    return tag
+
+
+def _coerce_xml_text(text: str | None) -> Any:
+    if text is None:
+        return None
+    value = text.strip()
+    if value == "" or value.lower() == "null":
+        return None
+    lowered = value.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    try:
+        if any(marker in lowered for marker in (".", "e")):
+            return float(value)
+        return int(value)
+    except ValueError:
+        return value
+
+
+def _xml_object(element: ET.Element) -> dict[str, Any]:
+    grouped: dict[str, list[ET.Element]] = {}
+    for child in element:
+        grouped.setdefault(_local_tag(child.tag), []).append(child)
+    out: dict[str, Any] = {}
+    for name, items in grouped.items():
+        if name in {"options", "symbols", "expirations"} or len(items) > 1:
+            nodes = [_xml_node(item) for item in items]
+            if len(nodes) == 1 and isinstance(nodes[0], list):
+                out[name] = nodes[0]
+            else:
+                out[name] = nodes
+        else:
+            out[name] = _xml_node(items[0])
+    for key, value in element.attrib.items():
+        name = _local_tag(key)
+        if name not in out and not name.startswith("xmlns"):
+            out[name] = _coerce_xml_text(value)
+    return out
+
+
+def _xml_node(element: ET.Element) -> Any:
+    tag = _local_tag(element.tag)
+    children = list(element)
+    if not children:
+        return _coerce_xml_text(element.text)
+    names = [_local_tag(child.tag) for child in children]
+    if tag in {"symbols", "options", "expirations"} or (len(names) > 1 and len(set(names)) == 1):
+        return [_xml_object(child) if list(child) else _coerce_xml_text(child.text) for child in children]
+    return _xml_object(element)
+
+
+def xml_payload(raw: bytes) -> Any:
+    return _xml_node(ET.fromstring(raw))
+
+
+def parse_cboe_body(raw: bytes | bytearray | str | None, *, content_type: str = "", content_encoding: str = "") -> Any:
+    if raw is None:
+        payload = b""
+    elif isinstance(raw, str):
+        payload = raw.encode("utf-8")
+    else:
+        payload = bytes(raw)
+    decoded = decode_http_body(payload, content_encoding)
+    kind = body_kind(decoded, content_type)
+    if kind == "empty":
+        raise CboeMalformedPayload(STATUS_UNAVAILABLE, "Cboe response was empty")
+    if kind == "html":
+        raise CboeMalformedPayload(
+            STATUS_UNAVAILABLE,
+            "Cboe response was HTML ({0}, {1} bytes)".format(content_type or "text/html", len(decoded)),
+        )
+    if kind == "xml":
+        try:
+            return xml_payload(decoded)
+        except ET.ParseError as exc:
+            raise CboeMalformedPayload(
+                STATUS_UNAVAILABLE,
+                "Cboe XML payload was malformed ({0} bytes)".format(len(decoded)),
+            ) from exc
+    try:
+        return json.loads(decoded.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise CboeMalformedPayload(
+            STATUS_UNAVAILABLE,
+            "Cboe response was not JSON ({0}, {1} bytes, kind={2})".format(
+                content_type or "unknown-type",
+                len(decoded),
+                kind,
+            ),
+        ) from exc
 
 
 def _read_error_body(exc: urllib.error.HTTPError) -> str:

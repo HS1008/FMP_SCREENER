@@ -198,6 +198,13 @@ def _ingest_skew(engine, client: CboeClient, as_of: date, parent_run_id: str | N
 
 
 def _ingest_spread(engine, as_of: date, parent_run_id: str | None, report: dict[str, Any], snaps: Mapping[str, Mapping[str, Any]]) -> None:
+    if not snaps:
+        # Quotes never parsed. Do not manufacture INCOMPLETE latest rows that make host/live gates go green.
+        run_id = _open(engine, "iv_minus_rv", parent_run_id, as_of)
+        _close(engine, run_id, RUN_FAILED, 0, "no_index_quotes")
+        _mark(engine, "iv_minus_rv", as_of, transport="UNAVAILABLE", success=False, error="no_index_quotes", run_id=run_id, capability="UNAVAILABLE")
+        report["sections"]["iv_minus_rv"] = {"status": "UNAVAILABLE", "reason": "no_index_quotes"}
+        return
     run_id = _open(engine, "iv_minus_rv", parent_run_id, as_of)
     closes = sorted(_stored_closes(engine).items())
     rv = realized_vol_20(closes)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gzip
 import json
 from datetime import date
 from pathlib import Path
@@ -15,6 +16,7 @@ from market_intelligence.cboe_client import (
     CboeMalformedPayload,
     CboeRateLimitError,
     CboeTrialLimitError,
+    parse_cboe_body,
     probe_status,
 )
 
@@ -23,8 +25,9 @@ AS_OF = date(2026, 9, 24)
 
 
 class _Resp:
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, headers=None):
         self._body = body
+        self.headers = headers or {}
 
     def read(self):
         return self._body
@@ -34,6 +37,15 @@ class _Resp:
 
     def __exit__(self, *args):
         return False
+
+
+def _token_then(body: bytes, headers=None):
+    def opener(request, timeout):
+        if request.get_method() == "POST":
+            return _Resp(b'{"access_token":"tok-1","expires_in":3600}')
+        return _Resp(body, headers)
+
+    return opener
 
 
 def _http_error(code: int, body: str = ""):
@@ -131,6 +143,80 @@ def test_malformed_token_payload():
 
     with pytest.raises(CboeMalformedPayload):
         _client(opener).access_token()
+
+
+def test_underlying_quotes_accepts_documented_xml():
+    xml = (
+        b'<symbols xmlns:i="http://www.w3.org/2001/XMLSchema-instance">'
+        b"<symbol><symbol>VIX</symbol>"
+        b"<underlying_last_trade_price>16.5</underlying_last_trade_price>"
+        b"<timestamp>15:59:00.000</timestamp></symbol></symbols>"
+    )
+    client = _client(_token_then(xml, {"Content-Type": "application/xml"}))
+    rows = client.underlying_quotes(["VIX"], AS_OF, session_date=AS_OF)
+    assert rows[0]["symbol"] == "VIX"
+    assert rows[0]["underlying_last_trade_price"] == 16.5
+    assert client.requests_made == 1
+    assert client.points_used == 4
+
+
+def test_xml_body_wins_over_json_content_type():
+    xml = (
+        b"<symbols><symbol><symbol>VIX</symbol>"
+        b"<underlying_last_trade_price>16.5</underlying_last_trade_price></symbol></symbols>"
+    )
+    rows = parse_cboe_body(xml, content_type="application/json")
+    assert rows[0]["symbol"] == "VIX"
+    assert rows[0]["underlying_last_trade_price"] == 16.5
+
+
+def test_underlying_quotes_decodes_gzip_json():
+    raw = gzip.compress(b'[{"symbol":"VIX","underlying_last_trade_price":16.5}]')
+    client = _client(_token_then(raw, {"Content-Type": "application/json", "Content-Encoding": "gzip"}))
+    rows = client.underlying_quotes(["VIX"], AS_OF, session_date=AS_OF)
+    assert rows[0]["symbol"] == "VIX"
+    assert rows[0]["underlying_last_trade_price"] == 16.5
+    assert client.points_used == 4
+
+
+def test_option_quotes_xml_unwraps_options_wrapper():
+    xml = (
+        b"<quote><symbol>SPX</symbol><underlying_last_trade_price>5700</underlying_last_trade_price>"
+        b"<options><option><root>SPX</root><option_type>P</option_type><strike>5500</strike>"
+        b"<delta>-0.24</delta><mid_iv>0.22</mid_iv></option></options></quote>"
+    )
+    payload = parse_cboe_body(xml, content_type="application/xml")
+    assert payload["symbol"] == "SPX"
+    assert payload["options"][0]["strike"] == 5500
+    snaps = vol.index_snapshots(
+        parse_cboe_body(
+            b"<symbols><symbol><symbol>VIX</symbol><underlying_last_trade_price>16.5</underlying_last_trade_price></symbol></symbols>",
+            content_type="application/xml",
+        ),
+        quote_date=AS_OF,
+    )
+    assert snaps["VIX"]["level"] == 16.5
+
+
+def test_html_body_is_unavailable():
+    with pytest.raises(CboeMalformedPayload) as exc:
+        parse_cboe_body(b"<html>blocked</html>", content_type="text/html")
+    assert exc.value.capability == "UNAVAILABLE"
+    assert "HTML" in str(exc.value)
+
+
+def test_empty_body_is_unavailable():
+    with pytest.raises(CboeMalformedPayload) as exc:
+        parse_cboe_body(b"", content_type="application/json")
+    assert "empty" in str(exc.value)
+
+
+def test_host_ingest_workflow_requires_ok_metrics_and_rejects_partial_exit():
+    workflow = (ROOT / ".github" / "workflows" / "cboe_host_ingest.yml").read_text(encoding="utf-8")
+    assert 'if [ "$refresh_rc" -gt 1 ]; then' in workflow
+    assert 'refresh_rc" -ne 2' not in workflow
+    assert "no OK Cboe metric rows after ingest" in workflow
+    assert 'r["status"] in {"OK", "INCOMPLETE"}' not in workflow
 
 
 def test_probe_configuration_states():

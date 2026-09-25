@@ -160,14 +160,28 @@ jobs:
           refresh_rc=$?
           set -e
           echo "refresh_exit_code=${refresh_rc}"
-          # 0=OK, 2=PARTIAL (expected when some Cboe metrics are entitlement-incomplete)
-          if [ "$refresh_rc" -ne 0 ] && [ "$refresh_rc" -ne 2 ]; then
+          # 0=OK. 2=PARTIAL means the configured Cboe source failed; do not treat that as host success.
+          if [ "$refresh_rc" -gt 1 ]; then
             echo "FAIL: refresh hard-failed"
-            tail -n 80 /tmp/cboe_ingest_stderr.txt || true
-            head -c 2000 /tmp/cboe_ingest_report.json || true
+            if [ -s /tmp/cboe_ingest_stderr.txt ]; then
+              echo "refresh_stderr_tail:"
+              tail -n 40 /tmp/cboe_ingest_stderr.txt || true
+            fi
+            python3 - <<'PY'
+          import json
+          from pathlib import Path
+          raw = Path("/tmp/cboe_ingest_report.json").read_text(encoding="utf-8").strip()
+          report = json.loads(raw) if raw else {}
+          print("refresh_status=" + str(report.get("status")))
+          cboe = (report.get("results") or {}).get("cboe") or {}
+          print("cboe_result_failed=" + str(cboe.get("failed")))
+          print("points_used=" + str(cboe.get("points_used")))
+          print("requests_made=" + str(cboe.get("requests_made")))
+          for name, section in sorted((cboe.get("sections") or {}).items()):
+              print("section={0}:{1}".format(name, section.get("status") if isinstance(section, dict) else section))
+          PY
             exit 2
           fi
-          # Always surface stderr summary (sanitized logging only; no secrets)
           if [ -s /tmp/cboe_ingest_stderr.txt ]; then
             echo "refresh_stderr_tail:"
             tail -n 40 /tmp/cboe_ingest_stderr.txt || true
@@ -222,8 +236,8 @@ jobs:
           print("data_health_cboe_rows=" + str(len(cboe_health) or len(health)))
           if not latest:
               raise SystemExit("no Cboe metric rows after ingest")
-          if not ok and not any(r["status"] in {"OK", "INCOMPLETE"} for r in latest):
-              raise SystemExit("no usable Cboe metric statuses")
+          if not ok:
+              raise SystemExit("no OK Cboe metric rows after ingest")
           print("host_ingest_ok=1")
           print("streamlit_options_read_path_ok=1")
           PY
