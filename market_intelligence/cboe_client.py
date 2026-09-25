@@ -289,6 +289,12 @@ class CboeClient:
                 xml_payload = _parse_livevol_xml(text)
                 if xml_payload is not None:
                     return xml_payload
+                if _edge_html_page(text):
+                    raise CboeUnavailableError(
+                        STATUS_UNAVAILABLE,
+                        "Cboe edge returned a non-API page (possible IP/WAF block)",
+                        http_status=None,
+                    ) from exc
                 hint = " ".join(text.replace("\n", " ").split())[:80] or "empty_body"
                 raise CboeMalformedPayload(
                     STATUS_UNAVAILABLE,
@@ -399,6 +405,18 @@ def _read_error_body(exc: urllib.error.HTTPError) -> str:
     if "client_secret" in text.lower() or "access_token" in text.lower():
         return ""
     return text[:240]
+
+
+def _edge_html_page(text: str) -> bool:
+    """True when the data host returned Cloudflare/WAF HTML instead of an API body."""
+    preview = (text or "")[:120].lower()
+    stripped = (text or "").lstrip()
+    return (
+        "cloudflare" in preview
+        or "cf-ray" in preview
+        or stripped.startswith("<!")
+        or stripped[:5].lower() == "<html"
+    )
 
 
 def _parse_livevol_xml(text: str) -> Any | None:

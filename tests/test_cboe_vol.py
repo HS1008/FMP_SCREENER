@@ -18,6 +18,7 @@ from market_intelligence.cboe_client import (
     CboeRateLimitError,
     CboeSignatureBlockedError,
     CboeTrialLimitError,
+    CboeUnavailableError,
     USER_AGENT,
     probe_status,
     quote_date_for_root,
@@ -195,6 +196,23 @@ def test_malformed_token_payload():
 
     with pytest.raises(CboeMalformedPayload):
         _client(opener).access_token()
+
+
+def test_cloudflare_html_quote_body_is_unavailable():
+    html = (
+        b"<!DOCTYPE html><html><title>Attention Required! | Cloudflare</title>"
+        b"<span>cf-ray</span></html>"
+    )
+
+    def opener(request, timeout):
+        if request.get_method() == "POST":
+            return _Resp(b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}')
+        return _Resp(html)
+
+    with pytest.raises(CboeUnavailableError) as exc:
+        _client(opener).underlying_quotes(["VIX"], date(2026, 9, 23), session_date=date(2026, 9, 24))
+    assert exc.value.capability == "UNAVAILABLE"
+    assert "non-API page" in str(exc.value)
 
 
 def test_probe_configuration_states():
