@@ -24,11 +24,11 @@ jobs:
   ingest:
     name: Bounded Yahoo vol ingest on writer host
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       DO_HOST: ${{ secrets.DO_HOST }}
       DO_USER: ${{ secrets.DO_USER }}
-      EXPECTED_SHA: a8315f7dd85fbf36979a80bc664c2470603d897e
+      EXPECTED_SHA: 7fedbbb10f65e28360f5dcc11a2b847ae7bdb823
     steps:
       - uses: actions/checkout@v4
         with:
@@ -102,6 +102,7 @@ jobs:
 
           from market_intelligence.read_models import data_health_context, options_volatility_context, yahoo_vol_core
           from market_intelligence.writer_db import writer_engine
+          from market_intelligence.yahoo_vol import TENOR_AXIS, curve_levels_on_date
           from sqlalchemy import text
 
           raw = Path("/tmp/yahoo_vol_ingest_report.json").read_text(encoding="utf-8").strip()
@@ -125,8 +126,9 @@ jobs:
           required = [
               "VIX_SPOT",
               "SKEW_INDEX",
-              "GSPC_REALIZED_VOL_20D",
-              "VIX_MINUS_GSPC_RV20",
+              "GSPC_REALIZED_VOL_21D",
+              "VIX_MINUS_GSPC_RV21",
+              "VIX_1D",
               "VIX_9D",
               "VIX_1M",
               "VIX_3M",
@@ -160,6 +162,21 @@ jobs:
               core = yahoo_vol_core(conn)
               opts = options_volatility_context(conn)
               dh = data_health_context(conn)
+              coverage = list(
+                  conn.execute(
+                      text(
+                          "SELECT metric_id, count(*) AS n, min(as_of)::text AS min_as_of, "
+                          "max(as_of)::text AS max_as_of, min(value) AS min_value, "
+                          "max(value) AS max_value, "
+                          "count(*) FILTER (WHERE value = 0) AS zero_values "
+                          "FROM mi_v_yahoo_vol_history "
+                          "WHERE metric_id IN ("
+                          "'VIX_SPOT','SKEW_INDEX','GSPC_REALIZED_VOL_21D','VIX_MINUS_GSPC_RV21',"
+                          "'VIX_1D','VIX_9D','VIX_1M','VIX_3M','VIX_6M','VIX_1Y'"
+                          ") GROUP BY metric_id ORDER BY metric_id"
+                      )
+                  ).mappings()
+              )
 
           by_id = {str(r["metric_id"]): r for r in latest}
           ok_ids = []
@@ -213,8 +230,52 @@ jobs:
                   )
               )
 
-          # Core series must publish; unsupported tenors may stay incomplete.
-          for mid in ("VIX_SPOT", "SKEW_INDEX", "GSPC_REALIZED_VOL_20D"):
+          for row in coverage:
+              print(
+                  "coverage={0}:n={1}:min={2}:max={3}:min_value={4}:max_value={5}:zeros={6}".format(
+                      row.get("metric_id"),
+                      row.get("n"),
+                      row.get("min_as_of"),
+                      row.get("max_as_of"),
+                      row.get("min_value"),
+                      row.get("max_value"),
+                      row.get("zero_values"),
+                  )
+              )
+          by_cov = {str(row["metric_id"]): row for row in coverage}
+          rv_cov = by_cov.get("GSPC_REALIZED_VOL_21D")
+          if not rv_cov or int(rv_cov["n"]) < 100:
+              raise SystemExit("FAIL: historical RV21 row count is too small")
+          if int(rv_cov["zero_values"] or 0) != 0:
+              raise SystemExit("FAIL: RV21 contains zero-filled values")
+          if float(rv_cov["min_value"]) <= 0 or float(rv_cov["max_value"]) > 120:
+              raise SystemExit("FAIL: RV21 values are outside a plausible vol-point range")
+          for mid in ("VIX_SPOT", "SKEW_INDEX", "VIX_1D", "VIX_9D", "VIX_1M", "VIX_3M", "VIX_6M", "VIX_1Y"):
+              row = by_cov.get(mid)
+              if not row or int(row["n"]) < 50:
+                  raise SystemExit("FAIL: historical coverage too small for " + mid)
+              if int(row["zero_values"] or 0) != 0:
+                  raise SystemExit("FAIL: zero-filled history for " + mid)
+          curve_dates = list(core.get("curve_dates") or [])
+          print("curve_date_count=" + str(len(curve_dates)))
+          print("tenor_axis=" + ",".join(str(x) for x in (core.get("tenor_axis") or [])))
+          if list(core.get("tenor_axis") or []) != list(TENOR_AXIS):
+              raise SystemExit("FAIL: tenor axis is not 1D,9D,1M,3M,6M,1Y")
+          if len(curve_dates) < 20:
+              raise SystemExit("FAIL: six-tenor common curve dates are too few")
+          history = core.get("history") or {}
+          for label, iso in (("earliest", curve_dates[0]), ("latest", curve_dates[-1])):
+              levels = curve_levels_on_date(history, iso)
+              ordered = [point["tenor"] for point in levels]
+              printable = ",".join(
+                  "" if point["value"] is None else "{0:.2f}".format(float(point["value"]))
+                  for point in levels
+              )
+              print("curve_{0}={1}:order={2}:levels={3}".format(label, iso, ",".join(ordered), printable))
+              if ordered != list(TENOR_AXIS) or any(point["value"] is None for point in levels):
+                  raise SystemExit("FAIL: curve on {0} is incomplete or mis-ordered".format(iso))
+
+          for mid in ("VIX_SPOT", "SKEW_INDEX", "GSPC_REALIZED_VOL_21D", "VIX_1D"):
               if mid not in ok_ids:
                   raise SystemExit("FAIL: required metric missing OK value: " + mid)
           if not health:
@@ -245,38 +306,76 @@ jobs:
           source venv/bin/activate
           export PYTHONPATH=/root/FMP_SCREENER${PYTHONPATH:+:$PYTHONPATH}
           python - <<'PY'
+          from datetime import timedelta
           from pathlib import Path
           from streamlit.testing.v1 import AppTest
 
           page = Path("/root/FMP_SCREENER/pages/21_Options_Volatility.py")
+          ui_path = Path("/root/FMP_SCREENER/market_intelligence/pages_ui.py")
           assert page.is_file(), "Options page missing"
-          at = AppTest.from_file(str(page), default_timeout=60)
+          page_src = page.read_text(encoding="utf-8")
+          ui_src = ui_path.read_text(encoding="utf-8")
+          assert "yfinance" not in page_src and "yfinance" not in ui_src
+          assert "ingest_yahoo_vol" not in page_src and "ingest_yahoo_vol" not in ui_src
+          assert "RV20" not in ui_src
+          yahoo_fn = ui_src.split("def _render_yahoo_vol_core", 1)[1].split("\ndef ", 1)[0]
+          assert "st.columns(2)" not in yahoo_fn
+          assert "st.dataframe" not in yahoo_fn
+          at = AppTest.from_file(str(page), default_timeout=90)
           at.run()
           assert not at.exception, [str(e.value) for e in at.exception]
-          parts = []
-          for kind in ("title", "subheader", "caption", "markdown", "info", "metric"):
-              for el in getattr(at, kind):
-                  parts.append(str(getattr(el, "value", el)))
-          text = "\n".join(parts)
+
+          def _visible(app):
+              parts = []
+              for kind in ("title", "subheader", "caption", "markdown", "info", "metric"):
+                  for el in getattr(app, kind):
+                      parts.append(str(getattr(el, "label", "") or ""))
+                      parts.append(str(getattr(el, "value", el)))
+              return "\n".join(parts)
+
+          text = _visible(at)
           required = [
               "Core volatility (Yahoo)",
               "Cboe SKEW Index",
+              "Implied − Realized Vol",
+              "Implied vs Realized Vol",
+              "VIX − GSPC RV21",
               "VIX index term structure",
+              "VIX recent history",
+              "SKEW recent history",
+              "Curve as of",
               "Options chains and VX futures",
           ]
           missing = [label for label in required if label not in text]
           if missing:
               raise SystemExit("FAIL: Options AppTest missing labels: " + ", ".join(missing))
-          # Distinguish index curve vs VX futures wording.
-          assert "VIX index term structure" in text
-          assert "VX futures" in text or "VX_EOD" in text or "Not a VIX futures" in text or "VX" in text
-          # Never call Yahoo from Streamlit page module.
-          src = page.read_text(encoding="utf-8")
-          assert "yfinance" not in src
-          assert "ingest_yahoo_vol" not in src
+          if "RV20" in text or "GSPC RV20" in text:
+              raise SystemExit("FAIL: RV20 wording is still visible")
+          for frame in at.dataframe:
+              rendered = str(frame)
+              if "Tenor" in rendered and "Yahoo" in rendered and "As-of" in rendered:
+                  raise SystemExit("FAIL: VIX term structure table is still visible")
+          if not at.date_input:
+              raise SystemExit("FAIL: curve date selector is missing")
+          default_caption = next(line for line in text.splitlines() if line.startswith("Curve as of"))
+          picker = at.date_input[0]
+          print("curve_picker_default=" + str(picker.value))
+          print("curve_caption_default=" + default_caption)
+          weekday_gap = (picker.value.weekday() - 5) % 7
+          saturday = picker.value - timedelta(days=weekday_gap or 7)
+          at.date_input[0].set_value(saturday).run()
+          assert not at.exception, [str(e.value) for e in at.exception]
+          rerun = _visible(at)
+          rerun_caption = next(line for line in rerun.splitlines() if line.startswith("Curve as of"))
+          print("curve_picker_saturday=" + str(saturday))
+          print("curve_caption_resolved=" + rerun_caption)
+          if rerun_caption == default_caption:
+              raise SystemExit("FAIL: selecting an earlier date did not change the resolved curve date")
+          if "RV20" in rerun:
+              raise SystemExit("FAIL: RV20 wording appeared after date change")
           print("options_apptest_yahoo=ok")
           print("options_apptest_has_metrics=" + str(bool(at.metric)))
-          print("options_apptest_has_dataframe=" + str(bool(at.dataframe)))
+          print("options_apptest_has_date_input=" + str(bool(at.date_input)))
           PY
           echo "yahoo_vol_streamlit_verify=complete"
           REMOTE
