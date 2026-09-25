@@ -273,7 +273,7 @@ def dashboard_ro_engine(pg_engine, pg_database, pg_admin_url, tmp_path):
     password = "dash_{0}".format(uuid.uuid4().hex)
     admin_on_test_db = make_url(pg_admin_url).set(
         database=make_url(pg_database).database,
-        drivername="postgresql",
+        drivername="postgresql+psycopg2",
     ).render_as_string(hide_password=False)
     first = _provision_dashboard_role(admin_on_test_db, role, password, tmp_path)
     assert first.returncode == 0, first.stderr
@@ -448,7 +448,7 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
     )
     admin_on_test_db = make_url(pg_admin_url).set(
         database=make_url(pg_database).database,
-        drivername="postgresql",
+        drivername="postgresql+psycopg2",
     ).render_as_string(hide_password=False)
     env = {
         **os.environ,
@@ -577,7 +577,7 @@ def test_polluted_preexisting_role_is_repaired_or_fails_closed(
     password = "dash_{0}".format(uuid.uuid4().hex)
     admin_on_test_db = make_url(pg_admin_url).set(
         database=make_url(pg_database).database,
-        drivername="postgresql",
+        drivername="postgresql+psycopg2",
     ).render_as_string(hide_password=False)
     admin = create_engine(admin_on_test_db, isolation_level="AUTOCOMMIT", future=True)
     try:
@@ -635,7 +635,7 @@ def test_public_create_inheritance_fails_closed(pg_engine, pg_database, pg_admin
     password = "dash_{0}".format(uuid.uuid4().hex)
     admin_on_test_db = make_url(pg_admin_url).set(
         database=make_url(pg_database).database,
-        drivername="postgresql",
+        drivername="postgresql+psycopg2",
     ).render_as_string(hide_password=False)
     admin = create_engine(admin_on_test_db, isolation_level="AUTOCOMMIT", future=True)
     try:
