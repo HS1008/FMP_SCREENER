@@ -10,12 +10,17 @@ import pytest
 
 from market_intelligence import cboe_analytics as vol
 from market_intelligence.cboe_client import (
+    API_ROOT_DELAYED,
+    API_ROOT_LIVE,
     CboeAuthError,
     CboeClient,
     CboeMalformedPayload,
     CboeRateLimitError,
+    CboeSignatureBlockedError,
     CboeTrialLimitError,
+    USER_AGENT,
     probe_status,
+    quote_date_for_root,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +70,7 @@ def test_token_success_and_cache():
         calls["n"] += 1
         assert request.get_method() == "POST"
         assert request.get_header("Authorization").startswith("Basic ")
+        assert (request.get_header("User-agent") or request.get_header("User-Agent")) == USER_AGENT
         assert b"client_secret" not in request.data
         assert b"grant_type=client_credentials" in request.data
         assert b"scope=api.allaccess" in request.data
@@ -99,6 +105,64 @@ def test_bad_credentials():
     with pytest.raises(CboeAuthError) as exc:
         _client(opener).access_token()
     assert exc.value.capability == "AUTH_FAILED"
+
+
+def test_cloudflare_1010_is_unavailable_not_auth():
+    calls = {"n": 0}
+    body = (
+        '{"type":"https://developers.cloudflare.com/support/troubleshooting/'
+        'http-status-codes/cloudflare-1xxx-errors/error-1010/",'
+        '"title":"Error 1010: Access denied","status":403,'
+        '"detail":"The site owner has blocked access based on your browser\'s signature.",'
+        '"error_code":1010,"error_name":"browser_signature_banned"}'
+    )
+
+    def opener(request, timeout):
+        calls["n"] += 1
+        raise _http_error(403, body)
+
+    with pytest.raises(CboeSignatureBlockedError) as exc:
+        _client(opener).access_token()
+    assert exc.value.capability == "UNAVAILABLE"
+    assert exc.value.http_status == 403
+    assert "1010" in str(exc.value)
+    assert calls["n"] == 1
+
+
+def test_underlying_quotes_accepts_documented_xml():
+    xml = (
+        b'<symbols xmlns:i="http://www.w3.org/2001/XMLSchema-instance">'
+        b"<symbol><symbol>VIX</symbol>"
+        b"<underlying_last_trade_price>16.5</underlying_last_trade_price>"
+        b"<timestamp>15:59:00.000</timestamp></symbol></symbols>"
+    )
+
+    def opener(request, timeout):
+        if request.get_method() == "POST":
+            return _Resp(b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}')
+        return _Resp(xml)
+
+    payload = _client(opener).underlying_quotes(["VIX"], date(2026, 9, 23), session_date=date(2026, 9, 24))
+    assert payload[0]["symbol"] == "VIX"
+    assert payload[0]["underlying_last_trade_price"] == 16.5
+
+
+def test_quotes_send_user_agent_and_bearer():
+    calls = []
+
+    def opener(request, timeout):
+        calls.append(request)
+        if request.get_method() == "POST":
+            return _Resp(b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}')
+        assert request.get_header("Authorization") == "Bearer tok-1"
+        assert (request.get_header("User-agent") or request.get_header("User-Agent")) == USER_AGENT
+        return _Resp(b"[]")
+
+    client = _client(opener)
+    payload = client.underlying_quotes(["VIX"], date(2026, 9, 24), session_date=date(2026, 9, 24))
+    assert payload == []
+    assert len(calls) == 2
+    assert (calls[0].get_header("User-agent") or calls[0].get_header("User-Agent")) == USER_AGENT
 
 
 def test_rate_limit_retries_then_raises():
@@ -267,6 +331,33 @@ def test_rv20_and_spreads_are_distinct():
     assert iv30["metric_id"] != vix_only["metric_id"]
     short = vol.realized_vol_20(closes[:5])
     assert short["value"] is None and short["status"] == "INCOMPLETE"
+
+
+def test_delayed_same_day_uses_documented_historical_date():
+    session = date(2026, 9, 24)  # Thursday
+    assert quote_date_for_root(session, session=session, api_root=API_ROOT_DELAYED) == date(2026, 9, 23)
+    assert quote_date_for_root(date(2026, 9, 22), session=session, api_root=API_ROOT_DELAYED) == date(2026, 9, 22)
+    assert quote_date_for_root(session, session=session, api_root=API_ROOT_LIVE) == session
+    monday = date(2026, 9, 21)
+    assert quote_date_for_root(monday, session=monday, api_root=API_ROOT_DELAYED) == date(2026, 9, 18)
+
+
+def test_live_validator_reads_view_aliases_not_snapshot_columns():
+    src = (ROOT / "jobs" / "validate_cboe_live.py").read_text(encoding="utf-8")
+    ingest = (ROOT / "market_intelligence" / "ingest_cboe.py").read_text(encoding="utf-8")
+    view = (ROOT / "db" / "migrations" / "038_cboe_volatility.sql").read_text(encoding="utf-8")
+    assert "computed_at AS ingested_at" in view
+    assert "inputs_retrieved_max AS provider_observation_ts" in view
+    assert "FROM mi_v_cboe_vol_latest" in src
+    assert "provider_observation_ts IS NOT NULL AS has_obs" in src
+    assert "ingested_at IS NOT NULL AS has_ingest" in src
+    assert "inputs_retrieved_max IS NOT NULL" not in src
+    assert "computed_at IS NOT NULL" not in src
+    assert "quote_date_for_root" in src
+    assert "quote_date_for_root" in ingest
+    assert "endpoint_error" in src
+    assert 'if hard or not report["metrics_ok"]' in src
+    assert "incomplete rows still" not in src
 
 
 def test_options_page_is_read_only_source():

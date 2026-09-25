@@ -8,6 +8,10 @@ Official contract (https://api.livevol.com/v1/docs/Home/Authentication and the A
 - Data: https://api.livevol.com/v1/live/allaccess/...
   Authorization: Bearer <access_token>
 
+``id.livevol.com`` is fronted by Cloudflare. The default Python-urllib User-Agent
+is banned (HTTP 403, error 1010 / browser_signature_banned). Every request must
+send a non-default User-Agent or the token exchange never reaches IdentityServer.
+
 Documented point costs used for the budget guard (per request, not per row):
 
 - GET /allaccess/market/underlying-quotes: live 4, historical 3
@@ -15,7 +19,8 @@ Documented point costs used for the budget guard (per request, not per row):
 - GET /allaccess/reference/expirations: 1
 
 Historical means ``date`` is before the New York session date, on the live host.
-No scope is documented for the client-credentials flow, so none is sent.
+Official client-credentials examples omit scope; All Access clients commonly
+need ``api.allaccess``.
 """
 
 from __future__ import annotations
@@ -27,6 +32,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
@@ -99,6 +105,10 @@ class CboeRateLimitError(CboeError):
 
 class CboeUnavailableError(CboeError):
     pass
+
+
+class CboeSignatureBlockedError(CboeUnavailableError):
+    """Cloudflare 1010 / browser-signature ban. Not a credential rejection."""
 
 
 class CboeMalformedPayload(CboeError):
@@ -275,7 +285,15 @@ class CboeClient:
             try:
                 parsed = json.loads(raw.decode("utf-8"))
             except (UnicodeError, json.JSONDecodeError) as exc:
-                raise CboeMalformedPayload(STATUS_UNAVAILABLE, "Cboe response was not JSON") from exc
+                text = raw.decode("utf-8", "replace") if raw else ""
+                xml_payload = _parse_livevol_xml(text)
+                if xml_payload is not None:
+                    return xml_payload
+                hint = " ".join(text.replace("\n", " ").split())[:80] or "empty_body"
+                raise CboeMalformedPayload(
+                    STATUS_UNAVAILABLE,
+                    "Cboe response was not JSON ({0})".format(hint),
+                ) from exc
             return parsed
         raise last or CboeUnavailableError(STATUS_UNAVAILABLE, "Cboe request failed")
 
@@ -318,6 +336,12 @@ def error_for_status(status: int, body: str) -> CboeError:
             if marker in safe_detail.lower():
                 safe_detail = "redacted_error_body"
                 break
+    if _signature_blocked(status, text):
+        return CboeSignatureBlockedError(
+            STATUS_UNAVAILABLE,
+            "Cboe identity host blocked the HTTP client signature (Cloudflare 1010)",
+            http_status=status,
+        )
     if status in {401, 403}:
         if any(word in text for word in ("entitlement", "subscription", "not subscribed", "permission", "forbidden product", "scope")):
             return CboeEntitlementError(
@@ -344,7 +368,25 @@ def error_for_status(status: int, body: str) -> CboeError:
 
 
 def _retryable(err: CboeError) -> bool:
-    return isinstance(err, (CboeRateLimitError, CboeUnavailableError)) and not isinstance(err, CboeTrialLimitError)
+    if isinstance(err, (CboeSignatureBlockedError, CboeTrialLimitError)):
+        return False
+    return isinstance(err, (CboeRateLimitError, CboeUnavailableError))
+
+
+def _signature_blocked(status: int, text: str) -> bool:
+    if status != 403:
+        return False
+    return any(
+        token in text
+        for token in (
+            "error 1010",
+            "error-1010",
+            '"error_code":1010',
+            "browser_signature_banned",
+            "blocked access based on your browser",
+            "banned your access based on your browser",
+        )
+    )
 
 
 def _read_error_body(exc: urllib.error.HTTPError) -> str:
@@ -357,6 +399,46 @@ def _read_error_body(exc: urllib.error.HTTPError) -> str:
     if "client_secret" in text.lower() or "access_token" in text.lower():
         return ""
     return text[:240]
+
+
+def _parse_livevol_xml(text: str) -> Any | None:
+    stripped = (text or "").lstrip()
+    if not stripped.startswith("<"):
+        return None
+    try:
+        root = ET.fromstring(stripped)
+    except ET.ParseError:
+        return None
+    tag = root.tag.split("}")[-1].lower()
+    if tag == "symbols":
+        return [_xml_symbol(child) for child in root if child.tag.split("}")[-1].lower() == "symbol"]
+    if tag == "symbol":
+        return [_xml_symbol(root)]
+    return None
+
+
+def _xml_symbol(node: ET.Element) -> dict[str, Any]:
+    row: dict[str, Any] = {}
+    for child in node:
+        name = child.tag.split("}")[-1]
+        row[name] = _xml_scalar(child.text)
+    if "symbol" not in row and node.get("symbol"):
+        row["symbol"] = node.get("symbol")
+    return row
+
+
+def _xml_scalar(raw: str | None) -> Any:
+    if raw is None:
+        return None
+    text = raw.strip()
+    if text == "" or text.lower() == "null":
+        return None
+    try:
+        if "." in text or "e" in text.lower():
+            return float(text)
+        return int(text)
+    except ValueError:
+        return text
 
 
 def _strike(value: float) -> str:
@@ -372,3 +454,24 @@ def prior_weekdays(end: date, count: int) -> list[date]:
         cursor -= timedelta(days=1)
     days.reverse()
     return days
+
+
+def latest_historical_date(session: date | None = None) -> date:
+    """Latest weekday strictly before the NY session date (documented historical request)."""
+    days = prior_weekdays(session or session_date(), 1)
+    if not days:
+        raise CboeUnavailableError(STATUS_UNAVAILABLE, "no historical weekday is available")
+    return days[0]
+
+
+def quote_date_for_root(quote_date: date, *, session: date, api_root: str) -> date:
+    """Same-day on the delayed host is delayed-current (SIP/CGIF, 8 points), not historical EOD.
+
+    Trial All Access is the delayed historical product: date must be before the current day.
+    Live same-day stays unchanged so a later SIP entitlement can request the current session.
+    """
+    if quote_date < session:
+        return quote_date
+    if api_root.rstrip("/") == API_ROOT_DELAYED.rstrip("/"):
+        return latest_historical_date(session)
+    return quote_date
