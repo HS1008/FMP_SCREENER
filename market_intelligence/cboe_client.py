@@ -38,6 +38,9 @@ SOURCE_ID = "CBOE_ALL_ACCESS"
 ENABLE_FLAG = "MI_CBOE_ENABLED"
 CLIENT_ID_ENV = "CBOE_CLIENT_ID"
 CLIENT_SECRET_ENV = "CBOE_CLIENT_SECRET"
+# Cloudflare in front of id.livevol.com returns Error 1010 for the default
+# Python-urllib signature. EIA/CFTC use the same product identifier.
+USER_AGENT = "FMP_SCREENER MarketIntelligence"
 NY = ZoneInfo("America/New_York")
 
 STATUS_READY = "READY"
@@ -216,8 +219,10 @@ class CboeClient:
     def _request_json(self, url: str, *, method: str, headers: dict[str, str], data: bytes | None) -> Any:
         delay = 0.4
         last: CboeError | None = None
+        request_headers = dict(headers)
+        request_headers.setdefault("User-Agent", USER_AGENT)
         for attempt in range(1, self.max_attempts + 1):
-            request = urllib.request.Request(url, data=data, headers=headers, method=method)
+            request = urllib.request.Request(url, data=data, headers=request_headers, method=method)
             try:
                 with self._opener(request, timeout=self.timeout_s) as response:
                     raw = response.read()
@@ -280,7 +285,13 @@ def probe_status(env: Mapping[str, str] | None = None) -> tuple[str, str, bool]:
 
 def error_for_status(status: int, body: str) -> CboeError:
     text = (body or "").lower()
-    if status in {401, 403}:
+    if _cloudflare_signature_block(text):
+        return CboeUnavailableError(
+            STATUS_UNAVAILABLE,
+            "Cboe identity host blocked the client signature",
+            http_status=status,
+        )
+    if status in {401, 403} or any(token in text for token in ("invalid_client", "invalid_grant", "unauthorized_client")):
         if any(word in text for word in ("entitlement", "subscription", "not subscribed", "permission", "forbidden product")):
             return CboeEntitlementError(STATUS_ENTITLEMENT_REQUIRED, "Cboe entitlement rejected the request", http_status=status)
         return CboeAuthError(STATUS_AUTH_FAILED, "Cboe rejected the credentials", http_status=status)
@@ -291,6 +302,13 @@ def error_for_status(status: int, body: str) -> CboeError:
     if status >= 500:
         return CboeUnavailableError(STATUS_UNAVAILABLE, "Cboe service unavailable", http_status=status)
     return CboeUnavailableError(STATUS_UNAVAILABLE, "Cboe request failed", http_status=status)
+
+
+def _cloudflare_signature_block(text: str) -> bool:
+    return any(
+        marker in text
+        for marker in ("error 1010", "error-1010", "browser_signature_banned", '"error_code":1010')
+    )
 
 
 def _retryable(err: CboeError) -> bool:

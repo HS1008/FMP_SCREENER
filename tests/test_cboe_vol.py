@@ -10,11 +10,13 @@ import pytest
 
 from market_intelligence import cboe_analytics as vol
 from market_intelligence.cboe_client import (
+    USER_AGENT,
     CboeAuthError,
     CboeClient,
     CboeMalformedPayload,
     CboeRateLimitError,
     CboeTrialLimitError,
+    CboeUnavailableError,
     probe_status,
 )
 
@@ -65,6 +67,7 @@ def test_token_success_and_cache():
         calls["n"] += 1
         assert request.get_method() == "POST"
         assert request.get_header("Authorization").startswith("Basic ")
+        assert (request.get_header("User-agent") or request.get_header("User-Agent")) == USER_AGENT
         assert b"client_secret" not in request.data
         assert b"grant_type=client_credentials" in request.data
         return _Resp(b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}')
@@ -98,6 +101,29 @@ def test_bad_credentials():
     with pytest.raises(CboeAuthError) as exc:
         _client(opener).access_token()
     assert exc.value.capability == "AUTH_FAILED"
+
+
+def test_oauth_invalid_client_on_400_is_auth_failed():
+    def opener(request, timeout):
+        raise _http_error(400, '{"error":"invalid_client"}')
+
+    with pytest.raises(CboeAuthError) as exc:
+        _client(opener).access_token()
+    assert exc.value.capability == "AUTH_FAILED"
+    assert exc.value.http_status == 400
+
+
+def test_cloudflare_1010_is_unavailable_not_auth_failed():
+    def opener(request, timeout):
+        raise _http_error(
+            403,
+            '{"title":"Error 1010: Access denied","error_code":1010,"error_name":"browser_signature_banned"}',
+        )
+
+    with pytest.raises(CboeUnavailableError) as exc:
+        _client(opener).access_token()
+    assert exc.value.capability == "UNAVAILABLE"
+    assert exc.value.http_status == 403
 
 
 def test_rate_limit_retries_then_raises():

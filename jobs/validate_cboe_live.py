@@ -149,7 +149,8 @@ def main(argv: list[str] | None = None) -> int:
         except CboeError as exc:
             report["auth"] = exc.capability
             report["entitlement"] = exc.capability
-            report["status"] = "AUTH_FAILED"
+            report["http_status"] = exc.http_status
+            report["status"] = exc.capability or "AUTH_FAILED"
             _emit(report, as_json=args.json)
             return EXIT_FAIL
 
