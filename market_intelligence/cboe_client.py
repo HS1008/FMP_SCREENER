@@ -239,7 +239,7 @@ class CboeClient:
             {"grant_type": "client_credentials"},
             {"grant_type": "client_credentials", "scope": "api.allaccess"},
         )
-        last_auth: CboeAuthError | None = None
+        last_auth: CboeError | None = None
         for form in forms:
             body = urllib.parse.urlencode(form).encode("utf-8")
             try:
@@ -253,7 +253,8 @@ class CboeClient:
                     },
                     data=body,
                 )
-            except CboeAuthError as exc:
+            except CboeError as exc:
+                # invalid_scope / unauthorized_client should advance to the next form.
                 last_auth = exc
                 continue
             if not isinstance(payload, dict):
@@ -271,7 +272,7 @@ class CboeClient:
                 },
                 data=urllib.parse.urlencode(form_with_client).encode("utf-8"),
             )
-        except CboeAuthError as exc:
+        except CboeError as exc:
             raise last_auth or exc
         if not isinstance(payload, dict):
             raise CboeMalformedPayload(STATUS_AUTH_FAILED, "token response was not an object")
@@ -389,7 +390,16 @@ def error_for_status(status: int, body: str) -> CboeError:
                 safe_detail = "redacted_error_body"
                 break
     if status in {401, 403}:
-        if any(word in text for word in ("entitlement", "subscription", "not subscribed", "permission", "forbidden product", "scope")):
+        if any(
+            word in text
+            for word in (
+                "entitlement",
+                "subscription",
+                "not subscribed",
+                "permission",
+                "forbidden product",
+            )
+        ):
             return CboeEntitlementError(
                 STATUS_ENTITLEMENT_REQUIRED,
                 "Cboe entitlement rejected the request ({0})".format(safe_detail or status),
