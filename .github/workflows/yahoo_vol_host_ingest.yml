@@ -1,0 +1,228 @@
+# Bounded Yahoo volatility ingest on the existing DigitalOcean writer host.
+# Uses repository secrets + pinned SSH trust. Never prints credentials.
+# Does not sync or dirty the production checkout; requires the live HEAD to
+# already include Yahoo volatility (deployed main).
+name: Yahoo vol host bounded ingest
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/yahoo-vol-host-ingest-f464
+    paths:
+      - ".github/workflows/yahoo_vol_host_ingest.yml"
+      - ".github/workflows/.yahoo_vol_host_ingest_trigger"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: yahoo-vol-host-ingest
+  cancel-in-progress: false
+
+jobs:
+  ingest:
+    name: Bounded Yahoo vol ingest on writer host
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      DO_HOST: ${{ secrets.DO_HOST }}
+      DO_USER: ${{ secrets.DO_USER }}
+      EXPECTED_SHA: a8315f7dd85fbf36979a80bc664c2470603d897e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure pinned SSH trust
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_SSH_KNOWN_HOSTS: ${{ secrets.DO_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ] || [ -z "${DO_SSH_KNOWN_HOSTS:-}" ]; then
+            echo "FAIL: DO_SSH_KEY and DO_SSH_KNOWN_HOSTS are required"
+            exit 3
+          fi
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf "%s\n" "$DO_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          unset SSH_PRIVATE_KEY DO_SSH_KNOWN_HOSTS
+
+      - name: Confirm deployed SHA, run --yahoo-vol, verify PG metrics
+        run: |
+          set -euo pipefail
+          set +x
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "$DO_USER@$DO_HOST" \
+            EXPECTED_SHA="$EXPECTED_SHA" bash -s <<'REMOTE'
+          set -euo pipefail
+          set +x
+          cd /root/FMP_SCREENER
+          head="$(git rev-parse HEAD)"
+          echo "deployed_head=${head}"
+          echo "expected_sha=${EXPECTED_SHA}"
+          if [ "$head" != "$EXPECTED_SHA" ]; then
+            echo "FAIL: host HEAD does not match expected Yahoo-vol merge SHA"
+            exit 3
+          fi
+          test -f market_intelligence/ingest_yahoo_vol.py
+          test -f db/migrations/038_yahoo_volatility.sql
+          ENV_FILE=/etc/fmp/market_intelligence.env
+          if [ ! -f "$ENV_FILE" ]; then
+            echo "FAIL: missing ${ENV_FILE}"
+            exit 3
+          fi
+          # shellcheck disable=SC1091
+          set -a
+          . "$ENV_FILE"
+          set +a
+          # shellcheck disable=SC1091
+          source venv/bin/activate
+          export PYTHONPATH=/root/FMP_SCREENER${PYTHONPATH:+:$PYTHONPATH}
+
+          set +e
+          python -m jobs.market_intelligence_refresh --yahoo-vol --wait-lock --json \
+            > /tmp/yahoo_vol_ingest_report.json 2>/tmp/yahoo_vol_ingest_stderr.txt
+          refresh_rc=$?
+          set -e
+          echo "refresh_exit_code=${refresh_rc}"
+          if [ "$refresh_rc" -gt 1 ]; then
+            echo "FAIL: yahoo-vol refresh hard-failed"
+            grep -Ei 'error|traceback|failed|modulenotfound|importerror' /tmp/yahoo_vol_ingest_stderr.txt \
+              | grep -viE 'postgres(ql)?://|bearer |api[_-]?key' \
+              | head -n 40 || true
+            exit 2
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from market_intelligence.read_models import data_health_context, options_volatility_context, yahoo_vol_core
+          from market_intelligence.writer_db import writer_engine
+          from sqlalchemy import text
+
+          raw = Path("/tmp/yahoo_vol_ingest_report.json").read_text(encoding="utf-8").strip()
+          report = json.loads(raw)
+          print("refresh_status=" + str(report.get("status")))
+          yahoo = (report.get("results") or {}).get("yahoo_vol") or {}
+          print("yahoo_vol_failed=" + str(yahoo.get("failed")))
+          sections = yahoo.get("sections") or {}
+          for name, section in sorted(sections.items()):
+              if isinstance(section, dict):
+                  print(
+                      "section={0}:status={1}:obs={2}".format(
+                          name,
+                          section.get("status"),
+                          section.get("observation_date"),
+                      )
+                  )
+              else:
+                  print("section={0}:{1}".format(name, section))
+
+          required = [
+              "VIX_SPOT",
+              "SKEW_INDEX",
+              "GSPC_REALIZED_VOL_20D",
+              "VIX_MINUS_GSPC_RV20",
+              "VIX_9D",
+              "VIX_1M",
+              "VIX_3M",
+              "VIX_6M",
+              "VIX_1Y",
+              "VIX_INDEX_FRONT_TO_BACK",
+          ]
+          engine = writer_engine()
+          with engine.connect() as conn:
+              latest = list(
+                  conn.execute(
+                      text(
+                          "SELECT metric_id, status, value IS NOT NULL AS has_value, "
+                          "as_of::text AS as_of, "
+                          "ingested_at IS NOT NULL AS has_ingest "
+                          "FROM mi_v_yahoo_vol_latest ORDER BY metric_id"
+                      )
+                  ).mappings()
+              )
+              health = list(
+                  conn.execute(
+                      text(
+                          "SELECT freshness_dataset, freshness_status, transport_status, "
+                          "latest_observation_date::text AS latest_observation_date, "
+                          "last_success_at IS NOT NULL AS has_success "
+                          "FROM mi_v_source_health WHERE source_id='YAHOO_VOL' "
+                          "ORDER BY freshness_dataset"
+                      )
+                  ).mappings()
+              )
+              core = yahoo_vol_core(conn)
+              opts = options_volatility_context(conn)
+              dh = data_health_context(conn)
+
+          by_id = {str(r["metric_id"]): r for r in latest}
+          ok_ids = []
+          incomplete_ids = []
+          for mid in required:
+              row = by_id.get(mid)
+              if row and row.get("status") == "OK" and row.get("has_value"):
+                  ok_ids.append(mid)
+                  print(
+                      "metric_ok={0}:as_of={1}".format(mid, row.get("as_of"))
+                  )
+              else:
+                  incomplete_ids.append(mid)
+                  status = None if not row else row.get("status")
+                  print("metric_incomplete={0}:status={1}".format(mid, status))
+
+          print("metric_rows=" + str(len(latest)))
+          print("metrics_ok=" + ",".join(ok_ids))
+          print("metrics_incomplete=" + ",".join(incomplete_ids))
+          print("health_rows=" + str(len(health)))
+          for row in health:
+              print(
+                  "health={0}:fresh={1}:transport={2}:obs={3}:success={4}".format(
+                      row.get("freshness_dataset"),
+                      row.get("freshness_status"),
+                      row.get("transport_status"),
+                      row.get("latest_observation_date"),
+                      row.get("has_success"),
+                  )
+              )
+
+          print("yahoo_core_status=" + str(core.get("status")))
+          print("yahoo_curve_state=" + str(core.get("curve_state")))
+          print("yahoo_curve_obs=" + str(core.get("curve_observation_date")))
+          unavailable = core.get("unavailable_tenors") or []
+          print("unavailable_tenors=" + ",".join(str(x) for x in unavailable))
+          print("options_page_yahoo_status=" + str((opts.get("yahoo_core") or {}).get("status")))
+          yahoo_health = [
+              row
+              for row in (dh.get("health") or [])
+              if str(row.get("source_id") or "") == "YAHOO_VOL"
+          ]
+          print("data_health_yahoo_rows=" + str(len(yahoo_health)))
+          for row in yahoo_health:
+              print(
+                  "dh_yahoo={0}:label={1}:obs={2}:transport={3}".format(
+                      row.get("freshness_dataset") or row.get("dataset"),
+                      row.get("health_label") or row.get("freshness_status"),
+                      row.get("latest_observation_date"),
+                      row.get("transport_status"),
+                  )
+              )
+
+          # Core series must publish; unsupported tenors may stay incomplete.
+          for mid in ("VIX_SPOT", "SKEW_INDEX", "GSPC_REALIZED_VOL_20D"):
+              if mid not in ok_ids:
+                  raise SystemExit("FAIL: required metric missing OK value: " + mid)
+          if not health:
+              raise SystemExit("FAIL: no YAHOO_VOL freshness rows")
+          if core.get("status") != "OK":
+              raise SystemExit("FAIL: yahoo_vol_core status is not OK")
+          print("yahoo_vol_verify=ok")
+          PY
+          unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL MARKET_INTELLIGENCE_DATABASE_URL
+          echo "yahoo_vol_host_ingest=complete"
+          REMOTE
