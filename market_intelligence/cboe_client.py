@@ -207,19 +207,33 @@ class CboeClient:
         raw = (self.client_id + ":" + self.client_secret).encode("utf-8")
         basic = base64.b64encode(raw).decode("ascii")
         # Official examples omit scope; All Access clients commonly need api.allaccess.
-        body = urllib.parse.urlencode(
-            {"grant_type": "client_credentials", "scope": "api.allaccess"}
-        ).encode("utf-8")
-        payload = self._request_json(
-            TOKEN_URL,
-            method="POST",
-            headers={
-                "Authorization": "Basic " + basic,
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Accept": "application/json",
-            },
-            data=body,
-        )
+        form = {"grant_type": "client_credentials", "scope": "api.allaccess"}
+        body = urllib.parse.urlencode(form).encode("utf-8")
+        try:
+            payload = self._request_json(
+                TOKEN_URL,
+                method="POST",
+                headers={
+                    "Authorization": "Basic " + basic,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                data=body,
+            )
+        except CboeAuthError:
+            # Some IdentityServer clients are configured for body credentials only.
+            form_with_client = dict(form)
+            form_with_client["client_id"] = self.client_id
+            form_with_client["client_secret"] = self.client_secret
+            payload = self._request_json(
+                TOKEN_URL,
+                method="POST",
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                data=urllib.parse.urlencode(form_with_client).encode("utf-8"),
+            )
         if not isinstance(payload, dict):
             raise CboeMalformedPayload(STATUS_AUTH_FAILED, "token response was not an object")
         return payload
@@ -293,17 +307,37 @@ def probe_status(env: Mapping[str, str] | None = None) -> tuple[str, str, bool]:
 
 def error_for_status(status: int, body: str) -> CboeError:
     text = (body or "").lower()
+    safe_detail = ""
+    if body:
+        # Keep a short non-secret diagnostic; strip anything that looks like a token/secret.
+        safe_detail = " ".join(body.replace("\n", " ").split())[:120]
+        for marker in ("access_token", "client_secret", "refresh_token", "authorization"):
+            if marker in safe_detail.lower():
+                safe_detail = "redacted_error_body"
+                break
     if status in {401, 403}:
-        if any(word in text for word in ("entitlement", "subscription", "not subscribed", "permission", "forbidden product")):
-            return CboeEntitlementError(STATUS_ENTITLEMENT_REQUIRED, "Cboe entitlement rejected the request", http_status=status)
-        return CboeAuthError(STATUS_AUTH_FAILED, "Cboe rejected the credentials", http_status=status)
+        if any(word in text for word in ("entitlement", "subscription", "not subscribed", "permission", "forbidden product", "scope")):
+            return CboeEntitlementError(
+                STATUS_ENTITLEMENT_REQUIRED,
+                "Cboe entitlement rejected the request ({0})".format(safe_detail or status),
+                http_status=status,
+            )
+        return CboeAuthError(
+            STATUS_AUTH_FAILED,
+            "Cboe rejected the credentials ({0})".format(safe_detail or status),
+            http_status=status,
+        )
     if status == 429 or "rate limit" in text or "too many requests" in text:
         return CboeRateLimitError(STATUS_RATE_LIMITED, "Cboe rate limit", http_status=status)
     if any(word in text for word in ("trial", "point limit", "points exceeded", "quota", "daily limit")):
         return CboeTrialLimitError(STATUS_TRIAL_LIMIT, "Cboe trial or point limit", http_status=status)
     if status >= 500:
         return CboeUnavailableError(STATUS_UNAVAILABLE, "Cboe service unavailable", http_status=status)
-    return CboeUnavailableError(STATUS_UNAVAILABLE, "Cboe request failed", http_status=status)
+    return CboeUnavailableError(
+        STATUS_UNAVAILABLE,
+        "Cboe request failed ({0})".format(safe_detail or status),
+        http_status=status,
+    )
 
 
 def _retryable(err: CboeError) -> bool:
