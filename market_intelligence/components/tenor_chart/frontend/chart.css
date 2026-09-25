@@ -1,0 +1,19 @@
+:host {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  background: var(--st-background-color, transparent);
+  color: var(--st-text-color, inherit);
+  font-family: var(--st-font, "Source Sans Pro", "Source Sans", sans-serif);
+  touch-action: pan-y;
+}
+
+#chart,
+#chart canvas {
+  width: 100%;
+  height: 100%;
+  touch-action: pan-y;
+  user-select: none;
+  -webkit-user-select: none;
+}

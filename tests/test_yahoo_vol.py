@@ -240,6 +240,21 @@ def test_term_structure_rejects_mixed_observation_dates():
     assert {p["tenor"] for p in curve2["points"] if p["level"] is None} == {"1M", "3M", "6M"}
 
 
+def test_curve_shape_follows_9d_to_1y_not_alphabetical_ends():
+    day = date(2026, 9, 23)
+    # Sorted labels end at 9D. 9D is above 1D, so a first-to-last alphabetical
+    # slope would be upward. The published slope is 1Y minus 9D.
+    levels = _complete_tenor_levels(
+        **{"^VIX1D": 10.0, "^VIX9D": 20.0, "^VIX": 16.0, "^VIX3M": 15.0, "^VIX6M": 14.0, "^VIX1Y": 12.0}
+    )
+    curve = vol.term_structure(_same_day_tenors(day, levels))
+    assert curve["front_tenor"] == "9D"
+    assert curve["back_tenor"] == "1Y"
+    assert curve["front_to_back_slope"] == pytest.approx(-8.0)
+    assert curve["curve_state"] == "downward_sloping"
+    assert [point["tenor"] for point in curve["points"]] == list(vol.TENOR_AXIS)
+
+
 def test_term_structure_slope_labels_not_contango():
     day = date(2026, 9, 23)
     curve = vol.term_structure(_same_day_tenors(day, _complete_tenor_levels()))
@@ -550,7 +565,9 @@ def test_options_page_shows_yahoo_core_without_provider_imports(monkeypatch):
     assert "st.columns(2)" not in source
     assert "st.dataframe" not in source
     assert "RV20" not in source
-    assert 'categoryorder="array"' in source
+    assert "tenor_curve_chart" in source
+    assert "st.plotly_chart" not in source
+    assert "go.Figure" not in source
     at.date_input[0].set_value(date(2026, 9, 23)).run()
     rerun_text = " ".join(
         str(getattr(el, "value", el))

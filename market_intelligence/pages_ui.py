@@ -11,7 +11,6 @@ from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 from market_intelligence.bond_ladder import LadderBond, aggregate_ladder, theoretical_rungs
@@ -19,6 +18,7 @@ from market_intelligence.bond_tax import ASSET_CORPORATE, ASSET_MUNI, ASSET_TREA
 from market_intelligence.bonds import interpolate_par_yield
 from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
 from market_intelligence.components.market_chart import lightweight_market_chart, time_series_points
+from market_intelligence.components.tenor_chart import build_tenor_curve, tenor_curve_chart
 from market_intelligence.curve_compare import (
     AFTER_CURRENT_MESSAGE,
     COMPARE_CUSTOM,
@@ -36,6 +36,7 @@ from market_intelligence.nulls import strict_dumps
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
 from market_intelligence.read_models import (
+    TENOR_AXIS,
     curve_levels_on_date,
     resolve_curve_date,
     term_structure_display_rows,
@@ -308,10 +309,6 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
         if parsed is not None:
             stored_dates.append(parsed)
     common_dates = sorted(set(stored_dates))
-    # Tenors stay on a categorical Plotly axis. Lightweight Charts 5.2.1 has no
-    # categorical scale. createYieldCurveChart measures that axis in months
-    # (baseResolution, default minimum 120), so 1D/9D/1M/3M/6M/1Y cannot be
-    # placed on it without inventing durations or calendar dates.
     st.markdown("**VIX index term structure**")
     if not common_dates:
         st.caption("A six-tenor VIX index curve is not available in stored history.")
@@ -330,29 +327,14 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
         else:
             st.caption("Curve as of {0}".format(_full_month_date(resolved)))
             levels = curve_levels_on_date(history, resolved)
-            fig = go.Figure(
-                data=[
-                    go.Scatter(
-                        x=[point["tenor"] for point in levels],
-                        y=[point["value"] for point in levels],
-                        mode="lines+markers",
-                        name="VIX index",
-                        connectgaps=False,
+            curve = build_tenor_curve(levels, axis=TENOR_AXIS, curve_date=resolved, y_title="Vol points")
+            tenor_curve_chart(curve, key="yahoo_vix_term_structure")
+            if curve["missing_tenors"]:
+                st.caption(
+                    "Missing tenors on this date: {0}. Missing levels are not filled.".format(
+                        ", ".join(curve["missing_tenors"])
                     )
-                ]
-            )
-            fig.update_xaxes(
-                type="category",
-                categoryorder="array",
-                categoryarray=[point["tenor"] for point in levels],
-            )
-            fig.update_layout(
-                height=360,
-                margin={"l": 48, "r": 16, "t": 24, "b": 40},
-                yaxis_title="Vol points",
-                showlegend=False,
-            )
-            st.plotly_chart(fig, width="stretch")
+                )
 
     st.markdown("**VIX recent history**")
     vix_points = time_series_points(history.get("VIX_SPOT") or [])
