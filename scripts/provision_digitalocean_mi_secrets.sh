@@ -19,8 +19,6 @@ FRED_KEY_FILE=""
 EIA_KEY_FILE=""
 OPENFIGI_KEY_FILE=""
 SEC_UA_FILE=""
-CBOE_ID_FILE=""
-CBOE_SECRET_FILE=""
 APPLY=0
 ROTATE=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -32,8 +30,6 @@ while [ $# -gt 0 ]; do
     --eia-key-file) EIA_KEY_FILE="$2"; shift 2 ;;
     --openfigi-key-file) OPENFIGI_KEY_FILE="$2"; shift 2 ;;
     --sec-ua-file) SEC_UA_FILE="$2"; shift 2 ;;
-    --cboe-id-file) CBOE_ID_FILE="$2"; shift 2 ;;
-    --cboe-secret-file) CBOE_SECRET_FILE="$2"; shift 2 ;;
     --root) ROOT="$2"; shift 2 ;;
     --apply) APPLY=1; shift ;;
     --rotate) ROTATE=1; shift ;;
@@ -60,10 +56,8 @@ need_any=0
 [ -n "${EIA_KEY_FILE}" ] && need_any=1
 [ -n "${OPENFIGI_KEY_FILE}" ] && need_any=1
 [ -n "${SEC_UA_FILE}" ] && need_any=1
-[ -n "${CBOE_ID_FILE}" ] && need_any=1
-[ -n "${CBOE_SECRET_FILE}" ] && need_any=1
 if [ "${need_any}" -eq 0 ]; then
-  echo "  no key files provided (--fred-key-file / --eia-key-file / --openfigi-key-file / --sec-ua-file / --cboe-id-file / --cboe-secret-file)"
+  echo "  no key files provided (--fred-key-file / --eia-key-file / --openfigi-key-file / --sec-ua-file)"
   if [ "${APPLY}" -eq 1 ]; then
     echo "refusing --apply without a key file" >&2
     exit 3
@@ -92,8 +86,6 @@ check_key_file "${FRED_KEY_FILE}"
 check_key_file "${EIA_KEY_FILE}"
 check_key_file "${OPENFIGI_KEY_FILE}"
 check_key_file "${SEC_UA_FILE}"
-check_key_file "${CBOE_ID_FILE}"
-check_key_file "${CBOE_SECRET_FILE}"
 
 if [ "${APPLY}" -eq 0 ]; then
   echo "DRY RUN: would upsert missing/placeholder keys from protected files (values not shown)"
@@ -107,7 +99,7 @@ fi
 TMP="$(mktemp "${ENV_FILE}.XXXX")"
 # Disable shell tracing around secret materialization.
 set +x
-python3 - "${ENV_FILE}" "${TMP}" "${ROOT}" "${ROTATE}" "${FRED_KEY_FILE}" "${EIA_KEY_FILE}" "${OPENFIGI_KEY_FILE}" "${SEC_UA_FILE}" "${CBOE_ID_FILE}" "${CBOE_SECRET_FILE}" <<'PY'
+python3 - "${ENV_FILE}" "${TMP}" "${ROOT}" "${ROTATE}" "${FRED_KEY_FILE}" "${EIA_KEY_FILE}" "${OPENFIGI_KEY_FILE}" "${SEC_UA_FILE}" <<'PY'
 import pathlib, sys
 env_path, tmp_path, root, rotate_flag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 sys.path.insert(0, root)
@@ -120,8 +112,6 @@ pairs = [
     ("EIA_API_KEY", sys.argv[6]),
     ("OPENFIGI_API_KEY", sys.argv[7]),
     ("SEC_USER_AGENT", sys.argv[8]),
-    ("CBOE_CLIENT_ID", sys.argv[9] if len(sys.argv) > 9 else ""),
-    ("CBOE_CLIENT_SECRET", sys.argv[10] if len(sys.argv) > 10 else ""),
 ]
 for key, path in pairs:
     if not path:

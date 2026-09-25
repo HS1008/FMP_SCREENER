@@ -1175,47 +1175,118 @@ def term_structure_display_rows(points: list[dict[str, Any]] | None) -> list[dic
     return rows
 
 
+def _yahoo_vol_metric(latest: list[dict[str, Any]], metric_id: str) -> dict[str, Any] | None:
+    for row in latest:
+        if row.get("metric_id") == metric_id:
+            return row
+    return None
 
-def _cboe_core_context(conn) -> dict[str, Any]:
-    """Direct LiveVol Cboe core metrics from mi_metric_snapshots. Never calls Cboe."""
-    if not _view_exists(conn, "mi_v_cboe_vol_latest"):
-        return {"available": False, "reason": "Cboe volatility views are not applied yet.", "latest": [], "history": [], "health": []}
-    latest = _rows(conn, "SELECT * FROM mi_v_cboe_vol_latest ORDER BY metric_id")
-    history = _rows(
+
+def _yahoo_vol_detail(row: dict[str, Any] | None) -> dict[str, Any]:
+    if not row:
+        return {}
+    raw = row.get("detail_json")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def yahoo_vol_core(conn) -> dict[str, Any]:
+    """Yahoo-backed VIX / SKEW / term / VIX−RV20 from stored metrics. Never calls Yahoo."""
+    if not _view_exists(conn, "mi_v_yahoo_vol_latest"):
+        return {"status": "UNAVAILABLE", "reason": "yahoo volatility views are not applied", "latest": [], "history": {}, "freshness": []}
+    latest = _rows(conn, "SELECT * FROM mi_v_yahoo_vol_latest ORDER BY metric_id")
+    history_rows = _rows(
         conn,
         """
-        SELECT * FROM mi_v_cboe_vol_history
-        WHERE metric_id IN ('VIX_SPOT', 'SPX_IV30_MINUS_SPX_RV20', 'VIX_MINUS_SPX_RV20', 'SPX_REALIZED_VOL_20D', 'SPX_IV30')
+        SELECT * FROM mi_v_yahoo_vol_history
+        WHERE metric_id IN (
+            'VIX_SPOT', 'SKEW_INDEX', 'VIX_MINUS_GSPC_RV20', 'GSPC_REALIZED_VOL_20D',
+            'VIX_9D', 'VIX_1M', 'VIX_3M', 'VIX_6M', 'VIX_1Y'
+        )
         ORDER BY metric_id, as_of
         """,
-    )
-    health = _rows(
+    ) if _view_exists(conn, "mi_v_yahoo_vol_history") else []
+    history: dict[str, list[dict[str, Any]]] = {}
+    for row in history_rows:
+        history.setdefault(str(row.get("metric_id")), []).append(row)
+    freshness = _rows(
         conn,
         """
-        SELECT * FROM mi_v_source_health
-        WHERE source_id = 'CBOE_ALL_ACCESS'
-        ORDER BY freshness_dataset
+        SELECT source_id, dataset, latest_observation_date, transport_status, freshness_status, error_redacted, updated_at
+        FROM mi_data_freshness
+        WHERE source_id = 'YAHOO_VOL'
+        ORDER BY dataset
         """,
     )
-    return {"available": True, "reason": None, "latest": latest, "history": history, "health": health}
+    vix = _yahoo_vol_metric(latest, "VIX_SPOT")
+    skew = _yahoo_vol_metric(latest, "SKEW_INDEX")
+    spread = _yahoo_vol_metric(latest, "VIX_MINUS_GSPC_RV20")
+    rv = _yahoo_vol_metric(latest, "GSPC_REALIZED_VOL_20D")
+    slope = _yahoo_vol_metric(latest, "VIX_INDEX_FRONT_TO_BACK")
+    slope_detail = _yahoo_vol_detail(slope)
+    tenors = []
+    for metric_id, label in (
+        ("VIX_9D", "9D"),
+        ("VIX_1M", "1M"),
+        ("VIX_3M", "3M"),
+        ("VIX_6M", "6M"),
+        ("VIX_1Y", "1Y"),
+    ):
+        row = _yahoo_vol_metric(latest, metric_id)
+        detail = _yahoo_vol_detail(row)
+        tenors.append(
+            {
+                "tenor": label,
+                "metric_id": metric_id,
+                "value": None if not row or row.get("status") != "OK" else row.get("value"),
+                "as_of": None if not row else row.get("as_of"),
+                "yahoo_ticker": detail.get("yahoo_ticker"),
+                "status": None if not row else row.get("status"),
+            }
+        )
+    status = "OK" if any(row.get("status") == "OK" and row.get("value") is not None for row in latest) else "UNAVAILABLE"
+    return {
+        "status": status,
+        "reason": None if status == "OK" else "No Yahoo volatility metrics published yet.",
+        "source_id": "YAHOO_VOL",
+        "attribution": "Yahoo Finance via yfinance (unofficial; no SLA).",
+        "latest": latest,
+        "history": history,
+        "freshness": freshness,
+        "vix": vix,
+        "skew": skew,
+        "spread": spread,
+        "rv20": rv,
+        "slope": slope,
+        "curve_state": slope_detail.get("curve_state"),
+        "unavailable_tenors": slope_detail.get("unavailable_tenors") or [],
+        "tenors": tenors,
+        "underlying_rv": "GSPC",
+        "window": 20,
+    }
 
 
 def options_volatility_context(conn) -> dict[str, Any]:
-    """Stored options / VIX analytics only. Never calls OpenBB or LiveVol HTTP."""
-    cboe_core = _cboe_core_context(conn)
+    """Stored options / VIX analytics only. Never calls OpenBB or Yahoo."""
+    yahoo_core = yahoo_vol_core(conn)
     if not _view_exists(conn, "mi_v_options_latest"):
-        status = "OK" if cboe_core.get("latest") else "UNAVAILABLE"
         return {
-            "status": status,
-            "reason": None if status == "OK" else "options schema is not applied",
+            "status": "OK" if yahoo_core.get("status") == "OK" else "UNAVAILABLE",
+            "reason": None if yahoo_core.get("status") == "OK" else "options schema is not applied",
             "export_scope": EXPORT_INTERNAL_ONLY,
             "source_id": "OPENBB_CBOE_OPTIONS",
             "attribution": CBOE_ATTRIBUTION,
-            "terms_notes": CBOE_TERMS_NOTES,
             "symbols": [],
             "vix": None,
-            "cboe_core": cboe_core,
             "last_attempts": [],
+            "yahoo_core": yahoo_core,
         }
     chains = _rows(conn, "SELECT * FROM mi_v_options_latest ORDER BY underlying_symbol")
     attempts = _rows(conn, "SELECT * FROM mi_v_openbb_last_attempt ORDER BY source_id, symbol") if _view_exists(conn, "mi_v_openbb_last_attempt") else []
@@ -1273,18 +1344,23 @@ def options_volatility_context(conn) -> dict[str, Any]:
             "not_official_settlement": True,
             "not_live_quotes": True,
         }
-    status = "OK" if symbols or vix or cboe_core.get("latest") else "UNAVAILABLE"
+    openbb_ok = bool(symbols or vix)
+    yahoo_ok = yahoo_core.get("status") == "OK"
+    status = "OK" if openbb_ok or yahoo_ok else "UNAVAILABLE"
+    reason = None
+    if status != "OK":
+        reason = "No published OpenBB/Cboe snapshots and no Yahoo volatility metrics. Optional sources are not a platform outage."
     return {
         "status": status,
-        "reason": None if status == "OK" else "No published OpenBB/Cboe or LiveVol core snapshots. Source stays optional and is not a platform outage.",
+        "reason": reason,
         "export_scope": EXPORT_INTERNAL_ONLY,
         "source_id": "OPENBB_CBOE_OPTIONS",
         "attribution": CBOE_ATTRIBUTION,
         "terms_notes": CBOE_TERMS_NOTES,
         "symbols": symbols,
         "vix": vix,
-        "cboe_core": cboe_core,
         "last_attempts": attempts,
+        "yahoo_core": yahoo_core,
     }
 
 

@@ -88,7 +88,7 @@ def test_env_example_has_only_placeholders_and_documents_every_consumed_variable
         cleaned = value.split("#")[0].strip().strip('"')
         assert cleaned in {"", "0", "1", "60", "external", "127.0.0.1", "8765", "5432", "fmp", "fmp_writer", "FMP Research ops@example.com", "/root/FMP_SCREENER/outputs/precomputed"} or "CHANGE_ME" in cleaned, (name, value)
     names = {n for n, _ in assigned}
-    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "MI_FMP_FREE", "MI_ALLOW_LEGACY_FMP", "MI_EQUITY_PROVIDER", "MI_TREASURY_ENABLED", "AI_GATEWAY_EXPORT_MODE", "AI_GATEWAY_REMOTE_VALUE_SOURCES", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE", "MI_OPENBB_ENABLED", "MI_OPENBB_OPTIONS_ENABLED", "MI_OPENBB_VIX_ENABLED", "MI_OPENBB_OPTIONS_RIGHTS_ACK", "MI_OPENBB_VIX_RIGHTS_ACK", "MI_OPENBB_CBOE_RIGHTS_ACK", "MI_OPENBB_INSTALL_EXTRA", "MI_OPENBB_INTRADAY_SNAPSHOTS", "MI_IBKR_OPTIONS_ENABLED", "MI_YAHOO_LIVE_FALLBACK", "MI_YAHOO_EOD_FALLBACK", "CBOE_CLIENT_ID", "CBOE_CLIENT_SECRET", "MI_CBOE_ENABLED"):
+    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "MI_FMP_FREE", "MI_ALLOW_LEGACY_FMP", "MI_EQUITY_PROVIDER", "MI_TREASURY_ENABLED", "AI_GATEWAY_EXPORT_MODE", "AI_GATEWAY_REMOTE_VALUE_SOURCES", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE", "MI_OPENBB_ENABLED", "MI_OPENBB_OPTIONS_ENABLED", "MI_OPENBB_VIX_ENABLED", "MI_OPENBB_OPTIONS_RIGHTS_ACK", "MI_OPENBB_VIX_RIGHTS_ACK", "MI_OPENBB_CBOE_RIGHTS_ACK", "MI_OPENBB_INSTALL_EXTRA", "MI_OPENBB_INTRADAY_SNAPSHOTS", "MI_IBKR_OPTIONS_ENABLED", "MI_YAHOO_LIVE_FALLBACK", "MI_YAHOO_EOD_FALLBACK"):
         assert required in names
     # The remote export policy must never be documented as owner-by-default.
     mode = dict(assigned).get("AI_GATEWAY_EXPORT_MODE", "").split("#")[0].strip()
@@ -565,42 +565,3 @@ def test_digitalocean_secret_script_is_dry_run_by_default_and_never_activates(tm
     assert "FRED_API_KEY=not-a-real-fred-key" in text
     assert "DATABASE_URL=postgresql://writer:keep@127.0.0.1/fmp" in text
     assert "systemctl" not in applied.stdout and "not-a-real-fred-key" not in applied.stdout
-
-
-def test_provision_mi_provider_keys_workflow_is_dispatch_only_and_does_not_activate():
-    raw = (ROOT / ".github" / "workflows" / "provision_mi_provider_keys.yml").read_text()
-    text = _yaml_without_comments(ROOT / ".github" / "workflows" / "provision_mi_provider_keys.yml")
-    assert "pull_request:" not in text and "pull_request_target" not in text
-    assert "workflow_dispatch:" in text
-    assert "secrets.DO_SSH_KNOWN_HOSTS" in raw
-    assert "ssh-keyscan -H" not in raw
-    assert "ssh-keyscan -" not in raw
-    assert "systemctl" not in raw
-    assert "MI_EIA_ENABLED=1" not in raw
-    assert "MI_OPENFIGI_ENABLED=1" not in raw
-    assert "MI_CBOE_ENABLED=1" not in raw
-    assert "enablement_flags_unchanged=1" in raw
-    assert "services_not_restarted=1" in raw
-    assert "secrets.EIA_API_KEY" in raw and "secrets.OPENFIGI_API_KEY" in raw
-    assert "secrets.CBOE_CLIENT_ID" in raw and "secrets.CBOE_CLIENT_SECRET" in raw
-    assert "secrets.SEC_USER_AGENT" in raw
-    assert "provision_digitalocean_mi_secrets.sh" in raw
-    pr = _yaml_without_comments(ROOT / ".github" / "workflows" / "pr_validation.yml")
-    assert "secrets.EIA_API_KEY" not in pr and "secrets.OPENFIGI_API_KEY" not in pr
-    assert "secrets.CBOE_CLIENT_ID" not in pr and "secrets.CBOE_CLIENT_SECRET" not in pr
-
-
-def test_validate_cboe_live_refuses_production_urls_and_missing_config(monkeypatch, capsys):
-    from jobs.validate_cboe_live import EXIT_CONFIG, EXIT_REFUSED, main
-
-    monkeypatch.delenv("CBOE_CLIENT_ID", raising=False)
-    monkeypatch.delenv("CBOE_CLIENT_SECRET", raising=False)
-    monkeypatch.delenv("FMP_TEST_DATABASE_URL", raising=False)
-    assert main([]) == EXIT_CONFIG
-    monkeypatch.setenv("CBOE_CLIENT_ID", "id")
-    monkeypatch.setenv("CBOE_CLIENT_SECRET", "secret")
-    monkeypatch.setenv("FMP_TEST_DATABASE_URL", "postgresql+psycopg2://u:p@db.ondigitalocean.com:25060/fmp")
-    assert main([]) == EXIT_REFUSED
-    err = capsys.readouterr().err
-    assert "ondigitalocean" in err.lower() or "refusing" in err.lower()
-

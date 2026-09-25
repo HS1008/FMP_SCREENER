@@ -116,11 +116,10 @@ FORBIDDEN_PROVIDER_IMPORTS = (
     "ibkr_collector.eod_cli",
     "ibkr_collector.readonly_client",
     "market_intelligence.ibkr_options",
-    "market_intelligence.cboe_client",
-    "market_intelligence.ingest_cboe",
-    "market_intelligence.cboe_analytics",
     "market_intelligence.fred_client",
     "market_intelligence.finra_client",
+    "market_intelligence.ingest_yahoo_vol",
+    "market_intelligence.yahoo_vol",
     "ai_gateway",
     "urllib.request",
 )

@@ -371,7 +371,6 @@ def test_adapters_are_disabled_or_configuration_required_and_refuse_to_fetch():
         "IBKR_CORPORATE_BONDS",
         "CFTC_COT",
         "EIA_ENERGY",
-        "CBOE_ALL_ACCESS",
     } <= set(statuses)
     assert statuses["IBKR_OPTIONS"].access_status == adapters.ACCESS_PROVIDER_SUPPORT_REQUIRED
     assert statuses["IBKR_OPTIONS_STORAGE"].access_status == adapters.ACCESS_RIGHTS_PENDING
@@ -383,8 +382,6 @@ def test_adapters_are_disabled_or_configuration_required_and_refuse_to_fetch():
     assert statuses["OPENBB_CBOE_VIX"].access_status == adapters.ACCESS_AGREEMENT_REQUIRED
     assert statuses["OPENBB_CBOE_OPTIONS"].enabled is False
     assert statuses["OPENBB_CBOE_VIX"].enabled is False
-    assert statuses["CBOE_ALL_ACCESS"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
-    assert statuses["CBOE_ALL_ACCESS"].enabled is False
     assert statuses["IBKR_MARKET_DATA"].access_status == adapters.ACCESS_DISABLED
     assert statuses["FINRA_TRACE"].access_status == adapters.ACCESS_DISABLED
     assert statuses["SEC_EDGAR"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED

@@ -27,8 +27,6 @@ ALLOWED_SECRET_KEYS = frozenset(
         "FRED_API_KEY",
         "EIA_API_KEY",
         "OPENFIGI_API_KEY",
-        "CBOE_CLIENT_ID",
-        "CBOE_CLIENT_SECRET",
         "SEC_USER_AGENT",
         "AI_CONTEXT_API_TOKEN",
         "DATABASE_READONLY_URL",

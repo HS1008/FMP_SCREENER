@@ -108,8 +108,8 @@ BEGIN
         'mi_v_openbb_last_attempt',
         'mi_v_cftc_cot_current',
         'mi_v_eia_latest',
-        'mi_v_cboe_vol_latest',
-        'mi_v_cboe_vol_history'
+        'mi_v_yahoo_vol_latest',
+        'mi_v_yahoo_vol_history'
     ]
     LOOP
         IF EXISTS (
