@@ -110,6 +110,89 @@ def load_platform_run_ids(engine, strategy_id: str) -> list[str]:
     return [str(value) for value in rows["research_run_id"].dropna().astype(str).tolist() if value]
 
 
+HBR_RUN_IDS_SQL = """
+SELECT research_run_id
+FROM research_runs
+WHERE research_kind = 'high_beta_rotation_rule_v1'
+  AND strategy_id = :strategy_id
+ORDER BY research_run_id
+"""
+
+HBR_RUN_ROWS_SQL = """
+SELECT research_run_id, run_status, first_seen_at, last_seen_at
+FROM research_runs
+WHERE research_kind = 'high_beta_rotation_rule_v1'
+  AND strategy_id = :strategy_id
+ORDER BY research_run_id
+"""
+
+HBR_ARTIFACTS_SQL = """
+SELECT artifact_key, artifact_type, payload_json, sha256
+FROM research_artifacts
+WHERE research_run_id = :research_run_id
+ORDER BY artifact_type, artifact_key
+"""
+
+
+def load_hbr_run_ids(engine, strategy_id: str) -> list[str]:
+    if not strategy_id:
+        return []
+    rows = read_sql(engine, HBR_RUN_IDS_SQL, {"strategy_id": strategy_id})
+    if rows is None or rows.empty:
+        return []
+    return [str(value) for value in rows["research_run_id"].dropna().astype(str).tolist() if value]
+
+
+def _present(value: Any) -> Any:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if text in {"", "NaT", "None", "nan"}:
+        return None
+    return value
+
+
+def load_hbr_run_rows(engine, strategy_id: str) -> list[dict[str, Any]]:
+    """Run identity rows. Recency is select_hbr_run, not this SQL order."""
+    if not strategy_id:
+        return []
+    rows = read_sql(engine, HBR_RUN_ROWS_SQL, {"strategy_id": strategy_id})
+    if rows is None or rows.empty:
+        return []
+    loaded: list[dict[str, Any]] = []
+    for _, row in rows.iterrows():
+        run_id = row.get("research_run_id")
+        if run_id is None or str(run_id).strip() == "":
+            continue
+        status = row.get("run_status")
+        loaded.append(
+            {
+                "research_run_id": str(run_id),
+                "run_status": None if status is None or str(status).strip() == "" else str(status),
+                "first_seen_at": _present(row.get("first_seen_at")),
+                "last_seen_at": _present(row.get("last_seen_at")),
+            }
+        )
+    return loaded
+
+
+def load_hbr_artifact_rows(engine, research_run_id: str) -> list[dict[str, Any]]:
+    rows = read_sql(engine, HBR_ARTIFACTS_SQL, {"research_run_id": research_run_id})
+    if rows is None or rows.empty:
+        return []
+    loaded: list[dict[str, Any]] = []
+    for _, row in rows.iterrows():
+        loaded.append(
+            {
+                "artifact_key": row.get("artifact_key"),
+                "artifact_type": row.get("artifact_type"),
+                "sha256": row.get("sha256"),
+                "payload": as_payload(row.get("payload_json")) or {},
+            }
+        )
+    return loaded
+
+
 def load_stage2_trials(engine, research_run_id: str) -> pd.DataFrame:
     return read_sql(
         engine,
@@ -265,6 +348,36 @@ PLATFORM_STRATEGY_ROWS_SQL = """
                 asset_class
             FROM research_runs
             WHERE research_kind = 'platform_research'
+              AND strategy_id IS NOT NULL
+              AND strategy_id <> ''
+            ORDER BY strategy_id, last_seen_at DESC NULLS LAST
+            """
+
+HBR_STRATEGY_ROWS_SQL = """
+            SELECT DISTINCT ON (strategy_id)
+                strategy_id,
+                strategy_id AS name,
+                'research' AS environment,
+                CASE
+                    WHEN COALESCE(run_status, '') IN ('COMPLETE', 'RESEARCH_COMPLETE', 'NON_HOLDOUT_COMPLETE')
+                    THEN 'COMPLETE'
+                    WHEN COALESCE(run_status, '') = ''
+                    THEN 'INCOMPLETE'
+                    ELSE run_status
+                END AS status,
+                NULL::varchar AS qc_project_id,
+                NULL::varchar AS qc_deployment_id,
+                NULL::varchar AS qc_research_project_id,
+                NULL::varchar AS qc_research_project_name,
+                NULL::varchar AS git_commit,
+                NULL::jsonb AS rules_json,
+                first_seen_at AS created_at,
+                last_seen_at AS updated_at,
+                research_mode,
+                research_kind,
+                asset_class
+            FROM research_runs
+            WHERE research_kind = 'high_beta_rotation_rule_v1'
               AND strategy_id IS NOT NULL
               AND strategy_id <> ''
             ORDER BY strategy_id, last_seen_at DESC NULLS LAST
@@ -528,17 +641,24 @@ def enrich_strategy_research_labels(engine, strategies: pd.DataFrame) -> pd.Data
     return work.merge(meta, on="strategy_id", how="left")
 
 
+def _merge_extra_strategies(combined: pd.DataFrame, extra: pd.DataFrame) -> pd.DataFrame:
+    if extra is None or extra.empty:
+        return combined
+    if combined is None or combined.empty:
+        return extra
+    have = set(combined["strategy_id"].astype(str))
+    add = extra[~extra["strategy_id"].astype(str).isin(have)]
+    if add.empty:
+        return combined
+    return pd.concat([combined, add], ignore_index=True)
+
+
 def load_strategies_frame(engine) -> pd.DataFrame:
     registered = read_sql(engine, STRATEGIES_SQL)
-    extra = read_sql_allow_missing_relation(engine, PLATFORM_STRATEGY_ROWS_SQL)
-    if extra is None or extra.empty:
-        combined = registered
-    elif registered is None or registered.empty:
-        combined = extra
-    else:
-        have = set(registered["strategy_id"].astype(str))
-        add = extra[~extra["strategy_id"].astype(str).isin(have)]
-        combined = registered if add.empty else pd.concat([registered, add], ignore_index=True)
+    combined = registered
+    for sql in (PLATFORM_STRATEGY_ROWS_SQL, HBR_STRATEGY_ROWS_SQL):
+        extra = read_sql_allow_missing_relation(engine, sql)
+        combined = _merge_extra_strategies(combined, extra)
     return enrich_strategy_research_labels(engine, combined)
 
 

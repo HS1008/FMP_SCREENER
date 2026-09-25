@@ -26,11 +26,18 @@ from qc_research.ml_monitor_ui import (
     render_platform_section,
     render_stage2_section,
 )
+from qc_research.high_beta_rotation_monitor import (
+    build_hbr_monitor_view,
+    format_hbr_metric,
+    select_hbr_run,
+)
 from qc_research.read_models.monitor_queries import (
     format_ops_identity_caption,
     load_backtest_equity_frame,
     load_backtests_frame,
     load_equity_history_frame,
+    load_hbr_artifact_rows,
+    load_hbr_run_rows,
     load_latest_positions_frame,
     load_latest_snapshot_row,
     load_ops_identity,
@@ -72,6 +79,7 @@ st.caption(
     "This page does not launch backtests, train models, approve strategies, or place orders. "
     "Stage 1 remains 81 planned experiments and 0 final-holdout experiments. "
     "Stage 2 research OOS ends 2024; 2025+ is sealed. "
+    "High-beta rotation observations are historical through 2024 and are not trading recommendations. "
     "Live monitor data updates automatically as new synchronized results become available."
 )
 if engine is None:
@@ -620,6 +628,75 @@ def _render_paper_and_execution(snapshot, history, positions, orders, trades, ba
             )
 
 
+def _render_hbr_section(view):
+    """Display a stored high-beta rotation view. No writes and no launches."""
+    st.markdown("### High-beta rotation")
+    st.caption(view.get("historical_label") or "")
+    st.write(
+        "Research status: {0} ({1}).".format(
+            view.get("run_status") or "unavailable",
+            view.get("evidence_status") or "unavailable",
+        )
+    )
+    ambiguous = view.get("ambiguous_artifacts") or []
+    if ambiguous:
+        st.caption(
+            "These artifact kinds have more than one stored version and need an explicit hash: {0}.".format(
+                ", ".join(str(kind) for kind in ambiguous)
+            )
+        )
+    st.info(
+        "Economic rating: {0}. {1}. This section reads stored research only.".format(
+            view.get("economic_rating") or "UNRATED",
+            view.get("thresholds") or "THRESHOLDS_NOT_PREDEFINED",
+        )
+    )
+    metric_map = view.get("metrics") or {}
+    labels = (
+        ("CAGR", "cagr"),
+        ("Max drawdown", "max_drawdown"),
+        ("Sortino", "sortino"),
+        ("Calmar", "calmar"),
+    )
+    columns = st.columns(4)
+    for column, (label, key) in zip(columns, labels):
+        column.metric(label, format_hbr_metric(metric_map.get(key)))
+    detail_labels = (
+        ("Ex-ante beta", metric_map.get("ex_ante_beta")),
+        ("Beta-control comparison", view.get("beta_control_comparison")),
+        ("Turnover", metric_map.get("turnover")),
+        ("Cash shortfall", metric_map.get("cash_shortfall")),
+        ("Constraint shortfall", metric_map.get("constraint_shortfall")),
+    )
+    for label, metric in detail_labels:
+        st.write("{0}: {1}".format(label, format_hbr_metric(metric)))
+    stress = view.get("cost_stress") or {}
+    st.write(
+        "Cost stress 0/10/20 bps: {0} / {1} / {2}".format(
+            format_hbr_metric(stress.get("0")),
+            format_hbr_metric(stress.get("10")),
+            format_hbr_metric(stress.get("20")),
+        )
+    )
+    for title, key in (
+        ("Yearly returns", "yearly_returns"),
+        ("Rolling beta", "rolling_beta"),
+        ("Exposures", "exposures"),
+        ("Rotation efficacy", "rotation_efficacy"),
+        ("Signal health", "signal_health"),
+    ):
+        block = view.get(key) or {}
+        with st.expander(title, expanded=False):
+            rows = block.get("rows")
+            status = block.get("status") or "unavailable"
+            if isinstance(rows, list) and rows:
+                st.dataframe(arrow_safe_frame(pd.DataFrame(rows)), use_container_width=True, hide_index=True)
+            elif isinstance(rows, dict) and rows:
+                st.json(rows)
+            else:
+                st.caption(status)
+
+
 def _render_live_monitor_body(
     strategy_id,
     strategy,
@@ -710,6 +787,48 @@ def _render_live_monitor_body(
             )
             st.error(
                 "Unable to read platform research from PostgreSQL. "
+                "A query failure is not treated as missing research."
+            )
+
+
+    # =========================================================
+    # HIGH-BETA ROTATION (read-only PostgreSQL)
+    # =========================================================
+
+    show_hbr = False
+    hbr_run = None
+    try:
+        hbr_run = select_hbr_run(load_hbr_run_rows(engine, strategy_id))
+        show_hbr = hbr_run is not None
+    except Exception:
+        logger.exception(
+            "Strategy Monitor failed to read high-beta rotation ids for strategy_id=%s",
+            strategy_id,
+        )
+        st.error(
+            "Unable to read high-beta rotation research from PostgreSQL. "
+            "A query failure is not treated as missing research."
+        )
+        show_hbr = False
+    if show_hbr and hbr_run is not None:
+        try:
+            hbr_run_id = str(hbr_run["research_run_id"])
+            hbr_view = build_hbr_monitor_view(
+                {
+                    "strategy_id": strategy_id,
+                    "research_run_id": hbr_run_id,
+                    "run_status": hbr_run.get("run_status"),
+                },
+                load_hbr_artifact_rows(engine, hbr_run_id),
+            )
+            _render_hbr_section(hbr_view)
+        except Exception:
+            logger.exception(
+                "Strategy Monitor failed to render high-beta rotation for strategy_id=%s",
+                strategy_id,
+            )
+            st.error(
+                "Unable to read high-beta rotation research from PostgreSQL. "
                 "A query failure is not treated as missing research."
             )
 
@@ -964,7 +1083,11 @@ if scope != "All" and "environment" in visible.columns:
             if "research_kind" in visible.columns
             else pd.Series([""] * len(visible), index=visible.index)
         )
-        visible = visible[env.eq("research") | kind.eq("platform_research")]
+        visible = visible[
+            env.eq("research")
+            | kind.eq("platform_research")
+            | kind.eq("high_beta_rotation_rule_v1")
+        ]
     else:
         visible = visible[env.eq(scope.lower())]
 if visible_library is not None and not visible_library.empty:
