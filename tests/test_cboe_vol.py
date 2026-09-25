@@ -10,11 +10,14 @@ import pytest
 
 from market_intelligence import cboe_analytics as vol
 from market_intelligence.cboe_client import (
+    USER_AGENT,
     CboeAuthError,
     CboeClient,
     CboeMalformedPayload,
     CboeRateLimitError,
     CboeTrialLimitError,
+    CboeUnavailableError,
+    error_for_status,
     probe_status,
 )
 
@@ -65,9 +68,11 @@ def test_token_success_and_cache():
         calls["n"] += 1
         assert request.get_method() == "POST"
         assert request.get_header("Authorization").startswith("Basic ")
+        ua = request.get_header("User-agent") or request.get_header("User-Agent")
+        assert ua == USER_AGENT
         assert b"client_secret" not in request.data
         assert b"grant_type=client_credentials" in request.data
-        assert b"scope=api.allaccess" in request.data
+        assert b"scope=" not in request.data
         return _Resp(b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}')
 
     client = _client(opener)
@@ -99,6 +104,68 @@ def test_bad_credentials():
     with pytest.raises(CboeAuthError) as exc:
         _client(opener).access_token()
     assert exc.value.capability == "AUTH_FAILED"
+
+
+def test_identity_400_invalid_client_is_auth_failed():
+    def opener(request, timeout):
+        raise _http_error(400, '{"error":"invalid_client"}')
+
+    with pytest.raises(CboeAuthError) as exc:
+        _client(opener).access_token()
+    assert exc.value.capability == "AUTH_FAILED"
+    assert exc.value.http_status == 400
+
+
+def test_cloudflare_1010_is_unavailable_and_does_not_retry():
+    calls = {"n": 0}
+    body = (
+        '{"type":"https://developers.cloudflare.com/support/troubleshooting/'
+        'http-status-codes/cloudflare-1xxx-errors/error-1010/",'
+        '"title":"Error 1010: Access denied","status":403,'
+        '"detail":"The site owner has blocked access based on your browser\'s signature.",'
+        '"error_name":"browser_signature_banned"}'
+    )
+
+    def opener(request, timeout):
+        calls["n"] += 1
+        raise _http_error(403, body)
+
+    with pytest.raises(CboeUnavailableError) as exc:
+        _client(opener).access_token()
+    assert exc.value.capability == "UNAVAILABLE"
+    assert exc.value.http_status == 403
+    assert "signature" in str(exc.value).lower()
+    assert calls["n"] == 1
+
+
+def test_data_request_sends_product_user_agent():
+    seen = {"n": 0}
+
+    def opener(request, timeout):
+        seen["n"] += 1
+        ua = request.get_header("User-agent") or request.get_header("User-Agent")
+        assert ua == USER_AGENT
+        if request.get_method() == "POST":
+            return _Resp(b'{"access_token":"tok-1","expires_in":3600}')
+        return _Resp(b"[]")
+
+    client = _client(opener)
+    payload = client.underlying_quotes(["VIX"], AS_OF, session_date=AS_OF)
+    assert payload == []
+    assert seen["n"] == 2
+
+
+def test_error_for_status_keeps_entitlement_distinct_from_signature_ban():
+    banned = error_for_status(
+        403, '{"title":"Error 1010: Access denied","error_name":"browser_signature_banned"}'
+    )
+    assert isinstance(banned, CboeUnavailableError)
+    assert banned.capability == "UNAVAILABLE"
+    entitled = error_for_status(403, "not subscribed to this product")
+    assert entitled.capability == "ENTITLEMENT_REQUIRED"
+    auth = error_for_status(401, "invalid_client")
+    assert isinstance(auth, CboeAuthError)
+    assert auth.capability == "AUTH_FAILED"
 
 
 def test_rate_limit_retries_then_raises():
