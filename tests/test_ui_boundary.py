@@ -118,6 +118,8 @@ FORBIDDEN_PROVIDER_IMPORTS = (
     "market_intelligence.ibkr_options",
     "market_intelligence.fred_client",
     "market_intelligence.finra_client",
+    "market_intelligence.ingest_yahoo_vol",
+    "market_intelligence.yahoo_vol",
     "ai_gateway",
     "urllib.request",
 )

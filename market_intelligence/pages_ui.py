@@ -213,12 +213,113 @@ def _render_commodities_panel(cats: dict[str, Any], *, heading: str = "Commoditi
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
+    st.subheader("Core volatility (Yahoo)")
+    st.caption(
+        "Free Yahoo closes stored in PostgreSQL. Spot VIX and Cboe SKEW Index are not VIX futures. "
+        "Index tenor shape uses upward-sloping / downward-sloping / flat only — never contango or backwardation. "
+        "Streamlit does not call Yahoo."
+    )
+    if not yahoo or yahoo.get("status") != "OK":
+        st.info((yahoo or {}).get("reason") or "Yahoo volatility metrics are unavailable.")
+        return
+
+    def _num(row: dict[str, Any] | None) -> Any:
+        if not row or row.get("status") != "OK":
+            return None
+        return row.get("value")
+
+    vix = yahoo.get("vix")
+    skew = yahoo.get("skew")
+    spread = yahoo.get("spread")
+    slope = yahoo.get("slope")
+    curve_state = yahoo.get("curve_state")
+    state_label = {
+        "upward_sloping": "Upward-sloping",
+        "downward_sloping": "Downward-sloping",
+        "flat": "Flat",
+    }.get(str(curve_state or ""), "—")
+
+    cols = st.columns(4)
+    cols[0].metric("VIX", _fmt_or_dash(_num(vix), "vol_points"), None if not vix else str(vix.get("as_of") or ""))
+    cols[1].metric("Cboe SKEW Index", _fmt_or_dash(_num(skew), None), None if not skew else str(skew.get("as_of") or ""))
+    cols[2].metric("VIX − GSPC RV20", _fmt_or_dash(_num(spread), "vol_points"))
+    cols[3].metric("VIX index curve", state_label if _num(slope) is not None else "Unavailable")
+    st.caption(
+        "Implied = ^VIX. Realized = sample stdev of 20 ^GSPC daily log returns × √252 × 100. "
+        "Missing values stay — (never zero)."
+    )
+
+    tenors = yahoo.get("tenors") or []
+    if tenors:
+        st.markdown("**VIX index term structure**")
+        term_frame = pd.DataFrame(
+            [
+                {
+                    "Tenor": t.get("tenor"),
+                    "Yahoo": t.get("yahoo_ticker") or "—",
+                    "Level": _fmt_or_dash(t.get("value"), "vol_points") if t.get("value") is not None else "—",
+                    "As-of": t.get("as_of") or "—",
+                }
+                for t in tenors
+            ]
+        )
+        st.dataframe(term_frame, use_container_width=True, hide_index=True)
+        chart_rows = [t for t in tenors if t.get("value") is not None]
+        if chart_rows:
+            st.line_chart(pd.DataFrame({"tenor": [t["tenor"] for t in chart_rows], "level": [t["value"] for t in chart_rows]}).set_index("tenor"))
+        curve_as_of = yahoo.get("curve_observation_date")
+        if curve_as_of:
+            st.caption("Curve observation date {0}. Front=9D, back=1Y on that date only.".format(curve_as_of))
+        missing = yahoo.get("unavailable_tenors") or []
+        if missing:
+            st.caption("Unavailable tenors on that date: {0}".format(", ".join(str(x) for x in missing)))
+
+    history = yahoo.get("history") or {}
+    left, right = st.columns(2)
+    with left:
+        st.markdown("**VIX recent history**")
+        vix_hist = history.get("VIX_SPOT") or []
+        if vix_hist:
+            st.line_chart(pd.DataFrame({"as_of": [r.get("as_of") for r in vix_hist], "VIX": [r.get("value") for r in vix_hist]}).set_index("as_of"))
+        else:
+            st.caption("VIX history unavailable.")
+        st.markdown("**SKEW recent history**")
+        skew_hist = history.get("SKEW_INDEX") or []
+        if skew_hist:
+            st.line_chart(pd.DataFrame({"as_of": [r.get("as_of") for r in skew_hist], "SKEW": [r.get("value") for r in skew_hist]}).set_index("as_of"))
+        else:
+            st.caption("SKEW history unavailable.")
+    with right:
+        st.markdown("**VIX vs GSPC RV20**")
+        spread_hist = history.get("VIX_MINUS_GSPC_RV20") or []
+        rv_hist = history.get("GSPC_REALIZED_VOL_20D") or []
+        vix_by = {r.get("as_of"): r.get("value") for r in (history.get("VIX_SPOT") or [])}
+        rv_by = {r.get("as_of"): r.get("value") for r in rv_hist}
+        dates = sorted(set(vix_by) | set(rv_by) | {r.get("as_of") for r in spread_hist})
+        if dates:
+            frame = pd.DataFrame(
+                {
+                    "as_of": dates,
+                    "VIX": [vix_by.get(d) for d in dates],
+                    "GSPC RV20": [rv_by.get(d) for d in dates],
+                }
+            ).set_index("as_of")
+            st.line_chart(frame)
+        else:
+            st.caption("VIX vs RV20 history unavailable.")
+
+
 def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
-    st.subheader("Options and volatility")
+    yahoo = (ctx or {}).get("yahoo_core") or {}
+    _render_yahoo_vol_core(yahoo)
+
+    st.subheader("Options chains and VX futures")
     st.caption("Stored PostgreSQL option snapshots only. Delay label is provider-specific (not hardcoded Cboe). Not a live quote. GEX is an OI-derived gamma-exposure proxy (estimated, CALL_PLUS_PUT_MINUS_V1), not observed dealer inventory. IBKR OPRA is gated until the TWS API delivers NBBO.")
     if not ctx or (not ctx.get("symbols") and not ctx.get("vix")):
         st.info(ctx.get("reason") if ctx else "Options schema is not available. This optional source is not a platform outage.")
-        open_registered_page("data_health", "Open Data Health")
+        if yahoo.get("status") != "OK":
+            open_registered_page("data_health", "Open Data Health")
         return
     symbols = ctx.get("symbols") or []
     if symbols:
@@ -282,7 +383,7 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
 def render_options_volatility() -> None:
     page_header(
         "Options & Volatility",
-        "ATM IV, skew, put/call, expected move, and the GEX proxy from stored snapshots only. Spot VIX is distinct from a VIX futures curve.",
+        "Yahoo VIX / SKEW / term structure / VIX−RV20, plus stored OpenBB option chains and VX futures. Spot VIX is distinct from a VIX futures curve.",
         fred=False,
     )
     result = load_optional("options_volatility_context", default={})
