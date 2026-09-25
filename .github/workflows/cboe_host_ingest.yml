@@ -5,6 +5,12 @@ name: Cboe host bounded ingest
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - cursor/cboe-volatility-v1
+    paths:
+      - ".github/workflows/cboe_host_ingest.yml"
+      - ".github/workflows/.cboe_host_ingest_trigger"
 
 permissions:
   contents: read
