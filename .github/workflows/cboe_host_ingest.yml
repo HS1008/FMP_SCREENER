@@ -160,10 +160,17 @@ jobs:
           refresh_rc=$?
           set -e
           echo "refresh_exit_code=${refresh_rc}"
-          if [ "$refresh_rc" -gt 1 ]; then
+          # 0=OK, 2=PARTIAL (expected when some Cboe metrics are entitlement-incomplete)
+          if [ "$refresh_rc" -ne 0 ] && [ "$refresh_rc" -ne 2 ]; then
             echo "FAIL: refresh hard-failed"
-            tail -n 40 /tmp/cboe_ingest_stderr.txt || true
+            tail -n 80 /tmp/cboe_ingest_stderr.txt || true
+            head -c 2000 /tmp/cboe_ingest_report.json || true
             exit 2
+          fi
+          # Always surface stderr summary (sanitized logging only; no secrets)
+          if [ -s /tmp/cboe_ingest_stderr.txt ]; then
+            echo "refresh_stderr_tail:"
+            tail -n 40 /tmp/cboe_ingest_stderr.txt || true
           fi
           python - <<'PY'
           import json
