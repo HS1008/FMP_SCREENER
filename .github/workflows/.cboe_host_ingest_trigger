@@ -1,3 +1,1 @@
-# Touch this file to re-run the bounded Cboe host ingest from the feature branch
-# (workflow_dispatch is unavailable until the workflow exists on default branch).
-trigger: 2
+trigger: 3

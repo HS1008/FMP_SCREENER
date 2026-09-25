@@ -23,11 +23,16 @@ AS_OF = date(2026, 9, 24)
 
 
 class _Resp:
-    def __init__(self, body: bytes):
+    def __init__(self, body: bytes, *, status: int = 200, content_type: str = "application/json"):
         self._body = body
+        self.status = status
+        self.headers = {"Content-Type": content_type}
 
     def read(self):
         return self._body
+
+    def getcode(self):
+        return self.status
 
     def __enter__(self):
         return self
@@ -67,13 +72,48 @@ def test_token_success_and_cache():
         assert request.get_header("Authorization").startswith("Basic ")
         assert b"client_secret" not in request.data
         assert b"grant_type=client_credentials" in request.data
-        assert b"scope=api.allaccess" in request.data
+        # Official examples omit scope; first attempt should not require it.
+        assert b"scope=" not in request.data
         return _Resp(b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}')
 
     client = _client(opener)
     assert client.access_token() == "tok-1"
     assert client.access_token() == "tok-1"
     assert calls["n"] == 1
+
+
+def test_token_falls_back_to_allaccess_scope():
+    calls = {"n": 0}
+
+    def opener(request, timeout):
+        calls["n"] += 1
+        if b"scope=api.allaccess" not in (request.data or b""):
+            raise _http_error(401, "invalid_scope")
+        return _Resp(b'{"access_token":"tok-scoped","expires_in":3600}')
+
+    client = _client(opener)
+    assert client.access_token() == "tok-scoped"
+    assert calls["n"] == 2
+
+
+def test_underlying_quotes_include_seq_no_and_delayed_point_cost(monkeypatch):
+    monkeypatch.setenv("CBOE_API_MODE", "delayed")
+    seen = {}
+
+    def opener(request, timeout):
+        if request.get_method() == "POST":
+            return _Resp(b'{"access_token":"tok","expires_in":3600}')
+        seen["url"] = request.full_url
+        return _Resp(b'[{"symbol":"VIX","underlying_close":16.5,"timestamp":"16:00:00.000"}]')
+
+    client = CboeClient("client-id", "client-secret", opener=opener, sleep=lambda _s: None, clock=lambda: 0.0)
+    rows = client.underlying_quotes(["VIX"], date(2026, 9, 23), session_date=date(2026, 9, 24))
+    assert rows[0]["symbol"] == "VIX"
+    assert "seq_no=0" in seen["url"]
+    assert client.points_used == 3  # historical
+    client2 = CboeClient("client-id", "client-secret", opener=opener, sleep=lambda _s: None, clock=lambda: 0.0)
+    client2.underlying_quotes(["VIX"], date(2026, 9, 24), session_date=date(2026, 9, 24))
+    assert client2.points_used == 8  # delayed same-session
 
 
 def test_token_refresh_after_expiry():

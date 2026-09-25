@@ -60,7 +60,9 @@ def to_vol_points(value: Any) -> float | None:
 
 
 def quote_level(row: Mapping[str, Any]) -> float | None:
-    for key in ("underlying_last_trade_price", "underlying_close", "underlying_mid", "implied_underlying_mid"):
+    # Prefer EOD close before last-trade: live/delayed last-trade often requires SIP and returns null.
+    # Do not use underlying_prev_day_close as the as-of level (wrong session).
+    for key in ("underlying_close", "underlying_last_trade_price", "underlying_mid", "implied_underlying_mid"):
         level = _positive_number(row.get(key))
         if level is not None:
             return level

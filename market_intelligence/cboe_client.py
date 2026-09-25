@@ -10,12 +10,13 @@ Official contract (https://api.livevol.com/v1/docs/Home/Authentication and the A
 
 Documented point costs used for the budget guard (per request, not per row):
 
-- GET /allaccess/market/underlying-quotes: live 4, historical 3
-- GET /allaccess/market/option-and-underlying-quotes: live 4, historical 3
+- GET /allaccess/market/underlying-quotes: live 4, delayed 8, historical 3
+- GET /allaccess/market/option-and-underlying-quotes: live 4, delayed 8, historical 3
 - GET /allaccess/reference/expirations: 1
 
-Historical means ``date`` is before the New York session date, on the live host.
-No scope is documented for the client-credentials flow, so none is sent.
+Historical means ``date`` is before the New York session date, on the live or delayed host.
+Official token examples send ``grant_type=client_credentials`` only; ``scope=api.allaccess``
+is tried as a fallback for IdentityServer clients that require it.
 """
 
 from __future__ import annotations
@@ -58,6 +59,22 @@ UNDERLYING_QUOTES = "/market/underlying-quotes"
 OPTION_QUOTES = "/market/option-and-underlying-quotes"
 EXPIRATIONS = "/reference/expirations"
 
+POINT_COST_LIVE = {
+    UNDERLYING_QUOTES: 4,
+    OPTION_QUOTES: 4,
+    EXPIRATIONS: 1,
+}
+POINT_COST_DELAYED = {
+    UNDERLYING_QUOTES: 8,
+    OPTION_QUOTES: 8,
+    EXPIRATIONS: 1,
+}
+POINT_COST_HISTORICAL = {
+    UNDERLYING_QUOTES: 3,
+    OPTION_QUOTES: 3,
+    EXPIRATIONS: 1,
+}
+# Back-compat alias used by older tests / docs.
 POINT_COST = {
     (UNDERLYING_QUOTES, False): 4,
     (UNDERLYING_QUOTES, True): 3,
@@ -164,7 +181,7 @@ class CboeClient:
     def underlying_quotes(self, symbols: list[str], quote_date: date, *, session_date: date) -> Any:
         return self._get(
             UNDERLYING_QUOTES,
-            {"symbols": ",".join(symbols), "date": quote_date.isoformat()},
+            {"symbols": ",".join(symbols), "date": quote_date.isoformat(), "seq_no": "0"},
             historical=quote_date < session_date,
         )
 
@@ -178,6 +195,7 @@ class CboeClient:
             "date": quote_date.isoformat(),
             "min_expiry": min_expiry.isoformat(),
             "max_expiry": max_expiry.isoformat(),
+            "seq_no": "0",
         }
         if min_strike is not None:
             params["min_strike"] = _strike(min_strike)
@@ -185,11 +203,18 @@ class CboeClient:
             params["max_strike"] = _strike(max_strike)
         return self._get(OPTION_QUOTES, params, historical=quote_date < session_date)
 
+    def _point_cost(self, path: str, *, historical: bool) -> int:
+        if historical:
+            return POINT_COST_HISTORICAL.get(path, 3)
+        if "delayed" in (self.api_root or ""):
+            return POINT_COST_DELAYED.get(path, 8)
+        return POINT_COST_LIVE.get(path, 4)
+
     def _get(self, path: str, params: dict[str, str], *, historical: bool) -> Any:
         key = path + "?" + urllib.parse.urlencode(params)
         if key in self._cache:
             return self._cache[key]
-        cost = POINT_COST[(path, historical)]
+        cost = self._point_cost(path, historical=historical)
         if self.points_used + cost > self.point_budget:
             raise CboeBudgetError(STATUS_TRIAL_LIMIT, "run point budget would be exceeded")
         token = self.access_token()
@@ -208,25 +233,35 @@ class CboeClient:
     def _token_request(self) -> dict[str, Any]:
         raw = (self.client_id + ":" + self.client_secret).encode("utf-8")
         basic = base64.b64encode(raw).decode("ascii")
-        # Official examples omit scope; All Access clients commonly need api.allaccess.
-        form = {"grant_type": "client_credentials", "scope": "api.allaccess"}
-        body = urllib.parse.urlencode(form).encode("utf-8")
+        # Official examples send grant_type only (no scope). Some All Access
+        # IdentityServer clients additionally require scope=api.allaccess.
+        forms = (
+            {"grant_type": "client_credentials"},
+            {"grant_type": "client_credentials", "scope": "api.allaccess"},
+        )
+        last_auth: CboeAuthError | None = None
+        for form in forms:
+            body = urllib.parse.urlencode(form).encode("utf-8")
+            try:
+                payload = self._request_json(
+                    TOKEN_URL,
+                    method="POST",
+                    headers={
+                        "Authorization": "Basic " + basic,
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "Accept": "application/json",
+                    },
+                    data=body,
+                )
+            except CboeAuthError as exc:
+                last_auth = exc
+                continue
+            if not isinstance(payload, dict):
+                raise CboeMalformedPayload(STATUS_AUTH_FAILED, "token response was not an object")
+            return payload
+        # Body-credential fallback (IdentityServer clients that reject Basic).
+        form_with_client = {"grant_type": "client_credentials", "client_id": self.client_id, "client_secret": self.client_secret}
         try:
-            payload = self._request_json(
-                TOKEN_URL,
-                method="POST",
-                headers={
-                    "Authorization": "Basic " + basic,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json",
-                },
-                data=body,
-            )
-        except CboeAuthError:
-            # Some IdentityServer clients are configured for body credentials only.
-            form_with_client = dict(form)
-            form_with_client["client_id"] = self.client_id
-            form_with_client["client_secret"] = self.client_secret
             payload = self._request_json(
                 TOKEN_URL,
                 method="POST",
@@ -236,6 +271,8 @@ class CboeClient:
                 },
                 data=urllib.parse.urlencode(form_with_client).encode("utf-8"),
             )
+        except CboeAuthError as exc:
+            raise last_auth or exc
         if not isinstance(payload, dict):
             raise CboeMalformedPayload(STATUS_AUTH_FAILED, "token response was not an object")
         return payload
@@ -249,6 +286,11 @@ class CboeClient:
             try:
                 with self._opener(request, timeout=self.timeout_s) as response:
                     raw = response.read()
+                    http_status = int(getattr(response, "status", None) or response.getcode() or 0) or None
+                    headers_map = getattr(response, "headers", None)
+                    content_type = ""
+                    if headers_map is not None:
+                        content_type = str(headers_map.get("Content-Type") or headers_map.get("content-type") or "")
             except urllib.error.HTTPError as exc:
                 body = _read_error_body(exc)
                 err = error_for_status(int(exc.code), body)
@@ -272,6 +314,15 @@ class CboeClient:
                 self.sleep(delay)
                 delay *= 2
                 continue
+            if not raw or not raw.strip():
+                raise CboeUnavailableError(
+                    STATUS_UNAVAILABLE,
+                    "Cboe returned empty body (status={0}, content_type={1}, bytes=0)".format(
+                        http_status or "unknown",
+                        (content_type or "unknown")[:80],
+                    ),
+                    http_status=http_status,
+                )
             try:
                 parsed = json.loads(raw.decode("utf-8"))
             except (UnicodeError, json.JSONDecodeError) as exc:
@@ -279,12 +330,19 @@ class CboeClient:
                 if "cloudflare" in preview.lower() or "cf-ray" in preview.lower() or preview.lstrip().startswith("<!"):
                     raise CboeUnavailableError(
                         STATUS_UNAVAILABLE,
-                        "Cboe edge returned a non-API page (possible IP/WAF block)",
-                        http_status=None,
+                        "Cboe edge returned a non-API page (possible IP/WAF block; status={0}, content_type={1})".format(
+                            http_status or "unknown",
+                            (content_type or "unknown")[:40],
+                        ),
+                        http_status=http_status,
                     ) from exc
                 raise CboeMalformedPayload(
                     STATUS_UNAVAILABLE,
-                    "Cboe response was not JSON ({0})".format(preview[:60]),
+                    "Cboe response was not JSON (status={0}, content_type={1}, preview={2})".format(
+                        http_status or "unknown",
+                        (content_type or "unknown")[:40],
+                        preview[:60],
+                    ),
                 ) from exc
             return parsed
         raise last or CboeUnavailableError(STATUS_UNAVAILABLE, "Cboe request failed")

@@ -185,9 +185,19 @@ jobs:
           cboe_result = (report.get("results") or {}).get("cboe") or {}
           print("cboe_result_failed=" + str(cboe_result.get("failed")))
           print("points_used=" + str(cboe_result.get("points_used")))
+          print("requests_made=" + str(cboe_result.get("requests_made")))
           sections = cboe_result.get("sections") or {}
           for name, section in sorted(sections.items()):
-              print("section={0}:{1}".format(name, section.get("status") if isinstance(section, dict) else section))
+              if isinstance(section, dict):
+                  print("section={0}:{1}".format(name, section.get("status")))
+                  if section.get("reason"):
+                      print("section_reason={0}:{1}".format(name, section.get("reason")))
+                  if section.get("http_status") is not None:
+                      print("section_http={0}:{1}".format(name, section.get("http_status")))
+                  if section.get("quote_date"):
+                      print("section_quote_date={0}:{1}".format(name, section.get("quote_date")))
+              else:
+                  print("section={0}:{1}".format(name, section))
 
           engine = writer_engine()
           with engine.connect() as conn:

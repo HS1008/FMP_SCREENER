@@ -93,8 +93,17 @@ def _ingest_indices(engine, client: CboeClient, as_of: date, parent_run_id: str 
         payload = None
         quote_day = as_of
         last_exc: CboeError | None = None
-        for day in [as_of] + list(prior_weekdays(as_of, 5)):
+        # Delayed same-session quotes often need SIP entitlements (fields null / empty).
+        # Prefer a completed prior weekday first for historical EOD snapshots (3 pts).
+        delayed = "delayed" in (getattr(client, "api_root", "") or "")
+        probe_days = list(prior_weekdays(as_of, 5)) + [as_of] if delayed else [as_of] + list(prior_weekdays(as_of, 5))
+        for day in probe_days:
             try:
+                # Probe VIX alone first (matches official examples), then the full tenor set.
+                probe = client.underlying_quotes(["VIX"], day, session_date=as_of)
+                if not isinstance(probe, list) or not probe:
+                    last_exc = CboeError("UNAVAILABLE", "empty_vix_probe")
+                    continue
                 payload = client.underlying_quotes(list(INDEX_SYMBOLS), day, session_date=as_of)
                 quote_day = day
                 last_exc = None
@@ -120,15 +129,15 @@ def _ingest_indices(engine, client: CboeClient, as_of: date, parent_run_id: str 
     except CboeError as exc:
         _close(engine, run_id, RUN_FAILED, 0, exc.capability)
         for dataset in ("vix", "vix_term_structure"):
-            _mark(engine, dataset, as_of, transport=exc.capability, success=False, error=exc.capability, run_id=run_id, capability=exc.capability)
-        report["sections"]["vix"] = {"status": exc.capability}
-        report["sections"]["vix_term_structure"] = {"status": exc.capability}
+            _mark(engine, dataset, as_of, transport=exc.capability, success=False, error=str(exc)[:160], run_id=run_id, capability=exc.capability)
+        report["sections"]["vix"] = {"status": exc.capability, "reason": str(exc)[:160], "http_status": exc.http_status}
+        report["sections"]["vix_term_structure"] = {"status": exc.capability, "reason": str(exc)[:160]}
         return {}
     except (ValueError, TypeError) as exc:
         _close(engine, run_id, RUN_FAILED, 0, "malformed_payload")
         for dataset in ("vix", "vix_term_structure"):
             _mark(engine, dataset, as_of, transport="FAILED", success=False, error="malformed_payload", run_id=run_id, capability="UNAVAILABLE")
-        report["sections"]["vix"] = {"status": "FAILED", "reason": "malformed_payload"}
+        report["sections"]["vix"] = {"status": "FAILED", "reason": "malformed_payload:{0}".format(exc.__class__.__name__)}
         report["sections"]["vix_term_structure"] = {"status": "FAILED", "reason": "malformed_payload"}
         report["failed"] = True
         return {}
