@@ -90,10 +90,23 @@ def ingest_cboe(engine, client: CboeClient, *, parent_run_id: str | None = None,
 def _ingest_indices(engine, client: CboeClient, as_of: date, parent_run_id: str | None, report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     run_id = _open(engine, "vix", parent_run_id, as_of)
     try:
-        payload = client.underlying_quotes(list(INDEX_SYMBOLS), as_of, session_date=as_of)
-        snaps = index_snapshots(payload, quote_date=as_of)
+        payload = None
+        quote_day = as_of
+        last_exc: CboeError | None = None
+        for day in [as_of] + list(prior_weekdays(as_of, 5)):
+            try:
+                payload = client.underlying_quotes(list(INDEX_SYMBOLS), day, session_date=as_of)
+                quote_day = day
+                last_exc = None
+                break
+            except CboeError as exc:
+                last_exc = exc
+                continue
+        if payload is None:
+            raise last_exc or CboeError("UNAVAILABLE", "underlying_quotes_unavailable")
+        snaps = index_snapshots(payload, quote_date=quote_day)
         _maybe_backfill(engine, client, as_of, snaps)
-        rows = _index_rows(snaps, as_of)
+        rows = _index_rows(snaps, quote_day)
         written = _write_rows(engine, rows, run_id)
         vix_ok = any(row["metric_id"] == "VIX_SPOT" and row["status"] == "OK" for row in rows)
         term = term_structure(snaps)
@@ -101,7 +114,7 @@ def _ingest_indices(engine, client: CboeClient, as_of: date, parent_run_id: str 
         _close(engine, run_id, RUN_SUCCEEDED if vix_ok else RUN_PARTIAL, written, None if vix_ok else "missing_vix_level")
         _mark(engine, "vix", as_of, transport="SUCCEEDED" if vix_ok else "PARTIAL", success=vix_ok, error=None if vix_ok else "missing_vix_level", run_id=run_id, capability=STATUS_READY)
         _mark(engine, "vix_term_structure", as_of, transport="SUCCEEDED" if term_ok else "PARTIAL", success=term_ok, error=None if term_ok else "incomplete_tenor_set", run_id=run_id, capability=STATUS_READY)
-        report["sections"]["vix"] = {"status": "SUCCEEDED" if vix_ok else "PARTIAL", "rows": written}
+        report["sections"]["vix"] = {"status": "SUCCEEDED" if vix_ok else "PARTIAL", "rows": written, "quote_date": quote_day.isoformat()}
         report["sections"]["vix_term_structure"] = {"status": "SUCCEEDED" if term_ok else "PARTIAL", "slope": term["front_to_back_slope"], "state": term["curve_state"]}
         return snaps
     except CboeError as exc:
