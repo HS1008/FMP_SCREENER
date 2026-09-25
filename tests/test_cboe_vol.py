@@ -10,11 +10,14 @@ import pytest
 
 from market_intelligence import cboe_analytics as vol
 from market_intelligence.cboe_client import (
+    USER_AGENT,
     CboeAuthError,
     CboeClient,
     CboeMalformedPayload,
     CboeRateLimitError,
     CboeTrialLimitError,
+    CboeUnavailableError,
+    error_for_status,
     probe_status,
 )
 
@@ -65,9 +68,11 @@ def test_token_success_and_cache():
         calls["n"] += 1
         assert request.get_method() == "POST"
         assert request.get_header("Authorization").startswith("Basic ")
+        ua = request.get_header("User-agent") or request.get_header("User-Agent")
+        assert ua == USER_AGENT
         assert b"client_secret" not in request.data
         assert b"grant_type=client_credentials" in request.data
-        assert b"scope=api.allaccess" in request.data
+        assert b"scope=" not in request.data
         return _Resp(b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}')
 
     client = _client(opener)
@@ -99,6 +104,71 @@ def test_bad_credentials():
     with pytest.raises(CboeAuthError) as exc:
         _client(opener).access_token()
     assert exc.value.capability == "AUTH_FAILED"
+
+
+def test_identity_400_invalid_client_is_auth_failed():
+    def opener(request, timeout):
+        raise _http_error(400, '{"error":"invalid_client"}')
+
+    with pytest.raises(CboeAuthError) as exc:
+        _client(opener).access_token()
+    assert exc.value.capability == "AUTH_FAILED"
+    assert exc.value.http_status == 400
+
+
+def test_cloudflare_1010_url_is_unavailable_and_does_not_retry():
+    calls = {"n": 0}
+    # Live run 36076709344 returned this type URL; title/error_name may be truncated.
+    body = (
+        '{"type":"https://developers.cloudflare.com/support/troubleshooting/'
+        'http-status-codes/cloudflare-1xxx-errors/error-1010/"}'
+    )
+
+    def opener(request, timeout):
+        calls["n"] += 1
+        raise _http_error(403, body)
+
+    with pytest.raises(CboeUnavailableError) as exc:
+        _client(opener).access_token()
+    assert exc.value.capability == "UNAVAILABLE"
+    assert exc.value.http_status == 403
+    assert "1010" in str(exc.value)
+    assert calls["n"] == 1
+
+
+def test_data_request_sends_product_user_agent():
+    seen = {"n": 0}
+
+    def opener(request, timeout):
+        seen["n"] += 1
+        ua = request.get_header("User-agent") or request.get_header("User-Agent")
+        assert ua == USER_AGENT
+        if request.get_method() == "POST":
+            return _Resp(b'{"access_token":"tok-1","expires_in":3600}')
+        return _Resp(b"[]")
+
+    client = _client(opener)
+    payload = client.underlying_quotes(["VIX"], AS_OF, session_date=AS_OF)
+    assert payload == []
+    assert seen["n"] == 2
+
+
+def test_error_for_status_keeps_entitlement_distinct_from_signature_ban():
+    banned = error_for_status(
+        403,
+        '{"type":"https://developers.cloudflare.com/support/troubleshooting/'
+        'http-status-codes/cloudflare-1xxx-errors/error-1010/"}',
+    )
+    assert isinstance(banned, CboeUnavailableError)
+    assert banned.capability == "UNAVAILABLE"
+    entitled = error_for_status(403, "not subscribed to this product")
+    assert entitled.capability == "ENTITLEMENT_REQUIRED"
+    auth = error_for_status(401, "invalid_client")
+    assert isinstance(auth, CboeAuthError)
+    assert auth.capability == "AUTH_FAILED"
+    identity = error_for_status(400, '{"error":"invalid_client"}')
+    assert isinstance(identity, CboeAuthError)
+    assert identity.capability == "AUTH_FAILED"
 
 
 def test_rate_limit_retries_then_raises():

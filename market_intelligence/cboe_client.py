@@ -16,6 +16,8 @@ Documented point costs used for the budget guard (per request, not per row):
 
 Historical means ``date`` is before the New York session date, on the live host.
 No scope is documented for the client-credentials flow, so none is sent.
+``id.livevol.com`` is behind Cloudflare. The default Python-urllib User-Agent is
+Error 1010 (``browser_signature_banned``). Requests send ``USER_AGENT`` instead.
 """
 
 from __future__ import annotations
@@ -42,6 +44,8 @@ ENABLE_FLAG = "MI_CBOE_ENABLED"
 CLIENT_ID_ENV = "CBOE_CLIENT_ID"
 CLIENT_SECRET_ENV = "CBOE_CLIENT_SECRET"
 API_MODE_ENV = "CBOE_API_MODE"
+# Same product identifier EIA already sends. Not a browser impersonation.
+USER_AGENT = "FMP_SCREENER MarketIntelligence"
 NY = ZoneInfo("America/New_York")
 
 STATUS_READY = "READY"
@@ -206,34 +210,17 @@ class CboeClient:
     def _token_request(self) -> dict[str, Any]:
         raw = (self.client_id + ":" + self.client_secret).encode("utf-8")
         basic = base64.b64encode(raw).decode("ascii")
-        # Official examples omit scope; All Access clients commonly need api.allaccess.
-        form = {"grant_type": "client_credentials", "scope": "api.allaccess"}
-        body = urllib.parse.urlencode(form).encode("utf-8")
-        try:
-            payload = self._request_json(
-                TOKEN_URL,
-                method="POST",
-                headers={
-                    "Authorization": "Basic " + basic,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json",
-                },
-                data=body,
-            )
-        except CboeAuthError:
-            # Some IdentityServer clients are configured for body credentials only.
-            form_with_client = dict(form)
-            form_with_client["client_id"] = self.client_id
-            form_with_client["client_secret"] = self.client_secret
-            payload = self._request_json(
-                TOKEN_URL,
-                method="POST",
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Accept": "application/json",
-                },
-                data=urllib.parse.urlencode(form_with_client).encode("utf-8"),
-            )
+        body = urllib.parse.urlencode({"grant_type": "client_credentials"}).encode("utf-8")
+        payload = self._request_json(
+            TOKEN_URL,
+            method="POST",
+            headers={
+                "Authorization": "Basic " + basic,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+            data=body,
+        )
         if not isinstance(payload, dict):
             raise CboeMalformedPayload(STATUS_AUTH_FAILED, "token response was not an object")
         return payload
@@ -241,8 +228,10 @@ class CboeClient:
     def _request_json(self, url: str, *, method: str, headers: dict[str, str], data: bytes | None) -> Any:
         delay = 0.4
         last: CboeError | None = None
+        outgoing = dict(headers)
+        outgoing.setdefault("User-Agent", USER_AGENT)
         for attempt in range(1, self.max_attempts + 1):
-            request = urllib.request.Request(url, data=data, headers=headers, method=method)
+            request = urllib.request.Request(url, data=data, headers=outgoing, method=method)
             try:
                 with self._opener(request, timeout=self.timeout_s) as response:
                     raw = response.read()
@@ -315,8 +304,18 @@ def error_for_status(status: int, body: str) -> CboeError:
             if marker in safe_detail.lower():
                 safe_detail = "redacted_error_body"
                 break
-    if status in {401, 403}:
-        if any(word in text for word in ("entitlement", "subscription", "not subscribed", "permission", "forbidden product", "scope")):
+    if _is_cloudflare_signature_ban(text):
+        return CboeUnavailableError(
+            STATUS_UNAVAILABLE,
+            "Cboe identity front door rejected the client signature (Cloudflare 1010)",
+            http_status=status,
+        )
+    oauth_reject = any(
+        token in text
+        for token in ("invalid_client", "invalid_grant", "invalid_scope", "unauthorized_client")
+    )
+    if status in {401, 403} or (status == 400 and oauth_reject):
+        if any(word in text for word in ("entitlement", "subscription", "not subscribed", "permission", "forbidden product")):
             return CboeEntitlementError(
                 STATUS_ENTITLEMENT_REQUIRED,
                 "Cboe entitlement rejected the request ({0})".format(safe_detail or status),
@@ -340,7 +339,25 @@ def error_for_status(status: int, body: str) -> CboeError:
     )
 
 
+def _is_cloudflare_signature_ban(text: str) -> bool:
+    # Live 36076709344 returned only the Cloudflare type URL (error-1010), not "Error 1010".
+    return any(
+        token in text
+        for token in (
+            "error 1010",
+            "error-1010",
+            'error_code":1010',
+            "browser_signature",
+            "browser's signature",
+            "browser_signature_banned",
+        )
+    )
+
+
 def _retryable(err: CboeError) -> bool:
+    # Cloudflare 1010 / signature bans are UNAVAILABLE but do not clear on retry.
+    if isinstance(err, CboeUnavailableError) and err.http_status in {401, 403}:
+        return False
     return isinstance(err, (CboeRateLimitError, CboeUnavailableError)) and not isinstance(err, CboeTrialLimitError)
 
 
@@ -353,7 +370,7 @@ def _read_error_body(exc: urllib.error.HTTPError) -> str:
     # Never keep a credential-shaped blob from an error page.
     if "client_secret" in text.lower() or "access_token" in text.lower():
         return ""
-    return text[:240]
+    return text[:1024]
 
 
 def _strike(value: float) -> str:

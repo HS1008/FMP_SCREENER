@@ -154,7 +154,8 @@ def main(argv: list[str] | None = None) -> int:
             report["entitlement"] = exc.capability
             report["auth_http_status"] = exc.http_status
             report["auth_error"] = str(exc)[:160]
-            report["status"] = "AUTH_FAILED"
+            # WAF signature bans are UNAVAILABLE, not rejected credentials.
+            report["status"] = exc.capability or "AUTH_FAILED"
             _emit(report, as_json=args.json)
             return EXIT_FAIL
         except Exception as exc:  # noqa: BLE001
