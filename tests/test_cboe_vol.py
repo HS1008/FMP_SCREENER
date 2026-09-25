@@ -67,6 +67,7 @@ def test_token_success_and_cache():
         assert request.get_header("Authorization").startswith("Basic ")
         assert b"client_secret" not in request.data
         assert b"grant_type=client_credentials" in request.data
+        assert b"scope=api.allaccess" in request.data
         return _Resp(b'{"access_token":"tok-1","expires_in":3600,"token_type":"Bearer"}')
 
     client = _client(opener)

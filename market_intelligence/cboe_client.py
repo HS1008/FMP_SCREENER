@@ -206,7 +206,10 @@ class CboeClient:
     def _token_request(self) -> dict[str, Any]:
         raw = (self.client_id + ":" + self.client_secret).encode("utf-8")
         basic = base64.b64encode(raw).decode("ascii")
-        body = urllib.parse.urlencode({"grant_type": "client_credentials"}).encode("utf-8")
+        # Official examples omit scope; All Access clients commonly need api.allaccess.
+        body = urllib.parse.urlencode(
+            {"grant_type": "client_credentials", "scope": "api.allaccess"}
+        ).encode("utf-8")
         payload = self._request_json(
             TOKEN_URL,
             method="POST",
