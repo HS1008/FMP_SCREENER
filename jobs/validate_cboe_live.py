@@ -32,6 +32,15 @@ EXIT_REFUSED = 4
 
 _PRODUCTION_HINTS = ("ondigitalocean", "digitalocean.com", "db.ondigitalocean.com", "aws.amazon", "rds.amazonaws")
 
+# Published view columns from 038 (table internals are aliased).
+LATEST_LINEAGE_SQL = """
+                    SELECT metric_id, status, value IS NOT NULL AS has_value,
+                           provider_observation_ts IS NOT NULL AS has_obs,
+                           ingested_at IS NOT NULL AS has_ingest
+                    FROM mi_v_cboe_vol_latest
+                    ORDER BY metric_id
+                    """
+
 
 def _refuse_production_url(url: str) -> str | None:
     lowered = url.lower()
@@ -188,17 +197,7 @@ def main(argv: list[str] | None = None) -> int:
         report["requests_made"] = int(ingest_report.get("requests_made") or client.requests_made)
 
         with engine.connect() as conn:
-            rows = conn.execute(
-                text(
-                    """
-                    SELECT metric_id, status, value IS NOT NULL AS has_value,
-                           inputs_retrieved_max IS NOT NULL AS has_obs,
-                           computed_at IS NOT NULL AS has_ingest
-                    FROM mi_v_cboe_vol_latest
-                    ORDER BY metric_id
-                    """
-                )
-            ).mappings().all()
+            rows = conn.execute(text(LATEST_LINEAGE_SQL)).mappings().all()
         for row in rows:
             if row["status"] == "OK" and row["has_value"]:
                 report["metrics_ok"].append(row["metric_id"])

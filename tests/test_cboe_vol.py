@@ -7,7 +7,9 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from sqlalchemy import text
 
+from jobs.validate_cboe_live import LATEST_LINEAGE_SQL
 from market_intelligence import cboe_analytics as vol
 from market_intelligence.cboe_client import (
     CboeAuthError,
@@ -319,3 +321,35 @@ def test_options_page_renders_null_as_blank(monkeypatch):
     assert "—" in text_blob or "unavailable" in text_blob.lower()
     assert "0.00" not in text_blob
     assert "not a live quote" in text_blob.lower() or "not a live" in text_blob.lower()
+
+
+def test_live_validator_queries_published_cboe_view_columns():
+    view = (ROOT / "db" / "migrations" / "038_cboe_volatility.sql").read_text(encoding="utf-8")
+    latest_block = view.split("CREATE OR REPLACE VIEW mi_v_cboe_vol_latest", 1)[1].split(
+        "CREATE OR REPLACE VIEW", 1
+    )[0]
+    assert "computed_at AS ingested_at" in latest_block
+    assert "inputs_retrieved_max AS provider_observation_ts" in latest_block
+    assert "FROM mi_v_cboe_vol_latest" in LATEST_LINEAGE_SQL
+    assert "provider_observation_ts IS NOT NULL AS has_obs" in LATEST_LINEAGE_SQL
+    assert "ingested_at IS NOT NULL AS has_ingest" in LATEST_LINEAGE_SQL
+    assert "inputs_retrieved_max" not in LATEST_LINEAGE_SQL
+    assert "computed_at" not in LATEST_LINEAGE_SQL
+
+
+def test_live_validator_lineage_query_executes_on_cboe_view(pg_engine):
+    with pg_engine.connect() as conn:
+        cols = {
+            row[0]
+            for row in conn.execute(
+                text(
+                    "SELECT column_name FROM information_schema.columns "
+                    "WHERE table_schema = 'public' AND table_name = 'mi_v_cboe_vol_latest'"
+                )
+            )
+        }
+        assert "ingested_at" in cols
+        assert "provider_observation_ts" in cols
+        assert "inputs_retrieved_max" not in cols
+        assert "computed_at" not in cols
+        conn.execute(text(LATEST_LINEAGE_SQL)).mappings().all()
