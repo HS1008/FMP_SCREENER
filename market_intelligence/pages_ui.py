@@ -18,6 +18,7 @@ from market_intelligence.bond_ladder import LadderBond, aggregate_ladder, theore
 from market_intelligence.bond_tax import ASSET_CORPORATE, ASSET_MUNI, ASSET_TREASURY, BondTaxInputs, TaxAssumptions, compare_three, muni_treasury_ratio
 from market_intelligence.bonds import interpolate_par_yield
 from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
+from market_intelligence.components.market_chart import lightweight_market_chart, time_series_points
 from market_intelligence.curve_compare import (
     AFTER_CURRENT_MESSAGE,
     COMPARE_CUSTOM,
@@ -307,6 +308,10 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
         if parsed is not None:
             stored_dates.append(parsed)
     common_dates = sorted(set(stored_dates))
+    # Tenors stay on a categorical Plotly axis. Lightweight Charts 5.2.1 has no
+    # categorical scale. createYieldCurveChart measures that axis in months
+    # (baseResolution, default minimum 120), so 1D/9D/1M/3M/6M/1Y cannot be
+    # placed on it without inventing durations or calendar dates.
     st.markdown("**VIX index term structure**")
     if not common_dates:
         st.caption("A six-tenor VIX index curve is not available in stored history.")
@@ -350,9 +355,9 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
             st.plotly_chart(fig, width="stretch")
 
     st.markdown("**VIX recent history**")
-    vix_frame = _history_frame(history.get("VIX_SPOT") or [], "VIX")
-    if vix_frame is not None:
-        st.line_chart(vix_frame)
+    vix_points = time_series_points(history.get("VIX_SPOT") or [])
+    if vix_points:
+        lightweight_market_chart(vix_points, series_label="VIX", height=440, key="yahoo_vix_history")
     else:
         st.caption("VIX history unavailable.")
 
