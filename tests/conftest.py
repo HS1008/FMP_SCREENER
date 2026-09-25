@@ -35,6 +35,20 @@ CREATE TABLE IF NOT EXISTS strategies (
 """
 
 
+def libpq_url(url: str) -> str:
+    """SQLAlchemy ``postgresql+psycopg2://`` is not a libpq URI; psql falls back to a Unix socket."""
+    text = (url or "").strip()
+    for prefix, replacement in (
+        ("postgresql+psycopg2://", "postgresql://"),
+        ("postgresql+psycopg://", "postgresql://"),
+        ("postgres+psycopg2://", "postgresql://"),
+        ("postgres://", "postgresql://"),
+    ):
+        if text.startswith(prefix):
+            return replacement + text[len(prefix):]
+    return text
+
+
 def _admin_url():
     return (os.environ.get("FMP_TEST_DATABASE_URL") or "").strip() or None
 

@@ -81,7 +81,15 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_REFUSED
 
     from jobs.apply_migrations import apply_migrations
-    from market_intelligence.cboe_client import CboeClient, CboeError, UNDERLYING_QUOTES, session_date
+    from market_intelligence.cboe_client import (
+        CboeClient,
+        CboeError,
+        UNDERLYING_QUOTES,
+        USER_AGENT,
+        prior_weekdays,
+        quote_date_for_root,
+        session_date,
+    )
     from market_intelligence.ingest_cboe import ingest_cboe
     from sqlalchemy import create_engine, text
     from sqlalchemy.engine import make_url
@@ -105,6 +113,7 @@ def main(argv: list[str] | None = None) -> int:
         "api_mode": (os.environ.get("CBOE_API_MODE") or "delayed").strip().lower() or "delayed",
         "credential_id_len": len(client_id),
         "credential_secret_len": len(client_secret),
+        "user_agent": None,
     }
     engine = None
     try:
@@ -146,6 +155,9 @@ def main(argv: list[str] | None = None) -> int:
 
         as_of = session_date()
         client = CboeClient(client_id, client_secret, point_budget=max(8, int(args.point_budget)))
+        report["user_agent"] = USER_AGENT
+        quote_date = quote_date_for_root(as_of, session=as_of, api_root=client.api_root)
+        report["quote_date"] = quote_date.isoformat()
         try:
             token = client.access_token()
             report["auth"] = "SUCCEEDED" if token else "FAILED"
@@ -154,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
             report["entitlement"] = exc.capability
             report["auth_http_status"] = exc.http_status
             report["auth_error"] = str(exc)[:160]
-            report["status"] = "AUTH_FAILED"
+            report["status"] = exc.capability or "AUTH_FAILED"
             _emit(report, as_json=args.json)
             return EXIT_FAIL
         except Exception as exc:  # noqa: BLE001
@@ -165,18 +177,16 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_FAIL
 
         try:
-            # Smallest live schema proof: VIX spot via documented underlying-quotes.
-            # Prefer prior weekday when the current session is not yet published on delayed.
-            from market_intelligence.cboe_client import prior_weekdays
-
-            probe_dates = [as_of] + list(prior_weekdays(as_of, 3))
+            # Delayed same-day is delayed-current (SIP), not historical EOD. Start on the
+            # documented prior weekday and walk older sessions if that date is unpublished.
             last_exc: CboeError | None = None
-            for probe_day in probe_dates:
+            for probe_day in [quote_date] + [day for day in prior_weekdays(quote_date, 2) if day != quote_date]:
                 try:
                     payload = client.underlying_quotes(["VIX"], probe_day, session_date=as_of)
                     report["endpoint_status"] = "SUCCEEDED"
                     report["endpoint_rows"] = len(payload) if isinstance(payload, list) else 1
                     report["endpoint_date"] = probe_day.isoformat()
+                    report["quote_date"] = probe_day.isoformat()
                     report["entitlement"] = "READY"
                     last_exc = None
                     break
@@ -190,9 +200,9 @@ def main(argv: list[str] | None = None) -> int:
                 logger.info("endpoint probe capability=%s", last_exc.capability)
         except CboeError as exc:
             report["endpoint_status"] = exc.capability
-            report["entitlement"] = exc.capability
             report["endpoint_http_status"] = exc.http_status
             report["endpoint_error"] = str(exc)[:160]
+            report["entitlement"] = exc.capability
             logger.info("endpoint probe capability=%s", exc.capability)
 
         os.environ["MI_CBOE_ENABLED"] = "1"
@@ -230,21 +240,12 @@ def main(argv: list[str] | None = None) -> int:
                 report.setdefault("lineage_gaps", []).append(row["metric_id"])
 
         hard = report["auth"] not in {"SUCCEEDED", "READY"} or not report["views_ok"]
-        # Auth + views prove the writer path. OK metrics are preferred; incomplete rows still
-        # count as a bounded live validation when entitlement/session data is partial.
-        if hard:
+        if hard or not report["metrics_ok"]:
             report["status"] = "FAILED"
             _emit(report, as_json=args.json)
             return EXIT_FAIL
-        if report["metrics_ok"]:
-            report["status"] = "OK"
-        elif report["metrics_incomplete"] or report.get("endpoint_status") == "SUCCEEDED":
-            report["status"] = "PARTIAL"
-        else:
-            report["status"] = "FAILED"
-            _emit(report, as_json=args.json)
-            return EXIT_FAIL
-        if report.get("entitlement") not in {None, "READY", "SUCCEEDED"} and report["status"] == "OK":
+        report["status"] = "OK"
+        if report.get("entitlement") not in {None, "READY", "SUCCEEDED"}:
             report["status"] = "PARTIAL"
         _emit(report, as_json=args.json)
         return EXIT_OK

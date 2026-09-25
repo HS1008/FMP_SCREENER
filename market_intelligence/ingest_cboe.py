@@ -31,6 +31,7 @@ from market_intelligence.cboe_client import (
     CboeClient,
     CboeError,
     prior_weekdays,
+    quote_date_for_root,
     session_date,
 )
 from market_intelligence.nulls import strict_dumps
@@ -62,8 +63,18 @@ _UPSERT = text(
 
 
 def ingest_cboe(engine, client: CboeClient, *, parent_run_id: str | None = None, today: date | None = None) -> dict[str, Any]:
-    as_of = today or session_date()
-    report: dict[str, Any] = {"source_id": SOURCE_ID, "as_of": as_of.isoformat(), "sections": {}, "points_used": 0, "failed": False}
+    session = today or session_date()
+    as_of = quote_date_for_root(session, session=session, api_root=client.api_root)
+    report: dict[str, Any] = {
+        "source_id": SOURCE_ID,
+        "as_of": as_of.isoformat(),
+        "session_date": session.isoformat(),
+        "sections": {},
+        "points_used": 0,
+        "failed": False,
+    }
+    if as_of != session:
+        report["quote_date_mode"] = "delayed_historical"
     try:
         client.access_token()
         _mark(engine, "cboe_auth", as_of, transport="SUCCEEDED", success=True, error=None, run_id=parent_run_id, capability=STATUS_READY)
@@ -77,8 +88,8 @@ def ingest_cboe(engine, client: CboeClient, *, parent_run_id: str | None = None,
         _set_access(engine, exc.capability)
         return report
 
-    snaps = _ingest_indices(engine, client, as_of, parent_run_id, report)
-    _ingest_skew(engine, client, as_of, parent_run_id, report, snaps)
+    snaps = _ingest_indices(engine, client, as_of, session, parent_run_id, report)
+    _ingest_skew(engine, client, as_of, session, parent_run_id, report, snaps)
     _ingest_spread(engine, as_of, parent_run_id, report, snaps)
     report["points_used"] = client.points_used
     report["requests_made"] = client.requests_made
@@ -87,15 +98,15 @@ def ingest_cboe(engine, client: CboeClient, *, parent_run_id: str | None = None,
     return report
 
 
-def _ingest_indices(engine, client: CboeClient, as_of: date, parent_run_id: str | None, report: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _ingest_indices(engine, client: CboeClient, as_of: date, session: date, parent_run_id: str | None, report: dict[str, Any]) -> dict[str, dict[str, Any]]:
     run_id = _open(engine, "vix", parent_run_id, as_of)
     try:
         payload = None
         quote_day = as_of
         last_exc: CboeError | None = None
-        for day in [as_of] + list(prior_weekdays(as_of, 5)):
+        for day in [as_of] + [item for item in prior_weekdays(as_of, 4) if item != as_of]:
             try:
-                payload = client.underlying_quotes(list(INDEX_SYMBOLS), day, session_date=as_of)
+                payload = client.underlying_quotes(list(INDEX_SYMBOLS), day, session_date=session)
                 quote_day = day
                 last_exc = None
                 break
@@ -105,7 +116,7 @@ def _ingest_indices(engine, client: CboeClient, as_of: date, parent_run_id: str 
         if payload is None:
             raise last_exc or CboeError("UNAVAILABLE", "underlying_quotes_unavailable")
         snaps = index_snapshots(payload, quote_date=quote_day)
-        _maybe_backfill(engine, client, as_of, snaps)
+        _maybe_backfill(engine, client, quote_day, session, snaps)
         rows = _index_rows(snaps, quote_day)
         written = _write_rows(engine, rows, run_id)
         vix_ok = any(row["metric_id"] == "VIX_SPOT" and row["status"] == "OK" for row in rows)
@@ -134,7 +145,7 @@ def _ingest_indices(engine, client: CboeClient, as_of: date, parent_run_id: str 
         return {}
 
 
-def _maybe_backfill(engine, client: CboeClient, as_of: date, snaps: dict[str, dict[str, Any]]) -> None:
+def _maybe_backfill(engine, client: CboeClient, as_of: date, session: date, snaps: dict[str, dict[str, Any]]) -> None:
     stored = _stored_closes(engine)
     level = (snaps.get("SPX") or {}).get("level")
     if level:
@@ -145,7 +156,7 @@ def _maybe_backfill(engine, client: CboeClient, as_of: date, snaps: dict[str, di
         if day in stored:
             continue
         try:
-            payload = client.underlying_quotes(list(INDEX_SYMBOLS), day, session_date=as_of)
+            payload = client.underlying_quotes(list(INDEX_SYMBOLS), day, session_date=session)
         except CboeBudgetError:
             break
         except CboeError:
@@ -157,7 +168,7 @@ def _maybe_backfill(engine, client: CboeClient, as_of: date, snaps: dict[str, di
             stored[day] = float(day_level)
 
 
-def _ingest_skew(engine, client: CboeClient, as_of: date, parent_run_id: str | None, report: dict[str, Any], snaps: Mapping[str, Mapping[str, Any]]) -> None:
+def _ingest_skew(engine, client: CboeClient, as_of: date, session: date, parent_run_id: str | None, report: dict[str, Any], snaps: Mapping[str, Mapping[str, Any]]) -> None:
     run_id = _open(engine, "spx_25d_skew", parent_run_id, as_of)
     try:
         spot = (snaps.get("SPX") or {}).get("level")
@@ -169,7 +180,7 @@ def _ingest_skew(engine, client: CboeClient, as_of: date, parent_run_id: str | N
             symbol=SKEW_UNDERLYING,
             root=SKEW_ROOT,
             quote_date=as_of,
-            session_date=as_of,
+            session_date=session,
             min_expiry=start,
             max_expiry=end,
             min_strike=low,
