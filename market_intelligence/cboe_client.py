@@ -275,7 +275,17 @@ class CboeClient:
             try:
                 parsed = json.loads(raw.decode("utf-8"))
             except (UnicodeError, json.JSONDecodeError) as exc:
-                raise CboeMalformedPayload(STATUS_UNAVAILABLE, "Cboe response was not JSON") from exc
+                preview = raw[:80].decode("utf-8", "replace").replace("\n", " ")
+                if "cloudflare" in preview.lower() or "cf-ray" in preview.lower() or preview.lstrip().startswith("<!"):
+                    raise CboeUnavailableError(
+                        STATUS_UNAVAILABLE,
+                        "Cboe edge returned a non-API page (possible IP/WAF block)",
+                        http_status=None,
+                    ) from exc
+                raise CboeMalformedPayload(
+                    STATUS_UNAVAILABLE,
+                    "Cboe response was not JSON ({0})".format(preview[:60]),
+                ) from exc
             return parsed
         raise last or CboeUnavailableError(STATUS_UNAVAILABLE, "Cboe request failed")
 

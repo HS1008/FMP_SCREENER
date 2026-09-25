@@ -164,7 +164,7 @@ def test_scenario_d_readonly_role_covers_gateway_views_and_cannot_mutate(scratch
     apply_migrations(engine=engine)
     role = "mig_ro_{0}".format(uuid.uuid4().hex[:8])
     password = "pw-{0}".format(uuid.uuid4().hex[:10])
-    admin_on_db = make_url(pg_admin_url).set(database=url.database, drivername="postgresql+psycopg2").render_as_string(hide_password=False)
+    admin_on_db = make_url(pg_admin_url).set(database=url.database, drivername="postgresql").render_as_string(hide_password=False)
     result = provision_role_with_psql(admin_on_db, role, password, tmp_path)
     assert result.returncode == 0, result.stderr
     ro = create_engine(url.set(username=role, password=password), future=True, connect_args={"options": "-c default_transaction_read_only=on"})

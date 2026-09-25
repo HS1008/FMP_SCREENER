@@ -273,7 +273,7 @@ def dashboard_ro_engine(pg_engine, pg_database, pg_admin_url, tmp_path):
     password = "dash_{0}".format(uuid.uuid4().hex)
     admin_on_test_db = make_url(pg_admin_url).set(
         database=make_url(pg_database).database,
-        drivername="postgresql+psycopg2",
+        drivername="postgresql",
     ).render_as_string(hide_password=False)
     first = _provision_dashboard_role(admin_on_test_db, role, password, tmp_path)
     assert first.returncode == 0, first.stderr
@@ -291,7 +291,13 @@ def dashboard_ro_engine(pg_engine, pg_database, pg_admin_url, tmp_path):
     with pg_engine.connect().execution_options(isolation_level="AUTOCOMMIT") as conn:
         conn.execute(text("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename = :u"), {"u": role})
         conn.execute(text('DROP OWNED BY "{0}"'.format(role)))
-    admin = create_engine(pg_admin_url, isolation_level="AUTOCOMMIT", future=True)
+    admin = create_engine(
+        pg_admin_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        if pg_admin_url.startswith("postgresql://") and "+psycopg2" not in pg_admin_url
+        else pg_admin_url,
+        isolation_level="AUTOCOMMIT",
+        future=True,
+    )
     with admin.connect() as conn:
         conn.execute(text('DROP ROLE IF EXISTS "{0}"'.format(role)))
     admin.dispose()
@@ -448,7 +454,7 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
     )
     admin_on_test_db = make_url(pg_admin_url).set(
         database=make_url(pg_database).database,
-        drivername="postgresql+psycopg2",
+        drivername="postgresql",
     ).render_as_string(hide_password=False)
     env = {
         **os.environ,
@@ -535,7 +541,13 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
         assert password not in verify.stdout + verify.stderr
     finally:
         for engine_url in (pg_database, pg_admin_url):
-            engine = create_engine(engine_url, isolation_level="AUTOCOMMIT", future=True)
+            engine = create_engine(
+        engine_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        if engine_url.startswith("postgresql://") and "+psycopg2" not in engine_url
+        else engine_url,
+        isolation_level="AUTOCOMMIT",
+        future=True,
+    )
             with engine.connect() as conn:
                 exists = conn.execute(text("SELECT 1 FROM pg_roles WHERE rolname = 'dashboard_readonly'")).scalar()
                 if exists:
@@ -547,7 +559,13 @@ def test_provision_script_creates_role_and_materializes_url(pg_engine, pg_databa
                     )
                     conn.execute(text("DROP OWNED BY dashboard_readonly"))
             engine.dispose()
-        admin = create_engine(pg_admin_url, isolation_level="AUTOCOMMIT", future=True)
+        admin = create_engine(
+        pg_admin_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        if pg_admin_url.startswith("postgresql://") and "+psycopg2" not in pg_admin_url
+        else pg_admin_url,
+        isolation_level="AUTOCOMMIT",
+        future=True,
+    )
         with admin.connect() as conn:
             conn.execute(text("DROP ROLE IF EXISTS dashboard_readonly"))
         admin.dispose()
@@ -577,9 +595,15 @@ def test_polluted_preexisting_role_is_repaired_or_fails_closed(
     password = "dash_{0}".format(uuid.uuid4().hex)
     admin_on_test_db = make_url(pg_admin_url).set(
         database=make_url(pg_database).database,
-        drivername="postgresql+psycopg2",
+        drivername="postgresql",
     ).render_as_string(hide_password=False)
-    admin = create_engine(admin_on_test_db, isolation_level="AUTOCOMMIT", future=True)
+    admin = create_engine(
+        admin_on_test_db.replace("postgresql://", "postgresql+psycopg2://", 1)
+        if admin_on_test_db.startswith("postgresql://") and "+psycopg2" not in admin_on_test_db
+        else admin_on_test_db,
+        isolation_level="AUTOCOMMIT",
+        future=True,
+    )
     try:
         with admin.connect() as conn:
             conn.execute(text('CREATE ROLE "{0}" NOLOGIN'.format(writer)))
@@ -635,9 +659,15 @@ def test_public_create_inheritance_fails_closed(pg_engine, pg_database, pg_admin
     password = "dash_{0}".format(uuid.uuid4().hex)
     admin_on_test_db = make_url(pg_admin_url).set(
         database=make_url(pg_database).database,
-        drivername="postgresql+psycopg2",
+        drivername="postgresql",
     ).render_as_string(hide_password=False)
-    admin = create_engine(admin_on_test_db, isolation_level="AUTOCOMMIT", future=True)
+    admin = create_engine(
+        admin_on_test_db.replace("postgresql://", "postgresql+psycopg2://", 1)
+        if admin_on_test_db.startswith("postgresql://") and "+psycopg2" not in admin_on_test_db
+        else admin_on_test_db,
+        isolation_level="AUTOCOMMIT",
+        future=True,
+    )
     try:
         with admin.connect() as conn:
             conn.execute(text("GRANT CREATE ON SCHEMA public TO PUBLIC"))
@@ -657,7 +687,13 @@ def test_public_create_inheritance_fails_closed(pg_engine, pg_database, pg_admin
 def test_constraint_insert_false_positive_fails_verify(pg_engine, pg_database, pg_admin_url, monkeypatch):
     role = "dash_insert_{0}".format(uuid.uuid4().hex[:8])
     password = "dash_{0}".format(uuid.uuid4().hex)
-    admin = create_engine(pg_admin_url, isolation_level="AUTOCOMMIT", future=True)
+    admin = create_engine(
+        pg_admin_url.replace("postgresql://", "postgresql+psycopg2://", 1)
+        if pg_admin_url.startswith("postgresql://") and "+psycopg2" not in pg_admin_url
+        else pg_admin_url,
+        isolation_level="AUTOCOMMIT",
+        future=True,
+    )
     dbname = make_url(pg_database).database
     try:
         with admin.connect() as conn:
