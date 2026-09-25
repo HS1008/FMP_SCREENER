@@ -1216,14 +1216,20 @@ def yahoo_vol_core(conn) -> dict[str, Any]:
     history: dict[str, list[dict[str, Any]]] = {}
     for row in history_rows:
         history.setdefault(str(row.get("metric_id")), []).append(row)
+    # Curated view only — never raw mi_data_freshness (readonly roles cannot SELECT it).
     freshness = _rows(
         conn,
         """
-        SELECT source_id, dataset, latest_observation_date, transport_status, freshness_status,
-               last_error_redacted AS error_redacted, updated_at
-        FROM mi_data_freshness
+        SELECT source_id,
+               freshness_dataset AS dataset,
+               latest_observation_date,
+               transport_status,
+               freshness_status,
+               last_error_redacted AS error_redacted,
+               freshness_updated_at AS updated_at
+        FROM mi_v_source_health
         WHERE source_id = 'YAHOO_VOL'
-        ORDER BY dataset
+        ORDER BY freshness_dataset
         """,
     )
     vix = _yahoo_vol_metric(latest, "VIX_SPOT")

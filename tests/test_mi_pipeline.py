@@ -956,7 +956,20 @@ def test_refresh_dry_run_makes_no_calls_and_no_writes(pg_engine, populated, caps
     code = run(["--all-configured", "--dry-run", "--json"], engine=pg_engine, fred_client_factory=lambda: _boom(), env={"FRED_API_KEY": "not-used", "DATABASE_URL": "x"})
     out = json.loads(capsys.readouterr().out)
     assert code == 0 and out["status"] == "DRY_RUN_VALIDATED"
-    assert [s["step"] for s in out["plan"]["steps"]] == ["fred", "finra", "treasury", "equity", "options", "vix", "cftc", "eia", "openfigi", "build_analytics", "build_morning"]
+    assert [s["step"] for s in out["plan"]["steps"]] == [
+        "fred",
+        "finra",
+        "treasury",
+        "equity",
+        "options",
+        "vix",
+        "yahoo_vol",
+        "cftc",
+        "eia",
+        "openfigi",
+        "build_analytics",
+        "build_morning",
+    ]
     assert "not-used" not in json.dumps(out)
     with pg_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_ingestion_runs")).scalar() == before
