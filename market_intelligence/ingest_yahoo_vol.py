@@ -27,10 +27,10 @@ from market_intelligence.yahoo_vol import (
     TICKER_RV,
     TICKER_SKEW,
     TICKER_VIX,
+    align_vix_minus_rv,
     positive_number,
-    realized_vol_20,
+    realized_vol_20_from_series,
     term_structure,
-    vix_minus_rv,
 )
 
 logger = logging.getLogger("market_intelligence.ingest_yahoo_vol")
@@ -89,36 +89,43 @@ def fetch_yahoo_closes(ticker: str, *, start: date, end: date) -> list[tuple[dat
 
 
 def ingest_yahoo_vol(engine, *, parent_run_id: str | None = None, today: date | None = None) -> dict[str, Any]:
-    as_of = today or session_date()
-    start = as_of - timedelta(days=HISTORY_LOOKBACK_DAYS)
-    report: dict[str, Any] = {"source_id": SOURCE_ID, "as_of": as_of.isoformat(), "sections": {}, "failed": False}
+    run_day = today or session_date()
+    start = run_day - timedelta(days=HISTORY_LOOKBACK_DAYS)
+    report: dict[str, Any] = {"source_id": SOURCE_ID, "run_day": run_day.isoformat(), "sections": {}, "failed": False}
     _ensure_source(engine)
 
     series: dict[str, list[tuple[date, float]]] = {}
     tickers = [TICKER_VIX, TICKER_SKEW, TICKER_RV] + [t for t, _, _ in TERM_TENORS]
     for ticker in dict.fromkeys(tickers):
         try:
-            series[ticker] = fetch_yahoo_closes(ticker, start=start, end=as_of)
+            series[ticker] = fetch_yahoo_closes(ticker, start=start, end=run_day)
         except Exception as exc:  # noqa: BLE001
             logger.warning("yahoo fetch failed for %s: %s", ticker, type(exc).__name__)
             series[ticker] = []
             report.setdefault("fetch_errors", {})[ticker] = type(exc).__name__
 
-    levels = {ticker: (rows[-1][1] if rows else None) for ticker, rows in series.items()}
-    level_dates = {ticker: (rows[-1][0] if rows else None) for ticker, rows in series.items()}
-
-    vix_rows = _ingest_vix(engine, as_of, series.get(TICKER_VIX) or [], parent_run_id, report, levels, level_dates)
-    _ingest_term(engine, as_of, levels, level_dates, parent_run_id, report)
-    _ingest_skew(engine, as_of, series.get(TICKER_SKEW) or [], parent_run_id, report)
-    _ingest_spread(engine, as_of, series.get(TICKER_RV) or [], vix_rows, parent_run_id, report)
+    _ingest_vix(engine, series.get(TICKER_VIX) or [], parent_run_id, report)
+    _ingest_term(engine, series, parent_run_id, report)
+    _ingest_skew(engine, series.get(TICKER_SKEW) or [], parent_run_id, report)
+    _ingest_spread(engine, series.get(TICKER_VIX) or [], series.get(TICKER_RV) or [], parent_run_id, report)
 
     hard = {"FAILED", "UNAVAILABLE"}
     report["failed"] = any(section.get("status") in hard for section in report["sections"].values())
     return report
 
 
-def _ingest_vix(engine, as_of: date, rows: list[tuple[date, float]], parent_run_id: str | None, report: dict[str, Any], levels: Mapping[str, float | None], level_dates: Mapping[str, date | None]) -> list[dict[str, Any]]:
-    run_id = _open(engine, "vix", parent_run_id, as_of)
+def _session_close_ts(day: date) -> datetime:
+    return datetime(day.year, day.month, day.day, 16, 0, tzinfo=NY)
+
+
+def _iso_date(value: Any) -> str | None:
+    if isinstance(value, date):
+        return value.isoformat()
+    return value if isinstance(value, str) else None
+
+
+def _ingest_vix(engine, rows: list[tuple[date, float]], parent_run_id: str | None, report: dict[str, Any]) -> None:
+    run_id = _open(engine, "vix", parent_run_id)
     try:
         if not rows:
             raise RuntimeError("no_vix_rows")
@@ -133,49 +140,55 @@ def _ingest_vix(engine, as_of: date, rows: list[tuple[date, float]], parent_run_
                 "change_1d": change,
             }
             written.append(
-                _metric("VIX_SPOT", day, close, "vol_points", METHOD_VIX, "OK", detail, observed=datetime(day.year, day.month, day.day, 16, 0, tzinfo=NY))
+                _metric("VIX_SPOT", day, close, "vol_points", METHOD_VIX, "OK", detail, observed=_session_close_ts(day))
             )
             prev = close
         count = _write_rows(engine, written, run_id)
-        latest = levels.get(TICKER_VIX)
-        ok = latest is not None
-        _close(engine, run_id, RUN_SUCCEEDED if ok else RUN_PARTIAL, count, None if ok else "missing_vix")
-        _mark(engine, "vix", as_of, transport="SUCCEEDED" if ok else "PARTIAL", success=ok, error=None if ok else "missing_vix", run_id=run_id)
+        obs = rows[-1][0]
+        latest = rows[-1][1]
+        _close(engine, run_id, RUN_SUCCEEDED, count, None)
+        _mark(engine, "vix", obs, transport="SUCCEEDED", success=True, error=None, run_id=run_id)
         report["sections"]["vix"] = {
-            "status": "SUCCEEDED" if ok else "PARTIAL",
+            "status": "SUCCEEDED",
             "value": latest,
-            "observation_date": (level_dates.get(TICKER_VIX) or as_of).isoformat(),
+            "observation_date": obs.isoformat(),
             "rows": count,
         }
-        return written
     except Exception as exc:  # noqa: BLE001
         _close(engine, run_id, RUN_FAILED, 0, type(exc).__name__)
-        _mark(engine, "vix", as_of, transport="FAILED", success=False, error=type(exc).__name__, run_id=run_id)
+        _mark(engine, "vix", None, transport="FAILED", success=False, error=type(exc).__name__, run_id=run_id)
         report["sections"]["vix"] = {"status": "FAILED", "reason": type(exc).__name__}
-        return []
 
 
-def _ingest_term(engine, as_of: date, levels: Mapping[str, float | None], level_dates: Mapping[str, date | None], parent_run_id: str | None, report: dict[str, Any]) -> None:
-    run_id = _open(engine, "vix_term_structure", parent_run_id, as_of)
-    curve = term_structure(levels)
+def _ingest_term(engine, series: Mapping[str, list[tuple[date, float]]], parent_run_id: str | None, report: dict[str, Any]) -> None:
+    run_id = _open(engine, "vix_term_structure", parent_run_id)
+    tenor_series = {ticker: series.get(ticker) or [] for ticker, _, _ in TERM_TENORS}
+    curve = term_structure(tenor_series)
+    curve_date = curve.get("observation_date")
     rows = []
-    unavailable = []
+    unavailable = list(curve.get("unavailable_tenors") or [])
     for point in curve["points"]:
         ticker = point["ticker"]
         metric_id = point["metric_id"]
         level = point["level"]
-        day = level_dates.get(ticker) or as_of
+        if curve_date is None:
+            continue
         if level is None:
-            unavailable.append(point["tenor"])
             rows.append(
                 _metric(
                     metric_id,
-                    as_of,
+                    curve_date,
                     None,
                     "vol_points",
                     METHOD_TERM,
                     "INCOMPLETE",
-                    {"source": SOURCE_ID, "yahoo_ticker": ticker, "tenor": point["tenor"], "reason": "ticker_unavailable"},
+                    {
+                        "source": SOURCE_ID,
+                        "yahoo_ticker": ticker,
+                        "tenor": point["tenor"],
+                        "reason": "unavailable_on_curve_date",
+                        "curve_observation_date": curve_date.isoformat(),
+                    },
                     observed=None,
                 )
             )
@@ -183,49 +196,69 @@ def _ingest_term(engine, as_of: date, levels: Mapping[str, float | None], level_
         rows.append(
             _metric(
                 metric_id,
-                day,
+                curve_date,
                 level,
                 "vol_points",
                 METHOD_TERM,
                 "OK",
-                {"source": SOURCE_ID, "yahoo_ticker": ticker, "tenor": point["tenor"]},
-                observed=datetime(day.year, day.month, day.day, 16, 0, tzinfo=NY),
+                {
+                    "source": SOURCE_ID,
+                    "yahoo_ticker": ticker,
+                    "tenor": point["tenor"],
+                    "curve_observation_date": curve_date.isoformat(),
+                },
+                observed=_session_close_ts(curve_date),
             )
         )
     slope = curve["front_to_back_slope"]
-    rows.append(
-        _metric(
-            "VIX_INDEX_FRONT_TO_BACK",
-            as_of,
-            slope,
-            "vol_points",
-            METHOD_TERM,
-            "OK" if slope is not None else "INCOMPLETE",
-            {
-                "source": SOURCE_ID,
-                "construction": curve["construction"],
-                "label": curve["label"],
-                "curve_state": curve["curve_state"],
-                "note": curve["note"],
-                "unavailable_tenors": unavailable,
-            },
-            observed=None,
+    slope_status = curve.get("slope_status") or ("OK" if slope is not None else "INCOMPLETE")
+    if curve_date is not None:
+        rows.append(
+            _metric(
+                "VIX_INDEX_FRONT_TO_BACK",
+                curve_date,
+                slope,
+                "vol_points",
+                METHOD_TERM,
+                slope_status,
+                {
+                    "source": SOURCE_ID,
+                    "construction": curve["construction"],
+                    "label": curve["label"],
+                    "curve_state": curve["curve_state"],
+                    "front_tenor": curve.get("front_tenor"),
+                    "back_tenor": curve.get("back_tenor"),
+                    "note": curve["note"],
+                    "unavailable_tenors": unavailable,
+                    "slope_reason": curve.get("slope_reason"),
+                    "curve_observation_date": curve_date.isoformat(),
+                },
+                observed=_session_close_ts(curve_date) if slope is not None else None,
+            )
         )
-    )
     count = _write_rows(engine, rows, run_id)
-    ok = slope is not None and len(unavailable) < len(TERM_TENORS)
-    _close(engine, run_id, RUN_SUCCEEDED if ok else RUN_PARTIAL, count, None if not unavailable else "partial_tenors")
-    _mark(engine, "vix_term_structure", as_of, transport="SUCCEEDED" if ok else "PARTIAL", success=ok, error=None if not unavailable else "partial_tenors", run_id=run_id)
+    ok = slope is not None and curve_date is not None
+    _close(engine, run_id, RUN_SUCCEEDED if ok else RUN_PARTIAL, count, None if ok else (curve.get("slope_reason") or "partial_tenors"))
+    _mark(
+        engine,
+        "vix_term_structure",
+        curve_date,
+        transport="SUCCEEDED" if ok else "PARTIAL",
+        success=curve_date is not None,
+        error=None if ok else (curve.get("slope_reason") or "partial_tenors"),
+        run_id=run_id,
+    )
     report["sections"]["vix_term_structure"] = {
         "status": "SUCCEEDED" if ok else "PARTIAL",
         "curve_state": curve["curve_state"],
         "slope": slope,
+        "observation_date": curve_date.isoformat() if curve_date else None,
         "unavailable_tenors": unavailable,
     }
 
 
-def _ingest_skew(engine, as_of: date, rows: list[tuple[date, float]], parent_run_id: str | None, report: dict[str, Any]) -> None:
-    run_id = _open(engine, "skew", parent_run_id, as_of)
+def _ingest_skew(engine, rows: list[tuple[date, float]], parent_run_id: str | None, report: dict[str, Any]) -> None:
+    run_id = _open(engine, "skew", parent_run_id)
     try:
         if not rows:
             raise RuntimeError("no_skew_rows")
@@ -244,33 +277,44 @@ def _ingest_skew(engine, as_of: date, rows: list[tuple[date, float]], parent_run
                         "yahoo_ticker": TICKER_SKEW,
                         "label": "Cboe SKEW Index",
                         "note": "Yahoo ^SKEW. Not a 25-delta SPX options skew.",
+                        "observation_date": day.isoformat(),
                     },
-                    observed=datetime(day.year, day.month, day.day, 16, 0, tzinfo=NY),
+                    observed=_session_close_ts(day),
                 )
             )
         count = _write_rows(engine, written, run_id)
+        obs = rows[-1][0]
         _close(engine, run_id, RUN_SUCCEEDED, count, None)
-        _mark(engine, "skew", as_of, transport="SUCCEEDED", success=True, error=None, run_id=run_id)
-        report["sections"]["skew"] = {"status": "SUCCEEDED", "value": rows[-1][1], "observation_date": rows[-1][0].isoformat(), "rows": count}
+        _mark(engine, "skew", obs, transport="SUCCEEDED", success=True, error=None, run_id=run_id)
+        report["sections"]["skew"] = {
+            "status": "SUCCEEDED",
+            "value": rows[-1][1],
+            "observation_date": obs.isoformat(),
+            "rows": count,
+        }
     except Exception as exc:  # noqa: BLE001
         _close(engine, run_id, RUN_FAILED, 0, type(exc).__name__)
-        _mark(engine, "skew", as_of, transport="FAILED", success=False, error=type(exc).__name__, run_id=run_id)
+        _mark(engine, "skew", None, transport="FAILED", success=False, error=type(exc).__name__, run_id=run_id)
         report["sections"]["skew"] = {"status": "FAILED", "reason": type(exc).__name__}
 
 
-def _ingest_spread(engine, as_of: date, gspc_rows: list[tuple[date, float]], vix_metric_rows: list[dict[str, Any]], parent_run_id: str | None, report: dict[str, Any]) -> None:
-    run_id = _open(engine, "iv_minus_rv", parent_run_id, as_of)
-    closes = [close for _, close in gspc_rows]
-    rv = realized_vol_20(closes)
-    vix_latest = None
-    for row in reversed(vix_metric_rows):
-        if row.get("metric_id") == "VIX_SPOT" and row.get("status") == "OK" and row.get("value") is not None:
-            vix_latest = float(row["value"])
-            break
-    if vix_latest is None and gspc_rows:
-        # fall back to latest stored VIX if this run did not rewrite history
-        pass
-    spread = vix_minus_rv(vix_latest, rv)
+def _ingest_spread(
+    engine,
+    vix_rows: list[tuple[date, float]],
+    gspc_rows: list[tuple[date, float]],
+    parent_run_id: str | None,
+    report: dict[str, Any],
+) -> None:
+    run_id = _open(engine, "iv_minus_rv", parent_run_id)
+    rv = realized_vol_20_from_series(gspc_rows)
+    spread = align_vix_minus_rv(vix_rows, gspc_rows)
+    rv_obs = rv.get("observation_date")
+    spread_obs = spread.get("observation_date") or rv_obs
+
+    rv_detail = {k: rv.get(k) for k in ("observations", "reason", "method", "window_start_date")}
+    if isinstance(rv_detail.get("window_start_date"), date):
+        rv_detail["window_start_date"] = rv_detail["window_start_date"].isoformat()
+
     detail = {
         "source": SOURCE_ID,
         "method": spread.get("method") or METHOD_SPREAD,
@@ -281,40 +325,59 @@ def _ingest_spread(engine, as_of: date, gspc_rows: list[tuple[date, float]], vix
         "vix": spread.get("vix"),
         "rv20": spread.get("rv"),
         "reason": spread.get("reason"),
-        "rv_detail": {k: rv.get(k) for k in ("observations", "reason", "method")},
+        "vix_observation_date": _iso_date(spread.get("vix_observation_date")),
+        "rv_observation_date": _iso_date(spread.get("rv_observation_date") or rv_obs),
+        "rv_detail": rv_detail,
     }
-    rows = [
-        _metric(
-            "GSPC_REALIZED_VOL_20D",
-            as_of,
-            rv.get("value"),
-            "vol_points",
-            rv.get("method") or "yahoo_gspc_rv20_v1",
-            rv.get("status") or "INCOMPLETE",
-            {**detail, "construction": "rv20"},
-            observed=None,
-        ),
-        _metric(
-            spread["metric_id"],
-            as_of,
-            spread.get("value"),
-            "vol_points",
-            METHOD_SPREAD,
-            spread.get("status") or "INCOMPLETE",
-            detail,
-            observed=None,
-        ),
-    ]
+
+    rows = []
+    if isinstance(rv_obs, date):
+        rows.append(
+            _metric(
+                "GSPC_REALIZED_VOL_20D",
+                rv_obs,
+                rv.get("value"),
+                "vol_points",
+                rv.get("method") or "yahoo_gspc_rv20_v1",
+                rv.get("status") or "INCOMPLETE",
+                {**detail, "construction": "rv20", "observation_date": rv_obs.isoformat()},
+                observed=_session_close_ts(rv_obs) if rv.get("status") == "OK" else None,
+            )
+        )
+    if isinstance(spread_obs, date):
+        rows.append(
+            _metric(
+                spread["metric_id"],
+                spread_obs,
+                spread.get("value"),
+                "vol_points",
+                METHOD_SPREAD,
+                spread.get("status") or "INCOMPLETE",
+                {**detail, "observation_date": spread_obs.isoformat()},
+                observed=_session_close_ts(spread_obs) if spread.get("status") == "OK" else None,
+            )
+        )
     count = _write_rows(engine, rows, run_id)
-    ok = spread.get("status") == "OK"
+    ok = spread.get("status") == "OK" and isinstance(spread_obs, date)
+    freshness_obs = spread_obs if ok else (rv_obs if rv.get("status") == "OK" and isinstance(rv_obs, date) else None)
     _close(engine, run_id, RUN_SUCCEEDED if ok else RUN_PARTIAL, count, spread.get("reason"))
-    _mark(engine, "iv_minus_rv", as_of, transport="SUCCEEDED" if ok else "PARTIAL", success=ok, error=spread.get("reason"), run_id=run_id)
+    _mark(
+        engine,
+        "iv_minus_rv",
+        freshness_obs,
+        transport="SUCCEEDED" if ok else "PARTIAL",
+        success=bool(freshness_obs),
+        error=None if ok else spread.get("reason"),
+        run_id=run_id,
+    )
     report["sections"]["iv_minus_rv"] = {
         "status": "SUCCEEDED" if ok else "INCOMPLETE",
         "metric_id": spread.get("metric_id"),
         "value": spread.get("value"),
         "reason": spread.get("reason"),
         "underlying": RV_UNDERLYING_LABEL,
+        "observation_date": _iso_date(spread_obs),
+        "rv_observation_date": _iso_date(rv_obs),
     }
 
 
@@ -355,7 +418,7 @@ def _write_rows(engine, rows: list[dict[str, Any]], run_id: str | None) -> int:
     return len(rows)
 
 
-def _open(engine, dataset: str, parent_run_id: str | None, as_of: date) -> str:
+def _open(engine, dataset: str, parent_run_id: str | None) -> str:
     with engine.begin() as conn:
         return start_run(conn, source_id=SOURCE_ID, dataset=dataset, parent_run_id=parent_run_id)
 
@@ -365,7 +428,7 @@ def _close(engine, run_id: str, status: str, written: int, error: str | None) ->
         finish_run(conn, run_id, status=status, counts={"received": written, "inserted": written}, error_redacted=error)
 
 
-def _mark(engine, dataset: str, as_of: date, *, transport: str, success: bool, error: str | None, run_id: str | None) -> None:
+def _mark(engine, dataset: str, observation: date | None, *, transport: str, success: bool, error: str | None, run_id: str | None) -> None:
     with engine.begin() as conn:
         record_freshness(
             conn,
@@ -373,11 +436,11 @@ def _mark(engine, dataset: str, as_of: date, *, transport: str, success: bool, e
             dataset=dataset,
             cadence="D",
             transport_status=transport,
-            latest_observation=as_of if success else None,
+            latest_observation=observation if success and observation is not None else None,
             success=success,
             error_redacted=error,
             run_id=run_id,
-            coverage_status="OK" if success else "PARTIAL",
+            coverage_status="OK" if success and error is None else "PARTIAL",
         )
 
 

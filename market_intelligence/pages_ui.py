@@ -268,9 +268,12 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
         chart_rows = [t for t in tenors if t.get("value") is not None]
         if chart_rows:
             st.line_chart(pd.DataFrame({"tenor": [t["tenor"] for t in chart_rows], "level": [t["value"] for t in chart_rows]}).set_index("tenor"))
+        curve_as_of = yahoo.get("curve_observation_date")
+        if curve_as_of:
+            st.caption("Curve observation date {0}. Front=9D, back=1Y on that date only.".format(curve_as_of))
         missing = yahoo.get("unavailable_tenors") or []
         if missing:
-            st.caption("Unavailable tenors: {0}".format(", ".join(str(x) for x in missing)))
+            st.caption("Unavailable tenors on that date: {0}".format(", ".join(str(x) for x in missing)))
 
     history = yahoo.get("history") or {}
     left, right = st.columns(2)
