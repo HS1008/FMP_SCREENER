@@ -3,9 +3,11 @@
     python -m jobs.validate_cboe_live
 
 Requires ``CBOE_CLIENT_ID``, ``CBOE_CLIENT_SECRET``, and ``FMP_TEST_DATABASE_URL``.
-Creates ``fmp_cboe_val_<id>``, applies migrations, proves OAuth, exercises one
-documented underlying-quotes request, then runs one bounded ingest within the
-trial point budget. Drops the child database on exit.
+Creates ``fmp_cboe_val_<id>``, bootstraps the pre-migration ``strategies``
+table (same stub as FRED/FINRA disposable validators), applies migrations,
+proves OAuth, exercises one documented underlying-quotes request, then runs
+one bounded ingest within the trial point budget. Drops the child database
+on exit.
 
 Never prints credentials, tokens, or Authorization headers. Ordinary PR CI does
 not run this module.
@@ -31,6 +33,24 @@ EXIT_CONFIG = 3
 EXIT_REFUSED = 4
 
 _PRODUCTION_HINTS = ("ondigitalocean", "digitalocean.com", "db.ondigitalocean.com", "aws.amazon", "rds.amazonaws")
+
+# Pre-dates numbered migrations. 002_research_project.sql ALTERs this table.
+# Fresh disposable databases must create it before apply_migrations, same as
+# jobs/validate_fred_live.py, jobs/validate_finra_live.py, and tests/conftest.py.
+STRATEGIES_TABLE_SQL = """
+CREATE TABLE IF NOT EXISTS strategies (
+    strategy_id VARCHAR(100) PRIMARY KEY,
+    name VARCHAR(255),
+    environment VARCHAR(32),
+    status VARCHAR(32),
+    qc_project_id VARCHAR(100),
+    qc_deployment_id VARCHAR(100),
+    git_commit VARCHAR(80),
+    rules_json JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+)
+"""
 
 
 def _refuse_production_url(url: str) -> str | None:
@@ -108,6 +128,8 @@ def main(argv: list[str] | None = None) -> int:
         with admin.connect() as conn:
             conn.execute(text('CREATE DATABASE "{0}"'.format(child)))
         engine = create_engine(child_url, future=True)
+        with engine.begin() as conn:
+            conn.execute(text(STRATEGIES_TABLE_SQL))
         apply_migrations(engine=engine)
         with engine.connect() as conn:
             views = {

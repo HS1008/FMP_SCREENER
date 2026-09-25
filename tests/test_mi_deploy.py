@@ -10,6 +10,9 @@ from pathlib import Path
 
 import pytest
 
+from jobs.validate_cboe_live import STRATEGIES_TABLE_SQL
+from tests.conftest import STRATEGIES_TABLE_SQL as CONFTEST_STRATEGIES_SQL
+
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "install_market_intelligence_timers.sh"
 TEMPLATES = ROOT / "deploy" / "market_intelligence"
@@ -603,4 +606,25 @@ def test_validate_cboe_live_refuses_production_urls_and_missing_config(monkeypat
     assert main([]) == EXIT_REFUSED
     err = capsys.readouterr().err
     assert "ondigitalocean" in err.lower() or "refusing" in err.lower()
+
+
+def test_disposable_validators_bootstrap_strategies_before_migrations():
+    """Fresh disposable DBs have no strategies table. 002_research_project.sql ALTERs it.
+
+    Cboe live validation 36076049474 failed at apply_migrations with
+    UndefinedTable strategies. FRED/FINRA already created the stub first.
+    """
+    assert STRATEGIES_TABLE_SQL.strip() == CONFTEST_STRATEGIES_SQL.strip()
+    marker = "CREATE TABLE IF NOT EXISTS strategies"
+    apply_call = "apply_migrations(engine=engine)"
+    for rel in (
+        "jobs/validate_cboe_live.py",
+        "jobs/validate_fred_live.py",
+        "jobs/validate_finra_live.py",
+    ):
+        source = (ROOT / rel).read_text(encoding="utf-8")
+        assert marker in source, rel
+        assert source.index(marker) < source.index(apply_call), rel
+        assert "qc_project_id" in source
+        assert "rules_json JSONB" in source
 
