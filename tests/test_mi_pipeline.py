@@ -33,6 +33,7 @@ from market_intelligence.morning_context import HistoricalReconstructionUnsuppor
 from market_intelligence.nulls import canonical_sha256, strict_dumps, strict_loads
 from market_intelligence.pit_sector import ingest_artifact
 from market_intelligence.store import finish_run, start_run, upsert_source_registry
+from tests.conftest import libpq_url
 from tests.mi_fixtures import SYNTHETIC_MARKER, fake_fred_client, write_full_precomputed_root
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -161,7 +162,7 @@ def provision_role_with_psql(admin_url: str, role: str, password: str | None, tm
     path.write_text(sql, encoding="utf-8")
     dbname = make_url(admin_url).database or "postgres"
     return subprocess.run(
-        [psql, "-d", admin_url, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-v", "DBNAME={0}".format(dbname), "-f", str(path)],
+        [psql, "-d", libpq_url(admin_url), "-X", "-q", "-v", "ON_ERROR_STOP=1", "-v", "DBNAME={0}".format(dbname), "-f", str(path)],
         capture_output=True,
         text=True,
         check=False,

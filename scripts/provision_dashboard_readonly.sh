@@ -149,6 +149,11 @@ apply_dashboard_role_sql() {
   if [ -n "$admin_url" ]; then
     echo "dashboard_readonly_sql_via=admin_url"
     unset PGPASSWORD
+    case "$admin_url" in
+      postgresql+psycopg2://*) admin_url="postgresql://${admin_url#postgresql+psycopg2://}" ;;
+      postgresql+psycopg://*) admin_url="postgresql://${admin_url#postgresql+psycopg://}" ;;
+      postgres://*) admin_url="postgresql://${admin_url#postgres://}" ;;
+    esac
     psql "$admin_url" -v ON_ERROR_STOP=1 \
       -v ro_password="$(cat "$PW_FILE")" \
       -f "$SQL_FILE"

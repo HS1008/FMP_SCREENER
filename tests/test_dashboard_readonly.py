@@ -16,13 +16,22 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 
+from tests.conftest import libpq_url
+
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_libpq_url_strips_sqlalchemy_driver_for_psql():
+    assert libpq_url("postgresql+psycopg2://u:p@127.0.0.1:5432/db") == "postgresql://u:p@127.0.0.1:5432/db"
+    assert libpq_url("postgresql+psycopg://u:p@127.0.0.1:5432/db") == "postgresql://u:p@127.0.0.1:5432/db"
+    assert libpq_url("postgresql://u:p@127.0.0.1:5432/db") == "postgresql://u:p@127.0.0.1:5432/db"
 
 
 def test_provision_script_defaults_to_host_secret_path():
     script = (ROOT / "scripts" / "provision_dashboard_readonly.sh").read_text(encoding="utf-8")
     assert 'HOST_PW_FILE="/etc/fmp/secrets/dashboard_readonly.pw"' in script
+    assert 'postgresql+psycopg2://*) admin_url="postgresql://${admin_url#postgresql+psycopg2://}"' in script
     assert 'PW_FILE="$HOST_PW_FILE"' in script
     assert "expected_pw_file=/etc/fmp/secrets/dashboard_readonly.pw" in script
     assert "dashboard_readonly_pw=migrated_to_etc_fmp_secrets" in script
@@ -258,7 +267,7 @@ def _provision_dashboard_role(admin_url: str, role: str, password: str | None, t
     path = tmp_dir / "{0}.sql".format(role)
     path.write_text(sql, encoding="utf-8")
     return subprocess.run(
-        [psql, "-d", admin_url, "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", str(path)],
+        [psql, "-d", libpq_url(admin_url), "-X", "-q", "-v", "ON_ERROR_STOP=1", "-f", str(path)],
         capture_output=True,
         text=True,
         check=False,
