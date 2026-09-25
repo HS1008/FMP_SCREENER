@@ -15,11 +15,16 @@ from sqlalchemy import text
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.store import RUN_FAILED, RUN_PARTIAL, RUN_SUCCEEDED, finish_run, record_freshness, start_run
 from market_intelligence.yahoo_vol import (
+    BACK_TICKER,
     CATEGORY,
+    FRONT_TICKER,
+    METHOD_RV,
     METHOD_SKEW,
     METHOD_SPREAD,
     METHOD_TERM,
     METHOD_VIX,
+    METRIC_RV,
+    METRIC_SPREAD,
     RV_UNDERLYING_LABEL,
     RV_WINDOW,
     SOURCE_ID,
@@ -28,14 +33,17 @@ from market_intelligence.yahoo_vol import (
     TICKER_SKEW,
     TICKER_VIX,
     align_vix_minus_rv,
+    classify_slope,
+    historical_realized_vol,
+    historical_vix_minus_rv,
     positive_number,
-    realized_vol_20_from_series,
     term_structure,
 )
 
 logger = logging.getLogger("market_intelligence.ingest_yahoo_vol")
 NY = ZoneInfo("America/New_York")
-HISTORY_LOOKBACK_DAYS = 90
+# Calendar span covering VIX1D history (from 2023) plus the 22-close RV21 warmup.
+HISTORY_LOOKBACK_DAYS = 1460
 DATASETS = ("vix", "vix_term_structure", "skew", "iv_minus_rv")
 
 _UPSERT = text(
@@ -131,7 +139,7 @@ def _ingest_vix(engine, rows: list[tuple[date, float]], parent_run_id: str | Non
             raise RuntimeError("no_vix_rows")
         written = []
         prev = None
-        for day, close in rows[-(60):]:
+        for day, close in rows:
             change = None if prev is None else close - prev
             detail = {
                 "source": SOURCE_ID,
@@ -160,72 +168,91 @@ def _ingest_vix(engine, rows: list[tuple[date, float]], parent_run_id: str | Non
         report["sections"]["vix"] = {"status": "FAILED", "reason": type(exc).__name__}
 
 
+def _levels_by_session(series: Mapping[str, list[tuple[date, float]]]) -> dict[date, dict[str, float]]:
+    by_date: dict[date, dict[str, float]] = {}
+    for ticker, _tenor, _metric_id in TERM_TENORS:
+        for day, level in series.get(ticker) or []:
+            number = positive_number(level)
+            if number is None:
+                continue
+            by_date.setdefault(day, {})[ticker] = number
+    return by_date
+
+
 def _ingest_term(engine, series: Mapping[str, list[tuple[date, float]]], parent_run_id: str | None, report: dict[str, Any]) -> None:
     run_id = _open(engine, "vix_term_structure", parent_run_id)
     tenor_series = {ticker: series.get(ticker) or [] for ticker, _, _ in TERM_TENORS}
     curve = term_structure(tenor_series)
     curve_date = curve.get("observation_date")
-    rows = []
     unavailable = list(curve.get("unavailable_tenors") or [])
-    for point in curve["points"]:
-        ticker = point["ticker"]
-        metric_id = point["metric_id"]
-        level = point["level"]
-        if curve_date is None:
-            continue
-        if level is None:
+    by_date = _levels_by_session(tenor_series)
+    rows = []
+    slope_dates: list[date] = []
+    for day in sorted(by_date):
+        levels = by_date[day]
+        for ticker, tenor, metric_id in TERM_TENORS:
+            level = levels.get(ticker)
+            if level is None:
+                continue
             rows.append(
                 _metric(
                     metric_id,
-                    curve_date,
-                    None,
+                    day,
+                    level,
                     "vol_points",
                     METHOD_TERM,
-                    "INCOMPLETE",
+                    "OK",
                     {
                         "source": SOURCE_ID,
                         "yahoo_ticker": ticker,
-                        "tenor": point["tenor"],
-                        "reason": "unavailable_on_curve_date",
-                        "curve_observation_date": curve_date.isoformat(),
+                        "tenor": tenor,
+                        "curve_observation_date": day.isoformat(),
                     },
-                    observed=None,
+                    observed=_session_close_ts(day),
                 )
             )
+        front = levels.get(FRONT_TICKER)
+        back = levels.get(BACK_TICKER)
+        if front is None or back is None:
             continue
+        slope_info = classify_slope(front, back)
+        slope_dates.append(day)
         rows.append(
             _metric(
-                metric_id,
-                curve_date,
-                level,
+                "VIX_INDEX_FRONT_TO_BACK",
+                day,
+                slope_info["front_to_back_slope"],
                 "vol_points",
                 METHOD_TERM,
-                "OK",
+                slope_info["slope_status"],
                 {
                     "source": SOURCE_ID,
-                    "yahoo_ticker": ticker,
-                    "tenor": point["tenor"],
-                    "curve_observation_date": curve_date.isoformat(),
+                    "construction": METHOD_TERM,
+                    "label": "VIX index term structure",
+                    "curve_state": slope_info["curve_state"],
+                    "front_tenor": "9D",
+                    "back_tenor": "1Y",
+                    "note": curve["note"],
+                    "slope_reason": slope_info["slope_reason"],
+                    "curve_observation_date": day.isoformat(),
                 },
-                observed=_session_close_ts(curve_date),
+                observed=_session_close_ts(day),
             )
         )
-    slope = curve["front_to_back_slope"]
-    slope_status = curve.get("slope_status") or ("OK" if slope is not None else "INCOMPLETE")
-    if curve_date is not None:
+    if not slope_dates and isinstance(curve_date, date):
         rows.append(
             _metric(
                 "VIX_INDEX_FRONT_TO_BACK",
                 curve_date,
-                slope,
+                None,
                 "vol_points",
                 METHOD_TERM,
-                slope_status,
+                "INCOMPLETE",
                 {
                     "source": SOURCE_ID,
                     "construction": curve["construction"],
                     "label": curve["label"],
-                    "curve_state": curve["curve_state"],
+                    "curve_state": None,
                     "front_tenor": curve.get("front_tenor"),
                     "back_tenor": curve.get("back_tenor"),
                     "note": curve["note"],
@@ -233,10 +260,11 @@ def _ingest_term(engine, series: Mapping[str, list[tuple[date, float]]], parent_
                     "slope_reason": curve.get("slope_reason"),
                     "curve_observation_date": curve_date.isoformat(),
                 },
-                observed=_session_close_ts(curve_date) if slope is not None else None,
+                observed=None,
             )
         )
     count = _write_rows(engine, rows, run_id)
+    slope = curve["front_to_back_slope"]
     ok = slope is not None and curve_date is not None
     _close(engine, run_id, RUN_SUCCEEDED if ok else RUN_PARTIAL, count, None if ok else (curve.get("slope_reason") or "partial_tenors"))
     _mark(
@@ -252,8 +280,9 @@ def _ingest_term(engine, series: Mapping[str, list[tuple[date, float]]], parent_
         "status": "SUCCEEDED" if ok else "PARTIAL",
         "curve_state": curve["curve_state"],
         "slope": slope,
-        "observation_date": curve_date.isoformat() if curve_date else None,
+        "observation_date": curve_date.isoformat() if isinstance(curve_date, date) else None,
         "unavailable_tenors": unavailable,
+        "rows": count,
     }
 
 
@@ -263,7 +292,7 @@ def _ingest_skew(engine, rows: list[tuple[date, float]], parent_run_id: str | No
         if not rows:
             raise RuntimeError("no_skew_rows")
         written = []
-        for day, close in rows[-(60):]:
+        for day, close in rows:
             written.append(
                 _metric(
                     "SKEW_INDEX",
@@ -298,6 +327,24 @@ def _ingest_skew(engine, rows: list[tuple[date, float]], parent_run_id: str | No
         report["sections"]["skew"] = {"status": "FAILED", "reason": type(exc).__name__}
 
 
+def _rv_row_detail(point: Mapping[str, Any]) -> dict[str, Any]:
+    window_start = point.get("window_start_date")
+    return {
+        "source": SOURCE_ID,
+        "method": point.get("method") or METHOD_RV,
+        "underlying": RV_UNDERLYING_LABEL,
+        "yahoo_ticker": TICKER_RV,
+        "window": RV_WINDOW,
+        "returns": point.get("returns"),
+        "closes_required": point.get("closes_required"),
+        "ddof": 1,
+        "construction": "rv21",
+        "reason": point.get("reason"),
+        "window_start_date": window_start.isoformat() if isinstance(window_start, date) else window_start,
+        "observation_date": _iso_date(point.get("observation_date")),
+    }
+
+
 def _ingest_spread(
     engine,
     vix_rows: list[tuple[date, float]],
@@ -306,78 +353,113 @@ def _ingest_spread(
     report: dict[str, Any],
 ) -> None:
     run_id = _open(engine, "iv_minus_rv", parent_run_id)
-    rv = realized_vol_20_from_series(gspc_rows)
-    spread = align_vix_minus_rv(vix_rows, gspc_rows)
-    rv_obs = rv.get("observation_date")
-    spread_obs = spread.get("observation_date") or rv_obs
-
-    rv_detail = {k: rv.get(k) for k in ("observations", "reason", "method", "window_start_date")}
-    if isinstance(rv_detail.get("window_start_date"), date):
-        rv_detail["window_start_date"] = rv_detail["window_start_date"].isoformat()
-
-    detail = {
-        "source": SOURCE_ID,
-        "method": spread.get("method") or METHOD_SPREAD,
-        "underlying": RV_UNDERLYING_LABEL,
-        "yahoo_ticker_rv": TICKER_RV,
-        "yahoo_ticker_vix": TICKER_VIX,
-        "window": RV_WINDOW,
-        "vix": spread.get("vix"),
-        "rv20": spread.get("rv"),
-        "reason": spread.get("reason"),
-        "vix_observation_date": _iso_date(spread.get("vix_observation_date")),
-        "rv_observation_date": _iso_date(spread.get("rv_observation_date") or rv_obs),
-        "rv_detail": rv_detail,
-    }
-
-    rows = []
-    if isinstance(rv_obs, date):
+    rv_points = historical_realized_vol(gspc_rows)
+    spreads = historical_vix_minus_rv(vix_rows, rv_points)
+    latest_align = align_vix_minus_rv(vix_rows, gspc_rows)
+    rows: list[dict[str, Any]] = []
+    for point in rv_points:
+        obs = point.get("observation_date")
+        if not isinstance(obs, date) or point.get("value") is None:
+            continue
         rows.append(
             _metric(
-                "GSPC_REALIZED_VOL_20D",
-                rv_obs,
-                rv.get("value"),
+                METRIC_RV,
+                obs,
+                point.get("value"),
                 "vol_points",
-                rv.get("method") or "yahoo_gspc_rv20_v1",
-                rv.get("status") or "INCOMPLETE",
-                {**detail, "construction": "rv20", "observation_date": rv_obs.isoformat()},
-                observed=_session_close_ts(rv_obs) if rv.get("status") == "OK" else None,
+                METHOD_RV,
+                "OK",
+                _rv_row_detail(point),
+                observed=_session_close_ts(obs),
             )
         )
-    if isinstance(spread_obs, date):
+    spread_dates: set[date] = set()
+    for spread in spreads:
+        obs = spread.get("observation_date")
+        if not isinstance(obs, date) or spread.get("value") is None:
+            continue
+        spread_dates.add(obs)
         rows.append(
             _metric(
-                spread["metric_id"],
-                spread_obs,
+                METRIC_SPREAD,
+                obs,
                 spread.get("value"),
                 "vol_points",
                 METHOD_SPREAD,
-                spread.get("status") or "INCOMPLETE",
-                {**detail, "observation_date": spread_obs.isoformat()},
-                observed=_session_close_ts(spread_obs) if spread.get("status") == "OK" else None,
+                "OK",
+                {
+                    "source": SOURCE_ID,
+                    "method": METHOD_SPREAD,
+                    "underlying": RV_UNDERLYING_LABEL,
+                    "yahoo_ticker_rv": TICKER_RV,
+                    "yahoo_ticker_vix": TICKER_VIX,
+                    "window": RV_WINDOW,
+                    "vix": spread.get("vix"),
+                    "rv21": spread.get("rv"),
+                    "reason": None,
+                    "vix_observation_date": _iso_date(spread.get("vix_observation_date")),
+                    "rv_observation_date": _iso_date(spread.get("rv_observation_date")),
+                    "observation_date": obs.isoformat(),
+                    "construction": "vix_minus_rv21",
+                },
+                observed=_session_close_ts(obs),
             )
         )
+    rv_obs = rv_points[-1].get("observation_date") if rv_points else latest_align.get("rv_observation_date")
+    if latest_align.get("status") != "OK":
+        incomplete_as_of = latest_align.get("observation_date") or rv_obs
+        if isinstance(incomplete_as_of, date) and incomplete_as_of not in spread_dates:
+            rows.append(
+                _metric(
+                    METRIC_SPREAD,
+                    incomplete_as_of,
+                    None,
+                    "vol_points",
+                    METHOD_SPREAD,
+                    "INCOMPLETE",
+                    {
+                        "source": SOURCE_ID,
+                        "method": METHOD_SPREAD,
+                        "underlying": RV_UNDERLYING_LABEL,
+                        "yahoo_ticker_rv": TICKER_RV,
+                        "yahoo_ticker_vix": TICKER_VIX,
+                        "window": RV_WINDOW,
+                        "vix": latest_align.get("vix"),
+                        "rv21": latest_align.get("rv"),
+                        "reason": latest_align.get("reason"),
+                        "vix_observation_date": _iso_date(latest_align.get("vix_observation_date")),
+                        "rv_observation_date": _iso_date(latest_align.get("rv_observation_date") or rv_obs),
+                        "observation_date": incomplete_as_of.isoformat(),
+                        "construction": "vix_minus_rv21",
+                    },
+                    observed=None,
+                )
+            )
     count = _write_rows(engine, rows, run_id)
-    ok = spread.get("status") == "OK" and isinstance(spread_obs, date)
-    freshness_obs = spread_obs if ok else (rv_obs if rv.get("status") == "OK" and isinstance(rv_obs, date) else None)
-    _close(engine, run_id, RUN_SUCCEEDED if ok else RUN_PARTIAL, count, spread.get("reason"))
+    latest_spread = spreads[-1] if spreads else None
+    ok = latest_spread is not None
+    spread_obs = latest_spread.get("observation_date") if latest_spread else (latest_align.get("observation_date") or rv_obs)
+    freshness_obs = spread_obs if ok and isinstance(spread_obs, date) else (rv_obs if isinstance(rv_obs, date) else None)
+    reason = None if ok else latest_align.get("reason")
+    _close(engine, run_id, RUN_SUCCEEDED if ok else RUN_PARTIAL, count, reason)
     _mark(
         engine,
         "iv_minus_rv",
-        freshness_obs,
+        freshness_obs if isinstance(freshness_obs, date) else None,
         transport="SUCCEEDED" if ok else "PARTIAL",
-        success=bool(freshness_obs),
-        error=None if ok else spread.get("reason"),
+        success=isinstance(freshness_obs, date),
+        error=reason,
         run_id=run_id,
     )
     report["sections"]["iv_minus_rv"] = {
         "status": "SUCCEEDED" if ok else "INCOMPLETE",
-        "metric_id": spread.get("metric_id"),
-        "value": spread.get("value"),
-        "reason": spread.get("reason"),
+        "metric_id": METRIC_SPREAD,
+        "value": None if latest_spread is None else latest_spread.get("value"),
+        "reason": reason,
         "underlying": RV_UNDERLYING_LABEL,
         "observation_date": _iso_date(spread_obs),
         "rv_observation_date": _iso_date(rv_obs),
+        "rows": count,
     }
 
 
@@ -455,7 +537,7 @@ def _ensure_source(engine) -> None:
                 ) VALUES (
                     :sid, 'Yahoo Finance (yfinance, unofficial)', 'volatility_indices', TRUE, 'OPTIONAL_FALLBACK',
                     'https://finance.yahoo.com/', 'D', CAST(:units AS JSONB), 'INTERNAL_ONLY',
-                    'Free Yahoo closes for VIX, SKEW, VIX-family tenors, and GSPC RV20. Streamlit is read-only.',
+                    'Free Yahoo closes for VIX, SKEW, VIX index tenors including ^VIX1D, and GSPC RV21. Streamlit is read-only.',
                     'Yahoo Finance via yfinance (unofficial; no SLA). Cboe SKEW Index name refers to the published index, not a LiveVol feed.',
                     'yahoo_vol_v1', NOW()
                 )

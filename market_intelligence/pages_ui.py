@@ -7,10 +7,11 @@ fabricating numbers. Missing values render as "—".
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
 
 from market_intelligence.bond_ladder import LadderBond, aggregate_ladder, theoretical_rungs
@@ -33,7 +34,11 @@ from market_intelligence.freshness import is_current_status
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
-from market_intelligence.read_models import term_structure_display_rows
+from market_intelligence.read_models import (
+    curve_levels_on_date,
+    resolve_curve_date,
+    term_structure_display_rows,
+)
 from market_intelligence.signals import build_what_matters, credit_sector_coverage
 from market_intelligence.surface_status import worst_surface_status
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
@@ -213,6 +218,49 @@ def _render_commodities_panel(cats: dict[str, Any], *, heading: str = "Commoditi
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
+def _full_month_date(day: date) -> str:
+    return "{0} {1}, {2}".format(day.strftime("%B"), day.day, day.year)
+
+
+def _parse_stored_date(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return date.fromisoformat(value[:10])
+        except ValueError:
+            return None
+    return None
+
+
+def _history_frame(rows: list[dict[str, Any]], column: str) -> pd.DataFrame | None:
+    points: dict[str, float] = {}
+    for row in rows:
+        session = _parse_stored_date(row.get("as_of"))
+        value = row.get("value")
+        if session is None or value is None:
+            continue
+        points[session.isoformat()] = float(value)
+    if not points:
+        return None
+    ordered = sorted(points)
+    return pd.DataFrame({column: [points[day] for day in ordered]}, index=pd.to_datetime(ordered))
+
+
+def _implied_realized_frame(history: dict[str, Any]) -> pd.DataFrame | None:
+    vix_frame = _history_frame(history.get("VIX_SPOT") or [], "VIX")
+    rv_frame = _history_frame(history.get("GSPC_REALIZED_VOL_21D") or [], "GSPC RV21")
+    if vix_frame is None and rv_frame is None:
+        return None
+    if vix_frame is None:
+        return rv_frame
+    if rv_frame is None:
+        return vix_frame
+    return vix_frame.join(rv_frame, how="outer")
+
+
 def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
     st.subheader("Core volatility (Yahoo)")
     st.caption(
@@ -243,71 +291,84 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
     cols = st.columns(4)
     cols[0].metric("VIX", _fmt_or_dash(_num(vix), "vol_points"), None if not vix else str(vix.get("as_of") or ""))
     cols[1].metric("Cboe SKEW Index", _fmt_or_dash(_num(skew), None), None if not skew else str(skew.get("as_of") or ""))
-    cols[2].metric("VIX − GSPC RV20", _fmt_or_dash(_num(spread), "vol_points"))
+    cols[2].metric("Implied − Realized Vol", _fmt_or_dash(_num(spread), "vol_points"))
     cols[3].metric("VIX index curve", state_label if _num(slope) is not None else "Unavailable")
+    st.caption("VIX − GSPC RV21")
     st.caption(
-        "Implied = ^VIX. Realized = sample stdev of 20 ^GSPC daily log returns × √252 × 100. "
-        "Missing values stay — (never zero)."
+        "Implied = VIX. Realized = sample stdev of 21 ^GSPC daily log returns × √252 × 100. "
+        "VIX is approximately 30-calendar-day implied volatility; RV21 is trailing realized volatility. "
+        "Missing values stay missing."
     )
 
-    tenors = yahoo.get("tenors") or []
-    if tenors:
-        st.markdown("**VIX index term structure**")
-        term_frame = pd.DataFrame(
-            [
-                {
-                    "Tenor": t.get("tenor"),
-                    "Yahoo": t.get("yahoo_ticker") or "—",
-                    "Level": _fmt_or_dash(t.get("value"), "vol_points") if t.get("value") is not None else "—",
-                    "As-of": t.get("as_of") or "—",
-                }
-                for t in tenors
-            ]
-        )
-        st.dataframe(term_frame, use_container_width=True, hide_index=True)
-        chart_rows = [t for t in tenors if t.get("value") is not None]
-        if chart_rows:
-            st.line_chart(pd.DataFrame({"tenor": [t["tenor"] for t in chart_rows], "level": [t["value"] for t in chart_rows]}).set_index("tenor"))
-        curve_as_of = yahoo.get("curve_observation_date")
-        if curve_as_of:
-            st.caption("Curve observation date {0}. Front=9D, back=1Y on that date only.".format(curve_as_of))
-        missing = yahoo.get("unavailable_tenors") or []
-        if missing:
-            st.caption("Unavailable tenors on that date: {0}".format(", ".join(str(x) for x in missing)))
-
     history = yahoo.get("history") or {}
-    left, right = st.columns(2)
-    with left:
-        st.markdown("**VIX recent history**")
-        vix_hist = history.get("VIX_SPOT") or []
-        if vix_hist:
-            st.line_chart(pd.DataFrame({"as_of": [r.get("as_of") for r in vix_hist], "VIX": [r.get("value") for r in vix_hist]}).set_index("as_of"))
+    stored_dates = []
+    for item in yahoo.get("curve_dates") or []:
+        parsed = _parse_stored_date(item)
+        if parsed is not None:
+            stored_dates.append(parsed)
+    common_dates = sorted(set(stored_dates))
+    st.markdown("**VIX index term structure**")
+    if not common_dates:
+        st.caption("A six-tenor VIX index curve is not available in stored history.")
+    else:
+        selected = st.date_input(
+            "Curve date",
+            value=common_dates[-1],
+            min_value=common_dates[0],
+            max_value=common_dates[-1],
+            key="yahoo_vix_curve_date",
+        )
+        requested = _parse_stored_date(selected) or common_dates[-1]
+        resolved = resolve_curve_date(requested, common_dates)
+        if resolved is None:
+            st.caption("No six-tenor curve on or before the selected date.")
         else:
-            st.caption("VIX history unavailable.")
-        st.markdown("**SKEW recent history**")
-        skew_hist = history.get("SKEW_INDEX") or []
-        if skew_hist:
-            st.line_chart(pd.DataFrame({"as_of": [r.get("as_of") for r in skew_hist], "SKEW": [r.get("value") for r in skew_hist]}).set_index("as_of"))
-        else:
-            st.caption("SKEW history unavailable.")
-    with right:
-        st.markdown("**VIX vs GSPC RV20**")
-        spread_hist = history.get("VIX_MINUS_GSPC_RV20") or []
-        rv_hist = history.get("GSPC_REALIZED_VOL_20D") or []
-        vix_by = {r.get("as_of"): r.get("value") for r in (history.get("VIX_SPOT") or [])}
-        rv_by = {r.get("as_of"): r.get("value") for r in rv_hist}
-        dates = sorted(set(vix_by) | set(rv_by) | {r.get("as_of") for r in spread_hist})
-        if dates:
-            frame = pd.DataFrame(
-                {
-                    "as_of": dates,
-                    "VIX": [vix_by.get(d) for d in dates],
-                    "GSPC RV20": [rv_by.get(d) for d in dates],
-                }
-            ).set_index("as_of")
-            st.line_chart(frame)
-        else:
-            st.caption("VIX vs RV20 history unavailable.")
+            st.caption("Curve as of {0}".format(_full_month_date(resolved)))
+            levels = curve_levels_on_date(history, resolved)
+            fig = go.Figure(
+                data=[
+                    go.Scatter(
+                        x=[point["tenor"] for point in levels],
+                        y=[point["value"] for point in levels],
+                        mode="lines+markers",
+                        name="VIX index",
+                        connectgaps=False,
+                    )
+                ]
+            )
+            fig.update_xaxes(
+                type="category",
+                categoryorder="array",
+                categoryarray=[point["tenor"] for point in levels],
+            )
+            fig.update_layout(
+                height=360,
+                margin={"l": 48, "r": 16, "t": 24, "b": 40},
+                yaxis_title="Vol points",
+                showlegend=False,
+            )
+            st.plotly_chart(fig, width="stretch")
+
+    st.markdown("**VIX recent history**")
+    vix_frame = _history_frame(history.get("VIX_SPOT") or [], "VIX")
+    if vix_frame is not None:
+        st.line_chart(vix_frame)
+    else:
+        st.caption("VIX history unavailable.")
+
+    st.markdown("**Implied vs Realized Vol**")
+    implied_frame = _implied_realized_frame(history)
+    if implied_frame is not None:
+        st.line_chart(implied_frame)
+    else:
+        st.caption("Implied vs realized history unavailable.")
+
+    st.markdown("**SKEW recent history**")
+    skew_frame = _history_frame(history.get("SKEW_INDEX") or [], "SKEW")
+    if skew_frame is not None:
+        st.line_chart(skew_frame)
+    else:
+        st.caption("SKEW history unavailable.")
 
 
 def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
@@ -383,7 +444,7 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
 def render_options_volatility() -> None:
     page_header(
         "Options & Volatility",
-        "Yahoo VIX / SKEW / term structure / VIX−RV20, plus stored OpenBB option chains and VX futures. Spot VIX is distinct from a VIX futures curve.",
+        "Yahoo VIX, Cboe SKEW, implied versus realized volatility, and the VIX index term structure, plus stored option chains and VX futures. Spot VIX is distinct from a VIX futures curve.",
         fred=False,
     )
     result = load_optional("options_volatility_context", default={})
