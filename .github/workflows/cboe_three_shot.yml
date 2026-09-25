@@ -1,0 +1,74 @@
+# At most 3 live Cboe data GETs on the writer host. No ingest, no UI/schema changes.
+name: Cboe three-shot entitlement probe
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cursor/cboe-volatility-v1
+    paths:
+      - ".github/workflows/cboe_three_shot.yml"
+      - ".github/workflows/.cboe_three_shot_trigger"
+      - "jobs/probe_cboe_three_shot.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cboe-three-shot
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    name: Three-shot Cboe probe on writer host
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DO_HOST: ${{ secrets.DO_HOST }}
+      DO_USER: ${{ secrets.DO_USER }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure pinned SSH trust
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_SSH_KNOWN_HOSTS: ${{ secrets.DO_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf "%s\n" "$DO_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          unset SSH_PRIVATE_KEY DO_SSH_KNOWN_HOSTS
+
+      - name: Sync probe only and run (max 3 data GETs)
+        run: |
+          set -euo pipefail
+          set +x
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "$DO_USER@$DO_HOST" \
+            'mkdir -p /root/FMP_SCREENER/tmp_cboe_sync /root/FMP_SCREENER/jobs /root/FMP_SCREENER/market_intelligence'
+          scp -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            jobs/probe_cboe_three_shot.py \
+            "$DO_USER@$DO_HOST:/root/FMP_SCREENER/tmp_cboe_sync/"
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "$DO_USER@$DO_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          set +x
+          cd /root/FMP_SCREENER
+          cp -f tmp_cboe_sync/probe_cboe_three_shot.py jobs/
+          ENV_FILE=/etc/fmp/market_intelligence.env
+          set -a
+          # shellcheck disable=SC1091
+          . "$ENV_FILE"
+          set +a
+          # shellcheck disable=SC1091
+          source venv/bin/activate
+          if [ -z "${CBOE_CLIENT_ID:-}" ] || [ -z "${CBOE_CLIENT_SECRET:-}" ]; then
+            echo "FAIL: Cboe credentials missing"
+            exit 3
+          fi
+          echo "cboe_credentials_present=1"
+          python -m jobs.probe_cboe_three_shot
+          REMOTE
