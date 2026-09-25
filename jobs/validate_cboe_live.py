@@ -102,6 +102,9 @@ def main(argv: list[str] | None = None) -> int:
         "metrics_incomplete": [],
         "views_ok": False,
         "child_database": child,
+        "api_mode": (os.environ.get("CBOE_API_MODE") or "delayed").strip().lower() or "delayed",
+        "credential_id_len": len(client_id),
+        "credential_secret_len": len(client_secret),
     }
     engine = None
     try:
@@ -149,6 +152,14 @@ def main(argv: list[str] | None = None) -> int:
         except CboeError as exc:
             report["auth"] = exc.capability
             report["entitlement"] = exc.capability
+            report["auth_http_status"] = exc.http_status
+            report["auth_error"] = str(exc)[:160]
+            report["status"] = "AUTH_FAILED"
+            _emit(report, as_json=args.json)
+            return EXIT_FAIL
+        except Exception as exc:  # noqa: BLE001
+            report["auth"] = "UNAVAILABLE"
+            report["auth_error"] = type(exc).__name__
             report["status"] = "AUTH_FAILED"
             _emit(report, as_json=args.json)
             return EXIT_FAIL

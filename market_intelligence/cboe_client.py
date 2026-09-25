@@ -33,11 +33,15 @@ from typing import Any, Callable, Mapping
 from zoneinfo import ZoneInfo
 
 TOKEN_URL = "https://id.livevol.com/connect/token"
-API_ROOT = "https://api.livevol.com/v1/live/allaccess"
+# Trial / All Access accounts commonly start on the delayed host. Live requires SIP entitlements.
+API_ROOT_LIVE = "https://api.livevol.com/v1/live/allaccess"
+API_ROOT_DELAYED = "https://api.livevol.com/v1/delayed/allaccess"
+API_ROOT = API_ROOT_DELAYED
 SOURCE_ID = "CBOE_ALL_ACCESS"
 ENABLE_FLAG = "MI_CBOE_ENABLED"
 CLIENT_ID_ENV = "CBOE_CLIENT_ID"
 CLIENT_SECRET_ENV = "CBOE_CLIENT_SECRET"
+API_MODE_ENV = "CBOE_API_MODE"
 NY = ZoneInfo("America/New_York")
 
 STATUS_READY = "READY"
@@ -117,6 +121,7 @@ class CboeClient:
     timeout_s: float = DEFAULT_TIMEOUT_S
     max_attempts: int = DEFAULT_MAX_ATTEMPTS
     point_budget: int = DEFAULT_POINT_BUDGET
+    api_root: str = API_ROOT
     sleep: Callable[[float], None] = time.sleep
     clock: Callable[[], float] = time.monotonic
     _token: _Token | None = field(default=None, init=False)
@@ -129,6 +134,9 @@ class CboeClient:
             raise CboeError(STATUS_CONFIGURATION_REQUIRED, "Cboe client credentials are missing")
         if any(ch.isspace() for ch in self.client_id + self.client_secret):
             raise CboeError(STATUS_CONFIGURATION_REQUIRED, "Cboe client credentials contain whitespace")
+        mode = (os.environ.get(API_MODE_ENV) or "").strip().lower()
+        if mode in {"live", "delayed"} and self.api_root in {API_ROOT, API_ROOT_LIVE, API_ROOT_DELAYED}:
+            self.api_root = API_ROOT_LIVE if mode == "live" else API_ROOT_DELAYED
         self._opener = self.opener or urllib.request.urlopen
 
     def invalidate_token(self) -> None:
@@ -183,7 +191,7 @@ class CboeClient:
         if self.points_used + cost > self.point_budget:
             raise CboeBudgetError(STATUS_TRIAL_LIMIT, "run point budget would be exceeded")
         token = self.access_token()
-        url = API_ROOT + path + "?" + urllib.parse.urlencode(params)
+        url = self.api_root + path + "?" + urllib.parse.urlencode(params)
         payload = self._request_json(
             url,
             method="GET",
@@ -261,7 +269,9 @@ def session_date(now: datetime | None = None) -> date:
 
 def credentials_from_env(env: Mapping[str, str] | None = None) -> tuple[str, str]:
     source = env if env is not None else os.environ
-    return str(source.get(CLIENT_ID_ENV, "")).strip(), str(source.get(CLIENT_SECRET_ENV, "")).strip()
+    client_id = str(source.get(CLIENT_ID_ENV, "")).strip().strip("\ufeff").strip('"').strip("'")
+    client_secret = str(source.get(CLIENT_SECRET_ENV, "")).strip().strip("\ufeff").strip('"').strip("'")
+    return client_id, client_secret
 
 
 def enabled_from_env(env: Mapping[str, str] | None = None) -> bool:
