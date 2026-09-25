@@ -105,8 +105,12 @@ def test_vix_history_uses_lightweight_charts_and_tenor_curve_stays_categorical()
     assert "st.line_chart(vix_frame)" not in source
     assert "st.line_chart(implied_frame)" in source
     assert "st.line_chart(skew_frame)" in source
-    assert 'categoryorder="array"' in source
-    assert "baseResolution" in source
+    assert "tenor_curve_chart" in source
+    assert source.count("lightweight_market_chart") == 1
+    assert "st.plotly_chart" not in source
+    assert "go.Figure" not in source
+    chart_module = (ROOT / "__init__.py").read_text(encoding="utf-8")
+    assert "yield-curve scale" in chart_module
     page = PAGES_UI.read_text(encoding="utf-8")
     assert "import yfinance" not in page
     assert "ingest_yahoo_vol" not in page
