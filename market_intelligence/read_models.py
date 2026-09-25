@@ -1219,7 +1219,8 @@ def yahoo_vol_core(conn) -> dict[str, Any]:
     freshness = _rows(
         conn,
         """
-        SELECT source_id, dataset, latest_observation_date, transport_status, freshness_status, error_redacted, updated_at
+        SELECT source_id, dataset, latest_observation_date, transport_status, freshness_status,
+               last_error_redacted AS error_redacted, updated_at
         FROM mi_data_freshness
         WHERE source_id = 'YAHOO_VOL'
         ORDER BY dataset
