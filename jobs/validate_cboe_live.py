@@ -108,6 +108,26 @@ def main(argv: list[str] | None = None) -> int:
         with admin.connect() as conn:
             conn.execute(text('CREATE DATABASE "{0}"'.format(child)))
         engine = create_engine(child_url, future=True)
+        # Migrations assume the pre-existing Stage-1 strategies table (same as FRED live validation).
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS strategies (
+                        strategy_id VARCHAR(100) PRIMARY KEY,
+                        name VARCHAR(255),
+                        environment VARCHAR(32),
+                        status VARCHAR(32),
+                        qc_project_id VARCHAR(100),
+                        qc_deployment_id VARCHAR(100),
+                        git_commit VARCHAR(80),
+                        rules_json JSONB,
+                        created_at TIMESTAMPTZ DEFAULT NOW(),
+                        updated_at TIMESTAMPTZ DEFAULT NOW()
+                    )
+                    """
+                )
+            )
         apply_migrations(engine=engine)
         with engine.connect() as conn:
             views = {
