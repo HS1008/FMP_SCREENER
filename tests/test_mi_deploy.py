@@ -589,3 +589,18 @@ def test_provision_mi_provider_keys_workflow_is_dispatch_only_and_does_not_activ
     assert "secrets.EIA_API_KEY" not in pr and "secrets.OPENFIGI_API_KEY" not in pr
     assert "secrets.CBOE_CLIENT_ID" not in pr and "secrets.CBOE_CLIENT_SECRET" not in pr
 
+
+def test_validate_cboe_live_refuses_production_urls_and_missing_config(monkeypatch, capsys):
+    from jobs.validate_cboe_live import EXIT_CONFIG, EXIT_REFUSED, main
+
+    monkeypatch.delenv("CBOE_CLIENT_ID", raising=False)
+    monkeypatch.delenv("CBOE_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("FMP_TEST_DATABASE_URL", raising=False)
+    assert main([]) == EXIT_CONFIG
+    monkeypatch.setenv("CBOE_CLIENT_ID", "id")
+    monkeypatch.setenv("CBOE_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("FMP_TEST_DATABASE_URL", "postgresql+psycopg2://u:p@db.ondigitalocean.com:25060/fmp")
+    assert main([]) == EXIT_REFUSED
+    err = capsys.readouterr().err
+    assert "ondigitalocean" in err.lower() or "refusing" in err.lower()
+
