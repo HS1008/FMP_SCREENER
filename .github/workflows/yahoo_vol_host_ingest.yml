@@ -226,3 +226,57 @@ jobs:
           unset DATABASE_URL DATABASE_ADMIN_URL DATABASE_WRITER_URL MARKET_INTELLIGENCE_DATABASE_URL
           echo "yahoo_vol_host_ingest=complete"
           REMOTE
+
+      - name: AppTest Options page Yahoo section (read-only)
+        run: |
+          set -euo pipefail
+          set +x
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "$DO_USER@$DO_HOST" bash -s <<'REMOTE'
+          set -euo pipefail
+          set +x
+          cd /root/FMP_SCREENER
+          # shellcheck disable=SC1091
+          set -a
+          . /etc/fmp/fmp-dashboard.env
+          set +a
+          unset DATABASE_URL DB_PASSWORD DB_USER DB_HOST DB_NAME DB_PORT MARKET_INTELLIGENCE_DATABASE_URL DASHBOARD_ALLOW_WRITER_FALLBACK
+          export FMP_STREAMLIT_READONLY=1
+          # shellcheck disable=SC1091
+          source venv/bin/activate
+          export PYTHONPATH=/root/FMP_SCREENER${PYTHONPATH:+:$PYTHONPATH}
+          python - <<'PY'
+          from pathlib import Path
+          from streamlit.testing.v1 import AppTest
+
+          page = Path("/root/FMP_SCREENER/pages/21_Options_Volatility.py")
+          assert page.is_file(), "Options page missing"
+          at = AppTest.from_file(str(page), default_timeout=60)
+          at.run()
+          assert not at.exception, [str(e.value) for e in at.exception]
+          parts = []
+          for kind in ("title", "subheader", "caption", "markdown", "info", "metric"):
+              for el in getattr(at, kind):
+                  parts.append(str(getattr(el, "value", el)))
+          text = "\n".join(parts)
+          required = [
+              "Core volatility (Yahoo)",
+              "Cboe SKEW Index",
+              "VIX index term structure",
+              "Options chains and VX futures",
+          ]
+          missing = [label for label in required if label not in text]
+          if missing:
+              raise SystemExit("FAIL: Options AppTest missing labels: " + ", ".join(missing))
+          # Distinguish index curve vs VX futures wording.
+          assert "VIX index term structure" in text
+          assert "VX futures" in text or "VX_EOD" in text or "Not a VIX futures" in text or "VX" in text
+          # Never call Yahoo from Streamlit page module.
+          src = page.read_text(encoding="utf-8")
+          assert "yfinance" not in src
+          assert "ingest_yahoo_vol" not in src
+          print("options_apptest_yahoo=ok")
+          print("options_apptest_has_metrics=" + str(bool(at.metric)))
+          print("options_apptest_has_dataframe=" + str(bool(at.dataframe)))
+          PY
+          echo "yahoo_vol_streamlit_verify=complete"
+          REMOTE
