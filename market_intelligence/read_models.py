@@ -1201,14 +1201,21 @@ def _cboe_core_context(conn) -> dict[str, Any]:
 
 
 def options_volatility_context(conn) -> dict[str, Any]:
-    """Stored options / VIX analytics only. Never calls OpenBB."""
+    """Stored options / VIX analytics only. Never calls OpenBB or LiveVol HTTP."""
+    cboe_core = _cboe_core_context(conn)
     if not _view_exists(conn, "mi_v_options_latest"):
+        status = "OK" if cboe_core.get("latest") else "UNAVAILABLE"
         return {
-            "status": "UNAVAILABLE",
-            "reason": "options schema is not applied",
+            "status": status,
+            "reason": None if status == "OK" else "options schema is not applied",
             "export_scope": EXPORT_INTERNAL_ONLY,
             "source_id": "OPENBB_CBOE_OPTIONS",
             "attribution": CBOE_ATTRIBUTION,
+            "terms_notes": CBOE_TERMS_NOTES,
+            "symbols": [],
+            "vix": None,
+            "cboe_core": cboe_core,
+            "last_attempts": [],
         }
     chains = _rows(conn, "SELECT * FROM mi_v_options_latest ORDER BY underlying_symbol")
     attempts = _rows(conn, "SELECT * FROM mi_v_openbb_last_attempt ORDER BY source_id, symbol") if _view_exists(conn, "mi_v_openbb_last_attempt") else []
@@ -1266,10 +1273,7 @@ def options_volatility_context(conn) -> dict[str, Any]:
             "not_official_settlement": True,
             "not_live_quotes": True,
         }
-    status = "OK" if symbols or vix else "UNAVAILABLE"
-    cboe_core = _cboe_core_context(conn)
-    if cboe_core.get("latest"):
-        status = "OK"
+    status = "OK" if symbols or vix or cboe_core.get("latest") else "UNAVAILABLE"
     return {
         "status": status,
         "reason": None if status == "OK" else "No published OpenBB/Cboe or LiveVol core snapshots. Source stays optional and is not a platform outage.",
