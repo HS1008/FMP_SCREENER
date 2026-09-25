@@ -70,6 +70,8 @@ POINT_COST = {
 DEFAULT_TIMEOUT_S = 20.0
 DEFAULT_MAX_ATTEMPTS = 3
 DEFAULT_POINT_BUDGET = 80
+# Cloudflare on id.livevol.com rejects the stock Python-urllib User-Agent (error 1010).
+USER_AGENT = "FMP-SCREENER-MI/1.0 (+writer; Cboe LiveVol All Access)"
 
 
 class CboeError(RuntimeError):
@@ -241,8 +243,9 @@ class CboeClient:
     def _request_json(self, url: str, *, method: str, headers: dict[str, str], data: bytes | None) -> Any:
         delay = 0.4
         last: CboeError | None = None
+        merged = {"User-Agent": USER_AGENT, "Accept": "application/json", **headers}
         for attempt in range(1, self.max_attempts + 1):
-            request = urllib.request.Request(url, data=data, headers=headers, method=method)
+            request = urllib.request.Request(url, data=data, headers=merged, method=method)
             try:
                 with self._opener(request, timeout=self.timeout_s) as response:
                     raw = response.read()
