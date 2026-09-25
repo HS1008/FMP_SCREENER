@@ -1,0 +1,166 @@
+{
+  "document": "FMP Dashboard data-platform implementation matrix",
+  "as_of": "2026-09-13",
+  "branch": "cursor/mi-platform-v1",
+  "base_sha": "3248eef656f6c8f672d4f4d651803d52bc418f40",
+  "migrations": ["033_platform_identity_policy.sql", "034_eia_cot_openfigi.sql", "035_sec_filings_metrics.sql", "036_market_hub_derived.sql"],
+  "fmp_can_be_cancelled": "NO",
+  "production_flags_changed": false,
+  "quant_strategies_changed": false,
+  "capabilities": [
+    {
+      "id": "ibkr_callback_safety",
+      "phase": 1,
+      "disposition": "EXTEND",
+      "status": "IMPLEMENTED_AND_TESTED",
+      "path": "ibkr_collector/readonly_client.py",
+      "test_gate": "tests/test_ibkr_callback_safety.py",
+      "production_enabled": false,
+      "rights": "INTERNAL_ONLY",
+      "blocker": null
+    },
+    {
+      "id": "identity_policy_schema",
+      "phase": 1,
+      "disposition": "EXTEND",
+      "status": "IMPLEMENTED_NOT_EXTERNALLY_VALIDATED",
+      "path": "db/migrations/033_platform_identity_policy.sql",
+      "test_gate": "tests/test_mi_schema_store.py (requires FMP_TEST_DATABASE_URL)",
+      "production_enabled": false,
+      "rights": "INTERNAL_ONLY",
+      "blocker": "disposable PostgreSQL not assumed in every local shell"
+    },
+    {
+      "id": "eia_openfigi_provisioning",
+      "phase": 2,
+      "disposition": "EXTEND",
+      "status": "IMPLEMENTED_AND_TESTED",
+      "path": "scripts/protected_env.py, scripts/provision_digitalocean_mi_secrets.sh, .github/workflows/provision_mi_provider_keys.yml",
+      "test_gate": "tests/test_protected_env.py, tests/test_mi_deploy.py",
+      "production_enabled": false,
+      "rights": "n/a",
+      "blocker": "GitHub secrets not available to local Cursor; host keys still operator-provisioned"
+    },
+    {
+      "id": "openfigi_mapping",
+      "phase": 3,
+      "disposition": "NEW",
+      "status": "IMPLEMENTED_NOT_EXTERNALLY_VALIDATED",
+      "path": "market_intelligence/openfigi_client.py",
+      "test_gate": "tests/test_platform_sources.py",
+      "production_enabled": false,
+      "rights": "ATTRIBUTION_REQUIRED",
+      "blocker": "CONFIGURATION_REQUIRED: MI_OPENFIGI_ENABLED and OPENFIGI_API_KEY"
+    },
+    {
+      "id": "eia_v2_catalog",
+      "phase": 4,
+      "disposition": "NEW",
+      "status": "IMPLEMENTED_NOT_EXTERNALLY_VALIDATED",
+      "path": "market_intelligence/eia_client.py, data_sources/eia_wholesale.py",
+      "test_gate": "tests/test_platform_sources.py",
+      "production_enabled": false,
+      "rights": "ATTRIBUTION_REQUIRED",
+      "blocker": "CONFIGURATION_REQUIRED: MI_EIA_ENABLED and EIA_API_KEY; hub prices and production routes UNAVAILABLE"
+    },
+    {
+      "id": "cftc_cot",
+      "phase": 5,
+      "disposition": "NEW",
+      "status": "IMPLEMENTED_NOT_EXTERNALLY_VALIDATED",
+      "path": "market_intelligence/cot_client.py, market_intelligence/cot_analytics.py",
+      "test_gate": "tests/test_platform_sources.py",
+      "production_enabled": false,
+      "rights": "ATTRIBUTION_REQUIRED",
+      "blocker": "CONFIGURATION_REQUIRED: MI_COT_ENABLED"
+    },
+    {
+      "id": "sec_filings_metrics_events",
+      "phase": 6,
+      "disposition": "EXTEND",
+      "status": "IMPLEMENTED_NOT_EXTERNALLY_VALIDATED",
+      "path": "market_intelligence/sec_metrics.py, market_intelligence/sec_events.py, market_intelligence/ingest_sec.py",
+      "test_gate": "tests/test_platform_sources.py",
+      "production_enabled": false,
+      "rights": "ATTRIBUTION_REQUIRED",
+      "blocker": "CONFIGURATION_REQUIRED: MI_EDGAR_ENABLED and SEC_USER_AGENT"
+    },
+    {
+      "id": "fmp_coexistence",
+      "phase": 7,
+      "disposition": "PRESENT",
+      "status": "IMPLEMENTED_AND_TESTED",
+      "path": "market_intelligence/fmp_mode.py, docs/SOURCE_REPLACEMENT_MATRIX.md",
+      "test_gate": "tests/test_fmp_off_independence.py",
+      "production_enabled": true,
+      "rights": "INTERNAL_ONLY",
+      "blocker": "FMP_CAN_BE_CANCELLED=NO until soak/parity/rights"
+    },
+    {
+      "id": "tws_bounded_acquisition",
+      "phase": 8,
+      "disposition": "EXTEND",
+      "status": "IMPLEMENTED_NOT_EXTERNALLY_VALIDATED",
+      "path": "ibkr_collector/capability.py, ibkr_collector/budget.py, ibkr_collector/runner.py, ibkr_collector/eod_cli.py",
+      "test_gate": "tests/test_ibkr_callback_safety.py; live diagnose/capability-probe/fetch-eod --client-id 73",
+      "production_enabled": false,
+      "rights": "INTERNAL_ONLY",
+      "blocker": "weekend AWAITING_OPEN_SESSION for live SLO; do not restart quote collector client 71"
+    },
+    {
+      "id": "derived_gex_curves_fx",
+      "phase": 9,
+      "disposition": "NEW",
+      "status": "IMPLEMENTED_AND_TESTED",
+      "path": "market_intelligence/derived_gex.py, market_intelligence/derived_curves.py",
+      "test_gate": "tests/test_platform_sources.py",
+      "production_enabled": false,
+      "rights": "INTERNAL_ONLY",
+      "blocker": "live option OI/Greeks ENTITLEMENT_REQUIRED / session-dependent"
+    },
+    {
+      "id": "source_policy_scheduler",
+      "phase": 10,
+      "disposition": "NEW",
+      "status": "IMPLEMENTED_AND_TESTED",
+      "path": "market_intelligence/source_policy.py",
+      "test_gate": "tests/test_platform_sources.py",
+      "production_enabled": false,
+      "rights": "n/a",
+      "blocker": "definitions are not production timers"
+    },
+    {
+      "id": "market_hub_data_health_gateway",
+      "phase": 11,
+      "disposition": "EXTEND",
+      "status": "IMPLEMENTED_NOT_EXTERNALLY_VALIDATED",
+      "path": "pages/19_Market_Hub.py, ai_gateway/services.py get_market_hub",
+      "test_gate": "tests/test_page_registry.py, tests/test_ai_gateway.py, tests/test_mi_pipeline.py",
+      "production_enabled": false,
+      "rights": "INTERNAL_SUMMARY",
+      "blocker": "new views require migration 033-036 on the host"
+    },
+    {
+      "id": "trace_prints",
+      "phase": 8,
+      "disposition": "PRESENT",
+      "status": "ENTITLEMENT_REQUIRED",
+      "path": "market_intelligence/adapters.py TraceAdapter",
+      "test_gate": "tests/test_bond_analytics.py",
+      "production_enabled": false,
+      "rights": "INTERNAL_ONLY",
+      "blocker": "TRAQS/TRACE API not entitled"
+    },
+    {
+      "id": "qc_research",
+      "phase": 0,
+      "disposition": "PRESENT",
+      "status": "DISABLED_BY_POLICY",
+      "path": "quant-strategies research/launch_guard.py",
+      "test_gate": "do not rerun Stage 1/2; no QC creates",
+      "production_enabled": false,
+      "rights": "never export models",
+      "blocker": "research invariants; repository left unchanged"
+    }
+  ]
+}

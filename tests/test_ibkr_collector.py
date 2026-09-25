@@ -29,6 +29,7 @@ def test_market_data_types_are_labelled():
 def test_error_2186_is_entitlement_not_connectivity():
     assert classify_error(2186) == "entitlement"
     assert classify_error(2104) == "info"
+    assert classify_error(10167) == "info"
     assert classify_error(502) == "connectivity"
 
 
@@ -175,6 +176,28 @@ def test_socket_probe_reports_closed_port():
     result = probe_socket("127.0.0.1", 1, timeout=0.2)
     assert result["ok"] is False
     assert result["error"]
+
+
+def test_detect_local_tws_port_refuses_to_guess_among_multiple_listeners(monkeypatch):
+    from ibkr_collector import live_eod_validate as live
+
+    def fake_probe(host, port, timeout=0.5):
+        return {"ok": port in {7496, 4001}, "port": port, "host": host}
+
+    monkeypatch.setattr(live, "probe_socket", fake_probe)
+    detected = live.detect_local_tws_port()
+    assert detected["port"] is None
+    assert "multiple" in detected["error"]
+    assert detected["open_ports"] == [7496, 4001]
+
+
+def test_detect_local_tws_port_returns_the_only_open_listener(monkeypatch):
+    from ibkr_collector import live_eod_validate as live
+
+    monkeypatch.setattr(live, "probe_socket", lambda host, port, timeout=0.5: {"ok": port == 7496, "port": port, "host": host})
+    detected = live.detect_local_tws_port()
+    assert detected["port"] == 7496
+    assert detected.get("error") is None
 
 
 def test_quote_fingerprint_ignores_clock_fields():

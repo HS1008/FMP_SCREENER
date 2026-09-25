@@ -16,7 +16,12 @@ def build_parser() -> argparse.ArgumentParser:
     diag = sub.add_parser("diagnose", help="Bounded read-only TWS handshake/quote/bond diagnostic")
     diag.add_argument("--host", default=None)
     diag.add_argument("--port", type=int, default=None)
-    diag.add_argument("--client-id", type=int, default=None)
+    diag.add_argument("--client-id", type=int, default=None, help="Must not collide with quote 71 or EOD 72; default 73")
+    cap = sub.add_parser("capability-probe", help="Bounded field-level TWS capability matrix (no orders; default client id 73)")
+    cap.add_argument("--host", default=None)
+    cap.add_argument("--port", type=int, default=None)
+    cap.add_argument("--client-id", type=int, default=None)
+    cap.add_argument("--json", action="store_true")
     run = sub.add_parser("run", help="Run the collector in the foreground")
     run.add_argument("--once-diagnose", action="store_true", help=argparse.SUPPRESS)
     sub.add_parser("start", help="Start the installed Windows logon task (or run if not installed)")
@@ -39,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "diagnose":
+        from ibkr_collector import DEFAULT_DIAGNOSTIC_CLIENT_ID
         from ibkr_collector.config import load_config
         from ibkr_collector.diagnostic import report_to_json, run_diagnostic
         from ibkr_collector.logging_setup import setup_logging
@@ -48,10 +54,25 @@ def main(argv: list[str] | None = None) -> int:
         report = run_diagnostic(
             host=args.host or cfg.tws_host,
             port=args.port or cfg.tws_port,
-            client_id=args.client_id or cfg.client_id,
+            client_id=args.client_id or DEFAULT_DIAGNOSTIC_CLIENT_ID,
         )
         sys.stdout.write(report_to_json(report) + "\n")
         return 0 if report.get("handshake", {}).get("ok") else 2
+    if args.command == "capability-probe":
+        from ibkr_collector import DEFAULT_DIAGNOSTIC_CLIENT_ID
+        from ibkr_collector.capability import run_capability_probe
+        from ibkr_collector.config import load_config
+        from ibkr_collector.logging_setup import setup_logging
+
+        cfg = load_config()
+        setup_logging(cfg.log_dir)
+        report = run_capability_probe(
+            host=args.host or cfg.tws_host,
+            port=args.port or cfg.tws_port,
+            client_id=args.client_id or DEFAULT_DIAGNOSTIC_CLIENT_ID,
+        )
+        sys.stdout.write(json.dumps(report, indent=2, default=str) + "\n")
+        return 0 if report.get("handshake_ok") else 2
     if args.command == "run":
         from ibkr_collector.runner import run_forever
 

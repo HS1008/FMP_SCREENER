@@ -246,7 +246,7 @@ def classify_historical_failure(errors: list[Mapping[str, Any]]) -> str:
     kinds = {e.get("kind") for e in errors}
     if "pacing" in messages or 420 in codes:
         return STATUS_PACING
-    if "entitlement" in kinds or 354 in codes or 10167 in codes or 10168 in codes:
+    if "entitlement" in kinds or 354 in codes or 10168 in codes:
         return STATUS_NO_ENTITLEMENT
     if "adjusted_last" in messages and ("end date" in messages or "rejected" in messages):
         return STATUS_ADJUSTED_LAST_REJECTED
@@ -409,7 +409,7 @@ class HistoricalSession:
             try:
                 self.client.cancelHistoricalData(req_id)
             except Exception:
-                pass
+                self.client.retire_request(req_id)
             if not raw_bars:
                 return [], STATUS_TIMEOUT, codes
         parsed = [b for b in (parse_historical_bar(row, what_to_show=what_to_show) for row in raw_bars) if b is not None]

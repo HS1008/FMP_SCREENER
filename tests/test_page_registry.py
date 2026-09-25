@@ -33,7 +33,7 @@ def test_registry_covers_required_routes_and_sections():
     assert required <= set(PAGE_BY_ROUTE)
     grouped = specs_by_section()
     assert [spec.title for spec in grouped["Overview"]] == ["Overview"]
-    assert {spec.title for spec in grouped["Markets"]} == {"Sectors", "Rates", "Credit", "Order Flow"}
+    assert {spec.title for spec in grouped["Markets"]} == {"Sectors", "Rates", "Credit", "Options", "Order Flow", "Market Hub"}
     assert any(spec.default for spec in PAGE_SPECS)
     urls = [spec.url_path for spec in PAGE_SPECS]
     assert len(urls) == len(set(urls))

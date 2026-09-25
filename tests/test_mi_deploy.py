@@ -15,8 +15,27 @@ SCRIPT = ROOT / "scripts" / "install_market_intelligence_timers.sh"
 TEMPLATES = ROOT / "deploy" / "market_intelligence"
 
 
+def _bash_exe() -> str:
+    import shutil
+
+    found = shutil.which("bash")
+    if found:
+        return found
+    for candidate in (Path(r"C:\Program Files\Git\bin\bash.exe"), Path("/bin/bash"), Path("/usr/bin/bash")):
+        if candidate.exists():
+            return str(candidate)
+    pytest.skip("bash not available on this host")
+
+
+def _chmod600(path: Path) -> None:
+    os.chmod(path, 0o600)
+    if os.name == "nt":
+        posix = path.as_posix()
+        subprocess.run([_bash_exe(), "-c", "chmod 600 \"$1\"", "chmod600", posix], check=False, capture_output=True)
+
+
 def _run(*args: str, cwd: Path) -> subprocess.CompletedProcess:
-    return subprocess.run(["bash", str(SCRIPT), *args], cwd=cwd, capture_output=True, text=True, check=False)
+    return subprocess.run([_bash_exe(), str(SCRIPT), *args], cwd=cwd, capture_output=True, text=True, check=False)
 
 
 @pytest.fixture
@@ -45,6 +64,7 @@ def test_dry_run_is_default_and_writes_nothing(fake_host):
     assert "systemctl enable --now fmp-mi-refresh.timer" in result.stdout
 
 
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit installer path rendering is Linux-host only")
 def test_apply_renders_units_idempotently_and_never_touches_other_units(fake_host):
     fake_host["systemd"].mkdir()
     other = fake_host["systemd"] / "fmp-dashboard.service"
@@ -82,7 +102,7 @@ def test_env_example_has_only_placeholders_and_documents_every_consumed_variable
         cleaned = value.split("#")[0].strip().strip('"')
         assert cleaned in {"", "0", "1", "60", "external", "127.0.0.1", "8765", "5432", "fmp", "fmp_writer", "FMP Research ops@example.com", "/root/FMP_SCREENER/outputs/precomputed"} or "CHANGE_ME" in cleaned, (name, value)
     names = {n for n, _ in assigned}
-    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "MI_FMP_FREE", "MI_ALLOW_LEGACY_FMP", "MI_EQUITY_PROVIDER", "MI_TREASURY_ENABLED", "AI_GATEWAY_EXPORT_MODE", "AI_GATEWAY_REMOTE_VALUE_SOURCES", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE"):
+    for required in ("FRED_API_KEY", "DATABASE_READONLY_URL", "AI_CONTEXT_API_TOKEN", "SEC_USER_AGENT", "MI_EDGAR_ENABLED", "MI_TRACE_ENABLED", "MI_FINRA_ENABLED", "FINRA_CLIENT_ID", "MARKET_INTELLIGENCE_DATABASE_URL", "MI_FMP_FREE", "MI_ALLOW_LEGACY_FMP", "MI_EQUITY_PROVIDER", "MI_TREASURY_ENABLED", "AI_GATEWAY_EXPORT_MODE", "AI_GATEWAY_REMOTE_VALUE_SOURCES", "AI_GATEWAY_RATE_LIMIT_PER_MINUTE", "EIA_API_KEY", "OPENFIGI_API_KEY", "MI_EIA_ENABLED", "MI_OPENFIGI_ENABLED", "MI_COT_ENABLED", "CBOE_CLIENT_ID", "CBOE_CLIENT_SECRET", "MI_CBOE_ENABLED"):
         assert required in names
     # The remote export policy must never be documented as owner-by-default.
     mode = dict(assigned).get("AI_GATEWAY_EXPORT_MODE", "").split("#")[0].strip()
@@ -143,6 +163,7 @@ def test_timer_calendar_follows_new_york_dst_and_skips_weekends(base_time, spec,
     assert match.group(1) == expected_utc
 
 
+@pytest.mark.skipif(os.name == "nt", reason="systemd unit installer path rendering is Linux-host only")
 def test_rendered_units_pass_systemd_verify_and_encode_lock_restart_and_port_semantics(fake_host):
     out = _run("--apply", "--with-api", "--no-systemctl", "--root", str(fake_host["root"]), "--user", "svc", "--env-file", str(fake_host["env"]), "--api-env-file", str(fake_host["api_env"]), "--systemd-dir", str(fake_host["systemd"]), cwd=ROOT)
     assert out.returncode == 0, out.stderr
@@ -493,6 +514,7 @@ def test_update_protected_env_preserves_other_keys_and_does_not_print_the_value(
     assert "generated-readonly-url-not-real" not in out.stdout
 
 
+@pytest.mark.skipif(os.name == "nt", reason="Git Bash on NTFS cannot represent unix 0600 for the provision script's stat check")
 def test_digitalocean_secret_script_is_dry_run_by_default_and_never_activates(tmp_path):
     script = ROOT / "scripts" / "provision_digitalocean_mi_secrets.sh"
     env_file = tmp_path / "market_intelligence.env"
@@ -500,15 +522,71 @@ def test_digitalocean_secret_script_is_dry_run_by_default_and_never_activates(tm
     os.chmod(env_file, 0o600)
     key = tmp_path / "fred_api_key"
     key.write_text("not-a-real-fred-key\n")
-    os.chmod(key, 0o600)
-    dry = subprocess.run(["bash", str(script), "--env-file", str(env_file), "--fred-key-file", str(key), "--root", str(ROOT)], capture_output=True, text=True, check=False)
+    _chmod600(key)
+    dry = subprocess.run([_bash_exe(), str(script), "--env-file", str(env_file), "--fred-key-file", str(key), "--root", str(ROOT)], capture_output=True, text=True, check=False)
     assert dry.returncode == 0, dry.stderr
     assert "DRY RUN" in dry.stdout and "will NOT" in dry.stdout
     assert env_file.read_text() == "FRED_API_KEY=CHANGE_ME\nDATABASE_URL=postgresql://writer:keep@127.0.0.1/fmp\n"
     assert "not-a-real-fred-key" not in dry.stdout
-    applied = subprocess.run(["bash", str(script), "--apply", "--env-file", str(env_file), "--fred-key-file", str(key), "--root", str(ROOT)], capture_output=True, text=True, check=False)
+    applied = subprocess.run([_bash_exe(), str(script), "--apply", "--env-file", str(env_file), "--fred-key-file", str(key), "--root", str(ROOT)], capture_output=True, text=True, check=False)
     assert applied.returncode == 0, applied.stderr
     text = env_file.read_text()
     assert "FRED_API_KEY=not-a-real-fred-key" in text
     assert "DATABASE_URL=postgresql://writer:keep@127.0.0.1/fmp" in text
     assert "systemctl" not in applied.stdout and "not-a-real-fred-key" not in applied.stdout
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Git Bash on NTFS cannot represent unix 0600 for the provision script's stat check")
+def test_digitalocean_secret_script_preserves_existing_key_without_rotate(tmp_path):
+    script = ROOT / "scripts" / "provision_digitalocean_mi_secrets.sh"
+    env_file = tmp_path / "market_intelligence.env"
+    env_file.write_text("FRED_API_KEY=keep-existing-fred-canary\nEIA_API_KEY=CHANGE_ME\n")
+    os.chmod(env_file, 0o600)
+    fred = tmp_path / "fred_api_key"
+    fred.write_text("replacement-fred-canary\n")
+    _chmod600(fred)
+    eia = tmp_path / "eia_api_key"
+    eia.write_text("replacement-eia-canary\n")
+    _chmod600(eia)
+    applied = subprocess.run(
+        [_bash_exe(), str(script), "--apply", "--env-file", str(env_file), "--fred-key-file", str(fred), "--eia-key-file", str(eia), "--root", str(ROOT)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert applied.returncode == 0, applied.stderr
+    text = env_file.read_text()
+    assert "FRED_API_KEY=keep-existing-fred-canary" in text
+    assert "EIA_API_KEY=replacement-eia-canary" in text
+    assert "replacement-fred-canary" not in text
+    assert "replacement-eia-canary" not in applied.stdout
+    rotated = subprocess.run(
+        [_bash_exe(), str(script), "--apply", "--rotate", "--env-file", str(env_file), "--fred-key-file", str(fred), "--root", str(ROOT)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rotated.returncode == 0, rotated.stderr
+    assert "FRED_API_KEY=replacement-fred-canary" in env_file.read_text()
+    assert "replacement-fred-canary" not in rotated.stdout
+
+
+def test_provision_mi_provider_keys_workflow_is_dispatch_only_and_does_not_activate():
+    raw = (ROOT / ".github" / "workflows" / "provision_mi_provider_keys.yml").read_text()
+    text = _yaml_without_comments(ROOT / ".github" / "workflows" / "provision_mi_provider_keys.yml")
+    assert "pull_request:" not in text and "pull_request_target" not in text
+    assert "workflow_dispatch:" in text
+    assert "secrets.DO_SSH_KNOWN_HOSTS" in raw
+    assert "ssh-keyscan -H" not in raw
+    assert "ssh-keyscan -" not in raw
+    assert "systemctl" not in raw
+    assert "MI_EIA_ENABLED=1" not in raw
+    assert "MI_OPENFIGI_ENABLED=1" not in raw
+    assert "eia_flag_unchanged=1" in raw
+    assert "services_not_restarted=1" in raw
+    assert "secrets.EIA_API_KEY" in raw and "secrets.OPENFIGI_API_KEY" in raw
+    assert "secrets.CBOE_CLIENT_ID" in raw and "secrets.CBOE_CLIENT_SECRET" in raw
+    assert "MI_CBOE_ENABLED=1" not in raw
+    assert "provision_digitalocean_mi_secrets.sh" in raw
+    pr = _yaml_without_comments(ROOT / ".github" / "workflows" / "pr_validation.yml")
+    assert "secrets.EIA_API_KEY" not in pr and "secrets.OPENFIGI_API_KEY" not in pr

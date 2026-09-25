@@ -47,6 +47,10 @@ scripts/provision_digitalocean_mi_secrets.sh --apply \
 - Creates `/etc/fmp/market_intelligence.env` from the example if it is missing
   (still placeholders for writer DB / API token).
 - Sets `FRED_API_KEY` from the protected file.
+- Optionally sets `EIA_API_KEY` / `OPENFIGI_API_KEY` from `--eia-key-file` /
+  `--openfigi-key-file`. Existing non-placeholder values are preserved unless
+  `--rotate` is passed. Key presence does **not** set `MI_EIA_ENABLED` or
+  `MI_OPENFIGI_ENABLED`.
 - Leaves every other existing assignment untouched.
 - Does not enable timers, does not run `market_intelligence_refresh`, does not
   open the API to the network.

@@ -277,6 +277,7 @@ def test_drop_incomplete_current_session():
 def test_historical_failure_classification():
     assert classify_historical_failure([{"error_code": 420, "error_string": "pacing"}]) == STATUS_PACING
     assert classify_historical_failure([{"error_code": 354, "kind": "entitlement"}]) == STATUS_NO_ENTITLEMENT
+    assert classify_historical_failure([{"error_code": 10167, "error_string": "Requested market data is not subscribed"}]) != STATUS_NO_ENTITLEMENT
     assert classify_historical_failure([{"error_code": 200}]) == STATUS_INVALID
     assert classify_historical_failure([{"error_code": 162, "error_string": "HMDS query returned no data"}]) == STATUS_NO_DATA
     assert classify_historical_failure([{"error_code": 321, "error_string": "ADJUSTED_LAST end date rejected"}]) == STATUS_ADJUSTED_LAST_REJECTED

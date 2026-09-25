@@ -63,6 +63,15 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         file_path="pages/13_Credit_Overview.py",
     ),
     PageSpec(
+        "options",
+        "Options",
+        "Markets",
+        "Options",
+        render_name="render_options",
+        legacy_path="pages/20_Options.py",
+        file_path="pages/20_Options.py",
+    ),
+    PageSpec(
         "order_flow",
         "Order Flow",
         "Markets",
@@ -70,6 +79,15 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         render_name="render_order_flow",
         legacy_path="pages/18_Order_Flow.py",
         file_path="pages/18_Order_Flow.py",
+    ),
+    PageSpec(
+        "market_hub",
+        "Market Hub",
+        "Markets",
+        "Market_Hub",
+        render_name="render_market_hub",
+        legacy_path="pages/19_Market_Hub.py",
+        file_path="pages/19_Market_Hub.py",
     ),
     PageSpec(
         "macro",

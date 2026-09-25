@@ -26,6 +26,8 @@ LIVE_ENABLED = os.environ.get("IBKR_LIVE_EOD", "").strip() == "1"
 @pytest.mark.skipif(not LIVE_ENABLED, reason="IBKR_LIVE_EOD not set; live TWS test skipped")
 def test_bounded_live_adjusted_last_daily_bars():
     detected = detect_local_tws_port()
+    if detected.get("error"):
+        pytest.skip(detected["error"])
     port = detected.get("port")
     if not port:
         pytest.skip("no localhost TWS on {0}".format(",".join(str(p) for p in LOCAL_TWS_PORTS)))

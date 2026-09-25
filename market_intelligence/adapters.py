@@ -198,7 +198,87 @@ class EdgarAdapter:
         return self._get_json("/api/xbrl/companyfacts/CIK{0}.json".format(self.normalize_cik(cik)), env=env)
 
 
-ADAPTERS = (IBKRMarketDataAdapter(), TraceAdapter(), EdgarAdapter())
+class EIAAdapter:
+    """Official EIA v2. Credential presence is not activation."""
+
+    source_id = "EIA"
+    ENABLE_FLAG = "MI_EIA_ENABLED"
+    KEY_ENV = "EIA_API_KEY"
+    CAPABILITIES = {"catalog": "eia_market_hub_v1 petroleum inventories, NG storage, RTO demand/generation/interchange", "hub_prices": "UNAVAILABLE"}
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        from market_intelligence.eia_client import api_key_from_env, enabled_from_env
+
+        key = api_key_from_env(env)
+        flag = enabled_from_env(env)
+        if not key:
+            status, reason, enabled = ACCESS_CONFIGURATION_REQUIRED, "EIA_API_KEY absent", False
+        elif not flag:
+            status, reason, enabled = ACCESS_DISABLED, "MI_EIA_ENABLED not set; key presence is not activation", False
+        else:
+            status, reason, enabled = ACCESS_CONFIGURED, "key present and adapter enabled", True
+        return AdapterStatus(self.source_id, status, enabled, reason, (self.KEY_ENV, self.ENABLE_FLAG), dict(self.CAPABILITIES))
+
+
+class OpenFIGIAdapter:
+    """OpenFIGI mapping. Credential presence is not activation."""
+
+    source_id = "OPENFIGI"
+    ENABLE_FLAG = "MI_OPENFIGI_ENABLED"
+    KEY_ENV = "OPENFIGI_API_KEY"
+    CAPABILITIES = {"mapping": "bounded event-driven jobs", "universe": "not an authoritative security master"}
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        from market_intelligence.openfigi_client import api_key_from_env, enabled_from_env
+
+        key = api_key_from_env(env)
+        flag = enabled_from_env(env)
+        if not key:
+            status, reason, enabled = ACCESS_CONFIGURATION_REQUIRED, "OPENFIGI_API_KEY absent", False
+        elif not flag:
+            status, reason, enabled = ACCESS_DISABLED, "MI_OPENFIGI_ENABLED not set; key presence is not activation", False
+        else:
+            status, reason, enabled = ACCESS_CONFIGURED, "key present and adapter enabled", True
+        return AdapterStatus(self.source_id, status, enabled, reason, (self.KEY_ENV, self.ENABLE_FLAG), dict(self.CAPABILITIES))
+
+
+class CboeAdapter:
+    """Cboe LiveVol All Access. Credential presence is not activation. Streamlit never calls this."""
+
+    source_id = "CBOE_ALL_ACCESS"
+    ENABLE_FLAG = "MI_CBOE_ENABLED"
+    CREDENTIAL_ENV = ("CBOE_CLIENT_ID", "CBOE_CLIENT_SECRET")
+    CAPABILITIES = {
+        "auth": "OAuth client_credentials at id.livevol.com",
+        "vix": "underlying-quotes index levels",
+        "vix_term_structure": "VIX index tenors, not futures",
+        "spx_skew": "filtered SPX 25-delta snapshot",
+        "iv_rv": "iv30 or VIX minus SPX RV20",
+    }
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        from market_intelligence.cboe_client import probe_status
+
+        status, reason, enabled = probe_status(env)
+        return AdapterStatus(self.source_id, status, enabled, reason, self.CREDENTIAL_ENV + (self.ENABLE_FLAG,), dict(self.CAPABILITIES))
+
+
+class COTAdapter:
+    """CFTC Public Reporting Environment. No API key; still requires MI_COT_ENABLED."""
+
+    source_id = "CFTC_COT"
+    ENABLE_FLAG = "MI_COT_ENABLED"
+    CAPABILITIES = {"tff_futonly": "gpe5-46if", "disaggregated_futonly": "72hh-3qpy", "combined": "catalogued not ingested"}
+
+    def probe(self, env: Mapping[str, str]) -> AdapterStatus:
+        from market_intelligence.cot_client import enabled_from_env
+
+        if not enabled_from_env(env):
+            return AdapterStatus(self.source_id, ACCESS_DISABLED, False, "MI_COT_ENABLED not set", (self.ENABLE_FLAG,), dict(self.CAPABILITIES))
+        return AdapterStatus(self.source_id, ACCESS_CONFIGURED, True, "public PRE enabled", (self.ENABLE_FLAG,), dict(self.CAPABILITIES))
+
+
+ADAPTERS = (IBKRMarketDataAdapter(), TraceAdapter(), EdgarAdapter(), EIAAdapter(), OpenFIGIAdapter(), COTAdapter(), CboeAdapter())
 
 
 def probe_all(env: Mapping[str, str]) -> dict[str, AdapterStatus]:
@@ -216,8 +296,12 @@ __all__ = [
     "ADAPTERS",
     "AdapterDisabled",
     "AdapterStatus",
+    "CboeAdapter",
+    "COTAdapter",
+    "EIAAdapter",
     "EdgarAdapter",
     "IBKRMarketDataAdapter",
+    "OpenFIGIAdapter",
     "TraceAdapter",
     "probe_all",
 ]

@@ -605,6 +605,11 @@ def build_and_publish(engine, *, parent_run_id: str | None = None, requested_cut
                 stored_body = stored["snapshot_json"] if isinstance(stored["snapshot_json"], dict) else body
 
                 def _iso(value: Any) -> str:
+                    # PostgreSQL timestamptz round-trips in the session TZ; canonical
+                    # snapshot identity is UTC, matching the frozen snapshot_json body.
+                    if hasattr(value, "astimezone"):
+                        aware = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+                        return aware.astimezone(timezone.utc).isoformat()
                     if hasattr(value, "isoformat"):
                         return value.isoformat()
                     return str(value)
@@ -616,9 +621,9 @@ def build_and_publish(engine, *, parent_run_id: str | None = None, requested_cut
                     completeness=stored["completeness"],
                     sections_status=stored["sections_status"] or stored_body.get("sections_status") or {},
                     published_new=False,
-                    generated_at=_iso(stored["generated_at"]),
-                    cutoff_at=_iso(stored["cutoff_at"]),
-                    as_of_date=_iso(stored["as_of_date"])[:10],
+                    generated_at=stored_body.get("generated_at") or _iso(stored["generated_at"]),
+                    cutoff_at=stored_body.get("cutoff_at") or _iso(stored["cutoff_at"]),
+                    as_of_date=(stored_body.get("as_of_date") or _iso(stored["as_of_date"]))[:10],
                     body=stored_body,
                 )
             snapshot_id = "mc_{0}".format(sha[:20])

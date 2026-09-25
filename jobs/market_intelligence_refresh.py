@@ -123,11 +123,41 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "step": "equity",
                 "source_id": "EQUITY_EOD",
                 "configured": equity_ok,
-                "provider": equity_adapter.source_id,
                 "action": "ingest" if equity_ok else ("skip_unconfigured" if want_all else "fail_unconfigured"),
-                "reason": equity_adapter.reason,
             }
         )
+    from market_intelligence.eia_client import EIA_SOURCE_ID, api_key_from_env as eia_key, enabled_from_env as eia_on
+    from market_intelligence.cot_client import CFTC_SOURCE_ID, enabled_from_env as cot_on
+    from market_intelligence.openfigi_client import OPENFIGI_SOURCE_ID, api_key_from_env as figi_key, enabled_from_env as figi_on
+    from market_intelligence.adapters import EDGAR_SOURCE_ID
+
+    want_eia = bool(getattr(args, "eia", False))
+    want_cot = bool(getattr(args, "cot", False))
+    want_figi = bool(getattr(args, "openfigi", False))
+    want_edgar = bool(getattr(args, "edgar", False))
+    if want_eia or want_all:
+        eia_ok = bool(eia_key(env)) and eia_on(env)
+        steps.append({"step": "eia", "source_id": EIA_SOURCE_ID, "configured": eia_ok, "action": "ingest" if eia_ok else ("skip_unconfigured" if want_all or not want_eia else "fail_unconfigured")})
+    if want_cot or want_all:
+        cot_ok = cot_on(env)
+        steps.append({"step": "cot", "source_id": CFTC_SOURCE_ID, "configured": cot_ok, "action": "ingest" if cot_ok else ("skip_unconfigured" if want_all or not want_cot else "fail_unconfigured")})
+    if want_figi or want_all:
+        figi_ok = figi_on(env) and bool(figi_key(env))
+        steps.append({"step": "openfigi", "source_id": OPENFIGI_SOURCE_ID, "configured": figi_ok, "action": "ingest" if figi_ok else ("skip_unconfigured" if want_all or not want_figi else "fail_unconfigured")})
+    from market_intelligence.cboe_client import SOURCE_ID as CBOE_SOURCE_ID
+    from market_intelligence.cboe_client import credentials_from_env as cboe_credentials
+    from market_intelligence.cboe_client import enabled_from_env as cboe_on
+
+    want_cboe = bool(getattr(args, "cboe", False))
+    if want_cboe or want_all:
+        cboe_id, cboe_secret = cboe_credentials(env)
+        cboe_ok = bool(cboe_id and cboe_secret) and cboe_on(env)
+        steps.append({"step": "cboe", "source_id": CBOE_SOURCE_ID, "configured": cboe_ok, "action": "ingest" if cboe_ok else ("skip_unconfigured" if want_all or not want_cboe else "fail_unconfigured")})
+    if want_edgar or want_all:
+        from market_intelligence.adapters import EdgarAdapter
+
+        edgar_ok = EdgarAdapter().probe(env).enabled
+        steps.append({"step": "edgar", "source_id": EDGAR_SOURCE_ID, "configured": edgar_ok, "action": "ingest" if edgar_ok else ("skip_unconfigured" if want_all or not want_edgar else "fail_unconfigured")})
     if args.build_analytics or want_all:
         steps.append({"step": "build_analytics", "action": "compute"})
     if args.build_morning or want_all:
@@ -158,6 +188,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
     parser.add_argument("--equity", action="store_true", help="Ingest independent equity/ETF daily bars")
+    parser.add_argument("--eia", action="store_true", help="Ingest official EIA v2 catalog (requires MI_EIA_ENABLED and EIA_API_KEY)")
+    parser.add_argument("--cot", action="store_true", help="Ingest CFTC COT futures-only datasets (requires MI_COT_ENABLED)")
+    parser.add_argument("--openfigi", action="store_true", help="Resolve a bounded OpenFIGI mapping batch (requires MI_OPENFIGI_ENABLED)")
+    parser.add_argument("--edgar", action="store_true", help="Ingest bounded SEC EDGAR facts (requires MI_EDGAR_ENABLED and SEC_USER_AGENT)")
+    parser.add_argument("--cboe", action="store_true", help="Ingest Cboe VIX, term structure, 25-delta SPX skew, and IV-RV (requires MI_CBOE_ENABLED)")
     parser.add_argument("--build-analytics", action="store_true", help="Recompute versioned analytics")
     parser.add_argument("--build-morning", action="store_true", help="Build and publish a morning context snapshot")
     parser.add_argument("--all-configured", action="store_true", help="Run every configured step; disabled sources are explicit skips")
@@ -177,8 +212,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--build-analytics/--build-morning/--all-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.eia, args.cot, args.openfigi, args.edgar, args.cboe, args.build_analytics, args.build_morning, args.all_configured, args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--eia/--cot/--openfigi/--edgar/--cboe/--build-analytics/--build-morning/--all-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -219,9 +254,22 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
 def _probe(engine) -> dict[str, Any]:
     from market_intelligence.finra_client import configured_from_env as finra_configured_from_env
 
+    from market_intelligence.eia_client import api_key_from_env as eia_key, enabled_from_env as eia_on
+    from market_intelligence.openfigi_client import api_key_from_env as figi_key, enabled_from_env as figi_on
+    from market_intelligence.cot_client import enabled_from_env as cot_on
+    from market_intelligence.cboe_client import credentials_from_env as cboe_credentials, enabled_from_env as cboe_on
+
     probe: dict[str, Any] = {
         "fred_api_key_present": api_key_from_env() is not None,
         "finra_credentials_present": finra_configured_from_env(),
+        "eia_api_key_present": eia_key() is not None,
+        "openfigi_api_key_present": figi_key() is not None,
+        "eia_enabled": eia_on(),
+        "openfigi_enabled": figi_on(),
+        "cot_enabled": cot_on(),
+        "cboe_credentials_present": all(cboe_credentials()),
+        "cboe_enabled": cboe_on(),
+        "note": "key presence is not activation",
     }
     try:
         if engine is None:
@@ -265,7 +313,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             continue  # Windows collector owns this row; FRED refresh must not clobber it
         if source_id in {FINRA_QUERY_SOURCE_ID, FINRA_TRACE_SOURCE_ID}:
             continue
-        enabled[source_id] = False
+        enabled[source_id] = bool(probe.enabled)
         access[source_id] = probe.access_status
     status["external_adapters"] = {sid: {"access_status": p.access_status, "reason": p.reason} for sid, p in adapter_status.items()}
     with engine.begin() as conn:
@@ -332,6 +380,47 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 report = ingest_equity_eod(engine, parent_run_id=parent_run_id, today=as_of, env=env)
                 status["results"][name] = report.as_dict()
                 if report.failed:
+                    failures += 1
+            elif name == "eia":
+                from market_intelligence.eia_client import EIAClient, api_key_from_env as eia_key
+                from market_intelligence.ingest_eia import ingest_eia_catalog
+
+                report = ingest_eia_catalog(engine, EIAClient(eia_key(env)), parent_run_id=parent_run_id)
+                status["results"][name] = report
+                if report.get("failed"):
+                    failures += 1
+            elif name == "cot":
+                from market_intelligence.cot_client import COTClient
+                from market_intelligence.ingest_cot import ingest_cot
+
+                report = ingest_cot(engine, COTClient(), parent_run_id=parent_run_id)
+                status["results"][name] = report
+                if report.get("failed"):
+                    failures += 1
+            elif name == "openfigi":
+                from market_intelligence.openfigi_client import OpenFIGIClient, api_key_from_env as figi_key
+                from market_intelligence.ingest_openfigi import persist_mapping_results
+
+                client = OpenFIGIClient(figi_key(env), min_interval_s=0.3)
+                mapped = client.map_jobs([{"idType": "TICKER", "idValue": "SPY", "exchCode": "US"}, {"idType": "TICKER", "idValue": "ZZ-NOT-A-FIGI", "exchCode": "US"}])
+                with engine.begin() as conn:
+                    status["results"][name] = persist_mapping_results(conn, mapped)
+            elif name == "cboe":
+                from market_intelligence.cboe_client import CboeClient, credentials_from_env as cboe_credentials
+                from market_intelligence.ingest_cboe import ingest_cboe
+
+                client_id, client_secret = cboe_credentials(env)
+                report = ingest_cboe(engine, CboeClient(client_id, client_secret), parent_run_id=parent_run_id, today=as_of)
+                status["results"][name] = report
+                if report.get("failed"):
+                    failures += 1
+            elif name == "edgar":
+                from market_intelligence.adapters import EdgarAdapter
+                from market_intelligence.ingest_sec import ingest_sec
+
+                report = ingest_sec(engine, EdgarAdapter(), env=env, parent_run_id=parent_run_id)
+                status["results"][name] = report
+                if report.get("failed"):
                     failures += 1
             elif name == "build_analytics":
                 from market_intelligence.analytics import build_analytics, last_analytics_run_at

@@ -846,6 +846,50 @@ def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
     }
 
 
+def market_hub_overview(conn) -> dict[str, Any]:
+    if not _view_exists(conn, "mi_v_market_hub_overview"):
+        return {"available": False, "reason": "market hub views not migrated"}
+    rows = _rows(conn, "SELECT * FROM mi_v_market_hub_overview LIMIT 1")
+    payload = rows[0] if rows else {}
+    payload["available"] = True
+    payload["eia"] = _rows(conn, "SELECT series_id, observation_date, units, status FROM mi_v_eia_latest ORDER BY series_id") if _view_exists(conn, "mi_v_eia_latest") else []
+    payload["cot"] = _rows(conn, "SELECT contract_code, report_family, position_date, trader_category FROM mi_v_cot_latest ORDER BY position_date DESC LIMIT 50") if _view_exists(conn, "mi_v_cot_latest") else []
+    payload["events"] = _rows(conn, "SELECT event_type, disclosed_at, accession FROM mi_v_corporate_events_recent ORDER BY disclosed_at DESC NULLS LAST LIMIT 20") if _view_exists(conn, "mi_v_corporate_events_recent") else []
+    payload["derived"] = _rows(conn, "SELECT method_id, subject_key, status, units, missing_reason FROM mi_v_derived_latest") if _view_exists(conn, "mi_v_derived_latest") else []
+    payload["export_scope"] = "INTERNAL_SUMMARY"
+    return payload
+
+
+def options_context(conn) -> dict[str, Any]:
+    """Latest Cboe volatility metrics and a short history. Missing values stay null."""
+    if not _view_exists(conn, "mi_v_cboe_vol_latest"):
+        return {"available": False, "reason": "No Cboe volatility views have been published on this database yet.", "latest": [], "history": [], "health": []}
+    latest = _rows(conn, "SELECT * FROM mi_v_cboe_vol_latest ORDER BY metric_id")
+    history = _rows(
+        conn,
+        """
+        SELECT * FROM mi_v_cboe_vol_history
+        WHERE metric_id IN ('VIX_SPOT', 'SPX_IV30_MINUS_SPX_RV20', 'VIX_MINUS_SPX_RV20', 'SPX_REALIZED_VOL_20D', 'SPX_IV30')
+        ORDER BY metric_id, as_of
+        """,
+    )
+    health = _rows(
+        conn,
+        """
+        SELECT * FROM mi_v_source_health
+        WHERE source_id = 'CBOE_ALL_ACCESS'
+        ORDER BY freshness_dataset
+        """,
+    )
+    return {"available": True, "reason": None, "latest": latest, "history": history, "health": health}
+
+
+def capability_matrix(conn) -> list[dict[str, Any]]:
+    if not _view_exists(conn, "mi_v_capability_matrix"):
+        return []
+    return _rows(conn, "SELECT * FROM mi_v_capability_matrix ORDER BY domain, capability_id")
+
+
 def _view_exists(conn, name: str) -> bool:
     return bool(conn.execute(text("SELECT 1 FROM information_schema.views WHERE table_name = :n"), {"n": name}).first())
 
@@ -900,7 +944,10 @@ __all__ = [
     "sector_latest",
     "sectors_context",
     "ops_status",
+    "options_context",
     "source_health",
     "strategies_context",
     "strategy_summary",
+    "market_hub_overview",
+    "capability_matrix",
 ]

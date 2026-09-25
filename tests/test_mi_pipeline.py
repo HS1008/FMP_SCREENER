@@ -44,7 +44,7 @@ GENERATED_AT = datetime(2025, 1, 2, 11, 30, tzinfo=timezone.utc)
 # so the module pins that clock to GENERATED_AT (a test seam on a private function, not a
 # production knob); clock-advancement tests move it forward explicitly.
 CAPTURE_CLOCK = {"now": GENERATED_AT}
-MI_PAGES = sorted(p for p in PAGES.glob("1[0-8]_*.py"))
+MI_PAGES = sorted(p for p in PAGES.glob("1[0-9]_*.py"))
 
 
 def _boom(*_a, **_k):
@@ -814,7 +814,7 @@ def test_pages_render_populated_state_db_only(consumer, page):
     text_out = _texts(at)
     assert at.title[0].value
     assert len(at.dataframe) >= 1, "each page shows at least one table when data exists"
-    if page.stem not in {"14_Sector_Rotation_V2", "15_Data_Health", "17_PIT_Sector_Internals", "18_Order_Flow"}:
+    if page.stem not in {"14_Sector_Rotation_V2", "15_Data_Health", "17_PIT_Sector_Internals", "18_Order_Flow", "19_Market_Hub"}:
         assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in text_out
     if page.stem == "10_Market_Pulse":
         assert "not labeled as overnight" in text_out.lower() or "quotes" in text_out.lower()
@@ -829,6 +829,9 @@ def test_pages_render_populated_state_db_only(consumer, page):
     if page.stem == "18_Order_Flow":
         assert "Corporate Bond Trading Activity" in text_out
         assert "not a live order book" in text_out.lower()
+    if page.stem == "19_Market_Hub":
+        assert "transitional fallback" in text_out.lower()
+        assert "dealer gex" in text_out.lower()
 
 
 def test_dashboard_entry_point_overview_links_use_registry(consumer):
@@ -922,7 +925,7 @@ def test_refresh_dry_run_makes_no_calls_and_no_writes(pg_engine, populated, caps
     code = run(["--all-configured", "--dry-run", "--json"], engine=pg_engine, fred_client_factory=lambda: _boom(), env={"FRED_API_KEY": "not-used", "DATABASE_URL": "x"})
     out = json.loads(capsys.readouterr().out)
     assert code == 0 and out["status"] == "DRY_RUN_VALIDATED"
-    assert [s["step"] for s in out["plan"]["steps"]] == ["fred", "finra", "treasury", "equity", "build_analytics", "build_morning"]
+    assert [s["step"] for s in out["plan"]["steps"]] == ["fred", "finra", "treasury", "equity", "eia", "cot", "openfigi", "edgar", "build_analytics", "build_morning"]
     assert "not-used" not in json.dumps(out)
     with pg_engine.connect() as conn:
         assert conn.execute(text("SELECT COUNT(*) FROM mi_ingestion_runs")).scalar() == before

@@ -36,9 +36,9 @@ def _read_stdio_message() -> dict[str, Any] | None:
 
 
 def _write_stdio_message(payload: dict[str, Any]) -> None:
+    """Write one MCP stdio frame as newline-delimited JSON."""
     encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    sys.stdout.buffer.write("Content-Length: {0}\r\n\r\n".format(len(encoded)).encode("ascii"))
-    sys.stdout.buffer.write(encoded)
+    sys.stdout.buffer.write(encoded + b"\n")
     sys.stdout.buffer.flush()
 
 

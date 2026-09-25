@@ -32,11 +32,37 @@ SIZE_TICKS = {
     0: "bid_size",
     3: "ask_size",
     5: "last_size",
+    8: "volume",
+    27: "option_call_oi",
+    28: "option_put_oi",
+    29: "option_call_volume",
+    30: "option_put_volume",
     69: "bid_size",
     70: "ask_size",
     71: "last_size",
+    76: "volume",
+    86: "open_interest",
 }
 TIMESTAMP_TICKS = {45: "last_timestamp", 88: "last_timestamp"}
+GENERIC_TICKS = {
+    23: "option_historical_vol",
+    24: "option_implied_vol",
+    86: "open_interest",
+}
+OPTION_COMPUTATION_TICKS = {
+    10: "bid",
+    11: "ask",
+    12: "last",
+    13: "model",
+    80: "delayed_bid",
+    81: "delayed_ask",
+    82: "delayed_last",
+    83: "delayed_model",
+}
+# Ordinary snapshot=True market-data requests do not support generic ticks.
+# Generic ticks used only on bounded streaming requests (never snapshot=True).
+# 258 (fundamentals/NAV) is omitted: this collector is not entitled and must not request it.
+STREAMING_GENERIC_TICKS = "101,105,106,165,221,225,233,236"
 DELAYED_TICK_IDS = frozenset({66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 88})
 
 INFORMATIONAL_ERROR_CODES = frozenset(
@@ -52,9 +78,11 @@ INFORMATIONAL_ERROR_CODES = frozenset(
         2174,
         2100,
         2188,  # up-to-the-second historical bars need a streaming subscription; EOD bars may still follow
+        10167,  # live not subscribed; delayed may still be delivered
     }
 )
-ENTITLEMENT_ERROR_CODES = frozenset({354, 10089, 10167, 10168, 10197, 10225, 2186})
+ENTITLEMENT_ERROR_CODES = frozenset({354, 10089, 10168, 10197, 10225, 2186})
+DELAYED_NOTICE_ERROR_CODES = frozenset({10167})
 CONNECTIVITY_ERROR_CODES = frozenset({502, 504, 1100, 1300, 2110, 326, 507, 1101, 1102})
 PACING_ERROR_CODES = frozenset({420})
 HISTORICAL_ERROR_CODES = frozenset({162, 165, 366})
@@ -131,7 +159,7 @@ def market_data_type_label(code: int | None) -> str:
 
 
 def classify_error(code: int) -> str:
-    if code in INFORMATIONAL_ERROR_CODES:
+    if code in INFORMATIONAL_ERROR_CODES or code in DELAYED_NOTICE_ERROR_CODES:
         return "info"
     if code in ENTITLEMENT_ERROR_CODES:
         return "entitlement"

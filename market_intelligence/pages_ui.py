@@ -724,6 +724,30 @@ def render_data_health() -> None:
     elif collectors:
         st.caption("Collector registered, but no quotes have been persisted yet.")
 
+    capabilities = load_or_stop("capability_matrix")
+    if capabilities:
+        with st.expander("Capability matrix"):
+            st.caption("Implementation status is not production enablement. Local TWS success is not DigitalOcean readiness.")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Capability": row.get("capability_id"),
+                            "Domain": row.get("domain"),
+                            "Status": row.get("status"),
+                            "Activation": row.get("activation_state"),
+                            "Validated": row.get("environment_validated") or "—",
+                            "Production": row.get("production_enabled"),
+                            "Rights": row.get("rights_scope") or "—",
+                            "Blocker": row.get("blocker") or "—",
+                        }
+                        for row in capabilities
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
     quarantine = ctx.get("quarantine") or []
     finra_quarantine = ctx.get("finra_quarantine") or []
     if quarantine or finra_quarantine:
@@ -1033,6 +1057,202 @@ def render_order_flow() -> None:
             st.caption(notes[0])
 
 
+def _cboe_row(latest: list[dict[str, Any]], metric_id: str) -> dict[str, Any] | None:
+    for row in latest:
+        if row.get("metric_id") == metric_id:
+            return row
+    return None
+
+
+def _cboe_number(row: dict[str, Any] | None) -> Any:
+    if not row or row.get("status") != "OK":
+        return None
+    value = row.get("value")
+    if value is None:
+        return None
+    return value
+
+
+def render_options() -> None:
+    ctx = load_or_stop("options_context")
+    latest = list(ctx.get("latest") or [])
+    history = list(ctx.get("history") or [])
+    health = list(ctx.get("health") or [])
+    vix = _cboe_row(latest, "VIX_SPOT")
+    skew = _cboe_row(latest, "SPX_25D_SKEW")
+    spread = _cboe_row(latest, "SPX_IV30_MINUS_SPX_RV20") or _cboe_row(latest, "VIX_MINUS_SPX_RV20")
+    slope = _cboe_row(latest, "VIX_INDEX_FRONT_TO_BACK")
+    as_of = None
+    if vix and vix.get("as_of"):
+        as_of = str(vix.get("as_of"))
+    page_header(
+        "Options",
+        "Stored Cboe volatility. Provider observation time and ingestion time are separate. This is not a live quote and not a trading signal.",
+        fred=False,
+        as_of=as_of,
+    )
+    if not ctx.get("available"):
+        st.info(ctx.get("reason") or "No Cboe volatility views have been published.")
+        return
+    stale = [row for row in health if str(row.get("freshness_status") or "").upper() == "STALE"]
+    failed = [row for row in health if str(row.get("transport_status") or "").upper() in {"FAILED", "AUTH_FAILED", "ENTITLEMENT_REQUIRED", "TRIAL_LIMIT", "RATE_LIMITED", "UNAVAILABLE", "PARTIAL"}]
+    if stale or failed:
+        st.warning("Stored snapshot is not a live quote. See Data Health for auth, trial, or publication lag.")
+
+    detail = (vix or {}).get("detail_json") or {}
+    if isinstance(detail, str):
+        import json as _json
+
+        detail = _json.loads(detail)
+    observed = (vix or {}).get("provider_observation_ts") or detail.get("observation_ts")
+    ingested = (vix or {}).get("ingested_at")
+    st.caption("Provider observation: {0}".format(observed or "unavailable"))
+    st.caption("Ingested: {0}".format(ingested or "unavailable"))
+
+    curve_state = (slope or {}).get("detail_json") or {}
+    if isinstance(curve_state, str):
+        import json as _json
+
+        curve_state = _json.loads(curve_state)
+    state_name = curve_state.get("curve_state") if isinstance(curve_state, dict) else None
+    state_label = {
+        "upward_sloping": "Upward-sloping",
+        "downward_sloping": "Downward-sloping",
+        "flat": "Flat",
+    }.get(state_name, "Unavailable")
+
+    cols = st.columns(4)
+    cols[0].metric("VIX", fmt(_cboe_number(vix), "vol_points"), None if _cboe_number(vix) is None else fmt_signed((detail or {}).get("change_1d"), None))
+    cols[1].metric("25Δ SPX skew", fmt(_cboe_number(skew), "vol_points"))
+    spread_name = "IV − RV" if spread and spread.get("metric_id") == "SPX_IV30_MINUS_SPX_RV20" else "VIX − RV20"
+    if not spread or spread.get("status") != "OK":
+        spread_name = "IV − RV"
+    cols[2].metric(spread_name, fmt(_cboe_number(spread), "vol_points"))
+    cols[3].metric("VIX index curve", state_label if _cboe_number(slope) is not None else "Unavailable")
+
+    st.subheader("VIX index term structure")
+    st.caption("Volatility-index tenors (VIX9D, VIX, VIX3M, VIX6M, VIX1Y). Not a VIX futures curve.")
+    tenor_order = ["9D", "1M", "3M", "6M", "1Y"]
+    tenor_ids = {"9D": "VIX_9D", "1M": "VIX_1M", "3M": "VIX_3M", "6M": "VIX_6M", "1Y": "VIX_1Y"}
+    curve_rows = []
+    for tenor in tenor_order:
+        row = _cboe_row(latest, tenor_ids[tenor])
+        level = _cboe_number(row)
+        if level is None:
+            continue
+        curve_rows.append({"tenor": tenor, "implied_vol": float(level)})
+    if len(curve_rows) >= 2:
+        st.line_chart(pd.DataFrame(curve_rows).set_index("tenor"))
+        if as_of:
+            st.caption("Observation date {0}.".format(as_of))
+    else:
+        st.info("No VIX index term structure stored.")
+
+    st.subheader("25Δ SPX skew")
+    put = _cboe_row(latest, "SPX_25D_PUT_IV")
+    call = _cboe_row(latest, "SPX_25D_CALL_IV")
+    skew_detail = (skew or {}).get("detail_json") or {}
+    if isinstance(skew_detail, str):
+        import json as _json
+
+        skew_detail = _json.loads(skew_detail)
+    if _cboe_number(skew) is None:
+        reason = (skew_detail or {}).get("reason") if isinstance(skew_detail, dict) else None
+        st.info("25Δ SPX skew is unavailable{0}.".format("" if not reason else " ({0})".format(reason)))
+    else:
+        st.caption(
+            "Downside puts are priced {0} vol points above equivalent calls.".format(fmt(_cboe_number(skew), "vol_points"))
+        )
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Put IV": fmt(_cboe_number(put), "vol_points"),
+                        "Call IV": fmt(_cboe_number(call), "vol_points"),
+                        "Skew": fmt(_cboe_number(skew), "vol_points"),
+                        "Expiry": (skew_detail or {}).get("expiry") or "—",
+                        "DTE": (skew_detail or {}).get("dte") if (skew_detail or {}).get("dte") is not None else "—",
+                        "Status": (skew or {}).get("status") or "—",
+                    }
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.subheader("Implied minus realized")
+    iv_row = _cboe_row(latest, "SPX_IV30") or _cboe_row(latest, "VIX_SPOT")
+    rv_row = _cboe_row(latest, "SPX_REALIZED_VOL_20D")
+    if _cboe_number(spread) is None:
+        st.info("IV minus realized volatility is unavailable.")
+    else:
+        construction = spread.get("metric_id")
+        if construction == "SPX_IV30_MINUS_SPX_RV20":
+            st.caption("30-day average SPX implied volatility is {0} vol points versus 20-day SPX realized volatility. This is not VIX.".format(fmt(_cboe_number(spread), "vol_points")))
+        else:
+            st.caption("VIX is {0} vol points versus 20-day SPX realized volatility. This is not ATM implied volatility.".format(fmt(_cboe_number(spread), "vol_points")))
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "Implied": fmt(_cboe_number(iv_row), "vol_points"),
+                        "RV20": fmt(_cboe_number(rv_row), "vol_points"),
+                        "Spread": fmt(_cboe_number(spread), "vol_points"),
+                        "Construction": construction,
+                    }
+                ]
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+    spread_id = spread.get("metric_id") if spread else "SPX_IV30_MINUS_SPX_RV20"
+    spread_history = [row for row in history if row.get("metric_id") == spread_id and row.get("value") is not None]
+    if spread_history:
+        history_chart(spread_history, x="as_of", y="value", title="IV minus realized", units="vol points")
+
+    vix_history = [row for row in history if row.get("metric_id") == "VIX_SPOT" and row.get("value") is not None]
+    if vix_history:
+        history_chart(vix_history, x="as_of", y="value", title="VIX", units="vol points")
+
+
+def render_market_hub() -> None:
+    hub = load_or_stop("market_hub_overview")
+    page_header(
+        "Market Hub",
+        "Current-context energy, positioning, events, and derived coverage. Missing prerequisites stay unavailable.",
+        fred=False,
+    )
+    if not hub or not hub.get("available"):
+        st.info(hub.get("reason") if isinstance(hub, dict) else "No Market Hub views have been published on this database yet.")
+        return
+    st.caption("Counts are coverage diagnostics, not a risk-on score. FMP remains the transitional fallback.")
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "EIA series with values": display_cell(hub.get("eia_series_with_values")),
+                    "COT rows": display_cell(hub.get("cot_rows")),
+                    "SEC metrics OK": display_cell(hub.get("sec_metrics_ok")),
+                    "Derived OK": display_cell(hub.get("derived_ok")),
+                }
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    eia_rows = hub.get("eia") or []
+    if eia_rows:
+        st.subheader("Official EIA v2")
+        st.dataframe(pd.DataFrame([{"Series": r.get("series_id"), "As of": r.get("observation_date") or "—", "Units": r.get("units") or "—", "Status": r.get("status") or "—"} for r in eia_rows]), use_container_width=True, hide_index=True)
+    else:
+        st.info("No official EIA observations stored. Hub power prices are UNAVAILABLE pending an exact EIA source.")
+    derived = hub.get("derived") or []
+    if derived:
+        st.subheader("Derived methods")
+        st.dataframe(pd.DataFrame([{"Method": r.get("method_id"), "Subject": r.get("subject_key"), "Status": r.get("status"), "Missing": r.get("missing_reason") or "—"} for r in derived]), use_container_width=True, hide_index=True)
+    st.caption("Option exposure magnitudes are not measured dealer GEX. Combined COT universes are not summed.")
+
+
 __all__ = [
     "display_cell",
     "order_flow_coverage_frame",
@@ -1041,8 +1261,10 @@ __all__ = [
     "render_macro_overview",
     "render_market_pulse",
     "render_morning_context",
+    "render_options",
     "render_order_flow",
     "render_pit_sector_internals",
     "render_rates_curve",
     "render_sector_rotation_v2",
+    "render_market_hub",
 ]

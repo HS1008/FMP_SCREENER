@@ -108,13 +108,21 @@ def _run_fetch_eod(args: Any, cfg) -> int:
         return EXIT_CONFIG
     symbols = [s.strip().upper() for s in str(args.symbols).split(",") if s.strip()] if args.symbols else list(UNIVERSE_SYMBOLS)
     duration = BACKFILL_DURATION if args.backfill else INCREMENTAL_DURATION
+    from ibkr_collector.budget import acquire, release
+
+    budget = acquire("eod", 1)
+    if not budget.allowed:
+        sys.stderr.write("shared TWS budget denied for EOD ({0})\n".format(budget.reason))
+        return EXIT_FAILED
     session, client, error = connect_historical_session(host=host, port=port, client_id=client_id)
     if session is None:
+        release("eod", 1)
         sys.stderr.write("TWS unavailable: {0}\n".format(error))
         return EXIT_FAILED
     try:
         results = fetch_universe(session, symbols, duration=duration)
     finally:
+        release("eod", 1)
         try:
             client.disconnect()
         except Exception:

@@ -31,6 +31,13 @@ LOCAL_TWS_PORTS = (7496, 7497, 4001, 4002)
 def detect_local_tws_port() -> dict[str, Any]:
     probes = [probe_socket("127.0.0.1", port, timeout=0.5) for port in LOCAL_TWS_PORTS]
     open_ports = [row for row in probes if row.get("ok")]
+    if len(open_ports) > 1:
+        return {
+            "probes": probes,
+            "port": None,
+            "error": "multiple TWS/Gateway ports listening; pass --port explicitly",
+            "open_ports": [row["port"] for row in open_ports],
+        }
     return {"probes": probes, "port": open_ports[0]["port"] if open_ports else None}
 
 

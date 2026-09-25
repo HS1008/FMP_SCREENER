@@ -137,6 +137,7 @@ class CollectorRuntime:
         self.backoff = cfg.backoff_initial_sec
         self._last_heartbeat = 0.0
         self._last_quote_push = 0.0
+        self._budget_tokens = 0
 
     def _key(self, row: dict[str, str]) -> str:
         return "{0}:{1}:{2}".format(row.get("sec_type") or "STK", row["symbol"], row.get("currency") or "USD")
@@ -319,7 +320,16 @@ class CollectorRuntime:
             self.subs[key] = {"req_id": req_id, "row": row, "con_id": con_id}
             logger.info("subscribed %s conId=%s req=%s", row["symbol"], con_id, req_id)
 
+    def _release_budget(self) -> None:
+        if self._budget_tokens <= 0:
+            return
+        from ibkr_collector.budget import release
+
+        release("quotes", self._budget_tokens)
+        self._budget_tokens = 0
+
     def _disconnect(self) -> None:
+        self._release_budget()
         client = self.client
         self.client = None
         if client is None:
@@ -338,10 +348,18 @@ class CollectorRuntime:
             logger.debug("disconnect failed", exc_info=True)
 
     def _connect(self) -> bool:
+        from ibkr_collector.budget import SHARES, acquire
+
         socket_ok = probe_socket(self.cfg.tws_host, self.cfg.tws_port)
         if not socket_ok["ok"]:
             self._set_state("WAITING_FOR_TWS")
             return False
+        wanted = max(1, min(len(self.cfg.watchlist) or 1, SHARES["quotes"]))
+        decision = acquire("quotes", wanted)
+        if not decision.allowed:
+            self._set_state("WAITING_FOR_BUDGET")
+            return False
+        self._budget_tokens = wanted
         self.last_socket_ok_at = utcnow().isoformat()
         self._set_state("SOCKET_OPEN_HANDSHAKE_PENDING")
         client = ReadOnlyTwsClient()
@@ -354,6 +372,7 @@ class CollectorRuntime:
                 client.disconnect()
             except Exception:
                 pass
+            self._release_budget()
             return False
         self.client = client
         self.reader = reader

@@ -3,30 +3,40 @@
 #
 # Default is a dry run: print the planned edits, change nothing, start nothing.
 # This script never enables systemd timers, never restarts Streamlit or the API,
-# never runs a FRED refresh, and never prints secret values.
+# never runs a provider refresh, and never prints secret values.
+#
+# Existing non-placeholder keys are preserved unless --rotate is passed.
+# Intentional rotation is explicit, atomic, and limited to allowed key names.
 #
 #   scripts/provision_digitalocean_mi_secrets.sh
 #   scripts/provision_digitalocean_mi_secrets.sh --apply --fred-key-file /root/FMP_SCREENER/.secrets/fred_api_key
-#
-# The key file must be mode 0600 (or 0400). The value is read from the file, never
-# from argv or the process command line. Existing keys in the env file are preserved;
-# only missing or placeholder FRED_API_KEY is replaced.
+#   scripts/provision_digitalocean_mi_secrets.sh --apply --rotate --eia-key-file /root/FMP_SCREENER/.secrets/eia_api_key
 set -euo pipefail
 
 ENV_FILE="/etc/fmp/market_intelligence.env"
 EXAMPLE="deploy/market_intelligence/market_intelligence.env.example"
 FRED_KEY_FILE=""
+EIA_KEY_FILE=""
+OPENFIGI_KEY_FILE=""
+CBOE_ID_FILE=""
+CBOE_SECRET_FILE=""
 APPLY=0
+ROTATE=0
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --env-file) ENV_FILE="$2"; shift 2 ;;
     --fred-key-file) FRED_KEY_FILE="$2"; shift 2 ;;
+    --eia-key-file) EIA_KEY_FILE="$2"; shift 2 ;;
+    --openfigi-key-file) OPENFIGI_KEY_FILE="$2"; shift 2 ;;
+    --cboe-id-file) CBOE_ID_FILE="$2"; shift 2 ;;
+    --cboe-secret-file) CBOE_SECRET_FILE="$2"; shift 2 ;;
     --root) ROOT="$2"; shift 2 ;;
     --apply) APPLY=1; shift ;;
+    --rotate) ROTATE=1; shift ;;
     --dry-run) APPLY=0; shift ;;
-    -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 64 ;;
   esac
 done
@@ -34,37 +44,55 @@ done
 echo "DigitalOcean Market Intelligence secret provisioning"
 echo "  env file : ${ENV_FILE}"
 echo "  apply    : ${APPLY}"
-echo "  actions  : write FRED_API_KEY if missing/placeholder; preserve every other line"
-echo "  will NOT : enable timers, restart services, run ingest, deploy, or print the key"
+echo "  rotate   : ${ROTATE}"
+echo "  actions  : write allowed keys if missing/placeholder; preserve non-placeholder unless --rotate"
+echo "  will NOT : enable timers, restart services, run ingest, deploy, or print keys"
 
 if [ ! -f "${ENV_FILE}" ]; then
   echo "  env file does not exist yet"
   echo "  planned: install -m 0600 ${ROOT}/${EXAMPLE} ${ENV_FILE}"
-  echo "  then fill writer identity / tokens by hand; this script only sets FRED_API_KEY"
 fi
 
-if [ -z "${FRED_KEY_FILE}" ]; then
-  echo "  FRED_API_KEY source file not provided (--fred-key-file)"
-  echo "  dry-run / apply will not write a key until that file is supplied"
+need_any=0
+[ -n "${FRED_KEY_FILE}" ] && need_any=1
+[ -n "${EIA_KEY_FILE}" ] && need_any=1
+[ -n "${OPENFIGI_KEY_FILE}" ] && need_any=1
+[ -n "${CBOE_ID_FILE}" ] && need_any=1
+[ -n "${CBOE_SECRET_FILE}" ] && need_any=1
+if [ "${need_any}" -eq 0 ]; then
+  echo "  no key files provided (--fred-key-file / --eia-key-file / --openfigi-key-file / --cboe-id-file / --cboe-secret-file)"
   if [ "${APPLY}" -eq 1 ]; then
-    echo "refusing --apply without --fred-key-file" >&2
+    echo "refusing --apply without a key file" >&2
     exit 3
   fi
   exit 0
 fi
 
-if [ ! -f "${FRED_KEY_FILE}" ]; then
-  echo "fred key file not found" >&2
-  exit 3
-fi
-MODE="$(stat -c '%a' "${FRED_KEY_FILE}" 2>/dev/null || stat -f '%OLp' "${FRED_KEY_FILE}")"
-if [ "${MODE}" != "600" ] && [ "${MODE}" != "400" ]; then
-  echo "refusing to read a key file with mode ${MODE} (require 0600 or 0400)" >&2
-  exit 3
-fi
+check_key_file() {
+  local path="$1"
+  if [ -z "${path}" ]; then
+    return 0
+  fi
+  if [ ! -f "${path}" ]; then
+    echo "key file not found" >&2
+    exit 3
+  fi
+  local mode
+  mode="$(stat -c '%a' "${path}" 2>/dev/null || stat -f '%OLp' "${path}")"
+  if [ "${mode}" != "600" ] && [ "${mode}" != "400" ]; then
+    echo "refusing to read a key file with mode ${mode} (require 0600 or 0400)" >&2
+    exit 3
+  fi
+}
+
+check_key_file "${FRED_KEY_FILE}"
+check_key_file "${EIA_KEY_FILE}"
+check_key_file "${OPENFIGI_KEY_FILE}"
+check_key_file "${CBOE_ID_FILE}"
+check_key_file "${CBOE_SECRET_FILE}"
 
 if [ "${APPLY}" -eq 0 ]; then
-  echo "DRY RUN: would set FRED_API_KEY from the protected file (value not shown)"
+  echo "DRY RUN: would upsert missing/placeholder keys from protected files (values not shown)"
   exit 0
 fi
 
@@ -73,24 +101,31 @@ if [ ! -f "${ENV_FILE}" ]; then
   install -m 0600 "${ROOT}/${EXAMPLE}" "${ENV_FILE}"
 fi
 TMP="$(mktemp "${ENV_FILE}.XXXX")"
-python3 - "${ENV_FILE}" "${FRED_KEY_FILE}" "${TMP}" <<'PY'
-import pathlib, re, sys
-env_path, key_path, tmp_path = sys.argv[1], sys.argv[2], sys.argv[3]
-key = pathlib.Path(key_path).read_text(encoding="utf-8").strip()
-if not key or any(ch.isspace() for ch in key):
-    raise SystemExit("fred key file is empty or contains whitespace")
+python3 - "${ENV_FILE}" "${TMP}" "${ROOT}" "${ROTATE}" "${FRED_KEY_FILE}" "${EIA_KEY_FILE}" "${OPENFIGI_KEY_FILE}" "${CBOE_ID_FILE}" "${CBOE_SECRET_FILE}" <<'PY'
+import pathlib, sys
+env_path, tmp_path, root, rotate_flag = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+sys.path.insert(0, root)
+from scripts.protected_env import upsert_if_placeholder
+rotate = rotate_flag == "1"
 text = pathlib.Path(env_path).read_text(encoding="utf-8")
-pattern = re.compile(r"^#?\s*FRED_API_KEY=.*$", re.M)
-replacement = "FRED_API_KEY=" + key
-if pattern.search(text):
-    text = pattern.sub(replacement, text, count=1)
-else:
-    if text and not text.endswith("\n"):
-        text += "\n"
-    text += replacement + "\n"
+actions = []
+pairs = [
+    ("FRED_API_KEY", sys.argv[5]),
+    ("EIA_API_KEY", sys.argv[6]),
+    ("OPENFIGI_API_KEY", sys.argv[7]),
+    ("CBOE_CLIENT_ID", sys.argv[8] if len(sys.argv) > 8 else ""),
+    ("CBOE_CLIENT_SECRET", sys.argv[9] if len(sys.argv) > 9 else ""),
+]
+for key, path in pairs:
+    if not path:
+        continue
+    value = pathlib.Path(path).read_text(encoding="utf-8").strip()
+    text, action = upsert_if_placeholder(text, key, value, rotate=rotate)
+    actions.append(key + "=" + action)
 pathlib.Path(tmp_path).write_text(text, encoding="utf-8")
+print("key_actions=" + ",".join(actions))
 PY
 chmod 0600 "${TMP}"
 mv "${TMP}" "${ENV_FILE}"
-echo "FRED_API_KEY written to env file (value not printed). Services were not restarted."
-echo "Production remains inactive until a human enables the refresh timer and reviews Data Health."
+echo "Allowed keys written or preserved (values not printed). Services were not restarted."
+echo "Credential presence does not enable ingestion. Production remains inactive until a human enables the matching flag/timer."

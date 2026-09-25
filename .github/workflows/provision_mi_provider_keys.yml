@@ -1,0 +1,126 @@
+name: Provision MI provider keys (not activation)
+
+# Transfers EIA_API_KEY / OPENFIGI_API_KEY from repository secrets onto the
+# existing DigitalOcean host through the pinned SSH trust path.
+# Never enables ingestion, never restarts services, never prints values.
+# Local Cursor cannot read GitHub secrets; this is the operator path when
+# the only copies live in GitHub.
+
+on:
+  workflow_dispatch:
+    inputs:
+      rotate:
+        description: Replace existing non-placeholder keys (default preserve)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provision-mi-provider-keys
+  cancel-in-progress: false
+
+jobs:
+  provision:
+    name: Write protected key files and env placeholders only
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DO_HOST: ${{ secrets.DO_HOST }}
+      DO_USER: ${{ secrets.DO_USER }}
+    steps:
+      - name: Checkout orchestrator
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Configure pinned SSH trust
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.DO_SSH_KEY }}
+          DO_SSH_KNOWN_HOSTS: ${{ secrets.DO_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ]; then
+            echo "FAIL: DO_SSH_KEY is required"
+            exit 3
+          fi
+          if [ -z "${DO_SSH_KNOWN_HOSTS:-}" ]; then
+            echo "FAIL: DO_SSH_KNOWN_HOSTS is required (pinned host key, never a live host scan)"
+            exit 3
+          fi
+          mkdir -p ~/.ssh
+          printf "%s\n" "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf "%s\n" "$DO_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          unset SSH_PRIVATE_KEY DO_SSH_KNOWN_HOSTS
+
+      - name: Transfer keys and provision env (no restart, no ingest, no enablement)
+        env:
+          EIA_API_KEY: ${{ secrets.EIA_API_KEY }}
+          OPENFIGI_API_KEY: ${{ secrets.OPENFIGI_API_KEY }}
+          CBOE_CLIENT_ID: ${{ secrets.CBOE_CLIENT_ID }}
+          CBOE_CLIENT_SECRET: ${{ secrets.CBOE_CLIENT_SECRET }}
+          ROTATE: ${{ github.event.inputs.rotate }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DO_HOST:-}" ] || [ -z "${DO_USER:-}" ]; then
+            echo "FAIL: DO_HOST and DO_USER are required"
+            exit 3
+          fi
+          wrote=0
+          if [ -n "${EIA_API_KEY:-}" ]; then
+            printf '%s\n' "$EIA_API_KEY" | ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              "$DO_USER@$DO_HOST" 'umask 077; mkdir -p /root/FMP_SCREENER/.secrets; cat > /root/FMP_SCREENER/.secrets/eia_api_key; chmod 600 /root/FMP_SCREENER/.secrets/eia_api_key'
+            wrote=1
+          fi
+          if [ -n "${OPENFIGI_API_KEY:-}" ]; then
+            printf '%s\n' "$OPENFIGI_API_KEY" | ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              "$DO_USER@$DO_HOST" 'umask 077; mkdir -p /root/FMP_SCREENER/.secrets; cat > /root/FMP_SCREENER/.secrets/openfigi_api_key; chmod 600 /root/FMP_SCREENER/.secrets/openfigi_api_key'
+            wrote=1
+          fi
+          if [ -n "${CBOE_CLIENT_ID:-}" ]; then
+            printf '%s\n' "$CBOE_CLIENT_ID" | ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              "$DO_USER@$DO_HOST" 'umask 077; mkdir -p /root/FMP_SCREENER/.secrets; cat > /root/FMP_SCREENER/.secrets/cboe_client_id; chmod 600 /root/FMP_SCREENER/.secrets/cboe_client_id'
+            wrote=1
+          fi
+          if [ -n "${CBOE_CLIENT_SECRET:-}" ]; then
+            printf '%s\n' "$CBOE_CLIENT_SECRET" | ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              "$DO_USER@$DO_HOST" 'umask 077; mkdir -p /root/FMP_SCREENER/.secrets; cat > /root/FMP_SCREENER/.secrets/cboe_client_secret; chmod 600 /root/FMP_SCREENER/.secrets/cboe_client_secret'
+            wrote=1
+          fi
+          if [ "$wrote" -eq 0 ]; then
+            echo "FAIL: EIA_API_KEY, OPENFIGI_API_KEY, and CBOE credentials repository secrets are empty"
+            exit 3
+          fi
+          rotate_arg=""
+          if [ "${ROTATE:-false}" = "true" ]; then
+            rotate_arg="--rotate"
+          fi
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes "$DO_USER@$DO_HOST" \
+            "ROTATE_ARG='$rotate_arg' bash -s" << 'REMOTE'
+set -euo pipefail
+cd /root/FMP_SCREENER
+args=(--apply --env-file /etc/fmp/market_intelligence.env --root /root/FMP_SCREENER)
+if [ -n "${ROTATE_ARG:-}" ]; then
+  args+=("$ROTATE_ARG")
+fi
+if [ -f /root/FMP_SCREENER/.secrets/eia_api_key ]; then
+  args+=(--eia-key-file /root/FMP_SCREENER/.secrets/eia_api_key)
+fi
+if [ -f /root/FMP_SCREENER/.secrets/openfigi_api_key ]; then
+  args+=(--openfigi-key-file /root/FMP_SCREENER/.secrets/openfigi_api_key)
+fi
+if [ -f /root/FMP_SCREENER/.secrets/cboe_client_id ]; then
+  args+=(--cboe-id-file /root/FMP_SCREENER/.secrets/cboe_client_id)
+fi
+if [ -f /root/FMP_SCREENER/.secrets/cboe_client_secret ]; then
+  args+=(--cboe-secret-file /root/FMP_SCREENER/.secrets/cboe_client_secret)
+fi
+bash scripts/provision_digitalocean_mi_secrets.sh "${args[@]}"
+echo provision_complete=1
+echo eia_flag_unchanged=1
+echo services_not_restarted=1
+REMOTE
+          unset EIA_API_KEY OPENFIGI_API_KEY CBOE_CLIENT_ID CBOE_CLIENT_SECRET

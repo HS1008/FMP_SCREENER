@@ -358,10 +358,14 @@ def test_settlement_skips_weekends():
 
 def test_adapters_are_disabled_or_configuration_required_and_refuse_to_fetch():
     statuses = adapters.probe_all({})
-    assert set(statuses) == {"IBKR_MARKET_DATA", "FINRA_TRACE", "SEC_EDGAR"}
+    assert set(statuses) == {"IBKR_MARKET_DATA", "FINRA_TRACE", "SEC_EDGAR", "EIA", "OPENFIGI", "CFTC_COT", "CBOE_ALL_ACCESS"}
     assert statuses["IBKR_MARKET_DATA"].access_status == adapters.ACCESS_DISABLED
     assert statuses["FINRA_TRACE"].access_status == adapters.ACCESS_DISABLED
     assert statuses["SEC_EDGAR"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
+    assert statuses["EIA"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
+    assert statuses["OPENFIGI"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
+    assert statuses["CFTC_COT"].access_status == adapters.ACCESS_DISABLED
+    assert statuses["CBOE_ALL_ACCESS"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
     assert not any(s.enabled for s in statuses.values())
     with pytest.raises(adapters.AdapterDisabled):
         adapters.IBKRMarketDataAdapter().fetch_quotes(["TLT"], env={"MI_IBKR_MARKET_DATA_ENABLED": "1"})

@@ -1,5 +1,57 @@
 # Market Intelligence implementation checkpoint
 
+## 2026-09-13 — `cursor/mi-platform-v1` (Phases 0–12, local Windows)
+
+Resume from this working tree. Do not reset to main. Do not merge or push to main.
+Do not overwrite `quant-strategies` (`SPYTrend/config.json` is dirty; leave it).
+
+| Item | Value |
+|------|--------|
+| FMP_SCREENER path | `C:\Users\dipka\Documents\FMP_SCREENER` |
+| Branch | `cursor/mi-platform-v1` (uncommitted; base `3248eef656f6c8f672d4f4d651803d52bc418f40`) |
+| quant-strategies | `C:\Users\dipka\Documents\quant-strategies` @ `3989207` on `main`, dirty `SPYTrend/config.json`; origin/main `654d057` left untouched |
+| Interpreter | `C:\Users\dipka\Documents\FMP_SCREENER\.venv\Scripts\python.exe` 3.14.4 64-bit Windows |
+| ibapi | 10.50.1 |
+| TWS | `127.0.0.1:7496` only (pid 25752). Client 71 quotes Running, 72 EOD Ready, diagnostic **73** |
+| Migrations added | 033–036 (next unused was 033). Not applied to DigitalOcean. |
+| Production flags | **unchanged**. `FMP_CAN_BE_CANCELLED = NO` |
+| Matrix | `docs/IMPLEMENTATION_MATRIX.json` |
+
+### Tests run (this session)
+
+```
+.\.venv\Scripts\python.exe -m pytest tests/test_platform_sources.py tests/test_protected_env.py tests/test_ibkr_callback_safety.py tests/test_page_registry.py tests/test_bond_analytics.py tests/test_fmp_off_independence.py tests/test_ai_gateway.py tests/test_ui_boundary.py tests/test_mi_deploy.py tests/test_ibkr_collector.py tests/test_overview_what_changed.py tests/test_mi_schema_store.py tests/test_mi_pipeline.py -q
+```
+
+Focused set after lock/UTC/10167/option-qualify fixes:
+
+- `tests/test_mi_pipeline.py` + RS + gateway + page registry + collector: **196 passed** (includes Market Hub AppTest).
+- Earlier platform/deploy/callback/schema bundle: **194 passed, 11 skipped** on Windows (systemd installer paths, Git-Bash 0600, systemd-analyze).
+- Morning snapshot replay now compares UTC identity from `snapshot_json` so PostgreSQL session TZ cannot break dedupe.
+
+Pre-existing, not introduced: `tests/test_migration_paths_pg.py::test_baseline_file_matches_committed_001_019_bytes` and `test_scenario_b_simulated_production_001_019_upgrades_through_028` — 001 file hash vs 001–019 checksum baseline (do not rewrite applied 001–019).
+
+### Live TWS (2026-09-13 22:19–22:34 UTC, weekend)
+
+Client **73**, port **7496**. Quote collector **71 left running**. No orders. `forbidden_methods_invoked=[]`.
+
+- Handshake OK; requested DELAYED; 10167 classified as **info** (delayed-notice), not entitlement.
+- EURUSD and USDJPY bid/ask **RETURNED** (LIVE). SPY/QQQ/IWM cash ticks **NOT_RETURNED** (closed session).
+- ESZ6 bid/ask/last **RETURNED** (DELAYED). ES OI **NOT_RETURNED** (2187 generic ticks unavailable on delayed fallback). NQ/RTY/ZN/CL/GC **contract_details RETURNED**; streams NOT_RETURNED this session.
+- SPY/IWM/SPX option **chain definitions RETURNED**. SPY 20260914 call/put **qualified** (4/8 sampled strikes); quotes/Greeks NOT_RETURNED (`AWAITING_OPEN_SESSION`).
+- `fetch-eod --symbols SPY --dry-run --client-id 73`: **FULL_SUCCESS**, 4 ADJUSTED_LAST bars 2026-09-08..2026-09-11, **not posted**.
+- Evidence: `%LOCALAPPDATA%\FMP_SCREENER\ibkr-collector\capability_probe.json` (sanitized).
+
+### Safe next step
+
+Keep implementing/reviewing on `cursor/mi-platform-v1`. Human: provision EIA/OpenFIGI keys via `provision_mi_provider_keys.yml` or host files **without** enabling `MI_*_ENABLED`. Do not enable new production timers. Re-run capability-probe on a weekday open session for live SLO.
+
+### Unchanged production
+
+Do not enable `MI_EIA_ENABLED`, `MI_COT_ENABLED`, `MI_OPENFIGI_ENABLED`, `MI_EDGAR_ENABLED`, or change `MI_EQUITY_PROVIDER` on DigitalOcean.
+
+---
+
 Working log for the Market Intelligence milestone. Updated as work lands so the session can
 resume after context compaction. Operator reference and capability statuses live in
 `docs/MARKET_INTELLIGENCE.md`; this file records what was actually run and found.

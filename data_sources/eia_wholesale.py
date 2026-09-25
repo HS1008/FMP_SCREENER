@@ -1,10 +1,12 @@
 """EIA Wholesale Electricity & Natural Gas data loader.
 
-Priority: cached parquet -> local CSV files -> sample data.
+Production reads attributed local CSV files or an explicit provenance cache.
+Generated sample prices exist only as demo/test fixtures and are never returned
+by production loaders.
 
 Place real data files in ``data/eia_wholesale/`` as:
-  power_prices.csv  (columns: date, hub, price)
-  gas_prices.csv    (columns: date, hub, price)
+  power_prices.csv  (columns: date, hub, price, source, provenance)
+  gas_prices.csv    (columns: date, hub, price, source, provenance)
 """
 
 from __future__ import annotations
@@ -24,9 +26,14 @@ from qc_research.ui_boundary import streamlit_filesystem_write_allowed
 EIA_CACHE_DIR: Path = config.OUTPUT_DIR / "cache" / "eia_wholesale"
 EIA_LOCAL_DIR: Path = config.PROJECT_ROOT / "data" / "eia_wholesale"
 
-# ---------------------------------------------------------------------------
-# Hub parameters for sample data generation
-# ---------------------------------------------------------------------------
+REQUIRED_COLUMNS = ("date", "hub", "price")
+PROVENANCE_COLUMNS = ("source", "provenance")
+UNAVAILABLE_HUB_PRICE = "EIA_HUB_PRICE_UNAVAILABLE"
+UNAVAILABLE_REASON = (
+    "No official EIA v2 hub-price series is wired into this legacy loader. "
+    "Generated sample prices are test-only. Official energy series live in "
+    "market_intelligence.eia_client."
+)
 POWER_HUB_PARAMS: dict[str, dict] = {
     "Mass Hub":     {"base": 48, "amp": 18, "vol": 6},
     "PJM West":     {"base": 40, "amp": 12, "vol": 5},
@@ -66,13 +73,17 @@ def get_eia_wholesale_files() -> list[Path]:
 def normalize_eia_columns(df: pd.DataFrame) -> pd.DataFrame | None:
     """Standardize column names and validate required columns."""
     df.columns = df.columns.str.strip().str.lower()
-    for col in ("date", "hub", "price"):
+    for col in REQUIRED_COLUMNS:
         if col not in df.columns:
             return None
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
     df["price"] = pd.to_numeric(df["price"], errors="coerce")
     df = df.dropna(subset=["date", "price"])
     df["hub"] = df["hub"].str.strip()
+    if "source" not in df.columns:
+        df["source"] = "UNATTRIBUTED_LOCAL_FILE"
+    if "provenance" not in df.columns:
+        df["provenance"] = "unverified"
     return df.sort_values("date").reset_index(drop=True)
 
 
@@ -98,10 +109,15 @@ def load_eia_gas_prices() -> pd.DataFrame | None:
         return None
 
 
-# ---------------------------------------------------------------------------
-# Sample data generation
-# ---------------------------------------------------------------------------
-def _generate_sample_power_prices(days: int = 365) -> pd.DataFrame:
+def frame_is_provenanced(df: pd.DataFrame) -> bool:
+    if df is None or df.empty or "provenance" not in df.columns:
+        return False
+    values = {str(v).strip().lower() for v in df["provenance"].dropna().unique()}
+    return bool(values) and values.isdisjoint({"", "unverified", "unknown", "generated_sample"})
+
+
+def demo_sample_power_prices(days: int = 365) -> pd.DataFrame:
+    """Test/demo fixture only. Never called from production loaders."""
     rng = np.random.default_rng(42)
     end = date.today()
     dates = pd.bdate_range(end=end, periods=days)
@@ -113,11 +129,12 @@ def _generate_sample_power_prices(days: int = 365) -> pd.DataFrame:
         walk = np.cumsum(rng.normal(0, 0.25, days))
         prices = np.maximum(p["base"] + seasonal + noise + walk, 5.0)
         for d, v in zip(dates, prices):
-            rows.append({"date": d, "hub": hub, "price": round(float(v), 2)})
+            rows.append({"date": d, "hub": hub, "price": round(float(v), 2), "source": "DEMO", "provenance": "generated_sample"})
     return pd.DataFrame(rows)
 
 
-def _generate_sample_gas_prices(days: int = 365) -> pd.DataFrame:
+def demo_sample_gas_prices(days: int = 365) -> pd.DataFrame:
+    """Test/demo fixture only. Never called from production loaders."""
     rng = np.random.default_rng(123)
     end = date.today()
     dates = pd.bdate_range(end=end, periods=days)
@@ -139,7 +156,7 @@ def _generate_sample_gas_prices(days: int = 365) -> pd.DataFrame:
                 hh_prices + basis_s + rng.normal(0, p["vol"], days), 0.25
             )
         for d, v in zip(dates, prices):
-            rows.append({"date": d, "hub": hub, "price": round(float(v), 2)})
+            rows.append({"date": d, "hub": hub, "price": round(float(v), 2), "source": "DEMO", "provenance": "generated_sample"})
     return pd.DataFrame(rows)
 
 
@@ -204,11 +221,14 @@ def merge_power_gas_hubs(
 # Main entry point
 # ---------------------------------------------------------------------------
 def load_cached_only() -> tuple[pd.DataFrame, pd.DataFrame, bool] | None:
-    """Return file-cache EIA frames only. Never hits the network."""
+    """Return provenanced file-cache EIA frames only. Never hits the network."""
     cached = _read_cache()
     if cached is None:
         return None
-    return cached[0], cached[1], False
+    power, gas = cached
+    if not frame_is_provenanced(power) or not frame_is_provenanced(gas):
+        return None
+    return power, gas, False
 
 
 def load_cached_or_fetch_eia_data(
@@ -217,19 +237,25 @@ def load_cached_or_fetch_eia_data(
     """
     Returns ``(power_df, gas_df, is_sample_data)``.
 
-    Priority: file cache -> local CSVs -> generated sample data.
+    Production path: provenanced cache -> attributed local CSVs.
+    Never returns generated sample data. Empty frames mean UNAVAILABLE.
     """
     if not force_refresh:
-        cached = _read_cache()
+        cached = load_cached_only()
         if cached is not None:
-            return cached[0], cached[1], False
+            return cached
 
     power = load_eia_power_prices()
     gas = load_eia_gas_prices()
-    if power is not None and gas is not None and not power.empty and not gas.empty:
+    if (
+        power is not None
+        and gas is not None
+        and not power.empty
+        and not gas.empty
+        and frame_is_provenanced(power)
+        and frame_is_provenanced(gas)
+    ):
         _write_cache(power, gas)
         return power, gas, False
 
-    power = _generate_sample_power_prices()
-    gas = _generate_sample_gas_prices()
-    return power, gas, True
+    return pd.DataFrame(), pd.DataFrame(), False

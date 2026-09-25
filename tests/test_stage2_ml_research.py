@@ -95,6 +95,10 @@ def test_migration_is_idempotent_and_additive():
         "030_ibkr_equity_eod.sql",
         "031_ibkr_eod_batch_protocol.sql",
         "032_ibkr_eod_batch_evidence.sql",
+        "033_platform_identity_policy.sql",
+        "034_eia_cot_openfigi.sql",
+        "035_sec_filings_metrics.sql",
+        "036_market_hub_derived.sql",
     ]
     assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})

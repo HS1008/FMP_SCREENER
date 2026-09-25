@@ -219,8 +219,16 @@ phase_probe() {
 phase_provision() {
   echo "PHASE provision"
   mkdir -p /etc/fmp
+  extra_keys=()
+  if [ -f "$ROOT/.secrets/eia_api_key" ]; then
+    extra_keys+=(--eia-key-file "$ROOT/.secrets/eia_api_key")
+  fi
+  if [ -f "$ROOT/.secrets/openfigi_api_key" ]; then
+    extra_keys+=(--openfigi-key-file "$ROOT/.secrets/openfigi_api_key")
+  fi
   "$ROOT/scripts/provision_digitalocean_mi_secrets.sh" --apply \
-    --env-file "$ENV_FILE" --fred-key-file "$FRED_KEY_FILE" --root "$ROOT"
+    --env-file "$ENV_FILE" --fred-key-file "$FRED_KEY_FILE" --root "$ROOT" \
+    "${extra_keys[@]}"
   python3 "$ROOT/scripts/update_protected_env.py" \
     --env-file "$ENV_FILE" --key AI_CONTEXT_API_TOKEN --value-file "$AI_TOKEN_FILE" \
     --create-from "$ROOT/deploy/market_intelligence/market_intelligence.env.example"

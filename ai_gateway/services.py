@@ -33,6 +33,7 @@ from market_intelligence.read_models import (
     ibkr_quotes_latest,
     industries_context,
     macro_context,
+    market_hub_overview,
     morning_index,
     morning_latest,
     observation_history,
@@ -267,6 +268,11 @@ TOOL_SPECS: tuple[dict[str, Any], ...] = (
     {
         "name": "get_data_health",
         "description": "Per-dataset freshness (policy v2: LATEST_AVAILABLE / AWAITING_RELEASE / INGESTION_OVERDUE / STALE / MISSING / INVALID_FUTURE / TRANSPORT_FAILURE), observation vs ingestion timestamps, transport status, last error.",
+        "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "get_market_hub",
+        "description": "Current-context Market Hub coverage: official EIA series status, CFTC COT rows, SEC metric status, derived method status. Counts only; no restricted raw values. Missing prerequisites stay unavailable.",
         "inputSchema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
@@ -1440,6 +1446,38 @@ def get_data_health() -> dict[str, Any]:
         )
 
     return cached("data_health", "latest", _build)
+
+
+@register("get_market_hub")
+def get_market_hub() -> dict[str, Any]:
+    def _build() -> dict[str, Any]:
+        with _readonly() as conn:
+            captured_at = _capture(conn)
+            snapshot = morning_latest(conn)
+            hub = market_hub_overview(conn)
+        body = {
+            "available": bool(hub.get("available")),
+            "eia_series_with_values": hub.get("eia_series_with_values"),
+            "cot_rows": hub.get("cot_rows"),
+            "sec_metrics_ok": hub.get("sec_metrics_ok"),
+            "derived_ok": hub.get("derived_ok"),
+            "fx_pairs": hub.get("fx_pairs"),
+            "futures_contracts": hub.get("futures_contracts"),
+            "eia_status": [{"series_id": row.get("series_id"), "observation_date": row.get("observation_date"), "units": row.get("units"), "status": row.get("status")} for row in hub.get("eia") or []],
+            "derived_status": [{"method_id": row.get("method_id"), "status": row.get("status"), "missing_reason": row.get("missing_reason")} for row in hub.get("derived") or []],
+            "notes": "Coverage diagnostics only. Option exposure magnitudes are not measured dealer GEX. Combined COT universes are not summed. FMP remains the transitional fallback.",
+            "export_scope": "INTERNAL_SUMMARY",
+        }
+        return respond(
+            body,
+            provenance=live_provenance(views=["mi_v_market_hub_overview"], captured_at=captured_at),
+            tool="get_market_hub",
+            available=bool(hub.get("available")),
+            unavailable_reason=None if hub.get("available") else hub.get("reason") or "market hub views not migrated",
+            snapshot=snapshot,
+        )
+
+    return cached("market_hub", "latest", _build)
 
 
 @register("get_market_changes")
