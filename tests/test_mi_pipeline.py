@@ -25,6 +25,7 @@ from sqlalchemy.engine import make_url
 
 from market_intelligence import morning_context, readonly_db
 from market_intelligence.analytics import build_analytics
+from market_intelligence.catalog import CREDIT_SERIES
 from market_intelligence.export_policy import verify_export_hash
 from market_intelligence.ingest_fred import ingest_fred_catalog
 from market_intelligence.legacy_bridge import ingest_precomputed_root
@@ -400,7 +401,7 @@ def test_morning_snapshot_is_hashed_current_only_with_db_capture_time_and_lineag
     assert dgs10["revision_seq"] is not None and dgs10["ingestion_run_id"] and dgs10["observation_date"] == AS_OF.isoformat()
     assert dgs10["publication_status"] == "PUBLISHED"
     assert any(m["metric_id"] == "curve.slope_10Y2Y_bps" for m in refs["metric_rows"])
-    assert len(refs["credit_rows"]) == 9 and len(refs["sector_artifact_hashes"]) >= 5
+    assert len(refs["credit_rows"]) == len(CREDIT_SERIES) and len(refs["sector_artifact_hashes"]) >= 5
     assert refs["contributing_ingestion_run_ids"] and refs["versions"]["catalog_version"] == "fred_catalog_v2"
     assert refs["versions"]["freshness_policy_version"]
     # Captured health is frozen inside the body and every section carries its own freshness.
@@ -735,7 +736,7 @@ def test_credit_route_redacts_every_value_including_history_and_deltas(api, pg_e
     payload = r.json()
     with pg_engine.connect() as conn:
         real = conn.execute(text("SELECT oas_bps FROM mi_v_credit_latest WHERE series_id='BAMLH0A0HYM2'")).scalar()
-    assert payload["restricted_entries"] == 9
+    assert payload["restricted_entries"] == len(CREDIT_SERIES)
     assert "{0:.4f}".format(float(real)) [:6] not in json.dumps(payload["body"])
     for b in payload["body"]["buckets"]:
         assert set(b) & {"oas_bps", "change_1d_bps", "change_1w_bps", "change_1m_bps", "percentile", "zscore", "history"} == set()
