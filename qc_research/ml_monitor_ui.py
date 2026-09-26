@@ -29,6 +29,7 @@ from qc_research.platform_presentation import (
     tidy_number,
 )
 from qc_research.research_readout import build_readout, comparison_table, plain_status_line
+from market_intelligence.components.time_series import mount_stored_series
 from qc_research.streamlit_tables import arrow_safe_frame
 
 from qc_research.ml_aggregation import (
@@ -552,13 +553,15 @@ def _maybe_performance_charts(view: dict[str, Any]) -> None:
         chart = frame.copy()
         if "timestamp" in chart.columns:
             chart = chart.set_index("timestamp")
-        st.line_chart(chart[y], use_container_width=True)
+        if not mount_stored_series(chart[y], label=y.replace("_", " "), key="stage2-performance"):
+            st.line_chart(chart[y], use_container_width=True)
     if "drawdown" in frame.columns:
         st.caption("Drawdown")
         dd = frame.copy()
         if "timestamp" in dd.columns:
             dd = dd.set_index("timestamp")
-        st.line_chart(dd["drawdown"], use_container_width=True)
+        if not mount_stored_series(dd["drawdown"], label="Drawdown", key="stage2-drawdown"):
+            st.line_chart(dd["drawdown"], use_container_width=True)
 
 
 def render_platform_view(view: dict[str, Any]) -> None:

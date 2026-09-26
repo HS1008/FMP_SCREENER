@@ -99,14 +99,11 @@ def test_vix_history_uses_lightweight_charts_and_tenor_curve_stays_categorical()
     from market_intelligence import pages_ui
 
     source = inspect.getsource(pages_ui._render_yahoo_vol_core)
-    assert source.count("time_series_points") == 1
     assert 'time_series_points(history.get("VIX_SPOT")' in source
     assert "lightweight_market_chart" in source
-    assert "st.line_chart(vix_frame)" not in source
-    assert "st.line_chart(implied_frame)" in source
-    assert "st.line_chart(skew_frame)" in source
+    assert "st.line_chart" not in source
+    assert "_mount_time_series" in source
     assert "tenor_curve_chart" in source
-    assert source.count("lightweight_market_chart") == 1
     assert "st.plotly_chart" not in source
     assert "go.Figure" not in source
     chart_module = (ROOT / "__init__.py").read_text(encoding="utf-8")

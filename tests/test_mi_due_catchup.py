@@ -207,6 +207,39 @@ def test_yahoo_live_due_respects_flag_and_rth():
     assert yahoo_live_due(enabled=True, now=datetime(2026, 9, 19, 11, 0, tzinfo=ET)).due is False
 
 
+def test_yahoo_vol_has_explicit_daily_due_state():
+    morning = datetime(2026, 9, 16, 15, 40, tzinfo=ET)
+    current = evaluate_due_steps(
+        now=morning,
+        env={},
+        freshness={("YAHOO_VOL", "vix_term_structure"): date(2026, 9, 15)},
+        configured_steps=["yahoo_vol"],
+    )
+    assert len(current) == 1
+    assert current[0].step == "yahoo_vol"
+    assert current[0].reason != "unknown_step"
+    assert current[0].due is False
+    assert current[0].outcome_if_skip == "SKIPPED_ALREADY_CURRENT"
+
+    after_close = evaluate_due_steps(
+        now=datetime(2026, 9, 16, 16, 30, tzinfo=ET),
+        env={},
+        freshness={("YAHOO_VOL", "vix_term_structure"): date(2026, 9, 15)},
+        configured_steps=["yahoo_vol"],
+    )
+    assert after_close[0].reason != "unknown_step"
+    assert after_close[0].due is True
+
+    stored_today = evaluate_due_steps(
+        now=datetime(2026, 9, 16, 16, 40, tzinfo=ET),
+        env={},
+        freshness={("YAHOO_VOL", "vix_term_structure"): date(2026, 9, 16)},
+        configured_steps=["yahoo_vol"],
+    )
+    assert stored_today[0].due is False
+    assert stored_today[0].outcome_if_skip == "SKIPPED_ALREADY_CURRENT"
+
+
 def test_outside_catchup_window_marks_all_not_due():
     now = datetime(2026, 9, 16, 8, 0, tzinfo=ET)
     decisions = evaluate_due_steps(

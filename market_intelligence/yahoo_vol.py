@@ -1,10 +1,11 @@
 """Yahoo-backed volatility analytics. No network I/O.
 
 Constructions:
-- VIX index term structure uses Yahoo closes for ^VIX1D / ^VIX9D / ^VIX / ^VIX3M / ^VIX6M / ^VIX1Y.
-  Tenor order is explicit (1D, 9D, 1M, 3M, 6M, 1Y), never alphabetical.
+- VIX index term structure uses Yahoo closes for ^VIX / ^VIX3M / ^VIX6M / ^VIX1Y.
+  Tenor order is explicit (1M, 3M, 6M, 1Y), never alphabetical.
   It is not a VIX futures curve and is never labeled contango or backwardation.
-  A displayed curve uses one common observation date only. Front=9D, back=1Y.
+  A displayed curve uses one observation date only. A missing tenor stays missing.
+  Front=1M (^VIX), back=1Y (^VIX1Y).
 - SKEW is the Cboe SKEW Index from Yahoo ticker ^SKEW (not a 25-delta SPX skew).
 - RV21 is the sample standard deviation (ddof=1) of 21 daily log returns
   times sqrt(252) times 100. Twenty-one returns require 22 closing prices.
@@ -36,9 +37,8 @@ METRIC_RV = "GSPC_REALIZED_VOL_21D"
 METRIC_SPREAD = "VIX_MINUS_GSPC_RV21"
 
 # (yahoo_ticker, tenor_label, metric_id) in display order. Do not sort these labels.
+# Legacy VIX_1D / VIX_9D rows may remain in PostgreSQL; they are not part of this curve.
 TERM_TENORS: tuple[tuple[str, str, str], ...] = (
-    ("^VIX1D", "1D", "VIX_1D"),
-    ("^VIX9D", "9D", "VIX_9D"),
     ("^VIX", "1M", "VIX_1M"),
     ("^VIX3M", "3M", "VIX_3M"),
     ("^VIX6M", "6M", "VIX_6M"),
@@ -48,9 +48,9 @@ TENOR_AXIS: tuple[str, ...] = tuple(tenor for _ticker, tenor, _metric_id in TERM
 TENOR_METRIC_IDS: tuple[str, ...] = tuple(metric_id for _ticker, _tenor, metric_id in TERM_TENORS)
 TENOR_RANK: dict[str, int] = {tenor: index for index, tenor in enumerate(TENOR_AXIS)}
 
-FRONT_TENOR = "9D"
+FRONT_TENOR = "1M"
 BACK_TENOR = "1Y"
-FRONT_TICKER = "^VIX9D"
+FRONT_TICKER = "^VIX"
 BACK_TICKER = "^VIX1Y"
 
 RV_RETURNS = 21
@@ -296,7 +296,7 @@ def historical_vix_minus_rv(vix_rows: SeriesRows, rv_points: Sequence[Mapping[st
 
 
 def classify_slope(front: float | None, back: float | None) -> dict[str, Any]:
-    """Index-curve shape from back(1Y) − front(9D). Never contango or backwardation."""
+    """Index-curve shape from back(1Y) − front(1M). Never contango or backwardation."""
     if front is None or back is None:
         return {
             "front_to_back_slope": None,
@@ -320,12 +320,12 @@ def classify_slope(front: float | None, back: float | None) -> dict[str, Any]:
 
 
 def term_structure(series: Mapping[str, SeriesRows]) -> dict[str, Any]:
-    """Build the latest VIX index term structure from one common observation date.
+    """Build the latest VIX index term structure from one observation date.
 
-    Front endpoint is 9D (^VIX9D); back endpoint is 1Y (^VIX1Y). Slope is published
-    only when both endpoints exist on the chosen date. 1D is part of the displayed
-    curve and does not change the slope endpoints. Intermediate gaps stay unavailable
-    for that date — never filled from another session.
+    The date is the latest session where at least one active tenor printed.
+    Front endpoint is 1M (^VIX); back endpoint is 1Y (^VIX1Y). Slope is published
+    only when both endpoints exist on that exact date. A missing tenor stays
+    missing — never filled from another session, another tenor, or zero.
     """
     by_date: dict[date, dict[str, float]] = {}
     for ticker, _tenor, _metric_id in TERM_TENORS:
@@ -337,14 +337,7 @@ def term_structure(series: Mapping[str, SeriesRows]) -> dict[str, Any]:
             by_date.setdefault(session, {})[ticker] = number
 
     candidates = sorted(by_date.keys(), reverse=True)
-    curve_date: date | None = None
-    for day in candidates:
-        levels = by_date[day]
-        if FRONT_TICKER in levels and BACK_TICKER in levels:
-            curve_date = day
-            break
-    if curve_date is None and candidates:
-        curve_date = candidates[0]
+    curve_date: date | None = candidates[0] if candidates else None
 
     points = []
     unavailable: list[str] = []
@@ -387,40 +380,38 @@ def term_structure(series: Mapping[str, SeriesRows]) -> dict[str, Any]:
         "unavailable_tenors": unavailable,
         "tenor_axis": list(TENOR_AXIS),
         "note": (
-            "Index tenors from Yahoo closes on one common observation date. "
-            "Order is 1D, 9D, 1M, 3M, 6M, 1Y. Front=9D, back=1Y. "
-            "Not a VIX futures curve. Never labeled contango/backwardation."
+            "Index tenors from Yahoo closes on one observation date. "
+            "Order is 1M, 3M, 6M, 1Y. Front=1M, back=1Y. "
+            "Missing tenors stay missing. Not a VIX futures curve. "
+            "Never labeled contango/backwardation."
         ),
     }
 
 
-def common_curve_dates_from_history(history: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[date]:
-    """Trading dates where every required tenor has a non-null level.
+def available_curve_dates_from_history(history: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[date]:
+    """Dates where at least one active tenor has a positive level.
 
-    The intersection is the selectable six-tenor curve. A tenor that does not
-    yet exist is absent, so earlier dates stay out of this set.
+    The union is the selectable curve. A tenor that has not started yet does
+    not remove earlier dates that another tenor already printed.
     """
-    sets: list[set[date]] = []
+    days: set[date] = set()
     for metric_id in TENOR_METRIC_IDS:
-        days: set[date] = set()
         for row in history.get(metric_id) or ():
-            if row.get("value") is None:
+            if positive_number(row.get("value")) is None:
                 continue
             session = _as_date(row.get("as_of"))
             if session is not None:
                 days.add(session)
-        sets.append(days)
-    if not sets or any(not day_set for day_set in sets):
-        return []
-    return sorted(set.intersection(*sets))
+    return sorted(days)
 
 
-def resolve_curve_date(requested: date | None, common_dates: Sequence[date]) -> date | None:
-    """Most recent common curve date on or before ``requested``.
+def resolve_curve_date(requested: date | None, available_dates: Sequence[date]) -> date | None:
+    """Most recent available curve date on or before ``requested``.
 
-    None means no eligible date exists. The resolver never returns a later session.
+    A date is available when any active tenor has an observation. None means no
+    eligible date exists. The resolver never returns a later session.
     """
-    ordered = sorted({day for day in (_as_date(item) for item in common_dates) if day is not None})
+    ordered = sorted({day for day in (_as_date(item) for item in available_dates) if day is not None})
     if not ordered:
         return None
     if requested is None:

@@ -512,6 +512,19 @@ def evaluate_due_steps(
             )
         elif step in {"options", "vix", "openfigi", "edgar", "legacy_sector"}:
             out.append(DueDecision(step, step.upper(), False, "not_in_catchup_poll_set", "SKIPPED_NOT_DUE"))
+        elif step == "yahoo_vol":
+            term_latest = _source_latest("YAHOO_VOL", "vix_term_structure")
+            if term_latest is None:
+                term_latest = _source_latest("YAHOO_VOL")
+            out.append(
+                daily_source_due(
+                    step=step,
+                    source_id="YAHOO_VOL",
+                    cadence="D",
+                    latest_observation=term_latest,
+                    now=now,
+                )
+            )
         elif step == "yahoo_live":
             out.append(yahoo_live_due(enabled=yahoo_live_fallback_enabled(env), now=now))
         elif step == "yahoo_eod":

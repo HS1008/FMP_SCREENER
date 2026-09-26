@@ -10,12 +10,17 @@
 
 #toolbar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   min-height: 48px;
   padding: 2px 2px 8px;
   box-sizing: border-box;
+}
+
+#readout {
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 #readout-date {
@@ -28,8 +33,35 @@
   font-size: 20px;
   line-height: 1.25;
   font-weight: 650;
+  white-space: pre-line;
 }
 
+#readout-value.multi {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+#toolbar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 1 auto;
+}
+
+#ranges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+#ranges[hidden] {
+  display: none;
+}
+
+#ranges button,
 #reset {
   flex: 0 0 auto;
   min-height: 44px;
@@ -40,6 +72,11 @@
   color: inherit;
   font: inherit;
   font-size: 14px;
+}
+
+#ranges button {
+  min-height: 36px;
+  padding: 6px 8px;
 }
 
 #chart,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import math
 import statistics
 from datetime import date, timedelta
@@ -14,7 +15,7 @@ import pytest
 from streamlit.testing.v1 import AppTest
 
 from market_intelligence import yahoo_vol as vol
-from market_intelligence.ingest_yahoo_vol import HISTORY_LOOKBACK_DAYS, fetch_yahoo_closes, ingest_yahoo_vol
+from market_intelligence.ingest_yahoo_vol import HISTORY_LOOKBACK_DAYS, TERM_HISTORY_PERIOD, fetch_yahoo_closes, ingest_yahoo_vol
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -39,8 +40,6 @@ def _same_day_tenors(day: date, levels: dict[str, float | None]) -> dict[str, li
 
 def _complete_tenor_levels(**overrides: float | None) -> dict[str, float | None]:
     levels: dict[str, float | None] = {
-        "^VIX1D": 13.0,
-        "^VIX9D": 14.0,
         "^VIX": 15.0,
         "^VIX3M": 16.0,
         "^VIX6M": 17.0,
@@ -156,14 +155,17 @@ def test_align_vix_minus_rv_fail_closed_on_no_overlap():
 
 
 def test_tenor_order_is_explicit_not_alphabetical():
-    assert vol.TENOR_AXIS == ("1D", "9D", "1M", "3M", "6M", "1Y")
+    assert vol.TENOR_AXIS == ("1M", "3M", "6M", "1Y")
+    assert [ticker for ticker, _tenor, _metric in vol.TERM_TENORS] == ["^VIX", "^VIX3M", "^VIX6M", "^VIX1Y"]
     assert [tenor for _ticker, tenor, _metric in vol.TERM_TENORS] == list(vol.TENOR_AXIS)
     assert list(vol.TENOR_AXIS) != sorted(vol.TENOR_AXIS)
-    assert vol.TENOR_RANK["1D"] == 0
-    assert vol.TENOR_RANK["1Y"] == 5
+    assert vol.TENOR_RANK["1M"] == 0
+    assert vol.TENOR_RANK["1Y"] == 3
+    assert "1D" not in vol.TENOR_AXIS
+    assert "9D" not in vol.TENOR_AXIS
     day = date(2026, 9, 23)
     curve = vol.term_structure(_same_day_tenors(day, _complete_tenor_levels()))
-    assert [point["tenor"] for point in curve["points"]] == ["1D", "9D", "1M", "3M", "6M", "1Y"]
+    assert [point["tenor"] for point in curve["points"]] == ["1M", "3M", "6M", "1Y"]
 
 
 def test_term_structure_all_tenors_same_date():
@@ -171,22 +173,24 @@ def test_term_structure_all_tenors_same_date():
     series = _same_day_tenors(day, _complete_tenor_levels())
     curve = vol.term_structure(series)
     assert curve["observation_date"] == day
-    assert curve["front_to_back_slope"] == pytest.approx(4.0)
+    assert curve["front_tenor"] == "1M"
+    assert curve["back_tenor"] == "1Y"
+    assert curve["front_to_back_slope"] == pytest.approx(3.0)
     assert curve["curve_state"] == "upward_sloping"
     assert curve["slope_status"] == "OK"
     assert curve["unavailable_tenors"] == []
     assert all(p["observation_date"] == day for p in curve["points"])
-    assert curve["points"][0]["ticker"] == "^VIX1D"
+    assert curve["points"][0]["ticker"] == "^VIX"
 
 
-def test_term_structure_9d_missing_slope_incomplete():
+def test_term_structure_1m_missing_slope_incomplete():
     day = date(2026, 9, 23)
-    series = _same_day_tenors(day, _complete_tenor_levels(**{"^VIX9D": None}))
+    series = _same_day_tenors(day, _complete_tenor_levels(**{"^VIX": None}))
     curve = vol.term_structure(series)
     assert curve["observation_date"] == day
     assert curve["front_to_back_slope"] is None
     assert curve["slope_status"] == "INCOMPLETE"
-    assert "9D" in curve["unavailable_tenors"]
+    assert "1M" in curve["unavailable_tenors"]
 
 
 def test_term_structure_1y_missing_slope_incomplete():
@@ -202,7 +206,7 @@ def test_term_structure_intermediate_missing_still_publishes_slope():
     day = date(2026, 9, 23)
     series = _same_day_tenors(day, _complete_tenor_levels(**{"^VIX3M": None}))
     curve = vol.term_structure(series)
-    assert curve["front_to_back_slope"] == pytest.approx(4.0)
+    assert curve["front_to_back_slope"] == pytest.approx(3.0)
     assert curve["slope_status"] == "OK"
     assert "3M" in curve["unavailable_tenors"]
     assert next(p for p in curve["points"] if p["tenor"] == "3M")["level"] is None
@@ -212,8 +216,6 @@ def test_term_structure_rejects_mixed_observation_dates():
     d1 = date(2026, 9, 22)
     d2 = date(2026, 9, 23)
     series = {
-        "^VIX1D": [(d2, 13.0)],
-        "^VIX9D": [(d2, 14.0)],
         "^VIX": [(d1, 99.0), (d2, 15.0)],
         "^VIX3M": [(d1, 50.0)],
         "^VIX6M": [(d2, 17.0)],
@@ -221,34 +223,34 @@ def test_term_structure_rejects_mixed_observation_dates():
     }
     curve = vol.term_structure(series)
     assert curve["observation_date"] == d2
-    assert curve["front_to_back_slope"] == pytest.approx(4.0)
+    assert curve["front_to_back_slope"] == pytest.approx(3.0)
     by_tenor = {p["tenor"]: p for p in curve["points"]}
     assert by_tenor["1M"]["level"] == pytest.approx(15.0)
     assert by_tenor["3M"]["level"] is None
     assert "3M" in curve["unavailable_tenors"]
     series2 = {
-        "^VIX1D": [(d1, 13.0)],
-        "^VIX9D": [(d1, 14.0)],
         "^VIX": [(d2, 15.0)],
-        "^VIX3M": [(d2, 16.0)],
+        "^VIX3M": [(d1, 16.0)],
         "^VIX6M": [(d2, 17.0)],
         "^VIX1Y": [(d1, 18.0)],
     }
     curve2 = vol.term_structure(series2)
-    assert curve2["observation_date"] == d1
-    assert curve2["front_to_back_slope"] == pytest.approx(4.0)
-    assert {p["tenor"] for p in curve2["points"] if p["level"] is None} == {"1M", "3M", "6M"}
+    assert curve2["observation_date"] == d2
+    assert curve2["front_to_back_slope"] is None
+    assert curve2["slope_status"] == "INCOMPLETE"
+    by_tenor2 = {p["tenor"]: p for p in curve2["points"]}
+    assert by_tenor2["3M"]["level"] is None
+    assert by_tenor2["1Y"]["level"] is None
+    assert by_tenor2["1M"]["level"] == pytest.approx(15.0)
 
 
-def test_curve_shape_follows_9d_to_1y_not_alphabetical_ends():
+def test_curve_shape_follows_1m_to_1y_not_alphabetical_ends():
     day = date(2026, 9, 23)
-    # Sorted labels end at 9D. 9D is above 1D, so a first-to-last alphabetical
-    # slope would be upward. The published slope is 1Y minus 9D.
-    levels = _complete_tenor_levels(
-        **{"^VIX1D": 10.0, "^VIX9D": 20.0, "^VIX": 16.0, "^VIX3M": 15.0, "^VIX6M": 14.0, "^VIX1Y": 12.0}
-    )
+    # Sorted labels are 1M, 1Y, 3M, 6M, so a first-to-last alphabetical slope
+    # would use 6M − 1M and look upward. The published slope is 1Y minus 1M.
+    levels = _complete_tenor_levels(**{"^VIX": 20.0, "^VIX3M": 18.0, "^VIX6M": 22.0, "^VIX1Y": 12.0})
     curve = vol.term_structure(_same_day_tenors(day, levels))
-    assert curve["front_tenor"] == "9D"
+    assert curve["front_tenor"] == "1M"
     assert curve["back_tenor"] == "1Y"
     assert curve["front_to_back_slope"] == pytest.approx(-8.0)
     assert curve["curve_state"] == "downward_sloping"
@@ -261,11 +263,11 @@ def test_term_structure_slope_labels_not_contango():
     assert curve["curve_state"] == "upward_sloping"
     assert curve["curve_state"] not in {"contango", "backwardation"}
     flat = vol.term_structure(
-        _same_day_tenors(day, _complete_tenor_levels(**{"^VIX1D": 15.0, "^VIX9D": 15.0, "^VIX": 15.02, "^VIX3M": None, "^VIX6M": None, "^VIX1Y": 15.01}))
+        _same_day_tenors(day, _complete_tenor_levels(**{"^VIX": 15.02, "^VIX3M": None, "^VIX6M": None, "^VIX1Y": 15.01}))
     )
     assert flat["curve_state"] == "flat"
     down = vol.term_structure(
-        _same_day_tenors(day, _complete_tenor_levels(**{"^VIX9D": 20.0, "^VIX": 18.0, "^VIX3M": 16.0, "^VIX6M": 15.0, "^VIX1Y": 14.0}))
+        _same_day_tenors(day, _complete_tenor_levels(**{"^VIX": 18.0, "^VIX3M": 16.0, "^VIX6M": 15.0, "^VIX1Y": 14.0}))
     )
     assert down["curve_state"] == "downward_sloping"
     assert "Never labeled contango/backwardation" in curve["note"]
@@ -310,8 +312,9 @@ def test_ingest_observation_dates_not_run_day():
     written: list[dict] = []
     freshness: list[dict] = []
 
-    def fake_fetch(ticker, *, start, end):
+    def fake_fetch(ticker, *, start, end, period=None):
         assert end == run_day
+        assert period is None
         if ticker == "^GSPC":
             return _gspc_series(obs, n=22)
         if ticker == "^VIX":
@@ -347,15 +350,17 @@ def test_ingest_observation_dates_not_run_day():
         row["metric_id"]: row
         for row in written
         if row["metric_id"]
-        in {"GSPC_REALIZED_VOL_21D", "VIX_MINUS_GSPC_RV21", "VIX_INDEX_FRONT_TO_BACK", "VIX_1D", "VIX_9D", "VIX_1Y"}
+        in {"GSPC_REALIZED_VOL_21D", "VIX_MINUS_GSPC_RV21", "VIX_INDEX_FRONT_TO_BACK", "VIX_1M", "VIX_3M", "VIX_1Y"}
     }
     assert by_id["GSPC_REALIZED_VOL_21D"]["as_of"] == obs
     assert by_id["VIX_MINUS_GSPC_RV21"]["as_of"] == obs
     assert by_id["VIX_MINUS_GSPC_RV21"]["status"] == "OK"
     assert by_id["VIX_INDEX_FRONT_TO_BACK"]["as_of"] == obs
-    assert by_id["VIX_1D"]["as_of"] == obs
-    assert by_id["VIX_9D"]["as_of"] == obs
+    assert json.loads(by_id["VIX_INDEX_FRONT_TO_BACK"]["detail"])["front_tenor"] == "1M"
+    assert by_id["VIX_1M"]["as_of"] == obs
+    assert by_id["VIX_3M"]["as_of"] == obs
     assert by_id["VIX_1Y"]["as_of"] == obs
+    assert not any(row["metric_id"] in {"VIX_1D", "VIX_9D"} for row in written)
     assert all(row["as_of"] != run_day for row in written)
 
     for mark in freshness:
@@ -371,7 +376,8 @@ def test_ingest_spread_incomplete_when_vix_gspc_dates_diverge_without_common_win
     engine.begin.return_value.__exit__.return_value = False
     written: list[dict] = []
 
-    def fake_fetch(ticker, *, start, end):
+    def fake_fetch(ticker, *, start, end, period=None):
+        assert period is None
         if ticker == "^GSPC":
             return _gspc_series(date(2026, 9, 20), n=22)
         if ticker == "^VIX":
@@ -413,20 +419,36 @@ def test_resolve_curve_date_exact_weekend_and_no_lookahead():
     assert vol.resolve_curve_date(None, common) == date(2026, 9, 25)
 
 
-def test_vix1d_missing_history_is_not_invented():
-    assert vol.TERM_TENORS[0] == ("^VIX1D", "1D", "VIX_1D")
+def test_partial_history_is_selectable_and_not_filled():
+    assert vol.TERM_TENORS[0] == ("^VIX", "1M", "VIX_1M")
     later = date(2026, 9, 24)
     earlier = date(2010, 1, 4)
-    history: dict[str, list[dict]] = {}
-    for ticker, _tenor, metric_id in vol.TERM_TENORS:
-        history[metric_id] = [{"as_of": later, "value": 15.0}]
-        if ticker != "^VIX1D":
-            history[metric_id].append({"as_of": earlier, "value": 20.0})
-    assert vol.common_curve_dates_from_history(history) == [later]
+    prior = date(2010, 1, 3)
+    history: dict[str, list[dict]] = {
+        "VIX_1M": [
+            {"as_of": earlier, "value": 15.0},
+            {"as_of": later, "value": 16.0},
+        ],
+        "VIX_3M": [{"as_of": prior, "value": 50.0}, {"as_of": later, "value": 17.0}],
+        "VIX_6M": [{"as_of": earlier, "value": 18.0}, {"as_of": later, "value": 19.0}],
+        "VIX_1Y": [{"as_of": later, "value": 20.0}],
+        "VIX_1D": [{"as_of": earlier, "value": 11.0}],
+    }
+    available = vol.available_curve_dates_from_history(history)
+    assert earlier in available
+    assert prior in available
+    assert later in available
     earlier_levels = vol.curve_levels_on_date(history, earlier)
-    assert [point["tenor"] for point in earlier_levels] == list(vol.TENOR_AXIS)
-    assert next(point for point in earlier_levels if point["tenor"] == "1D")["value"] is None
-    assert vol.resolve_curve_date(earlier, vol.common_curve_dates_from_history(history)) is None
+    by_tenor = {point["tenor"]: point for point in earlier_levels}
+    assert [point["tenor"] for point in earlier_levels] == ["1M", "3M", "6M", "1Y"]
+    assert by_tenor["1M"]["value"] == pytest.approx(15.0)
+    assert by_tenor["1M"]["as_of"] == "2010-01-04"
+    assert by_tenor["3M"]["value"] is None
+    assert by_tenor["3M"]["as_of"] is None
+    assert by_tenor["6M"]["value"] == pytest.approx(18.0)
+    assert by_tenor["1Y"]["value"] is None
+    assert vol.resolve_curve_date(date(2010, 1, 4), available) == earlier
+    assert vol.resolve_curve_date(date(2010, 1, 2), available) is None
 
 
 def test_ingest_writes_historical_rv21_series():
@@ -438,8 +460,9 @@ def test_ingest_writes_historical_rv21_series():
     written: list[dict] = []
     gspc = _gspc_series(obs, n=30)
 
-    def fake_fetch(ticker, *, start, end):
+    def fake_fetch(ticker, *, start, end, period=None):
         assert end == run_day
+        assert period is None
         assert start == run_day - timedelta(days=HISTORY_LOOKBACK_DAYS)
         if ticker == "^GSPC":
             return gspc
@@ -469,8 +492,9 @@ def test_ingest_writes_historical_rv21_series():
     assert rv_rows[0]["as_of"] != rv_rows[-1]["as_of"]
     assert all(row["value"] not in (None, 0) for row in rv_rows)
     assert [row["as_of"] for row in rv_rows] == [row["as_of"] for row in spread_rows]
-    vix1d = [row for row in written if row["metric_id"] == "VIX_1D"]
-    assert {row["as_of"] for row in vix1d} == {obs - timedelta(days=1), obs}
+    vix1m = [row for row in written if row["metric_id"] == "VIX_1M"]
+    assert {row["as_of"] for row in vix1m} == {day for day, _close in gspc}
+    assert not any(row["metric_id"] == "VIX_1D" for row in written)
 
 
 def test_options_page_shows_yahoo_core_without_provider_imports(monkeypatch):
@@ -493,8 +517,6 @@ def test_options_page_shows_yahoo_core_without_provider_imports(monkeypatch):
         ],
     }
     for metric_id, level in (
-        ("VIX_1D", 12.0),
-        ("VIX_9D", 17.0),
         ("VIX_1M", 18.5),
         ("VIX_3M", 19.0),
         ("VIX_6M", 19.5),
@@ -596,3 +618,42 @@ def test_options_page_nulls_stay_unavailable(monkeypatch):
     assert not at.exception
     text = " ".join(str(el.value) for el in at.info)
     assert "unavailable" in text.lower() or "No Yahoo" in text
+
+
+def test_full_backfill_uses_max_history_only_for_active_term_tickers():
+    run_day = date(2026, 9, 24)
+    engine = MagicMock()
+    engine.begin.return_value.__enter__.return_value = MagicMock()
+    engine.begin.return_value.__exit__.return_value = False
+    calls: list[tuple] = []
+
+    def fake_fetch(ticker, *, start, end, period=None):
+        calls.append((ticker, start, period))
+        assert end == run_day
+        return [(run_day - timedelta(days=1), 16.0)]
+
+    with (
+        patch("market_intelligence.ingest_yahoo_vol.fetch_yahoo_closes", side_effect=fake_fetch),
+        patch("market_intelligence.ingest_yahoo_vol.start_run", return_value="run-1"),
+        patch("market_intelligence.ingest_yahoo_vol.finish_run"),
+        patch("market_intelligence.ingest_yahoo_vol.record_freshness"),
+        patch("market_intelligence.ingest_yahoo_vol._ensure_source"),
+        patch("market_intelligence.ingest_yahoo_vol._write_rows", side_effect=lambda _e, rows, _r: len(rows)),
+    ):
+        report = ingest_yahoo_vol(engine, today=run_day, mode="full")
+
+    assert report["mode"] == "full"
+    assert TERM_HISTORY_PERIOD == "max"
+    by_period = {}
+    for ticker, start, period in calls:
+        by_period.setdefault(ticker, []).append((start, period))
+    assert "^VIX1D" not in by_period
+    assert "^VIX9D" not in by_period
+    assert by_period["^SKEW"] == [(run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), None)]
+    assert by_period["^GSPC"] == [(run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), None)]
+    assert (run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), None) in by_period["^VIX"]
+    assert any(period == "max" for _start, period in by_period["^VIX"])
+    for ticker in ("^VIX3M", "^VIX6M", "^VIX1Y"):
+        assert by_period[ticker] == [(run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), "max")]
+    assert report["rows_by_ticker"]["^VIX1Y"] == 1
+    assert report["sections"]["vix_term_structure"]["rows_by_ticker"]["^VIX"] == 1

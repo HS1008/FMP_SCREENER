@@ -17,3 +17,7 @@
   user-select: none;
   -webkit-user-select: none;
 }
+
+#chart div {
+  color: #f4f6f8;
+}

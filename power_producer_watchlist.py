@@ -23,13 +23,7 @@ import streamlit as st
 import config
 import data_loader
 from data_sources import eia_wholesale
-
-try:
-    import plotly.graph_objects as go
-
-    HAS_PLOTLY = True
-except ImportError:
-    HAS_PLOTLY = False
+from market_intelligence.components.market_chart import lightweight_market_chart
 
 # =========================================================================
 # Constants
@@ -532,44 +526,44 @@ def render_spark_spread_monitor(summary: pd.DataFrame) -> None:
 # =========================================================================
 # Rendering — Spark Spread Trend Chart
 # =========================================================================
+def _dated_series(frame: pd.DataFrame, column: str, label: str) -> dict[str, Any]:
+    return {
+        "label": label,
+        "points": [
+            {"as_of": stamp, "value": value}
+            for stamp, value in zip(frame["date"], frame[column])
+        ],
+    }
+
+
 def render_spark_spread_chart(
     market_df: pd.DataFrame, regions: list[str], lookback_days: int
 ) -> None:
     st.subheader("Spark Spread Trend")
-    if not HAS_PLOTLY or market_df.empty:
-        if not HAS_PLOTLY:
-            st.warning("Install plotly for charts.")
+    st.caption("Spark spread ($/MWh). A 30-session moving average is drawn beside each region.")
+    if market_df.empty:
         return
     cutoff = market_df["date"].max() - pd.Timedelta(days=lookback_days)
     plot_df = market_df[market_df["date"] >= cutoff]
-
-    fig = go.Figure()
+    series: list[dict[str, Any]] = []
     for region in regions:
         rdf = plot_df[plot_df["region"] == region].sort_values("date")
         if rdf.empty:
             continue
-        fig.add_trace(
-            go.Scatter(x=rdf["date"], y=rdf["spark_spread"], mode="lines", name=region)
-        )
+        series.append(_dated_series(rdf, "spark_spread", region))
         if len(rdf) >= 30:
             ma = rdf["spark_spread"].rolling(30, min_periods=15).mean()
-            fig.add_trace(
-                go.Scatter(
-                    x=rdf["date"],
-                    y=ma,
-                    mode="lines",
-                    name=f"{region} 30d MA",
-                    line=dict(dash="dot"),
-                    showlegend=False,
-                )
+            series.append(
+                {
+                    "label": "{0} 30d MA".format(region),
+                    "points": [
+                        {"as_of": stamp, "value": value}
+                        for stamp, value in zip(rdf["date"], ma)
+                    ],
+                }
             )
-    fig.update_layout(
-        yaxis_title="Spark Spread ($/MWh)",
-        hovermode="x unified",
-        height=400,
-        margin=dict(l=50, r=20, t=30, b=40),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    if series:
+        lightweight_market_chart(series=series, key="spark-spread", ranges=True, height=400)
 
 
 # =========================================================================
@@ -579,28 +573,19 @@ def render_implied_heat_rate_chart(
     market_df: pd.DataFrame, regions: list[str], lookback_days: int
 ) -> None:
     st.subheader("Implied Heat Rate Trend")
-    if not HAS_PLOTLY or market_df.empty:
+    st.caption("Implied heat rate (MMBtu/MWh).")
+    if market_df.empty:
         return
     cutoff = market_df["date"].max() - pd.Timedelta(days=lookback_days)
     plot_df = market_df[market_df["date"] >= cutoff]
-
-    fig = go.Figure()
+    series = []
     for region in regions:
         rdf = plot_df[plot_df["region"] == region].sort_values("date")
         if rdf.empty:
             continue
-        fig.add_trace(
-            go.Scatter(
-                x=rdf["date"], y=rdf["implied_heat_rate"], mode="lines", name=region
-            )
-        )
-    fig.update_layout(
-        yaxis_title="Implied Heat Rate (MMBtu/MWh)",
-        hovermode="x unified",
-        height=400,
-        margin=dict(l=50, r=20, t=30, b=40),
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        series.append(_dated_series(rdf, "implied_heat_rate", region))
+    if series:
+        lightweight_market_chart(series=series, key="implied-heat-rate", ranges=True, height=400)
 
 
 # =========================================================================
@@ -610,7 +595,8 @@ def render_power_vs_fuel_cost_chart(
     market_df: pd.DataFrame, heat_rate: float, lookback_days: int
 ) -> None:
     st.subheader("Power Price vs Fuel Cost")
-    if not HAS_PLOTLY or market_df.empty:
+    st.caption("$/MWh")
+    if market_df.empty:
         return
     regions = sorted(market_df["region"].unique())
     selected = st.selectbox("Select hub pair", regions, key="pv_fuel_region")
@@ -622,28 +608,23 @@ def render_power_vs_fuel_cost_chart(
         st.info("No data for selected hub.")
         return
 
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=rdf["date"], y=rdf["power_price"], mode="lines", name="Power Price ($/MWh)"
-        )
-    )
-    fuel_cost = rdf["gas_price"] * heat_rate
-    fig.add_trace(
-        go.Scatter(
-            x=rdf["date"],
-            y=fuel_cost,
-            mode="lines",
-            name=f"Fuel Cost (gas × {heat_rate:.1f})",
-        )
-    )
-    fig.update_layout(
-        yaxis_title="$/MWh",
-        hovermode="x unified",
+    fuel_label = "Fuel Cost (gas × {0:.1f})".format(heat_rate)
+    slug = "".join(ch if ch.isalnum() else "-" for ch in str(selected))[:40]
+    lightweight_market_chart(
+        series=[
+            _dated_series(rdf, "power_price", "Power Price ($/MWh)"),
+            {
+                "label": fuel_label,
+                "points": [
+                    {"as_of": stamp, "value": price * heat_rate}
+                    for stamp, price in zip(rdf["date"], rdf["gas_price"])
+                ],
+            },
+        ],
+        key="power-fuel-{0}".format(slug or "hub"),
+        ranges=True,
         height=400,
-        margin=dict(l=50, r=20, t=30, b=40),
     )
-    st.plotly_chart(fig, use_container_width=True)
 
 
 # =========================================================================

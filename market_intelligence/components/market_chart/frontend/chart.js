@@ -1,5 +1,6 @@
-/* Renders the points Streamlit passes in. No network calls. */
+/* Renders the series Streamlit passes in. No network calls. */
 var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+var EXTRA_LINE_COLORS = ["#1e88e5", "#43a047", "#fb8c00", "#8e24aa", "#00acc1", "#e53935"];
 
 function timeToIso(time) {
   if (typeof time === "string") {
@@ -75,14 +76,128 @@ function paletteFor(root) {
   return { background: background, text: text, line: line, font: font, grid: grid };
 }
 
-function showPoint(state, point) {
-  if (!point) {
+function seriesColor(palette, index) {
+  if (index === 0) {
+    return palette.line;
+  }
+  return EXTRA_LINE_COLORS[(index - 1) % EXTRA_LINE_COLORS.length];
+}
+
+function chartPoint(point) {
+  if (!point || point.time == null) {
+    return null;
+  }
+  var time = String(point.time).slice(0, 10);
+  if (!time) {
+    return null;
+  }
+  if (typeof point.value !== "number" || !Number.isFinite(point.value)) {
+    return { time: time };
+  }
+  return { time: time, value: point.value };
+}
+
+function normalizePoints(points) {
+  var byTime = {};
+  var order = [];
+  var i;
+  for (i = 0; i < points.length; i++) {
+    var next = chartPoint(points[i]);
+    if (!next) {
+      continue;
+    }
+    var prior = byTime[next.time];
+    if (!prior) {
+      order.push(next.time);
+      byTime[next.time] = next;
+    } else if (typeof next.value === "number") {
+      byTime[next.time] = next;
+    }
+  }
+  order.sort();
+  var normalized = [];
+  for (i = 0; i < order.length; i++) {
+    normalized.push(byTime[order[i]]);
+  }
+  return normalized;
+}
+
+function unionTimes(items) {
+  var seen = {};
+  var times = [];
+  var i;
+  var j;
+  for (i = 0; i < items.length; i++) {
+    var points = items[i].points;
+    for (j = 0; j < points.length; j++) {
+      var time = points[j].time;
+      if (!time || seen[time]) {
+        continue;
+      }
+      seen[time] = true;
+      times.push(time);
+    }
+  }
+  times.sort();
+  return times;
+}
+
+function seriesFromData(data) {
+  if (Array.isArray(data.series)) {
+    return data.series.map(function (item) {
+      return {
+        label: (item && item.label) || "Value",
+        points: item && Array.isArray(item.points) ? item.points : [],
+      };
+    });
+  }
+  return [
+    {
+      label: data.series_label || "Value",
+      points: Array.isArray(data.points) ? data.points : [],
+    },
+  ];
+}
+
+function formatReadoutValue(state, value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "—";
+  }
+  var text = value.toFixed(2);
+  if (state.valueFormat === "percent") {
+    return text + "%";
+  }
+  return text;
+}
+
+function showAtTime(state, iso) {
+  var multi = state.seriesList.length > 1;
+  state.valueEl.classList.toggle("multi", multi);
+  if (!iso) {
+    state.activeTime = "";
     state.dateEl.textContent = "—";
     state.valueEl.textContent = "—";
     return;
   }
-  state.dateEl.textContent = formatDay(point.time);
-  state.valueEl.textContent = state.seriesLabel + ": " + Number(point.value).toFixed(2);
+  state.activeTime = iso;
+  state.dateEl.textContent = formatDay(iso);
+  if (!state.seriesList.length) {
+    state.valueEl.textContent = "—";
+    return;
+  }
+  var lines = [];
+  var i;
+  for (i = 0; i < state.seriesList.length; i++) {
+    var item = state.seriesList[i];
+    var has = Object.prototype.hasOwnProperty.call(item.byTime, iso);
+    var shown = has ? formatReadoutValue(state, item.byTime[iso]) : "—";
+    if (multi) {
+      lines.push(item.label + "  " + shown);
+    } else {
+      lines.push(item.label + ": " + shown);
+    }
+  }
+  state.valueEl.textContent = lines.join("\n");
 }
 
 function applyTheme(state) {
@@ -109,35 +224,57 @@ function applyTheme(state) {
       horzLine: { color: palette.text, width: 1, style: 2, labelBackgroundColor: palette.line },
     },
   });
-  state.series.applyOptions({ color: palette.line, lineWidth: 2 });
+  state.seriesList.forEach(function (entry, index) {
+    var color = seriesColor(palette, index);
+    entry.fragments.forEach(function (api) {
+      api.applyOptions({ color: color, lineWidth: 2 });
+    });
+  });
+}
+
+function pointAt(state, iso) {
+  var i;
+  for (i = 0; i < state.seriesList.length; i++) {
+    var item = state.seriesList[i];
+    if (Object.prototype.hasOwnProperty.call(item.byTime, iso) && item.apiByTime[iso]) {
+      return { time: iso, value: item.byTime[iso], api: item.apiByTime[iso] };
+    }
+  }
+  var fallback = null;
+  if (state.seriesList.length && state.seriesList[0].fragments.length) {
+    fallback = state.seriesList[0].fragments[0];
+  }
+  return { time: iso, value: null, api: fallback };
 }
 
 function nearestPoint(state, x) {
-  if (!state.points.length) {
+  if (!state.times.length) {
     return null;
   }
   var logical = state.chart.timeScale().coordinateToLogical(x);
   var index;
   if (logical == null || Number.isNaN(logical)) {
-    index = x < (state.container.clientWidth || 1) / 2 ? 0 : state.points.length - 1;
+    index = x < (state.container.clientWidth || 1) / 2 ? 0 : state.times.length - 1;
   } else {
     index = Math.round(logical);
   }
   if (index < 0) {
     index = 0;
   }
-  if (index > state.points.length - 1) {
-    index = state.points.length - 1;
+  if (index > state.times.length - 1) {
+    index = state.times.length - 1;
   }
-  return state.points[index];
+  return pointAt(state, state.times[index]);
 }
 
 function inspect(state, point) {
   if (!point) {
     return;
   }
-  state.chart.setCrosshairPosition(point.value, point.time, state.series);
-  showPoint(state, point);
+  if (point.api && typeof point.value === "number" && Number.isFinite(point.value)) {
+    state.chart.setCrosshairPosition(point.value, point.time, point.api);
+  }
+  showAtTime(state, point.time);
 }
 
 function touchDistance(first, second) {
@@ -185,13 +322,194 @@ function onTimeAxis(container, clientY) {
   return clientY >= rect.bottom - 36;
 }
 
-function signatureOf(points) {
-  if (!points.length) {
-    return "empty";
+function signatureOf(items) {
+  var parts = [];
+  var i;
+  var j;
+  for (i = 0; i < items.length; i++) {
+    parts.push(items[i].label);
+    var points = items[i].points;
+    for (j = 0; j < points.length; j++) {
+      var point = points[j];
+      parts.push(point.time + "=" + (typeof point.value === "number" ? point.value : ""));
+    }
   }
-  var first = points[0];
-  var last = points[points.length - 1];
-  return points.length + "|" + first.time + "|" + last.time + "|" + last.value;
+  return parts.join("|");
+}
+
+function daysInMonth(year, month) {
+  if (month === 2) {
+    if ((year % 4 === 0 && year % 100 !== 0) || year % 400 === 0) {
+      return 29;
+    }
+    return 28;
+  }
+  if (month === 4 || month === 6 || month === 9 || month === 11) {
+    return 30;
+  }
+  return 31;
+}
+
+function shiftIso(iso, deltaMonths) {
+  var parts = String(iso).slice(0, 10).split("-");
+  var year = Number(parts[0]);
+  var month = Number(parts[1]);
+  var day = Number(parts[2]);
+  if (!year || month < 1 || month > 12 || !day) {
+    return String(iso).slice(0, 10);
+  }
+  var index = year * 12 + (month - 1) + deltaMonths;
+  var nextYear = Math.floor(index / 12);
+  var nextMonth = index - nextYear * 12 + 1;
+  var dim = daysInMonth(nextYear, nextMonth);
+  if (day > dim) {
+    day = dim;
+  }
+  return (
+    String(nextYear) +
+    "-" +
+    String(nextMonth).padStart(2, "0") +
+    "-" +
+    String(day).padStart(2, "0")
+  );
+}
+
+function rangeStart(last, kind) {
+  if (kind === "1M") {
+    return shiftIso(last, -1);
+  }
+  if (kind === "3M") {
+    return shiftIso(last, -3);
+  }
+  if (kind === "6M") {
+    return shiftIso(last, -6);
+  }
+  if (kind === "YTD") {
+    return String(last).slice(0, 4) + "-01-01";
+  }
+  if (kind === "1Y") {
+    return shiftIso(last, -12);
+  }
+  if (kind === "3Y") {
+    return shiftIso(last, -36);
+  }
+  return "";
+}
+
+function applyRange(state, kind) {
+  var times = state.times;
+  if (!times.length) {
+    return;
+  }
+  var start = rangeStart(times[times.length - 1], kind);
+  if (!start) {
+    return;
+  }
+  var fromIndex = times.length - 1;
+  var i;
+  for (i = 0; i < times.length; i++) {
+    if (times[i] >= start) {
+      fromIndex = i;
+      break;
+    }
+  }
+  state.chart.timeScale().setVisibleLogicalRange({
+    from: fromIndex - 0.5,
+    to: times.length - 1 + 0.5,
+  });
+}
+
+function applyChartHeight(state, data) {
+  var compact = !!(state.media && state.media.matches);
+  var next;
+  if (compact) {
+    next = "320px";
+  } else {
+    var total = Number(data && data.height) || 420;
+    var toolbar = state.root.querySelector("#toolbar");
+    var used = toolbar && toolbar.offsetHeight ? toolbar.offsetHeight : 68;
+    next = Math.max(220, Math.round(total - used)) + "px";
+  }
+  if (state.container.style.height !== next) {
+    state.container.style.height = next;
+  }
+}
+
+function lineOptions() {
+  return {
+    lineWidth: 2,
+    priceFormat: { type: "price", precision: 2, minMove: 0.01 },
+    lastValueVisible: false,
+    priceLineVisible: false,
+    crosshairMarkerVisible: true,
+    crosshairMarkerRadius: 5,
+  };
+}
+
+function runsOf(points) {
+  var runs = [];
+  var current = [];
+  var i;
+  for (i = 0; i < points.length; i++) {
+    var point = points[i];
+    if (typeof point.value !== "number" || !Number.isFinite(point.value)) {
+      if (current.length) {
+        runs.push(current);
+        current = [];
+      }
+      continue;
+    }
+    current.push(point);
+  }
+  if (current.length) {
+    runs.push(current);
+  }
+  return runs;
+}
+
+function removeFragments(state, entry) {
+  while (entry.fragments.length) {
+    state.chart.removeSeries(entry.fragments.pop());
+  }
+}
+
+function syncSeries(state, prepared) {
+  var charts = window.LightweightCharts;
+  while (state.seriesList.length > prepared.length) {
+    removeFragments(state, state.seriesList.pop());
+  }
+  var i;
+  for (i = 0; i < prepared.length; i++) {
+    if (!state.seriesList[i]) {
+      state.seriesList.push({
+        label: "Value",
+        byTime: {},
+        apiByTime: {},
+        fragments: [],
+      });
+    }
+    var entry = state.seriesList[i];
+    var runs = runsOf(prepared[i].points);
+    while (entry.fragments.length > runs.length) {
+      state.chart.removeSeries(entry.fragments.pop());
+    }
+    while (entry.fragments.length < runs.length) {
+      entry.fragments.push(state.chart.addSeries(charts.LineSeries, lineOptions()));
+    }
+    entry.label = prepared[i].label;
+    entry.byTime = {};
+    entry.apiByTime = {};
+    var runIndex;
+    for (runIndex = 0; runIndex < runs.length; runIndex++) {
+      var run = runs[runIndex];
+      entry.fragments[runIndex].setData(run);
+      var pointIndex;
+      for (pointIndex = 0; pointIndex < run.length; pointIndex++) {
+        entry.byTime[run[pointIndex].time] = run[pointIndex].value;
+        entry.apiByTime[run[pointIndex].time] = entry.fragments[runIndex];
+      }
+    }
+  }
 }
 
 function createState(root) {
@@ -199,7 +517,8 @@ function createState(root) {
   var dateEl = root.querySelector("#readout-date");
   var valueEl = root.querySelector("#readout-value");
   var reset = root.querySelector("#reset");
-  if (!container || !dateEl || !valueEl || !reset || !window.LightweightCharts) {
+  var ranges = root.querySelector("#ranges");
+  if (!container || !dateEl || !valueEl || !reset || !ranges || !window.LightweightCharts) {
     throw new Error("Market chart markup or Lightweight Charts bundle is missing.");
   }
   var charts = window.LightweightCharts;
@@ -248,25 +567,21 @@ function createState(root) {
     },
     kineticScroll: { touch: false, mouse: false },
   });
-  var series = chart.addSeries(charts.LineSeries, {
-    lineWidth: 2,
-    priceFormat: { type: "price", precision: 2, minMove: 0.01 },
-    lastValueVisible: false,
-    priceLineVisible: false,
-    crosshairMarkerVisible: true,
-    crosshairMarkerRadius: 5,
-  });
   var state = {
     root: root,
     container: container,
     dateEl: dateEl,
     valueEl: valueEl,
+    reset: reset,
+    rangesEl: ranges,
     chart: chart,
-    series: series,
     magnet: magnet,
-    points: [],
-    seriesLabel: "Value",
-    signature: "",
+    seriesList: [],
+    times: [],
+    valueFormat: "number",
+    activeTime: "",
+    signature: null,
+    data: null,
     gesture: null,
   };
   chart.subscribeCrosshairMove(function (param) {
@@ -276,16 +591,19 @@ function createState(root) {
     if (state.gesture && state.gesture.mode !== "inspect") {
       return;
     }
-    if (!param || param.time == null || !param.seriesData) {
+    if (!param || param.time == null) {
       return;
     }
-    var bar = param.seriesData.get(series);
-    if (!bar || bar.value == null) {
+    var iso = timeToIso(param.time);
+    if (!iso) {
       return;
     }
-    showPoint(state, { time: bar.time || param.time, value: bar.value });
+    showAtTime(state, iso);
   });
   state.observer = new ResizeObserver(function () {
+    if (state.data) {
+      applyChartHeight(state, state.data);
+    }
     if (chart.autoSizeActive && chart.autoSizeActive()) {
       return;
     }
@@ -295,6 +613,15 @@ function createState(root) {
     });
   });
   state.observer.observe(container);
+  state.media = window.matchMedia ? window.matchMedia("(max-width: 699px)") : null;
+  state.onMedia = function () {
+    if (state.data) {
+      applyChartHeight(state, state.data);
+    }
+  };
+  if (state.media && state.media.addEventListener) {
+    state.media.addEventListener("change", state.onMedia);
+  }
   state.onTouchStart = function (event) {
     if (event.touches.length >= 2) {
       var startRange = chart.timeScale().getVisibleLogicalRange();
@@ -379,37 +706,64 @@ function createState(root) {
     }
     state.gesture = null;
   };
-  container.addEventListener("pointermove", function (event) {
+  state.onPointerMove = function (event) {
     if (event.pointerType === "mouse") {
       state.holdReadout = false;
     }
-  }, true);
+  };
+  container.addEventListener("pointermove", state.onPointerMove, true);
   container.addEventListener("touchstart", state.onTouchStart, { capture: true, passive: true });
   container.addEventListener("touchmove", state.onTouchMove, { capture: true, passive: false });
   container.addEventListener("touchend", state.onTouchEnd, { passive: true });
   container.addEventListener("touchcancel", state.onTouchEnd, { passive: true });
   state.onReset = function () {
     chart.timeScale().fitContent();
-    showPoint(state, state.points.length ? state.points[state.points.length - 1] : null);
+    showAtTime(state, state.times.length ? state.times[state.times.length - 1] : null);
   };
   reset.addEventListener("click", state.onReset);
+  state.onRangeClick = function (event) {
+    var button = event.target && event.target.closest ? event.target.closest("button[data-range]") : null;
+    if (!button) {
+      return;
+    }
+    applyRange(state, button.getAttribute("data-range"));
+  };
+  ranges.addEventListener("click", state.onRangeClick);
   return state;
 }
 
 function updateState(state, data) {
-  state.seriesLabel = data.series_label || "Value";
-  var height = Number(data.height) || 440;
-  state.container.style.height = Math.max(220, height - 68) + "px";
-  var nextPoints = Array.isArray(data.points) ? data.points : [];
-  applyTheme(state);
-  var signature = signatureOf(nextPoints);
-  if (signature !== state.signature) {
-    state.points = nextPoints;
-    state.series.setData(nextPoints);
-    state.chart.timeScale().fitContent();
-    showPoint(state, nextPoints.length ? nextPoints[nextPoints.length - 1] : null);
+  state.data = data || {};
+  var nextFormat = String(state.data.value_format || "").toLowerCase() === "percent" ? "percent" : "number";
+  var formatChanged = nextFormat !== state.valueFormat;
+  state.valueFormat = nextFormat;
+  state.rangesEl.hidden = state.data.ranges !== true;
+  applyChartHeight(state, state.data);
+  var prepared = seriesFromData(state.data).map(function (item) {
+    return {
+      label: item.label || "Value",
+      points: normalizePoints(item.points),
+    };
+  });
+  var signature = signatureOf(prepared);
+  var changed = signature !== state.signature;
+  if (changed) {
+    var times = unionTimes(prepared);
+    syncSeries(state, prepared);
+    state.times = times;
     state.signature = signature;
+    state.chart.timeScale().fitContent();
+    showAtTime(state, times.length ? times[times.length - 1] : null);
+  } else {
+    var j;
+    for (j = 0; j < prepared.length && j < state.seriesList.length; j++) {
+      state.seriesList[j].label = prepared[j].label;
+    }
+    if (formatChanged) {
+      showAtTime(state, state.activeTime || null);
+    }
   }
+  applyTheme(state);
 }
 
 export default function (component) {
@@ -426,10 +780,16 @@ export default function (component) {
       return;
     }
     state.observer.disconnect();
+    if (state.media && state.media.removeEventListener && state.onMedia) {
+      state.media.removeEventListener("change", state.onMedia);
+    }
+    state.container.removeEventListener("pointermove", state.onPointerMove, true);
     state.container.removeEventListener("touchstart", state.onTouchStart, { capture: true });
     state.container.removeEventListener("touchmove", state.onTouchMove, { capture: true });
     state.container.removeEventListener("touchend", state.onTouchEnd);
     state.container.removeEventListener("touchcancel", state.onTouchEnd);
+    state.rangesEl.removeEventListener("click", state.onRangeClick);
+    state.reset.removeEventListener("click", state.onReset);
     state.chart.remove();
     root.__marketChart = null;
   };
