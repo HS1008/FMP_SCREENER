@@ -117,6 +117,42 @@ def test_request_window_full_backfill_bounded_by_catalog():
     assert inc_start == AS_OF - timedelta(days=3) - REVISION_LOOKBACK["D"]
 
 
+def test_request_window_max_uses_provider_start_and_incremental_stays_bounded():
+    spec = CATALOG_BY_ID["BAMLEMCBPIOAS"]
+    provider_start = date(1998, 12, 31)
+    start, end = request_window(spec, mode="max", today=AS_OF, latest_stored=None, provider_start=provider_start)
+    assert (start, end) == (provider_start, AS_OF)
+    incremental, _ = request_window(spec, mode="incremental", today=AS_OF, latest_stored=None)
+    assert incremental == date(AS_OF.year - spec.backfill_years, AS_OF.month, 1)
+    assert incremental > provider_start
+
+
+def test_max_backfill_keeps_older_stored_rows(mi_db):
+    _registry(mi_db)
+    old = date(1998, 12, 31)
+    recent = date(2024, 12, 30)
+    client = FakeFredClient(
+        {"BAMLEMCBPIOAS": [(old, "4.20"), (recent, "3.10")]},
+        metadata={"BAMLEMCBPIOAS": {"observation_start": old.isoformat()}},
+    )
+    first = ingest_fred_catalog(mi_db, client, series_ids=["BAMLEMCBPIOAS"], mode="max", today=AS_OF)
+    assert first.results[0].status == "SUCCEEDED"
+    assert client.observation_calls[-1][1] == old
+    shorter = FakeFredClient(
+        {"BAMLEMCBPIOAS": [(recent, "3.10")]},
+        metadata={"BAMLEMCBPIOAS": {"observation_start": "2020-01-01"}},
+    )
+    second = ingest_fred_catalog(mi_db, shorter, series_ids=["BAMLEMCBPIOAS"], mode="max", today=AS_OF)
+    assert second.results[0].status == "SUCCEEDED"
+    assert shorter.observation_calls[-1][1] == date(2020, 1, 1)
+    with mi_db.connect() as conn:
+        kept = conn.execute(
+            text("SELECT value FROM mi_macro_observations WHERE series_id='BAMLEMCBPIOAS' AND observation_date=:d AND is_current"),
+            {"d": old},
+        ).scalar()
+    assert kept is not None
+
+
 def test_weekend_month_end_ice_observation_is_not_rejected(mi_db):
     _registry(mi_db)
     rows = daily_series(AS_OF, 100, 0.8, 0.001)

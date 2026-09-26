@@ -16,7 +16,21 @@ import streamlit as st
 from market_intelligence.bond_ladder import LadderBond, aggregate_ladder, theoretical_rungs
 from market_intelligence.bond_tax import ASSET_CORPORATE, ASSET_MUNI, ASSET_TREASURY, BondTaxInputs, TaxAssumptions, compare_three, muni_treasury_ratio
 from market_intelligence.bonds import interpolate_par_yield
-from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
+from market_intelligence.catalog import (
+    CATALOG_BY_ID,
+    CREDIT_BROAD_BUCKETS,
+    CREDIT_BROAD_TILES,
+    CREDIT_RATING_TILES,
+    CURVE_TENORS,
+)
+from market_intelligence.history_range import (
+    STORED_HISTORY_LIMIT,
+    chart_series_from_histories,
+    filter_history_rows,
+    historical_date_range,
+    series_toggles,
+    union_history_bounds,
+)
 from market_intelligence.components.market_chart import lightweight_market_chart, time_series_points
 from market_intelligence.components.tenor_chart import (
     build_tenor_curve,
@@ -246,33 +260,13 @@ def _parse_stored_date(value: Any) -> date | None:
     return None
 
 
-def _history_frame(rows: list[dict[str, Any]], column: str) -> pd.DataFrame | None:
-    points: dict[str, float] = {}
-    for row in rows:
-        session = _parse_stored_date(row.get("as_of"))
-        value = row.get("value")
-        if session is None or value is None:
-            continue
-        points[session.isoformat()] = float(value)
-    if not points:
-        return None
-    ordered = sorted(points)
-    return pd.DataFrame({column: [points[day] for day in ordered]}, index=pd.to_datetime(ordered))
-
-
-def _implied_realized_frame(history: dict[str, Any]) -> pd.DataFrame | None:
-    vix_frame = _history_frame(history.get("VIX_SPOT") or [], "VIX")
-    rv_frame = _history_frame(history.get("GSPC_REALIZED_VOL_21D") or [], "GSPC RV21")
-    if vix_frame is None and rv_frame is None:
-        return None
-    if vix_frame is None:
-        return rv_frame
-    if rv_frame is None:
-        return vix_frame
-    return vix_frame.join(rv_frame, how="outer")
-
-
-def _mount_time_series(series: list[dict[str, Any]], *, key: str, ranges: bool = False) -> None:
+def _mount_time_series(
+    series: list[dict[str, Any]],
+    *,
+    key: str,
+    ranges: bool = False,
+    value_format: str = "number",
+) -> None:
     """One Lightweight chart. Missing dates stay missing on the shared calendar."""
     if not series:
         return
@@ -281,19 +275,8 @@ def _mount_time_series(series: list[dict[str, Any]], *, key: str, ranges: bool =
         ranges=ranges,
         key=key,
         series_label=str(series[0].get("label") or "Value"),
+        value_format=value_format,
     )
-
-
-def _frame_points(frame: pd.DataFrame | None, column: str) -> list[dict[str, Any]]:
-    if frame is None or column not in getattr(frame, "columns", []):
-        return []
-    rows = []
-    for stamp, value in frame[column].items():
-        if value is None or (isinstance(value, float) and pd.isna(value)):
-            continue
-        day = stamp.date() if isinstance(stamp, datetime) else stamp
-        rows.append({"as_of": day, "value": value})
-    return time_series_points(rows)
 
 
 def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
@@ -373,8 +356,28 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
                     )
                 )
 
+    st.markdown("**Historical range**")
+    st.caption("From and To choose the stored history loaded into the three charts below. Quick ranges zoom inside that window.")
+    history_earliest, history_latest = union_history_bounds(
+        (
+            history.get("VIX_SPOT") or [],
+            history.get("VIX_MINUS_GSPC_RV21") or [],
+            history.get("SKEW_INDEX") or [],
+        )
+    )
+    history_start, history_end = historical_date_range(
+        key="yahoo_vol_history",
+        earliest=history_earliest,
+        latest=history_latest,
+    )
+    range_ok = history_start is not None and history_end is not None and history_start <= history_end
+
     st.markdown("**VIX recent history**")
-    vix_points = time_series_points(history.get("VIX_SPOT") or [])
+    vix_points = (
+        time_series_points(filter_history_rows(history.get("VIX_SPOT") or [], start=history_start, end=history_end))
+        if range_ok
+        else []
+    )
     if vix_points:
         lightweight_market_chart(
             vix_points,
@@ -383,28 +386,36 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
             key="yahoo_vix_history",
             ranges=True,
         )
-    else:
+    elif range_ok:
         st.caption("VIX history unavailable.")
 
-    st.markdown("**Implied vs Realized Vol**")
-    implied_frame = _implied_realized_frame(history)
-    implied_series = []
-    vix_history_points = _frame_points(implied_frame, "VIX")
-    rv_history_points = _frame_points(implied_frame, "GSPC RV21")
-    if vix_history_points:
-        implied_series.append({"label": "VIX", "points": vix_history_points})
-    if rv_history_points:
-        implied_series.append({"label": "GSPC RV21", "points": rv_history_points})
-    if implied_series:
-        _mount_time_series(implied_series, key="yahoo_implied_realized", ranges=True)
-    else:
-        st.caption("Implied vs realized history unavailable.")
+    st.markdown("**Implied − Realized Vol**")
+    spread_points = (
+        time_series_points(
+            filter_history_rows(history.get("VIX_MINUS_GSPC_RV21") or [], start=history_start, end=history_end)
+        )
+        if range_ok
+        else []
+    )
+    if spread_points:
+        _mount_time_series(
+            [{"label": "Implied − Realized", "points": spread_points}],
+            key="yahoo_implied_realized",
+            ranges=True,
+            value_format="vol_points",
+        )
+    elif range_ok:
+        st.caption("Implied − Realized history unavailable.")
 
     st.markdown("**SKEW recent history**")
-    skew_points = time_series_points(history.get("SKEW_INDEX") or [])
+    skew_points = (
+        time_series_points(filter_history_rows(history.get("SKEW_INDEX") or [], start=history_start, end=history_end))
+        if range_ok
+        else []
+    )
     if skew_points:
         _mount_time_series([{"label": "SKEW", "points": skew_points}], key="yahoo_skew_history", ranges=True)
-    else:
+    elif range_ok:
         st.caption("SKEW history unavailable.")
 
 
@@ -481,7 +492,7 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
 def render_options_volatility() -> None:
     page_header(
         "Options & Volatility",
-        "Yahoo VIX, Cboe SKEW, implied versus realized volatility, and the VIX index term structure, plus stored option chains and VX futures. Spot VIX is distinct from a VIX futures curve.",
+        "Yahoo VIX, Cboe SKEW, implied minus realized volatility, and the VIX index term structure, plus stored option chains and VX futures. Spot VIX is distinct from a VIX futures curve.",
         fred=False,
     )
     result = load_optional("options_volatility_context", default={})
@@ -1065,13 +1076,53 @@ def render_rates_curve() -> None:
 
 # ---- Credit ---------------------------------------------------------------------------
 
+def _load_oas_histories(series_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
+    histories: dict[str, list[dict[str, Any]]] = {}
+    for series_id in series_ids:
+        rows = load_or_stop("metric_history", "{0}.oas_bps".format(series_id), limit=STORED_HISTORY_LIMIT)
+        histories[series_id] = list(rows or [])
+    return histories
+
+
+def _render_oas_history_chart(
+    tiles: tuple[tuple[str, str], ...],
+    selected_ids: list[str],
+    histories: dict[str, list[dict[str, Any]]],
+    *,
+    range_key: str,
+    chart_key: str,
+    empty_message: str,
+) -> None:
+    ordered = [(series_id, label) for series_id, label in tiles if series_id in selected_ids]
+    if not ordered:
+        st.caption(empty_message)
+        return
+    earliest, latest = union_history_bounds([histories.get(series_id) or [] for series_id, _label in ordered])
+    start, end = historical_date_range(key=range_key, earliest=earliest, latest=latest)
+    if start is None or end is None or start > end:
+        return
+    series, missing = chart_series_from_histories(ordered, histories, start=start, end=end)
+    if missing:
+        st.caption("No stored observations in this range for {0}.".format(", ".join(missing)))
+    if not series:
+        st.caption("No stored observations in this range.")
+        return
+    lightweight_market_chart(
+        series=series,
+        ranges=True,
+        value_format="bps",
+        key=chart_key,
+        height=420,
+    )
+
+
 def render_credit_overview() -> None:
     credit = load_or_stop("credit_context")
     buckets = credit.get("buckets") or []
     coverage = credit_sector_coverage(credit)
     page_header(
         "Credit",
-        "ICE BofA option-adjusted spreads by broad market and rating. Sector/subsector OAS only where stored coverage supports it.",
+        "ICE BofA option-adjusted spreads for US investment grade, US high yield, emerging markets, and rating buckets. Sector OAS only where stored coverage supports it.",
         as_of=compact_as_of([row.get("as_of") for row in buckets])[0],
     )
     if not buckets:
@@ -1079,8 +1130,8 @@ def render_credit_overview() -> None:
         return
 
     view = st.radio("Credit view", ("Broad market", "Ratings", "Sectors & subsectors"), horizontal=True, key="credit_view")
-    broad = [row for row in buckets if row["bucket"] in {"ig_broad", "hy_broad"}]
-    rating = [row for row in buckets if row["bucket"] not in {"ig_broad", "hy_broad"}]
+    broad = [row for row in buckets if row["bucket"] in CREDIT_BROAD_BUCKETS]
+    rating = [row for row in buckets if row["bucket"] not in CREDIT_BROAD_BUCKETS]
 
     if view == "Broad market":
         st.subheader("Key takeaways")
@@ -1101,10 +1152,16 @@ def render_credit_overview() -> None:
                 y_title="OAS bps",
                 unit="bps",
             )
-        ids = [row["series_id"] for row in broad] or [row["series_id"] for row in buckets]
-        chosen = st.selectbox("History", ids, format_func=lambda series_id: CATALOG_BY_ID[series_id].label if series_id in CATALOG_BY_ID else series_id, key="credit_hist_broad")
-        history = load_or_stop("metric_history", "{0}.oas_bps".format(chosen))
-        history_chart(history, x="as_of", y="value", title="{0} OAS (bps)".format(CATALOG_BY_ID[chosen].label if chosen in CATALOG_BY_ID else chosen), units="bps")
+        st.subheader("Broad market history")
+        selected = series_toggles(CREDIT_BROAD_TILES, key="credit_broad", group_label="Broad series")
+        _render_oas_history_chart(
+            CREDIT_BROAD_TILES,
+            selected,
+            _load_oas_histories(selected) if selected else {},
+            range_key="credit_broad_history",
+            chart_key="credit-broad-history",
+            empty_message="Select at least one series.",
+        )
 
     elif view == "Ratings":
         st.subheader("Rating buckets")
@@ -1144,10 +1201,16 @@ def render_credit_overview() -> None:
             )
         else:
             st.info("No rating-bucket OAS rows are stored.")
-        ids = [row["series_id"] for row in rating] or [row["series_id"] for row in buckets]
-        chosen = st.selectbox("History", ids, format_func=lambda series_id: CATALOG_BY_ID[series_id].label if series_id in CATALOG_BY_ID else series_id, key="credit_hist_rating")
-        history = load_or_stop("metric_history", "{0}.oas_bps".format(chosen))
-        history_chart(history, x="as_of", y="value", title="{0} OAS (bps)".format(CATALOG_BY_ID[chosen].label if chosen in CATALOG_BY_ID else chosen), units="bps")
+        st.subheader("Rating history")
+        selected = series_toggles(CREDIT_RATING_TILES, key="credit_rating", group_label="Rating spreads")
+        _render_oas_history_chart(
+            CREDIT_RATING_TILES,
+            selected,
+            _load_oas_histories(selected) if selected else {},
+            range_key="credit_rating_history",
+            chart_key="credit-rating-history",
+            empty_message="Select at least one rating.",
+        )
 
     else:
         st.subheader("Sectors & subsectors")

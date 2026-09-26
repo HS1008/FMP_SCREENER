@@ -570,7 +570,8 @@ def test_options_page_shows_yahoo_core_without_provider_imports(monkeypatch):
     )
     assert "Cboe SKEW Index" in text
     assert "Core volatility" in text
-    assert "Implied vs Realized Vol" in text
+    assert "Implied − Realized Vol" in text
+    assert "Implied vs Realized Vol" not in text
     assert "VIX − GSPC RV21" in text
     assert "Curve as of September 24, 2026" in text
     assert "RV20" not in text
@@ -588,6 +589,11 @@ def test_options_page_shows_yahoo_core_without_provider_imports(monkeypatch):
     assert "st.dataframe" not in source
     assert "RV20" not in source
     assert "tenor_curve_chart" in source
+    assert "VIX_MINUS_GSPC_RV21" in source
+    assert "GSPC_REALIZED_VOL_21D" not in source
+    assert "_implied_realized_frame" not in source
+    assert "yahoo_vix_curve_date" in source
+    assert "yahoo_vol_history" in source
     assert "st.plotly_chart" not in source
     assert "go.Figure" not in source
     at.date_input[0].set_value(date(2026, 9, 23)).run()
@@ -649,10 +655,9 @@ def test_full_backfill_uses_max_history_only_for_active_term_tickers():
         by_period.setdefault(ticker, []).append((start, period))
     assert "^VIX1D" not in by_period
     assert "^VIX9D" not in by_period
-    assert by_period["^SKEW"] == [(run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), None)]
-    assert by_period["^GSPC"] == [(run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), None)]
-    assert (run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), None) in by_period["^VIX"]
-    assert any(period == "max" for _start, period in by_period["^VIX"])
+    assert by_period["^SKEW"] == [(run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), "max")]
+    assert by_period["^GSPC"] == [(run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), "max")]
+    assert by_period["^VIX"] == [(run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), "max")]
     for ticker in ("^VIX3M", "^VIX6M", "^VIX1Y"):
         assert by_period[ticker] == [(run_day - timedelta(days=HISTORY_LOOKBACK_DAYS), "max")]
     assert report["rows_by_ticker"]["^VIX1Y"] == 1

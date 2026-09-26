@@ -174,8 +174,8 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
     "M2SL": _fred_macro_monthly(lag_days=32),
     **{sid: _daily_treasury() for sid in ("T5YIE", "T10YIE", "T5YIFR", "RRPONTSYD")},
     **{sid: FreshnessPolicy(calendar=CAL_US_TREASURY, cadence="D", typical_release=time(16, 0), overdue_sessions=2, stale_sessions=6, same_day_available=False, notes="ICE BofA OAS via FRED; often lags the cash session.") for sid in (
-        "BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLC0A1CAAA", "BAMLC0A2CAA", "BAMLC0A3CA", "BAMLC0A4CBBB",
-        "BAMLH0A1HYBB", "BAMLH0A2HYB", "BAMLH0A3HYC",
+        "BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLEMCBPIOAS", "BAMLC0A1CAAA", "BAMLC0A2CAA", "BAMLC0A3CA",
+        "BAMLC0A4CBBB", "BAMLH0A1HYBB", "BAMLH0A2HYB", "BAMLH0A3HYC",
     )},
     "DCOILWTICO": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="D", overdue_sessions=2, stale_sessions=6, notes="EIA WTI spot via FRED. Weekends and holidays are missing, not zero."),
     "DHHNGSP": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="D", overdue_sessions=2, stale_sessions=6, notes="EIA Henry Hub spot via FRED. Weekends and holidays are missing, not zero."),

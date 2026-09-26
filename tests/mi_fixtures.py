@@ -253,7 +253,7 @@ def synthetic_fred_data(end: date = date(2024, 12, 31)) -> dict[str, list[tuple[
         data[sid] = daily_series(end, 800, start, 0.0005, missing_every=97)
     for sid, start in (("DFII5", 1.8), ("DFII10", 1.9), ("DFII20", 2.0), ("DFII30", 2.1), ("T5YIE", 2.3), ("T10YIE", 2.25), ("T5YIFR", 2.2), ("DFF", 4.33), ("SOFR", 4.3)):
         data[sid] = daily_series(end, 800, start, 0.0002)
-    for sid, start in (("BAMLC0A0CM", 0.80), ("BAMLH0A0HYM2", 2.9), ("BAMLC0A1CAAA", 0.4), ("BAMLC0A2CAA", 0.5), ("BAMLC0A3CA", 0.7), ("BAMLC0A4CBBB", 1.0), ("BAMLH0A1HYBB", 1.9), ("BAMLH0A2HYB", 2.8), ("BAMLH0A3HYC", 8.0)):
+    for sid, start in (("BAMLC0A0CM", 0.80), ("BAMLH0A0HYM2", 2.9), ("BAMLEMCBPIOAS", 3.1), ("BAMLC0A1CAAA", 0.4), ("BAMLC0A2CAA", 0.5), ("BAMLC0A3CA", 0.7), ("BAMLC0A4CBBB", 1.0), ("BAMLH0A1HYBB", 1.9), ("BAMLH0A2HYB", 2.8), ("BAMLH0A3HYC", 8.0)):
         data[sid] = daily_series(end, 300, start, 0.0007)  # ICE history limited (~14 months) by design
     for sid, start, g in (("CPIAUCSL", 290.0, 0.0025), ("CPILFESL", 300.0, 0.0022), ("PCEPI", 118.0, 0.002), ("PCEPILFE", 119.0, 0.0021), ("INDPRO", 102.0, 0.001), ("M2SL", 20800.0, 0.003), ("RSAFS", 690000.0, 0.003)):
         data[sid] = monthly_index(date(end.year, end.month, 1), 40, start, g)

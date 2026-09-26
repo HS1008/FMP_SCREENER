@@ -167,6 +167,12 @@ function formatReadoutValue(state, value) {
   if (state.valueFormat === "percent") {
     return text + "%";
   }
+  if (state.valueFormat === "bps") {
+    return value.toFixed(0) + " bps";
+  }
+  if (state.valueFormat === "vol_points") {
+    return text + " vol pts";
+  }
   return text;
 }
 
@@ -397,6 +403,8 @@ function rangeStart(last, kind) {
 }
 
 function applyRange(state, kind) {
+  // Zoom inside the points Streamlit supplied. Does not fetch older data
+  // and does not change the page's From/To selectors. Full range is fitContent.
   var times = state.times;
   if (!times.length) {
     return;
@@ -734,7 +742,8 @@ function createState(root) {
 
 function updateState(state, data) {
   state.data = data || {};
-  var nextFormat = String(state.data.value_format || "").toLowerCase() === "percent" ? "percent" : "number";
+  var requestedFormat = String(state.data.value_format || "").toLowerCase();
+  var nextFormat = requestedFormat === "percent" || requestedFormat === "bps" || requestedFormat === "vol_points" ? requestedFormat : "number";
   var formatChanged = nextFormat !== state.valueFormat;
   state.valueFormat = nextFormat;
   state.rangesEl.hidden = state.data.ranges !== true;

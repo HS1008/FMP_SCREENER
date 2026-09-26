@@ -409,7 +409,9 @@ _CREDIT_UPSERT = text(
 
 # Bounded default history per cadence for the first backfill (calendar days).
 DEFAULT_HISTORY_DAYS = {"D": 3 * 366, "W": 5 * 366, "BW": 5 * 366, "M": 12 * 366, "Q": 12 * 366}
-MAX_HISTORY_DATES_PER_SERIES = 4000
+# Safety ceiling for an explicit historical analytics backfill. Daily ICE history
+# since the mid-1990s fits. This does not delete older stored metric rows.
+MAX_HISTORY_DATES_PER_SERIES = 20000
 
 
 def _inputs_retrieved_max(conn, series_id: str, up_to: date) -> Any:

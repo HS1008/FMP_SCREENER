@@ -41,6 +41,9 @@ from market_intelligence.yahoo_vol import (
 )
 
 MAX_HISTORY_ROWS = 4000
+# Credit and volatility charts load stored history, then the page filters From/To.
+# This ceiling is large enough for multi-decade daily series. It is not a 3-year window.
+FULL_HISTORY_LIMIT = 20000
 
 # Delivery-age policy for published morning snapshots (hours since capture). Versioned so
 # the API can state which rule produced ``snapshot_age_status``.
@@ -273,15 +276,24 @@ def metric_latest(conn) -> dict[str, dict[str, Any]]:
     return {r["metric_id"]: r for r in rows}
 
 
-def metric_history(conn, metric_id: str, *, start: date | None = None, limit: int = MAX_HISTORY_ROWS) -> list[dict[str, Any]]:
+def metric_history(
+    conn,
+    metric_id: str,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = MAX_HISTORY_ROWS,
+) -> list[dict[str, Any]]:
     return _rows(
         conn,
         """
         SELECT as_of, value, units, status FROM mi_v_metric_history
-        WHERE metric_id = :metric_id AND (:start IS NULL OR as_of >= :start)
+        WHERE metric_id = :metric_id
+          AND (:start IS NULL OR as_of >= :start)
+          AND (:end IS NULL OR as_of <= :end)
         ORDER BY as_of DESC LIMIT :limit
         """,
-        {"metric_id": metric_id, "start": start, "limit": int(limit)},
+        {"metric_id": metric_id, "start": start, "end": end, "limit": int(limit)},
     )[::-1]
 
 
@@ -762,7 +774,7 @@ def credit_context(conn) -> dict[str, Any]:
             "subsector_oas_available": False,
             "available_dimensions": ["broad_market", "rating_bucket"],
             "note": (
-                "Stored ICE BofA OAS series are broad IG/HY and rating buckets only. "
+                "Stored ICE BofA OAS series are broad IG, HY, emerging markets, and rating buckets only. "
                 "No sector/subsector OAS feed or display-quality bond-sample aggregate is available."
             ),
         },
