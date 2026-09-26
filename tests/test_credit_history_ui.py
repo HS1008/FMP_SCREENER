@@ -24,6 +24,7 @@ from market_intelligence.history_range import (
     chart_series_from_histories,
     filter_history_rows,
     ordered_selection,
+    pills_layout_kwargs,
     union_history_bounds,
 )
 from market_intelligence.ingest_fred import request_window
@@ -81,6 +82,22 @@ def test_em_is_broad_market_not_a_rating_bucket():
     rating = [row for row in buckets if row["bucket"] not in CREDIT_BROAD_BUCKETS]
     assert [row["series_id"] for row in broad] == ["BAMLC0A0CM", "BAMLH0A0HYM2", "BAMLEMCBPIOAS"]
     assert [row["series_id"] for row in rating] == ["BAMLC0A1CAAA"]
+
+
+def test_pills_wrap_is_omitted_when_the_runtime_rejects_it(monkeypatch):
+    import market_intelligence.history_range as history_range
+
+    def pills_without_wrap(label, options, **kwargs):
+        return options
+
+    def pills_with_wrap(label, options, *, wrap=None, **kwargs):
+        return options
+
+    monkeypatch.setattr(history_range.st, "pills", pills_without_wrap)
+    assert pills_layout_kwargs() == {}
+    monkeypatch.setattr(history_range.st, "pills", pills_with_wrap)
+    assert pills_layout_kwargs() == {"wrap": True}
+    assert "wrap" in inspect.signature(history_range.st.pills).parameters
 
 
 def test_rating_selection_order_select_all_and_clear_all():

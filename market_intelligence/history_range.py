@@ -7,6 +7,7 @@ points the page already passed in.
 
 from __future__ import annotations
 
+import inspect
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
@@ -181,6 +182,17 @@ def historical_date_range(
     return start, end
 
 
+def pills_layout_kwargs() -> dict[str, Any]:
+    """Pass ``wrap`` only when this Streamlit build accepts it.
+
+    The production checkout venv has ``st.pills`` but rejects ``wrap``. On
+    builds that support it, wrapping keeps rating tiles inside the page width.
+    """
+    if "wrap" in inspect.signature(st.pills).parameters:
+        return {"wrap": True}
+    return {}
+
+
 def series_toggles(
     options: Sequence[tuple[str, str]],
     *,
@@ -208,7 +220,7 @@ def series_toggles(
         format_func=lambda series_id: labels.get(series_id, series_id),
         key=pills_key,
         label_visibility="collapsed",
-        wrap=True,
+        **pills_layout_kwargs(),
     )
     if selected is None:
         return []
