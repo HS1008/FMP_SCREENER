@@ -122,18 +122,6 @@ function normalizePoints(points) {
   return normalized;
 }
 
-function indexByTime(points) {
-  var byTime = {};
-  var i;
-  for (i = 0; i < points.length; i++) {
-    var point = points[i];
-    if (point && typeof point.value === "number" && Number.isFinite(point.value)) {
-      byTime[point.time] = point.value;
-    }
-  }
-  return byTime;
-}
-
 function unionTimes(items) {
   var seen = {};
   var times = [];
@@ -237,7 +225,10 @@ function applyTheme(state) {
     },
   });
   state.seriesList.forEach(function (entry, index) {
-    entry.api.applyOptions({ color: seriesColor(palette, index), lineWidth: 2 });
+    var color = seriesColor(palette, index);
+    entry.fragments.forEach(function (api) {
+      api.applyOptions({ color: color, lineWidth: 2 });
+    });
   });
 }
 
@@ -245,15 +236,15 @@ function pointAt(state, iso) {
   var i;
   for (i = 0; i < state.seriesList.length; i++) {
     var item = state.seriesList[i];
-    if (Object.prototype.hasOwnProperty.call(item.byTime, iso)) {
-      return { time: iso, value: item.byTime[iso], api: item.api };
+    if (Object.prototype.hasOwnProperty.call(item.byTime, iso) && item.apiByTime[iso]) {
+      return { time: iso, value: item.byTime[iso], api: item.apiByTime[iso] };
     }
   }
-  return {
-    time: iso,
-    value: null,
-    api: state.seriesList.length ? state.seriesList[0].api : null,
-  };
+  var fallback = null;
+  if (state.seriesList.length && state.seriesList[0].fragments.length) {
+    fallback = state.seriesList[0].fragments[0];
+  }
+  return { time: iso, value: null, api: fallback };
 }
 
 function nearestPoint(state, x) {
@@ -455,18 +446,69 @@ function lineOptions() {
   };
 }
 
-function ensureSeries(state, count) {
-  var charts = window.LightweightCharts;
-  while (state.seriesList.length > count) {
-    var removed = state.seriesList.pop();
-    state.chart.removeSeries(removed.api);
+function runsOf(points) {
+  var runs = [];
+  var current = [];
+  var i;
+  for (i = 0; i < points.length; i++) {
+    var point = points[i];
+    if (typeof point.value !== "number" || !Number.isFinite(point.value)) {
+      if (current.length) {
+        runs.push(current);
+        current = [];
+      }
+      continue;
+    }
+    current.push(point);
   }
-  while (state.seriesList.length < count) {
-    state.seriesList.push({
-      api: state.chart.addSeries(charts.LineSeries, lineOptions()),
-      label: "Value",
-      byTime: {},
-    });
+  if (current.length) {
+    runs.push(current);
+  }
+  return runs;
+}
+
+function removeFragments(state, entry) {
+  while (entry.fragments.length) {
+    state.chart.removeSeries(entry.fragments.pop());
+  }
+}
+
+function syncSeries(state, prepared) {
+  var charts = window.LightweightCharts;
+  while (state.seriesList.length > prepared.length) {
+    removeFragments(state, state.seriesList.pop());
+  }
+  var i;
+  for (i = 0; i < prepared.length; i++) {
+    if (!state.seriesList[i]) {
+      state.seriesList.push({
+        label: "Value",
+        byTime: {},
+        apiByTime: {},
+        fragments: [],
+      });
+    }
+    var entry = state.seriesList[i];
+    var runs = runsOf(prepared[i].points);
+    while (entry.fragments.length > runs.length) {
+      state.chart.removeSeries(entry.fragments.pop());
+    }
+    while (entry.fragments.length < runs.length) {
+      entry.fragments.push(state.chart.addSeries(charts.LineSeries, lineOptions()));
+    }
+    entry.label = prepared[i].label;
+    entry.byTime = {};
+    entry.apiByTime = {};
+    var runIndex;
+    for (runIndex = 0; runIndex < runs.length; runIndex++) {
+      var run = runs[runIndex];
+      entry.fragments[runIndex].setData(run);
+      var pointIndex;
+      for (pointIndex = 0; pointIndex < run.length; pointIndex++) {
+        entry.byTime[run[pointIndex].time] = run[pointIndex].value;
+        entry.apiByTime[run[pointIndex].time] = entry.fragments[runIndex];
+      }
+    }
   }
 }
 
@@ -705,16 +747,9 @@ function updateState(state, data) {
   });
   var signature = signatureOf(prepared);
   var changed = signature !== state.signature;
-  ensureSeries(state, prepared.length);
   if (changed) {
     var times = unionTimes(prepared);
-    var i;
-    for (i = 0; i < prepared.length; i++) {
-      var entry = state.seriesList[i];
-      entry.label = prepared[i].label;
-      entry.byTime = indexByTime(prepared[i].points);
-      entry.api.setData(prepared[i].points);
-    }
+    syncSeries(state, prepared);
     state.times = times;
     state.signature = signature;
     state.chart.timeScale().fitContent();

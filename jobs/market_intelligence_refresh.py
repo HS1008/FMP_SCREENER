@@ -611,7 +611,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 if report.failed:
                     failures += 1
             elif name == "yahoo_vol":
-                from market_intelligence.ingest_yahoo_vol import ingest_yahoo_vol
+                from market_intelligence.ingest_yahoo_vol import ingest_yahoo_vol, term_history_coverage
 
                 explicit_backfill = bool(getattr(args, "yahoo_vol_backfill", False)) or (
                     bool(getattr(args, "yahoo_vol", False))
@@ -625,8 +625,6 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                     mode="full" if explicit_backfill else "incremental",
                 )
                 if explicit_backfill:
-                    from market_intelligence.ingest_yahoo_vol import term_history_coverage
-
                     report["term_coverage"] = term_history_coverage(engine)
                     for row in report["term_coverage"]:
                         print(
