@@ -160,12 +160,19 @@ def ingest_yahoo_vol(
     _ensure_source(engine)
 
     series: dict[str, list[tuple[date, float]]] = {}
+    # Explicit full mode asks Yahoo for max history of spot VIX, SKEW, and GSPC
+    # so RV21 and the same-date spread can cover that span. Incremental stays
+    # on HISTORY_LOOKBACK_DAYS. Upserts do not delete older stored rows.
+    core_period = TERM_HISTORY_PERIOD if full else None
     for ticker in (TICKER_VIX, TICKER_SKEW, TICKER_RV):
-        _fetch_one(ticker, start=start, end=run_day, period=None, series=series, report=report)
+        _fetch_one(ticker, start=start, end=run_day, period=core_period, series=series, report=report)
 
     term_series: dict[str, list[tuple[date, float]]] = {}
     for ticker, _tenor, _metric_id in TERM_TENORS:
-        if full:
+        if ticker in series and (not full or core_period == TERM_HISTORY_PERIOD):
+            rows = series[ticker]
+            term_series[ticker] = rows
+        elif full:
             rows = _fetch_one(
                 ticker,
                 start=start,
@@ -174,9 +181,6 @@ def ingest_yahoo_vol(
                 series=term_series,
                 report=report,
             )
-        elif ticker in series:
-            rows = series[ticker]
-            term_series[ticker] = rows
         else:
             rows = _fetch_one(ticker, start=start, end=run_day, period=None, series=term_series, report=report)
         report["rows_by_ticker"][ticker] = len(rows)
@@ -222,6 +226,47 @@ def term_history_coverage(engine) -> list[dict[str, Any]]:
             {
                 "ticker": ticker,
                 "tenor": tenor,
+                "metric_id": metric_id,
+                "earliest": None if earliest is None else earliest.isoformat(),
+                "latest": None if latest is None else latest.isoformat(),
+                "rows": 0 if row is None else int(row["row_count"]),
+                "nulls": 0 if row is None else int(row["nulls"]),
+                "zeros": 0 if row is None else int(row["zeros"]),
+            }
+        )
+    return coverage
+
+
+def core_history_coverage(engine) -> list[dict[str, Any]]:
+    """Stored span for spot VIX, the same-date VIX−RV21 spread, and SKEW."""
+    metric_ids = ("VIX_SPOT", "VIX_MINUS_GSPC_RV21", "SKEW_INDEX")
+    in_list = ", ".join("'{0}'".format(metric_id) for metric_id in metric_ids)
+    with engine.connect() as conn:
+        found = {
+            row["metric_id"]: row
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT metric_id,
+                           min(as_of) AS earliest,
+                           max(as_of) AS latest,
+                           count(*) AS row_count,
+                           count(*) FILTER (WHERE value IS NULL) AS nulls,
+                           count(*) FILTER (WHERE value = 0) AS zeros
+                    FROM mi_metric_snapshots
+                    WHERE metric_id IN ({ids})
+                    GROUP BY metric_id
+                    """.format(ids=in_list)
+                )
+            ).mappings()
+        }
+    coverage: list[dict[str, Any]] = []
+    for metric_id in metric_ids:
+        row = found.get(metric_id)
+        earliest = None if row is None else row["earliest"]
+        latest = None if row is None else row["latest"]
+        coverage.append(
+            {
                 "metric_id": metric_id,
                 "earliest": None if earliest is None else earliest.isoformat(),
                 "latest": None if latest is None else latest.isoformat(),

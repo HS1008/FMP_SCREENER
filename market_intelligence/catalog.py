@@ -226,6 +226,35 @@ CATALOG: tuple[SeriesSpec, ...] = (
         for sid, bucket, lbl in (
             ("BAMLC0A0CM", "ig_broad", "US Corporate IG OAS"),
             ("BAMLH0A0HYM2", "hy_broad", "US High Yield OAS"),
+        )
+    ],
+    _s(
+        "BAMLEMCBPIOAS",
+        "credit",
+        "em_broad",
+        CADENCE_DAILY,
+        _PCT,
+        expected_sa="NSA",
+        value_kind="percent",
+        export_scope=EXPORT_RESTRICTED,
+        attribution=ICE_ATTRIBUTION,
+        backfill_years=4,
+        transforms=("oas_bps", "chg_bps", "pctile_available"),
+        label="EM Corporate OAS",
+        notes=(
+            "ICE BofA Emerging Markets Corporate Plus Index Option-Adjusted Spread. "
+            "Broad emerging-markets corporate OAS. Not the USD-only US Emerging Markets "
+            "subset BAMLEMUBCRPIUSOAS. Option-adjusted spread in percent (x100 = bps). "
+            "Provider limits history; distribution restricted by ICE terms."
+        ),
+    ),
+    *[
+        _s(sid, "credit", bucket, CADENCE_DAILY, _PCT, expected_sa="NSA", value_kind="percent",
+           export_scope=EXPORT_RESTRICTED, attribution=ICE_ATTRIBUTION, backfill_years=4,
+           transforms=("oas_bps", "chg_bps", "pctile_available"), label=lbl,
+           notes="Option-adjusted spread in percent (x100 = bps). Provider limits history; "
+                 "distribution restricted by ICE terms.")
+        for sid, bucket, lbl in (
             ("BAMLC0A1CAAA", "aaa", "AAA OAS"),
             ("BAMLC0A2CAA", "aa", "AA OAS"),
             ("BAMLC0A3CA", "a", "A OAS"),
@@ -248,6 +277,22 @@ CATALOG: tuple[SeriesSpec, ...] = (
 
 CATALOG_BY_ID: dict[str, SeriesSpec] = {spec.series_id: spec for spec in CATALOG}
 CREDIT_SERIES: tuple[str, ...] = tuple(s.series_id for s in CATALOG if s.category == "credit")
+CREDIT_BROAD_BUCKETS = frozenset({"ig_broad", "hy_broad", "em_broad"})
+# Short tile labels. Chart series use these names; catalog labels keep the full OAS names.
+CREDIT_BROAD_TILES: tuple[tuple[str, str], ...] = (
+    ("BAMLC0A0CM", "IG"),
+    ("BAMLH0A0HYM2", "HY"),
+    ("BAMLEMCBPIOAS", "EM"),
+)
+CREDIT_RATING_TILES: tuple[tuple[str, str], ...] = (
+    ("BAMLC0A1CAAA", "AAA"),
+    ("BAMLC0A2CAA", "AA"),
+    ("BAMLC0A3CA", "A"),
+    ("BAMLC0A4CBBB", "BBB"),
+    ("BAMLH0A1HYBB", "BB"),
+    ("BAMLH0A2HYB", "B"),
+    ("BAMLH0A3HYC", "CCC & lower"),
+)
 CURVE_TENORS: dict[str, str] = {
     "3M": "DGS3MO", "6M": "DGS6MO", "1Y": "DGS1", "2Y": "DGS2", "3Y": "DGS3", "5Y": "DGS5",
     "7Y": "DGS7", "10Y": "DGS10", "20Y": "DGS20", "30Y": "DGS30",

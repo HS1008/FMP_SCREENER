@@ -2,12 +2,15 @@
 
 Revision-reconciliation policy (``REVISION_LOOKBACK``): an incremental refresh re-requests
 a trailing window per cadence so recent revisions are captured; it does *not* claim to
-capture arbitrary historical revisions. ``mode="full"`` re-requests the full bounded
-backfill window (periodic revalidation). Every returned observation is compared with the
-current stored value; differences create an auditable new revision row.
+capture arbitrary historical revisions. ``mode="full"`` re-requests the catalog
+``backfill_years`` window (periodic revalidation). ``mode="max"`` requests the earliest
+date the provider currently exposes (metadata ``observation_start``). It is for an
+explicit historical backfill, not the scheduled refresh. Every returned observation is
+compared with the current stored value; differences create an auditable new revision row.
 
 Each series is written in its own transaction. A failed series never rolls back another
-series and never erases previously stored observations.
+series and never erases previously stored observations. A shorter provider window does
+not delete older rows already stored.
 """
 
 from __future__ import annotations
@@ -17,8 +20,10 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any, Iterable
 
-from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CATALOG_VERSION, FRED_SOURCE_ID, SeriesSpec, publishable, validate_metadata
-from market_intelligence.fred_client import FredClient, FredError, redact
+from sqlalchemy import text
+
+from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CATALOG_VERSION, CREDIT_SERIES, FRED_SOURCE_ID, SeriesSpec, publishable, validate_metadata
+from market_intelligence.fred_client import FredClient, FredError, parse_fred_date, redact
 from market_intelligence.nulls import MalformedValueError, is_missing_token, normalize_numeric
 from market_intelligence.store import (
     RUN_FAILED,
@@ -142,7 +147,24 @@ class FredIngestReport:
         }
 
 
-def request_window(spec: SeriesSpec, *, mode: str, today: date, latest_stored: date | None) -> tuple[date, date]:
+# Used only when provider metadata has no observation_start. FRED then returns
+# whatever history it still publishes; stored rows outside that reply are kept.
+PROVIDER_MAX_START = date(1900, 1, 1)
+
+
+def request_window(
+    spec: SeriesSpec,
+    *,
+    mode: str,
+    today: date,
+    latest_stored: date | None,
+    provider_start: date | None = None,
+) -> tuple[date, date]:
+    if mode == "max":
+        start = provider_start or PROVIDER_MAX_START
+        if start > today:
+            start = today
+        return start, today
     backfill_start = date(today.year - spec.backfill_years, today.month, 1)
     if mode == "full" or latest_stored is None:
         return backfill_start, today
@@ -153,15 +175,31 @@ def request_window(spec: SeriesSpec, *, mode: str, today: date, latest_stored: d
 
 def ingest_series(engine, client: FredClient, spec: SeriesSpec, *, mode: str, today: date, parent_run_id: str | None) -> SeriesIngestResult:
     result = SeriesIngestResult(series_id=spec.series_id, status=RUN_FAILED)
+    prefetched_meta: dict[str, Any] | None = None
+    provider_start: date | None = None
+    if mode == "max":
+        try:
+            prefetched_meta = client.series_metadata(spec.series_id)
+            provider_start = parse_fred_date(prefetched_meta.get("observation_start"))
+        except FredError as exc:
+            result.request_window = (None, today)
+            with engine.begin() as conn:
+                result.run_id = start_run(conn, source_id=FRED_SOURCE_ID, dataset="series:{0}".format(spec.series_id), parent_run_id=parent_run_id, request_window=(None, today))
+            return _fail(engine, result, spec, redact(str(exc)), retry_count=client.retry_count)
+        except Exception as exc:  # noqa: BLE001 - redact everything, never leak query strings
+            result.request_window = (None, today)
+            with engine.begin() as conn:
+                result.run_id = start_run(conn, source_id=FRED_SOURCE_ID, dataset="series:{0}".format(spec.series_id), parent_run_id=parent_run_id, request_window=(None, today))
+            return _fail(engine, result, spec, "unexpected {0}".format(redact(exc.__class__.__name__)), retry_count=client.retry_count)
     with engine.begin() as conn:
         latest_stored = latest_observation_date(conn, spec.series_id) if _series_exists(conn, spec.series_id) else None
-        window = request_window(spec, mode=mode, today=today, latest_stored=latest_stored)
+        window = request_window(spec, mode=mode, today=today, latest_stored=latest_stored, provider_start=provider_start)
         result.request_window = window
         result.run_id = start_run(conn, source_id=FRED_SOURCE_ID, dataset="series:{0}".format(spec.series_id), parent_run_id=parent_run_id, request_window=window)
 
     spec_fields = spec_registry_fields(spec)
     try:
-        meta = client.series_metadata(spec.series_id)
+        meta = prefetched_meta if prefetched_meta is not None else client.series_metadata(spec.series_id)
         metadata_status, mismatches = validate_metadata(spec, meta)
         observations = client.observations(spec.series_id, observation_start=window[0], observation_end=window[1])
     except FredError as exc:
@@ -349,6 +387,72 @@ def ingest_fred_catalog(engine, client: FredClient, *, series_ids: Iterable[str]
     return report
 
 
+def credit_history_coverage(engine) -> list[dict[str, Any]]:
+    """Stored span for ICE OAS observations and ``*.oas_bps`` metrics.
+
+    Observations are the provider history that was kept. Metric rows are what the
+    Credit charts read. Counts only; values are not printed.
+    """
+    series_ids = list(CREDIT_SERIES)
+    in_series = ", ".join("'{0}'".format(sid) for sid in series_ids)
+    in_metrics = ", ".join("'{0}.oas_bps'".format(sid) for sid in series_ids)
+    with engine.connect() as conn:
+        observations = {
+            row["series_id"]: row
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT series_id,
+                           min(observation_date) AS earliest,
+                           max(observation_date) AS latest,
+                           count(*) AS row_count
+                    FROM mi_macro_observations
+                    WHERE is_current AND value IS NOT NULL AND series_id IN ({ids})
+                    GROUP BY series_id
+                    """.format(ids=in_series)
+                )
+            ).mappings()
+        }
+        metrics = {
+            row["metric_id"]: row
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT metric_id,
+                           min(as_of) AS earliest,
+                           max(as_of) AS latest,
+                           count(*) AS row_count
+                    FROM mi_metric_snapshots
+                    WHERE value IS NOT NULL AND metric_id IN ({ids})
+                    GROUP BY metric_id
+                    """.format(ids=in_metrics)
+                )
+            ).mappings()
+        }
+    coverage: list[dict[str, Any]] = []
+    for sid in series_ids:
+        spec = CATALOG_BY_ID[sid]
+        obs = observations.get(sid)
+        metric = metrics.get("{0}.oas_bps".format(sid))
+        obs_first = None if obs is None else obs["earliest"]
+        obs_last = None if obs is None else obs["latest"]
+        metric_first = None if metric is None else metric["earliest"]
+        metric_last = None if metric is None else metric["latest"]
+        coverage.append(
+            {
+                "label": spec.label,
+                "series_id": sid,
+                "earliest": None if obs_first is None else obs_first.isoformat(),
+                "latest": None if obs_last is None else obs_last.isoformat(),
+                "rows": 0 if obs is None else int(obs["row_count"]),
+                "metric_earliest": None if metric_first is None else metric_first.isoformat(),
+                "metric_latest": None if metric_last is None else metric_last.isoformat(),
+                "metric_rows": 0 if metric is None else int(metric["row_count"]),
+            }
+        )
+    return coverage
+
+
 __all__ = [
     "FRED_DATASET",
     "FredIngestReport",
@@ -357,6 +461,7 @@ __all__ = [
     "SeriesIngestResult",
     "TRANSPORT_METADATA_REJECTED",
     "TRANSPORT_PARTIAL",
+    "credit_history_coverage",
     "ingest_fred_catalog",
     "ingest_series",
     "latest_usable_observation_date",

@@ -414,7 +414,7 @@ def credit_sector_coverage(credit: dict[str, Any] | None = None) -> dict[str, An
             "Individual bond quotes/ratings are not entitlement-complete for a display-quality sample aggregate.",
         ],
         "note": (
-            "The nine stored ICE BofA OAS series are broad IG/HY and rating buckets only. "
+            "Stored ICE BofA OAS series are broad IG, HY, emerging markets, and rating buckets only. "
             "They cannot populate a sector heatmap. Sector & subsector views stay capability-aware until "
             "a verified sector OAS feed or a documented bond-sample aggregation meets minimum coverage rules."
         ),

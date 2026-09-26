@@ -56,6 +56,17 @@
       "units": "Percent",
       "units_short": "%"
     },
+    "BAMLEMCBPIOAS": {
+      "frequency": "Daily, Close",
+      "frequency_short": "D",
+      "id": "BAMLEMCBPIOAS",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/BAMLEMCBPIOAS",
+      "title": "ICE BofA Emerging Markets Corporate Plus Index Option-Adjusted Spread",
+      "units": "Percent",
+      "units_short": "%"
+    },
     "BAMLH0A0HYM2": {
       "frequency": "Daily, Close",
       "frequency_short": "D",

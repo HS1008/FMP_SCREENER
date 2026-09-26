@@ -499,4 +499,54 @@ else
     echo "yahoo_vol_backfill=failed rc=${YAHOO_RC}"
   fi
 fi
+# One-shot max-history fetch for spot VIX, SKEW, and GSPC RV21/spread.
+# The four-tenor marker above does not cover these metrics. Daily refresh stays incremental.
+YAHOO_CORE_MARKER="/var/lib/fmp/yahoo_vol_core_max_backfill.done"
+if [ -f "$YAHOO_CORE_MARKER" ]; then
+  echo "yahoo_vol_core_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "yahoo_vol_core_backfill=skipped_no_writer_env"
+else
+  echo "yahoo_vol_core_backfill=start"
+  YAHOO_CORE_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    staged_python -m jobs.market_intelligence_refresh --yahoo-vol-backfill
+  ) || YAHOO_CORE_RC=$?
+  if [ "$YAHOO_CORE_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$YAHOO_CORE_MARKER"
+    echo "yahoo_vol_core_backfill=complete"
+  else
+    echo "yahoo_vol_core_backfill=failed rc=${YAHOO_CORE_RC}"
+  fi
+fi
+# One-shot max FRED history for ICE BofA OAS, including emerging markets.
+# Incremental refresh keeps the catalog backfill_years window.
+CREDIT_BACKFILL_MARKER="/var/lib/fmp/fred_credit_max_backfill.done"
+if [ -f "$CREDIT_BACKFILL_MARKER" ]; then
+  echo "fred_credit_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "fred_credit_backfill=skipped_no_writer_env"
+else
+  echo "fred_credit_backfill=start"
+  CREDIT_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    staged_python -m jobs.market_intelligence_refresh --fred-credit-backfill
+  ) || CREDIT_RC=$?
+  if [ "$CREDIT_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$CREDIT_BACKFILL_MARKER"
+    echo "fred_credit_backfill=complete"
+  else
+    echo "fred_credit_backfill=failed rc=${CREDIT_RC}"
+  fi
+fi
 echo "deploy_host=complete sha=$SHA"

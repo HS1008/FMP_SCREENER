@@ -28,7 +28,7 @@ from datetime import date
 from typing import Any
 
 from market_intelligence import CODE_VERSION
-from market_intelligence.catalog import CATALOG, CATALOG_VERSION, FRED_SOURCE_ID
+from market_intelligence.catalog import CATALOG, CATALOG_VERSION, CREDIT_SERIES, FRED_SOURCE_ID
 from market_intelligence.fmp_mode import fmp_free_mode, legacy_fmp_enabled, treasury_enabled
 from market_intelligence.fred_client import api_key_from_env
 from market_intelligence.locking import EXIT_LOCK_CONTENTION, LockContention, writer_lock
@@ -74,6 +74,18 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "action": ("ingest" if fred_configured else "skip_unconfigured") if (want_all or fred_configured) else "fail_unconfigured",
                 "mode": args.mode,
                 "series": list(args.series) if args.series else [s.series_id for s in CATALOG],
+                "catalog_version": CATALOG_VERSION,
+            }
+        )
+    if getattr(args, "fred_credit_backfill", False):
+        steps.append(
+            {
+                "step": "fred_credit_backfill",
+                "source_id": FRED_SOURCE_ID,
+                "configured": fred_configured,
+                "action": "ingest" if fred_configured else "fail_unconfigured",
+                "mode": "max",
+                "series": list(CREDIT_SERIES),
                 "catalog_version": CATALOG_VERSION,
             }
         )
@@ -269,6 +281,11 @@ def _writer_configured(env: dict[str, str]) -> bool:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Market Intelligence refresh")
     parser.add_argument("--fred", action="store_true", help="Ingest the FRED catalog")
+    parser.add_argument(
+        "--fred-credit-backfill",
+        action="store_true",
+        help="Max-history FRED ingest for ICE BofA OAS series, then rebuild their OAS metrics. Not part of the incremental refresh.",
+    )
     parser.add_argument("--finra", action="store_true", help="Ingest FINRA Query API corporate-bond aggregates")
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
@@ -319,8 +336,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
+    if not any((args.fred, getattr(args, "fred_credit_backfill", False), args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--fred-credit-backfill/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -544,6 +561,50 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 status["results"][name] = report.as_dict()
                 if report.failed:
                     failures += 1
+            elif name == "fred_credit_backfill":
+                from market_intelligence.analytics import build_analytics
+                from market_intelligence.fred_client import FredClient
+                from market_intelligence.ingest_fred import credit_history_coverage, ingest_fred_catalog
+                from market_intelligence.store import finish_run, start_run
+
+                client = fred_client_factory() if fred_client_factory else FredClient(fred_key)
+                report = ingest_fred_catalog(
+                    engine,
+                    client,
+                    series_ids=list(CREDIT_SERIES),
+                    mode="max",
+                    parent_run_id=parent_run_id,
+                    today=as_of,
+                )
+                with engine.begin() as conn:
+                    rid = start_run(conn, source_id="ANALYTICS", dataset="credit_oas_backfill", parent_run_id=parent_run_id)
+                    analytics = build_analytics(
+                        conn,
+                        as_of=as_of,
+                        run_id=rid,
+                        history_start=date(1900, 1, 1),
+                        series_ids=list(CREDIT_SERIES),
+                    )
+                    finish_run(
+                        conn,
+                        rid,
+                        status="SUCCEEDED",
+                        counts={"inserted": analytics.metrics_written + analytics.credit_written},
+                        details=analytics.as_dict(),
+                    )
+                coverage = credit_history_coverage(engine)
+                for row in coverage:
+                    print(
+                        "credit_oas_coverage label={label} series={series_id} earliest={earliest} latest={latest} rows={rows} metric_earliest={metric_earliest} metric_latest={metric_latest} metric_rows={metric_rows}".format(**row),
+                        flush=True,
+                    )
+                status["results"][name] = {
+                    "ingest": report.as_dict(),
+                    "analytics": analytics.as_dict(),
+                    "coverage": coverage,
+                }
+                if report.failed:
+                    failures += 1
             elif name == "finra":
                 from market_intelligence.finra_client import FinraClient, credentials_from_env
                 from market_intelligence.ingest_finra import ingest_finra
@@ -611,7 +672,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 if report.failed:
                     failures += 1
             elif name == "yahoo_vol":
-                from market_intelligence.ingest_yahoo_vol import ingest_yahoo_vol, term_history_coverage
+                from market_intelligence.ingest_yahoo_vol import core_history_coverage, ingest_yahoo_vol, term_history_coverage
 
                 explicit_backfill = bool(getattr(args, "yahoo_vol_backfill", False)) or (
                     bool(getattr(args, "yahoo_vol", False))
@@ -626,9 +687,15 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 )
                 if explicit_backfill:
                     report["term_coverage"] = term_history_coverage(engine)
+                    report["core_coverage"] = core_history_coverage(engine)
                     for row in report["term_coverage"]:
                         print(
                             "yahoo_vol_coverage ticker={ticker} metric={metric_id} earliest={earliest} latest={latest} rows={rows} nulls={nulls} zeros={zeros}".format(**row),
+                            flush=True,
+                        )
+                    for row in report["core_coverage"]:
+                        print(
+                            "yahoo_vol_core_coverage metric={metric_id} earliest={earliest} latest={latest} rows={rows} nulls={nulls} zeros={zeros}".format(**row),
                             flush=True,
                         )
                 status["results"][name] = report

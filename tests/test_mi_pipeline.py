@@ -227,7 +227,7 @@ def test_fixture_marker_present_and_ingest_counts(populated):
 def test_ice_history_truncation_yields_insufficient_history_not_failure(pg_engine, populated):
     with pg_engine.connect() as conn:
         rows = conn.execute(text("SELECT series_id, oas_bps, percentile, percentile_window, window_observations, history_status FROM mi_v_credit_latest ORDER BY series_id")).mappings().all()
-    assert len(rows) == 9
+    assert len(rows) == 10
     ig = next(r for r in rows if r["series_id"] == "BAMLC0A0CM")
     assert ig["oas_bps"] is not None and float(ig["oas_bps"]) > 0
     # ~300 sessions of history: 1Y window (>=200 obs) is adequate; 3Y is not -> labeled 1Y, never relabeled.
