@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 
 from db.dashboard_engine import DashboardIdentityError, dashboard_engine, load_streamlit_env
+from market_intelligence.components.time_series import mount_stored_series
 
 load_streamlit_env()
 try:
@@ -444,16 +445,14 @@ def _render_paper_and_execution(snapshot, history, positions, orders, trades, ba
             errors="coerce",
         )
 
-        chart_data = (
-            chart_data
-            .dropna()
-            .set_index("timestamp")
+        chart_data = chart_data.dropna()
+        mounted = mount_stored_series(
+            [{"as_of": row.timestamp, "value": row.equity} for row in chart_data.itertuples(index=False)],
+            label="Equity",
+            key="paper-equity",
         )
-
-        st.line_chart(
-            chart_data["equity"],
-            use_container_width=True,
-        )
+        if not mounted:
+            st.line_chart(chart_data.set_index("timestamp")["equity"], use_container_width=True)
 
 
     # =========================================================

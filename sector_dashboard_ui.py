@@ -21,8 +21,26 @@ import rotation_correlation
 import rotation_price_batch
 import sector_pages
 import spy_sector_rotation_engine
+from market_intelligence.components.market_chart import lightweight_market_chart
 
 ROOT = Path(__file__).resolve().parent
+
+
+def _mount_frame(frame: pd.DataFrame, *, key: str, height: int = 420) -> None:
+    """Date-indexed columns become one Lightweight chart. Missing values stay missing."""
+    series = []
+    for column in frame.columns:
+        series.append(
+            {
+                "label": str(column),
+                "points": [
+                    {"as_of": stamp, "value": value}
+                    for stamp, value in frame[column].items()
+                ],
+            }
+        )
+    if series:
+        lightweight_market_chart(series=series, key=key, height=height, ranges=True)
 
 
 def _streamlit_http_session():
@@ -227,7 +245,7 @@ def render_sector_tab(
                 }
             )
             st.markdown(f"**{etf} Price with Moving Averages**")
-            st.line_chart(chart, height=460)
+            _mount_frame(chart, key=f"sector-ma-{etf}", height=460)
 
     _thr_rot = threading.Thread(target=_run_rotation, name="sector-rotation", daemon=True)
     _thr_rot.start()
@@ -337,14 +355,14 @@ def render_sector_tab(
             }
         )
         st.markdown(f"**{etf_sym} vs SPY Cumulative Performance**")
-        st.line_chart(perf, height=420)
+        _mount_frame(perf, key=f"sector-perf-{etf_sym}", height=420)
 
         ratio = detail[["date", "relative_strength_ratio"]].copy()
         ratio["date"] = pd.to_datetime(ratio["date"], errors="coerce")
         ratio = ratio.dropna(subset=["date"]).set_index("date")
         ratio = ratio.rename(columns={"relative_strength_ratio": f"{etf_sym} / {bench} ratio"})
         st.markdown(f"**{etf_sym} / SPY Relative Strength Ratio**")
-        st.line_chart(ratio, height=380)
+        _mount_frame(ratio, key=f"sector-ratio-{etf_sym}", height=380)
 
     st.divider()
     st.subheader("Risk")
@@ -372,7 +390,7 @@ def render_sector_tab(
         dd_plot = dd_ts.copy()
         dd_plot["date"] = pd.to_datetime(dd_plot["date"], errors="coerce")
         dd_plot = dd_plot.dropna(subset=["date"]).set_index("date")
-        st.line_chart(dd_plot[["drawdown"]], height=360)
+        _mount_frame(dd_plot[["drawdown"]], key=f"sector-dd-{etf}", height=360)
 
     if not fmp.strip():
         return
@@ -443,7 +461,7 @@ def render_sector_tab(
             st.info("Not enough overlapping breadth / dispersion history to plot the combined health series yet.")
         else:
             chart_df = health[[c for c in plot_cols if c in health.columns]].copy()
-            st.line_chart(chart_df, height=420)
+            _mount_frame(chart_df, key=f"sector-health-{label}", height=420)
             st.caption(
                 "DMA breadth lines are forward-filled for chart continuity when later dates have missing "
                 "200-DMA coverage. KPI cards still use the latest raw calculated values."
@@ -566,7 +584,7 @@ def render_spy_benchmark_tab(
                 }
             )
             st.markdown(f"**{etf} price with moving averages**")
-            st.line_chart(chart, height=460)
+            _mount_frame(chart, key="spy-price-ma", height=460)
 
     _thr_rot = threading.Thread(target=_run_rotation, name="spy-sector-rotation", daemon=True)
     _thr_rot.start()
@@ -664,14 +682,14 @@ def render_spy_benchmark_tab(
             }
         )
         st.markdown("**RSP vs SPY cumulative performance**")
-        st.line_chart(perf, height=420)
+        _mount_frame(perf, key="rsp-spy-perf", height=420)
 
         ratio = detail[["date", "relative_strength_ratio"]].copy()
         ratio["date"] = pd.to_datetime(ratio["date"], errors="coerce")
         ratio = ratio.dropna(subset=["date"]).set_index("date")
         ratio = ratio.rename(columns={"relative_strength_ratio": f"{etf_sym} / {bench} ratio"})
         st.markdown("**RSP / SPY relative strength ratio**")
-        st.line_chart(ratio, height=380)
+        _mount_frame(ratio, key="rsp-spy-ratio", height=380)
 
     st.divider()
     st.subheader("SPY risk")
@@ -699,4 +717,4 @@ def render_spy_benchmark_tab(
         dd_plot = dd_ts.copy()
         dd_plot["date"] = pd.to_datetime(dd_plot["date"], errors="coerce")
         dd_plot = dd_plot.dropna(subset=["date"]).set_index("date")
-        st.line_chart(dd_plot[["drawdown"]], height=360)
+        _mount_frame(dd_plot[["drawdown"]], key="spy-drawdown", height=360)

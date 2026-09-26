@@ -18,7 +18,13 @@ from market_intelligence.bond_tax import ASSET_CORPORATE, ASSET_MUNI, ASSET_TREA
 from market_intelligence.bonds import interpolate_par_yield
 from market_intelligence.catalog import CATALOG_BY_ID, CURVE_TENORS
 from market_intelligence.components.market_chart import lightweight_market_chart, time_series_points
-from market_intelligence.components.tenor_chart import build_tenor_curve, tenor_curve_chart
+from market_intelligence.components.tenor_chart import (
+    build_tenor_curve,
+    category_bar_chart,
+    category_line_chart,
+    ranked_bar_chart,
+    tenor_curve_chart,
+)
 from market_intelligence.curve_compare import (
     AFTER_CURRENT_MESSAGE,
     COMPARE_CUSTOM,
@@ -36,7 +42,10 @@ from market_intelligence.nulls import strict_dumps
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
 from market_intelligence.read_models import (
+    BACK_TENOR,
+    FRONT_TENOR,
     TENOR_AXIS,
+    classify_slope,
     curve_levels_on_date,
     resolve_curve_date,
     term_structure_display_rows,
@@ -263,6 +272,30 @@ def _implied_realized_frame(history: dict[str, Any]) -> pd.DataFrame | None:
     return vix_frame.join(rv_frame, how="outer")
 
 
+def _mount_time_series(series: list[dict[str, Any]], *, key: str, ranges: bool = False) -> None:
+    """One Lightweight chart. Missing dates stay missing on the shared calendar."""
+    if not series:
+        return
+    lightweight_market_chart(
+        series=series,
+        ranges=ranges,
+        key=key,
+        series_label=str(series[0].get("label") or "Value"),
+    )
+
+
+def _frame_points(frame: pd.DataFrame | None, column: str) -> list[dict[str, Any]]:
+    if frame is None or column not in getattr(frame, "columns", []):
+        return []
+    rows = []
+    for stamp, value in frame[column].items():
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            continue
+        day = stamp.date() if isinstance(stamp, datetime) else stamp
+        rows.append({"as_of": day, "value": value})
+    return time_series_points(rows)
+
+
 def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
     st.subheader("Core volatility (Yahoo)")
     st.caption(
@@ -282,25 +315,6 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
     vix = yahoo.get("vix")
     skew = yahoo.get("skew")
     spread = yahoo.get("spread")
-    slope = yahoo.get("slope")
-    curve_state = yahoo.get("curve_state")
-    state_label = {
-        "upward_sloping": "Upward-sloping",
-        "downward_sloping": "Downward-sloping",
-        "flat": "Flat",
-    }.get(str(curve_state or ""), "—")
-
-    cols = st.columns(4)
-    cols[0].metric("VIX", _fmt_or_dash(_num(vix), "vol_points"), None if not vix else str(vix.get("as_of") or ""))
-    cols[1].metric("Cboe SKEW Index", _fmt_or_dash(_num(skew), None), None if not skew else str(skew.get("as_of") or ""))
-    cols[2].metric("Implied − Realized Vol", _fmt_or_dash(_num(spread), "vol_points"))
-    cols[3].metric("VIX index curve", state_label if _num(slope) is not None else "Unavailable")
-    st.caption("VIX − GSPC RV21")
-    st.caption(
-        "Implied = VIX. Realized = sample stdev of 21 ^GSPC daily log returns × √252 × 100. "
-        "VIX is approximately 30-calendar-day implied volatility; RV21 is trailing realized volatility. "
-        "Missing values stay missing."
-    )
 
     history = yahoo.get("history") or {}
     stored_dates = []
@@ -308,22 +322,45 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
         parsed = _parse_stored_date(item)
         if parsed is not None:
             stored_dates.append(parsed)
-    common_dates = sorted(set(stored_dates))
+    available_dates = sorted(set(stored_dates))
+    requested_state = _parse_stored_date(st.session_state.get("yahoo_vix_curve_date"))
+    resolved_for_shape = resolve_curve_date(requested_state, available_dates) if available_dates else None
+    shape_levels = curve_levels_on_date(history, resolved_for_shape) if resolved_for_shape is not None else []
+    shape_by_tenor = {row.get("tenor"): row.get("value") for row in shape_levels}
+    shape = classify_slope(shape_by_tenor.get(FRONT_TENOR), shape_by_tenor.get(BACK_TENOR))
+    state_label = {
+        "upward_sloping": "Upward-sloping",
+        "downward_sloping": "Downward-sloping",
+        "flat": "Flat",
+    }.get(str(shape.get("curve_state") or ""), "Unavailable")
+
+    cols = st.columns(4)
+    cols[0].metric("VIX", _fmt_or_dash(_num(vix), "vol_points"), None if not vix else str(vix.get("as_of") or ""))
+    cols[1].metric("Cboe SKEW Index", _fmt_or_dash(_num(skew), None), None if not skew else str(skew.get("as_of") or ""))
+    cols[2].metric("Implied − Realized Vol", _fmt_or_dash(_num(spread), "vol_points"))
+    cols[3].metric("VIX index curve", state_label)
+    st.caption("VIX − GSPC RV21")
+    st.caption(
+        "Implied = VIX. Realized = sample stdev of 21 ^GSPC daily log returns × √252 × 100. "
+        "VIX is approximately 30-calendar-day implied volatility; RV21 is trailing realized volatility. "
+        "Missing values stay missing."
+    )
+
     st.markdown("**VIX index term structure**")
-    if not common_dates:
-        st.caption("A six-tenor VIX index curve is not available in stored history.")
+    if not available_dates:
+        st.caption("No VIX index tenor observations are stored yet.")
     else:
         selected = st.date_input(
             "Curve date",
-            value=common_dates[-1],
-            min_value=common_dates[0],
-            max_value=common_dates[-1],
+            value=available_dates[-1],
+            min_value=available_dates[0],
+            max_value=available_dates[-1],
             key="yahoo_vix_curve_date",
         )
-        requested = _parse_stored_date(selected) or common_dates[-1]
-        resolved = resolve_curve_date(requested, common_dates)
+        requested = _parse_stored_date(selected) or available_dates[-1]
+        resolved = resolve_curve_date(requested, available_dates)
         if resolved is None:
-            st.caption("No six-tenor curve on or before the selected date.")
+            st.caption("No stored VIX index observation on or before the selected date.")
         else:
             st.caption("Curve as of {0}".format(_full_month_date(resolved)))
             levels = curve_levels_on_date(history, resolved)
@@ -331,7 +368,7 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
             tenor_curve_chart(curve, key="yahoo_vix_term_structure")
             if curve["missing_tenors"]:
                 st.caption(
-                    "Missing tenors on this date: {0}. Missing levels are not filled.".format(
+                    "Missing on this date: {0}. Missing levels are not filled.".format(
                         ", ".join(curve["missing_tenors"])
                     )
                 )
@@ -339,21 +376,34 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
     st.markdown("**VIX recent history**")
     vix_points = time_series_points(history.get("VIX_SPOT") or [])
     if vix_points:
-        lightweight_market_chart(vix_points, series_label="VIX", height=440, key="yahoo_vix_history")
+        lightweight_market_chart(
+            vix_points,
+            series_label="VIX",
+            height=440,
+            key="yahoo_vix_history",
+            ranges=True,
+        )
     else:
         st.caption("VIX history unavailable.")
 
     st.markdown("**Implied vs Realized Vol**")
     implied_frame = _implied_realized_frame(history)
-    if implied_frame is not None:
-        st.line_chart(implied_frame)
+    implied_series = []
+    vix_history_points = _frame_points(implied_frame, "VIX")
+    rv_history_points = _frame_points(implied_frame, "GSPC RV21")
+    if vix_history_points:
+        implied_series.append({"label": "VIX", "points": vix_history_points})
+    if rv_history_points:
+        implied_series.append({"label": "GSPC RV21", "points": rv_history_points})
+    if implied_series:
+        _mount_time_series(implied_series, key="yahoo_implied_realized", ranges=True)
     else:
         st.caption("Implied vs realized history unavailable.")
 
     st.markdown("**SKEW recent history**")
-    skew_frame = _history_frame(history.get("SKEW_INDEX") or [], "SKEW")
-    if skew_frame is not None:
-        st.line_chart(skew_frame)
+    skew_points = time_series_points(history.get("SKEW_INDEX") or [])
+    if skew_points:
+        _mount_time_series([{"label": "SKEW", "points": skew_points}], key="yahoo_skew_history", ranges=True)
     else:
         st.caption("SKEW history unavailable.")
 
@@ -637,16 +687,13 @@ def _render_overview_visuals(*, rates: dict[str, Any], credit: dict[str, Any], s
                     for row in usable
                 ]
             ).sort_values("Return", ascending=True)
-            try:
-                import plotly.express as px
-
-                fig = px.bar(frame, x="Return", y="Sector", orientation="h", title="{0} absolute return".format(horizon))
-                fig.update_layout(height=360, margin=dict(l=10, r=10, t=40, b=10), xaxis_tickformat=".1%")
-                fig.update_xaxes(fixedrange=True)
-                fig.update_yaxes(fixedrange=True)
-                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
-            except ImportError:  # pragma: no cover
-                st.bar_chart(frame.set_index("Sector")["Return"])
+            ranked_bar_chart(
+                frame["Sector"].tolist(),
+                frame["Return"].tolist(),
+                key="pulse-sector-rank",
+                unit="percent",
+                title="{0} absolute return".format(horizon),
+            )
             st.caption("Absolute ETF proxy returns for the selected horizon. Relative strength lives on Equities & Sectors.")
             open_registered_page("sectors", "Open Equities & Sectors")
         else:
@@ -657,17 +704,12 @@ def _render_overview_visuals(*, rates: dict[str, Any], credit: dict[str, Any], s
         mixed = bool(rates.get("curve_dates_mixed"))
         if curve and not mixed:
             st.subheader("Treasury curve")
-            try:
-                import plotly.express as px
-
-                frame = pd.DataFrame([{"Tenor": row.get("tenor"), "Yield %": row.get("yield_pct"), "Obs": row.get("observation_date")} for row in curve])
-                fig = px.line(frame, x="Tenor", y="Yield %", markers=True, title="Latest coherent curve ({0})".format(rates.get("complete_curve_date") or "same-date"))
-                fig.update_layout(height=360, margin=dict(l=10, r=10, t=40, b=10))
-                fig.update_xaxes(fixedrange=True)
-                fig.update_yaxes(fixedrange=True)
-                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
-            except ImportError:  # pragma: no cover
-                st.line_chart(pd.DataFrame(curve).set_index("tenor")["yield_pct"])
+            category_line_chart(
+                [row.get("tenor") for row in curve],
+                [{"name": "Yield %", "values": [row.get("yield_pct") for row in curve]}],
+                key="pulse-treasury-curve",
+                y_title="percent",
+            )
             st.caption("Same-date complete curve on {0}. Mixed-date legs are not drawn as one print.".format(rates.get("complete_curve_date") or "—"))
             open_registered_page("rates", "Open Rates & Curve")
         elif curve and mixed:
@@ -690,17 +732,13 @@ def _render_overview_visuals(*, rates: dict[str, Any], credit: dict[str, Any], s
             open_registered_page("rates", "Open Rates & Curve")
         elif buckets:
             st.subheader("Credit spreads")
-            try:
-                import plotly.express as px
-
-                frame = pd.DataFrame([{"Bucket": row.get("label"), "OAS bps": row.get("oas_bps")} for row in buckets])
-                fig = px.bar(frame, x="Bucket", y="OAS bps", title="Broad IG / HY OAS")
-                fig.update_layout(height=360, margin=dict(l=10, r=10, t=40, b=10))
-                fig.update_xaxes(fixedrange=True)
-                fig.update_yaxes(fixedrange=True)
-                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
-            except ImportError:  # pragma: no cover
-                st.bar_chart(pd.DataFrame(buckets).set_index("label")["oas_bps"])
+            category_bar_chart(
+                [row.get("label") for row in buckets],
+                [row.get("oas_bps") for row in buckets],
+                key="pulse-credit-oas",
+                y_title="OAS bps",
+                unit="bps",
+            )
             open_registered_page("credit", "Open Credit")
         else:
             st.subheader("Rates / Credit")
@@ -943,24 +981,28 @@ def render_rates_curve() -> None:
     custom_date = _custom_comparison_date(current_date) if compare == COMPARE_CUSTOM else None
     comparison = _load_comparison_curve(compare, current_date, custom_date) if compare != COMPARE_NONE and not mixed else None
     _render_comparison_note(comparison, current_date=current_date)
-    try:
-        import plotly.graph_objects as go
-
-        fig = go.Figure()
-        mode = "markers" if mixed else "lines+markers"
-        current_name = "{0} — Current".format(format_curve_date(current_date)) if current_date and not mixed else ("Latest per tenor (dates differ)" if mixed else "Current")
-        fig.add_trace(go.Scatter(x=frame["tenor"], y=frame["yield_pct"], mode=mode, name=current_name))
-        if comparison and comparison.get("found") and not mixed:
-            comp_frame = _comparison_frame(comparison.get("curve") or [])
-            if comp_frame is not None and not comp_frame.empty:
-                comp_name = "{0} — Comparison".format(format_curve_date(comparison.get("effective_date")))
-                fig.add_trace(go.Scatter(x=comp_frame["tenor"], y=comp_frame["yield_pct"], mode="lines+markers", name=comp_name, line=dict(dash="dash")))
-        fig.update_layout(height=360, margin=dict(l=10, r=10, t=30, b=10), yaxis_title="percent", legend=dict(orientation="h"))
-        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
-    except ImportError:  # pragma: no cover
-        st.line_chart(frame.set_index("tenor")["yield_pct"])
+    current_name = "{0} — Current".format(format_curve_date(current_date)) if current_date and not mixed else ("Latest per tenor" if mixed else "Current")
+    curve_series = [{"name": current_name, "values": frame["yield_pct"].tolist()}]
+    if comparison and comparison.get("found") and not mixed:
+        comp_frame = _comparison_frame(comparison.get("curve") or [])
+        if comp_frame is not None and not comp_frame.empty:
+            aligned = {str(tenor): value for tenor, value in zip(comp_frame["tenor"], comp_frame["yield_pct"])}
+            curve_series.append(
+                {
+                    "name": "{0} — Comparison".format(format_curve_date(comparison.get("effective_date"))),
+                    "values": [aligned.get(str(tenor)) for tenor in frame["tenor"].tolist()],
+                }
+            )
     if mixed:
+        category_bar_chart(
+            frame["tenor"].tolist(),
+            frame["yield_pct"].tolist(),
+            key="rates-mixed-tenors",
+            y_title="percent",
+        )
         st.caption("Points are latest observations per tenor and are not a single coherent curve print.")
+    else:
+        category_line_chart(frame["tenor"].tolist(), curve_series, key="rates-treasury-curve", y_title="percent")
     headline = [row for row in present if row["tenor"] in {"2Y", "10Y", "30Y"}]
     cols = st.columns(max(1, len(headline)))
     for i, row in enumerate(headline):
@@ -970,6 +1012,22 @@ def render_rates_curve() -> None:
     slope_2s10s = slopes.get("2s10s") or slopes.get("2Y10Y") or next(iter(slopes.values()), None)
     if slope_2s10s:
         st.metric("2s10s slope", _transform_text(slope_2s10s), help="Long minus short tenor on a common observation date, in basis points.")
+
+    history_choices = {
+        "10Y yield": "DGS10",
+        "2Y yield": "DGS2",
+        "3M yield": "DGS3MO",
+        "30Y yield": "DGS30",
+        "10Y−2Y": "curve.slope_10Y2Y_bps",
+        "30Y−2Y": "curve.slope_30Y2Y_bps",
+        "30Y−5Y": "curve.slope_30Y5Y_bps",
+        "10Y−3M": "curve.slope_10Y3M_bps",
+    }
+    history_label = st.selectbox("History", list(history_choices), key="rates_history_series")
+    history_metric = history_choices[str(history_label)]
+    history_rows = load_or_stop("metric_history", history_metric)
+    history_units = "bps" if history_metric.startswith("curve.slope_") else "percent"
+    history_chart(history_rows, x="as_of", y="value", title=str(history_label), units=history_units)
 
     with st.expander("Tenor table and other slopes"):
         st.dataframe(
@@ -1036,17 +1094,13 @@ def render_credit_overview() -> None:
             cols[i].metric(row["label"], "{0:.0f} bps".format(row["oas_bps"]) if row.get("oas_bps") is not None else "—", delta)
         st.caption(credit.get("attribution") or "")
         if broad:
-            try:
-                import plotly.express as px
-
-                frame = pd.DataFrame([{"Bucket": row["label"], "OAS bps": row.get("oas_bps"), "1D": row.get("change_1d_bps")} for row in broad])
-                fig = px.bar(frame, x="Bucket", y="OAS bps", title="Broad IG / HY OAS")
-                fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
-                fig.update_xaxes(fixedrange=True)
-                fig.update_yaxes(fixedrange=True)
-                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
-            except ImportError:  # pragma: no cover
-                pass
+            category_bar_chart(
+                [row["label"] for row in broad],
+                [row.get("oas_bps") for row in broad],
+                key="credit-broad-oas",
+                y_title="OAS bps",
+                unit="bps",
+            )
         ids = [row["series_id"] for row in broad] or [row["series_id"] for row in buckets]
         chosen = st.selectbox("History", ids, format_func=lambda series_id: CATALOG_BY_ID[series_id].label if series_id in CATALOG_BY_ID else series_id, key="credit_hist_broad")
         history = load_or_stop("metric_history", "{0}.oas_bps".format(chosen))
@@ -1081,16 +1135,13 @@ def render_credit_overview() -> None:
                 use_container_width=True,
                 hide_index=True,
             )
-            try:
-                import plotly.express as px
-
-                fig = px.bar(table.dropna(subset=["OAS (bps)"]), x="Bucket", y="OAS (bps)", title="Rating-bucket OAS")
-                fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10))
-                fig.update_xaxes(fixedrange=True)
-                fig.update_yaxes(fixedrange=True)
-                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
-            except ImportError:  # pragma: no cover
-                pass
+            category_bar_chart(
+                table["Bucket"].tolist(),
+                table["OAS (bps)"].tolist(),
+                key="credit-rating-oas",
+                y_title="OAS bps",
+                unit="bps",
+            )
         else:
             st.info("No rating-bucket OAS rows are stored.")
         ids = [row["series_id"] for row in rating] or [row["series_id"] for row in buckets]
@@ -1175,23 +1226,17 @@ def render_sector_rotation_v2() -> None:
     if chart.get("available") and chart.get("series"):
         st.subheader("SPY vs RSP")
         frame = pd.DataFrame(chart["series"])
-        frame["date"] = pd.to_datetime(frame["date"])
-        try:
-            import plotly.graph_objects as go
-
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=frame["date"], y=frame["SPY"], name="SPY", mode="lines"))
-            fig.add_trace(go.Scatter(x=frame["date"], y=frame["RSP"], name="RSP", mode="lines"))
-            fig.update_layout(
-                height=280,
-                margin=dict(l=10, r=10, t=30, b=10),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-                yaxis_title="Indexed (start = 100)",
-                xaxis_title=None,
+        spy_rsp = []
+        for label in ("SPY", "RSP"):
+            if label not in frame.columns:
+                continue
+            points = time_series_points(
+                [{"as_of": row.get("date"), "value": row.get(label)} for row in frame.to_dict(orient="records")]
             )
-            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": False})
-        except Exception:  # noqa: BLE001 - plotly optional fallback
-            st.line_chart(frame.set_index("date")[["SPY", "RSP"]])
+            if points:
+                spy_rsp.append({"label": label, "points": points})
+        if spy_rsp:
+            _mount_time_series(spy_rsp, key="spy-rsp", ranges=True)
         st.caption(
             "Cap-weight (SPY) vs equal-weight (RSP) S&P 500 proxies, normalized to 100 at the first common observation. "
             "Data through {0}. Stored EQUITY_EOD closes only.".format(chart.get("as_of") or "—")
@@ -1259,6 +1304,15 @@ def render_sector_rotation_v2() -> None:
         order = {name: i for i, name in enumerate(CANONICAL_SECTORS)}
         frame["_o"] = frame["Sector"].map(lambda name: order.get(name, 99))
         frame = frame.sort_values(["_o", "Sector"]).drop(columns="_o")
+        rank_col = next((name for name in ("1M RS", "1M Return", "Live 1D RS", "Live 1D Return") if name in frame.columns), None)
+        if rank_col:
+            ranked_bar_chart(
+                frame["Sector"].tolist(),
+                frame[rank_col].tolist(),
+                key="sector-rank",
+                unit="percent",
+                title=rank_col,
+            )
         st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
         heatmap_legend(scale_note="each column uses its own near-zero band")
 
@@ -1419,6 +1473,15 @@ def render_sector_rotation_v2() -> None:
     ]
     frame = frame[keep]
     value_cols = [c for c in value_cols if c in frame.columns]
+    industry_rank = next((name for name in ("1M RS", "1M Return", "Live 1D RS", "Live 1D Return") if name in frame.columns), None)
+    if industry_rank:
+        ranked_bar_chart(
+            frame["Group"].tolist(),
+            frame[industry_rank].tolist(),
+            key="industry-rank",
+            unit="percent",
+            title=industry_rank,
+        )
     st.dataframe(styled_heatmap(frame, value_cols), use_container_width=True, hide_index=True)
     st.caption(
         "Custom baskets are daily-rebalanced equal-dollar indexes (current-context membership, not PIT). "

@@ -15,8 +15,10 @@ from sqlalchemy import text
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.store import RUN_FAILED, RUN_PARTIAL, RUN_SUCCEEDED, finish_run, record_freshness, start_run
 from market_intelligence.yahoo_vol import (
+    BACK_TENOR,
     BACK_TICKER,
     CATEGORY,
+    FRONT_TENOR,
     FRONT_TICKER,
     METHOD_RV,
     METHOD_SKEW,
@@ -42,8 +44,10 @@ from market_intelligence.yahoo_vol import (
 
 logger = logging.getLogger("market_intelligence.ingest_yahoo_vol")
 NY = ZoneInfo("America/New_York")
-# Calendar span covering VIX1D history (from 2023) plus the 22-close RV21 warmup.
+# Bounded window for the scheduled refresh. RV21 needs 22 closes; this also covers recent term prints.
 HISTORY_LOOKBACK_DAYS = 1460
+# Explicit historical backfill only. Daily refresh must not re-download this span.
+TERM_HISTORY_PERIOD = "max"
 DATASETS = ("vix", "vix_term_structure", "skew", "iv_minus_rv")
 
 _UPSERT = text(
@@ -74,20 +78,34 @@ def session_date(now: datetime | None = None) -> date:
     return moment.astimezone(NY).date()
 
 
-def fetch_yahoo_closes(ticker: str, *, start: date, end: date) -> list[tuple[date, float]]:
-    """Return (session_date, close) ascending. Raises on import failure; empty on no data."""
+def fetch_yahoo_closes(
+    ticker: str,
+    *,
+    start: date,
+    end: date,
+    period: str | None = None,
+) -> list[tuple[date, float]]:
+    """Return (session_date, close) ascending. Raises on import failure; empty on no data.
+
+    ``period="max"`` asks Yahoo for the full daily history. Rows after ``end`` are dropped.
+    """
     import yfinance as yf
 
-    hist = yf.Ticker(ticker).history(
-        start=start.isoformat(),
-        end=(end + timedelta(days=1)).isoformat(),
-        auto_adjust=True,
-    )
+    if period:
+        hist = yf.Ticker(ticker).history(period=period, auto_adjust=True)
+    else:
+        hist = yf.Ticker(ticker).history(
+            start=start.isoformat(),
+            end=(end + timedelta(days=1)).isoformat(),
+            auto_adjust=True,
+        )
     if hist is None or hist.empty or "Close" not in hist.columns:
         return []
     out: list[tuple[date, float]] = []
     for idx, row in hist.iterrows():
         day = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
+        if day > end:
+            continue
         close = positive_number(row.get("Close"))
         if close is None:
             continue
@@ -96,24 +114,76 @@ def fetch_yahoo_closes(ticker: str, *, start: date, end: date) -> list[tuple[dat
     return out
 
 
-def ingest_yahoo_vol(engine, *, parent_run_id: str | None = None, today: date | None = None) -> dict[str, Any]:
+def _fetch_one(
+    ticker: str,
+    *,
+    start: date,
+    end: date,
+    period: str | None,
+    series: dict[str, list[tuple[date, float]]],
+    report: dict[str, Any],
+) -> list[tuple[date, float]]:
+    try:
+        rows = fetch_yahoo_closes(ticker, start=start, end=end, period=period)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("yahoo fetch failed for %s: %s", ticker, type(exc).__name__)
+        rows = []
+        report.setdefault("fetch_errors", {})[ticker] = type(exc).__name__
+    series[ticker] = rows
+    logger.info(
+        "yahoo vol fetch %s period=%s rows=%s",
+        ticker,
+        period or "window",
+        len(rows),
+    )
+    return rows
+
+
+def ingest_yahoo_vol(
+    engine,
+    *,
+    parent_run_id: str | None = None,
+    today: date | None = None,
+    mode: str = "incremental",
+) -> dict[str, Any]:
     run_day = today or session_date()
+    full = mode == "full"
     start = run_day - timedelta(days=HISTORY_LOOKBACK_DAYS)
-    report: dict[str, Any] = {"source_id": SOURCE_ID, "run_day": run_day.isoformat(), "sections": {}, "failed": False}
+    report: dict[str, Any] = {
+        "source_id": SOURCE_ID,
+        "run_day": run_day.isoformat(),
+        "mode": "full" if full else "incremental",
+        "sections": {},
+        "failed": False,
+        "rows_by_ticker": {},
+    }
     _ensure_source(engine)
 
     series: dict[str, list[tuple[date, float]]] = {}
-    tickers = [TICKER_VIX, TICKER_SKEW, TICKER_RV] + [t for t, _, _ in TERM_TENORS]
-    for ticker in dict.fromkeys(tickers):
-        try:
-            series[ticker] = fetch_yahoo_closes(ticker, start=start, end=run_day)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("yahoo fetch failed for %s: %s", ticker, type(exc).__name__)
-            series[ticker] = []
-            report.setdefault("fetch_errors", {})[ticker] = type(exc).__name__
+    for ticker in (TICKER_VIX, TICKER_SKEW, TICKER_RV):
+        _fetch_one(ticker, start=start, end=run_day, period=None, series=series, report=report)
+
+    term_series: dict[str, list[tuple[date, float]]] = {}
+    for ticker, _tenor, _metric_id in TERM_TENORS:
+        if full:
+            rows = _fetch_one(
+                ticker,
+                start=start,
+                end=run_day,
+                period=TERM_HISTORY_PERIOD,
+                series=term_series,
+                report=report,
+            )
+        elif ticker in series:
+            rows = series[ticker]
+            term_series[ticker] = rows
+        else:
+            rows = _fetch_one(ticker, start=start, end=run_day, period=None, series=term_series, report=report)
+        report["rows_by_ticker"][ticker] = len(rows)
+        logger.info("yahoo vol term %s observations=%s mode=%s", ticker, len(rows), report["mode"])
 
     _ingest_vix(engine, series.get(TICKER_VIX) or [], parent_run_id, report)
-    _ingest_term(engine, series, parent_run_id, report)
+    _ingest_term(engine, term_series, parent_run_id, report)
     _ingest_skew(engine, series.get(TICKER_SKEW) or [], parent_run_id, report)
     _ingest_spread(engine, series.get(TICKER_VIX) or [], series.get(TICKER_RV) or [], parent_run_id, report)
 
@@ -230,8 +300,8 @@ def _ingest_term(engine, series: Mapping[str, list[tuple[date, float]]], parent_
                     "construction": METHOD_TERM,
                     "label": "VIX index term structure",
                     "curve_state": slope_info["curve_state"],
-                    "front_tenor": "9D",
-                    "back_tenor": "1Y",
+                    "front_tenor": FRONT_TENOR,
+                    "back_tenor": BACK_TENOR,
                     "note": curve["note"],
                     "slope_reason": slope_info["slope_reason"],
                     "curve_observation_date": day.isoformat(),
@@ -264,6 +334,10 @@ def _ingest_term(engine, series: Mapping[str, list[tuple[date, float]]], parent_
             )
         )
     count = _write_rows(engine, rows, run_id)
+    written_by_ticker: dict[str, int] = {}
+    for ticker, _tenor, metric_id in TERM_TENORS:
+        written_by_ticker[ticker] = sum(1 for row in rows if row["metric_id"] == metric_id)
+        logger.info("yahoo vol wrote %s rows for %s (%s)", written_by_ticker[ticker], ticker, metric_id)
     slope = curve["front_to_back_slope"]
     ok = slope is not None and curve_date is not None
     _close(engine, run_id, RUN_SUCCEEDED if ok else RUN_PARTIAL, count, None if ok else (curve.get("slope_reason") or "partial_tenors"))
@@ -283,6 +357,7 @@ def _ingest_term(engine, series: Mapping[str, list[tuple[date, float]]], parent_
         "observation_date": curve_date.isoformat() if isinstance(curve_date, date) else None,
         "unavailable_tenors": unavailable,
         "rows": count,
+        "rows_by_ticker": written_by_ticker,
     }
 
 
@@ -537,7 +612,7 @@ def _ensure_source(engine) -> None:
                 ) VALUES (
                     :sid, 'Yahoo Finance (yfinance, unofficial)', 'volatility_indices', TRUE, 'OPTIONAL_FALLBACK',
                     'https://finance.yahoo.com/', 'D', CAST(:units AS JSONB), 'INTERNAL_ONLY',
-                    'Free Yahoo closes for VIX, SKEW, VIX index tenors including ^VIX1D, and GSPC RV21. Streamlit is read-only.',
+                    'Free Yahoo closes for VIX, SKEW, VIX index tenors ^VIX/^VIX3M/^VIX6M/^VIX1Y, and GSPC RV21. Streamlit is read-only.',
                     'Yahoo Finance via yfinance (unofficial; no SLA). Cboe SKEW Index name refers to the published index, not a LiveVol feed.',
                     'yahoo_vol_v1', NOW()
                 )

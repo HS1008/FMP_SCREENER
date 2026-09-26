@@ -28,11 +28,14 @@ from market_intelligence.freshness import (
 )
 from market_intelligence.nulls import normalize_payload
 from market_intelligence.yahoo_vol import (
+    BACK_TENOR,
+    FRONT_TENOR,
     METRIC_RV,
     METRIC_SPREAD,
     TENOR_AXIS,
     TENOR_METRIC_IDS,
-    common_curve_dates_from_history,
+    available_curve_dates_from_history,
+    classify_slope,
     curve_levels_on_date,
     resolve_curve_date,
 )
@@ -1191,21 +1194,6 @@ def _yahoo_vol_metric(latest: list[dict[str, Any]], metric_id: str) -> dict[str,
     return None
 
 
-def _yahoo_vol_detail(row: dict[str, Any] | None) -> dict[str, Any]:
-    if not row:
-        return {}
-    raw = row.get("detail_json")
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str) and raw.strip():
-        try:
-            parsed = json.loads(raw)
-        except (TypeError, ValueError, json.JSONDecodeError):
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
-    return {}
-
-
 def yahoo_vol_core(conn) -> dict[str, Any]:
     """Yahoo-backed VIX / SKEW / term / implied−realized from stored metrics. Never calls Yahoo."""
     if not _view_exists(conn, "mi_v_yahoo_vol_latest"):
@@ -1218,17 +1206,12 @@ def yahoo_vol_core(conn) -> dict[str, Any]:
         METRIC_RV,
         *TENOR_METRIC_IDS,
     )
-    history_rows = _rows(
-        conn,
-        """
+    history_sql = """
         SELECT * FROM mi_v_yahoo_vol_history
-        WHERE metric_id IN (
-            'VIX_SPOT', 'SKEW_INDEX', 'VIX_MINUS_GSPC_RV21', 'GSPC_REALIZED_VOL_21D',
-            'VIX_1D', 'VIX_9D', 'VIX_1M', 'VIX_3M', 'VIX_6M', 'VIX_1Y'
-        )
+        WHERE metric_id IN ({ids})
         ORDER BY metric_id, as_of
-        """,
-    ) if _view_exists(conn, "mi_v_yahoo_vol_history") else []
+    """.format(ids=", ".join("'{0}'".format(metric_id) for metric_id in history_ids))
+    history_rows = _rows(conn, history_sql) if _view_exists(conn, "mi_v_yahoo_vol_history") else []
     history: dict[str, list[dict[str, Any]]] = {}
     for row in history_rows:
         history.setdefault(str(row.get("metric_id")), []).append(row)
@@ -1253,11 +1236,12 @@ def yahoo_vol_core(conn) -> dict[str, Any]:
     spread = _yahoo_vol_metric(latest, METRIC_SPREAD)
     rv = _yahoo_vol_metric(latest, METRIC_RV)
     slope = _yahoo_vol_metric(latest, "VIX_INDEX_FRONT_TO_BACK")
-    slope_detail = _yahoo_vol_detail(slope)
-    curve_days = common_curve_dates_from_history(history)
+    curve_days = available_curve_dates_from_history(history)
     curve_dates = [day.isoformat() for day in curve_days]
     latest_curve = resolve_curve_date(None, curve_days)
     tenors = curve_levels_on_date(history, latest_curve)
+    by_tenor = {point["tenor"]: point.get("value") for point in tenors}
+    slope_info = classify_slope(by_tenor.get(FRONT_TENOR), by_tenor.get(BACK_TENOR))
     unavailable = [point["tenor"] for point in tenors if point.get("value") is None]
     status = "OK" if any(row.get("status") == "OK" and row.get("value") is not None for row in latest) else "UNAVAILABLE"
     return {
@@ -1273,13 +1257,15 @@ def yahoo_vol_core(conn) -> dict[str, Any]:
         "spread": spread,
         "rv21": rv,
         "slope": slope,
-        "curve_state": slope_detail.get("curve_state"),
+        "curve_state": slope_info["curve_state"],
+        "front_to_back_slope": slope_info["front_to_back_slope"],
+        "slope_status": slope_info["slope_status"],
         "unavailable_tenors": unavailable,
         "curve_dates": curve_dates,
         "curve_observation_date": None if latest_curve is None else latest_curve.isoformat(),
         "tenor_axis": list(TENOR_AXIS),
-        "front_tenor": slope_detail.get("front_tenor") or "9D",
-        "back_tenor": slope_detail.get("back_tenor") or "1Y",
+        "front_tenor": FRONT_TENOR,
+        "back_tenor": BACK_TENOR,
         "tenors": tenors,
         "underlying_rv": "GSPC",
         "window": 21,

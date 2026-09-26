@@ -10,6 +10,8 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from market_intelligence.components.tenor_chart import category_line_chart
+from market_intelligence.components.time_series import mount_stored_series
 from qc_research.contracts.sealed_results import official_stage1_identity_blockers
 from qc_research.aggregation import (
     IN_PROGRESS,
@@ -89,17 +91,21 @@ def _params_text(value) -> str:
     return ", ".join(parts) if parts else "—"
 
 
-def _plotly_line(df, x, y, title):
-    try:
-        import plotly.express as px
+def _equity_chart(series: pd.Series, *, label: str, key: str) -> None:
+    rows = [{"as_of": stamp, "value": value} for stamp, value in series.items()]
+    if not mount_stored_series(rows, label=label, key=key):
+        st.line_chart(series, use_container_width=True)
 
-        fig = px.line(df, x=x, y=y, markers=True, title=title)
-        fig.update_layout(margin=dict(l=10, r=10, t=40, b=10), height=360)
-        st.plotly_chart(fig, use_container_width=True)
-    except Exception:
-        chart = df[[x, y]].copy()
-        chart = chart.set_index(x)
-        st.line_chart(chart, use_container_width=True)
+
+def _plotly_line(df, x, y, title):
+    """Parameter or window comparison. The x-axis is the sweep variable, not a calendar."""
+    ordered = df.sort_values(x)
+    category_line_chart(
+        ordered[x].astype(str).tolist(),
+        [{"name": y, "values": ordered[y].tolist()}],
+        key="qc-line-{0}".format("".join(ch if ch.isalnum() else "-" for ch in str(title))[:40]),
+        y_title=str(y),
+    )
 
 
 def render_smoke_section(backtests: pd.DataFrame, *, load_equity=None) -> None:
@@ -185,7 +191,7 @@ def render_smoke_section(backtests: pd.DataFrame, *, load_equity=None) -> None:
         chart = equity.copy()
         chart["equity"] = pd.to_numeric(chart["equity"], errors="coerce")
         chart = chart.dropna(subset=["timestamp", "equity"]).set_index("timestamp")
-        st.line_chart(chart["equity"], use_container_width=True)
+        _equity_chart(chart["equity"], label="Equity", key="smoke-equity")
 
 
 def render_stage1_section(
@@ -950,7 +956,7 @@ def render_all_backtests(run_df: pd.DataFrame, load_equity):
         chart = equity.copy()
         chart["equity"] = pd.to_numeric(chart["equity"], errors="coerce")
         chart = chart.dropna(subset=["timestamp", "equity"]).set_index("timestamp")
-        st.line_chart(chart["equity"], use_container_width=True)
+        _equity_chart(chart["equity"], label="Equity", key="stage1-selected-equity")
 
 
 def render_equity_curves(run_df: pd.DataFrame, load_equity):
@@ -984,7 +990,7 @@ def render_equity_curves(run_df: pd.DataFrame, load_equity):
     chart = equity.copy()
     chart["equity"] = pd.to_numeric(chart["equity"], errors="coerce")
     chart = chart.dropna(subset=["timestamp", "equity"]).set_index("timestamp")
-    st.line_chart(chart["equity"], use_container_width=True)
+    _equity_chart(chart["equity"], label="Equity", key="stage1-compare-equity")
 
 
 def render_audit_safety(

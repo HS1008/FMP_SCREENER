@@ -3,8 +3,10 @@ var MOBILE_QUERY = "(max-width: 699px)";
 var MOBILE_HEIGHT = 320;
 var DESKTOP_HEIGHT = 390;
 
-function frameHeight() {
-  return window.matchMedia(MOBILE_QUERY).matches ? MOBILE_HEIGHT : DESKTOP_HEIGHT;
+function frameHeight(root) {
+  var mobile = root && root.__tenorMobile ? root.__tenorMobile : MOBILE_HEIGHT;
+  var desktop = root && root.__tenorDesktop ? root.__tenorDesktop : DESKTOP_HEIGHT;
+  return window.matchMedia(MOBILE_QUERY).matches ? mobile : desktop;
 }
 
 function sizeBox(el, height) {
@@ -91,6 +93,9 @@ function escapeHtml(value) {
 }
 
 function finiteValue(point) {
+  if (typeof point === "number") {
+    return Number.isFinite(point) ? point : null;
+  }
   if (!point || typeof point !== "object") {
     return null;
   }
@@ -98,9 +103,23 @@ function finiteValue(point) {
   return Number.isFinite(number) ? number : null;
 }
 
+function formatNumber(number, point) {
+  if (point && point.unit === "percent") {
+    return (number * 100).toFixed(1) + "%";
+  }
+  if (point && point.unit === "bps") {
+    return Number(number).toFixed(0);
+  }
+  return Number(number).toFixed(2);
+}
+
 function formatLevel(params) {
   var number = finiteValue(params && params.data);
   return number == null ? "" : number.toFixed(2);
+}
+
+function tooltipBox(html) {
+  return '<div style="color:#f4f6f8;background:transparent;font-size:13px;line-height:1.35;padding:0;margin:0">' + html + "</div>";
 }
 
 function formatTooltip(params) {
@@ -109,20 +128,34 @@ function formatTooltip(params) {
     return "";
   }
   var point = row.data && typeof row.data === "object" ? row.data : null;
-  var tenor = point && point.tenor ? point.tenor : row.axisValue || "";
+  var tenor = point && point.tenor ? point.tenor : row.name || row.axisValue || "";
   var number = finiteValue(point);
+  if (number == null && typeof row.data === "number" && Number.isFinite(row.data)) {
+    number = row.data;
+  }
+  if (number == null && row.value != null && typeof row.value === "number" && Number.isFinite(row.value)) {
+    number = row.value;
+  }
+  var ticker = point ? point.ticker || "" : "";
+  var headline = ticker ? escapeHtml(tenor) + " · " + escapeHtml(ticker) : escapeHtml(tenor);
   if (number == null) {
-    return escapeHtml(tenor) + "<br/>No observation";
+    return tooltipBox(headline + "<br/>unavailable on this date");
   }
-  var lines = [
-    escapeHtml(tenor),
-    escapeHtml(point.name || point.ticker || ""),
-    number.toFixed(2),
-  ];
-  if (point.curve_date_label) {
-    lines.push(escapeHtml(point.curve_date_label));
+  var dateLabel = "";
+  if (point && point.curve_date_label) {
+    dateLabel = point.curve_date_label;
+  } else if (point && point.curve_date_long) {
+    dateLabel = point.curve_date_long;
   }
-  return lines.join("<br/>");
+  var body =
+    '<div style="font-weight:500">' + headline + "</div>" +
+    '<div style="color:#f4f6f8;font-size:18px;font-weight:650;margin:2px 0 1px">' +
+    formatNumber(number, point) +
+    "</div>";
+  if (dateLabel) {
+    body += '<div style="color:#f4f6f8;opacity:0.82;font-size:12px">' + escapeHtml(dateLabel) + "</div>";
+  }
+  return tooltipBox(body);
 }
 
 function applyTheme(option, palette, compact) {
@@ -136,22 +169,52 @@ function applyTheme(option, palette, compact) {
   option.yAxis.nameTextStyle = { color: palette.text, fontSize: 11, padding: [0, 0, 0, 4] };
   option.yAxis.splitLine = { show: true, lineStyle: { color: palette.grid } };
   option.yAxis.axisLine = { show: false };
-  var series = option.series[0];
-  series.symbolSize = compact ? 8 : 10;
-  series.lineStyle = { width: 2, color: palette.line };
-  series.itemStyle = { color: palette.line };
-  series.label = series.label || {};
-  series.label.show = true;
-  series.label.position = "top";
-  series.label.distance = 6;
-  series.label.color = palette.text;
-  series.label.fontSize = compact ? 11 : 12;
-  series.label.formatter = formatLevel;
-  series.labelLayout = { hideOverlap: false, moveOverlap: "shiftY" };
-  option.tooltip.backgroundColor = palette.dark ? "rgba(28,28,32,0.96)" : "rgba(255,255,255,0.96)";
-  option.tooltip.borderColor = palette.grid;
-  option.tooltip.textStyle = { color: palette.text, fontSize: 13 };
-  option.tooltip.extraCssText = "box-shadow:none;border-radius:8px;";
+  var seriesList = Array.isArray(option.series) ? option.series : [];
+  var paletteColors = [palette.line, "#4c78a8", "#f2c14e", "#59a14f", "#e15759", "#76b7b2"];
+  for (var seriesIndex = 0; seriesIndex < seriesList.length; seriesIndex++) {
+    var series = seriesList[seriesIndex];
+    var color = (series.itemStyle && series.itemStyle.color) || paletteColors[seriesIndex % paletteColors.length];
+    if (!series.type || series.type === "line") {
+      series.symbolSize = compact ? 8 : 10;
+      series.lineStyle = series.lineStyle || {};
+      if (!series.lineStyle.color) {
+        series.lineStyle.color = color;
+      }
+      if (!series.lineStyle.width) {
+        series.lineStyle.width = 2;
+      }
+      series.itemStyle = series.itemStyle || {};
+      if (!series.itemStyle.color) {
+        series.itemStyle.color = color;
+      }
+      if (series.label && series.label.show) {
+        series.label.color = palette.text;
+        series.label.fontSize = compact ? 11 : 12;
+        series.label.formatter = formatLevel;
+        series.labelLayout = { hideOverlap: false, moveOverlap: "shiftY" };
+      }
+    } else {
+      series.itemStyle = series.itemStyle || {};
+      if (!series.itemStyle.color) {
+        series.itemStyle.color = color;
+      }
+      if (series.label) {
+        series.label.color = palette.text;
+      }
+    }
+  }
+  if (option.legend && option.legend.show) {
+    option.legend.textStyle = { color: palette.text, fontSize: 12 };
+  }
+  option.tooltip.backgroundColor = "rgba(22, 24, 28, 0.96)";
+  option.tooltip.borderColor = "rgba(255, 255, 255, 0.14)";
+  option.tooltip.borderWidth = 1;
+  option.tooltip.padding = [8, 10];
+  option.tooltip.textStyle = { color: "#f4f6f8", fontSize: 13 };
+  option.tooltip.extraCssText =
+    "background:rgba(22,24,28,0.96)!important;color:#f4f6f8!important;" +
+    "border:1px solid rgba(255,255,255,0.14)!important;border-radius:8px;" +
+    "box-shadow:none;padding:8px 10px;";
   option.tooltip.formatter = formatTooltip;
   option.tooltip.axisPointer = {
     type: "line",
@@ -221,10 +284,14 @@ function updateState(state, data) {
   if (!source) {
     return;
   }
+  state.root.__tenorMobile = Number(data.mobile_height) || MOBILE_HEIGHT;
+  state.root.__tenorDesktop = Number(data.desktop_height) || DESKTOP_HEIGHT;
   var option = JSON.parse(JSON.stringify(source));
   option.dataZoom = [];
   option.toolbox = { show: false };
-  option.legend = { show: false };
+  if (!option.legend) {
+    option.legend = { show: false };
+  }
   state.option = applyTheme(option, paletteFor(state.root), window.matchMedia(MOBILE_QUERY).matches);
   state.compact = window.matchMedia(MOBILE_QUERY).matches;
   applyFrameHeight(state.root);

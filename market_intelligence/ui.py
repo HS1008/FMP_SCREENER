@@ -1,6 +1,6 @@
 """Shared Streamlit helpers for DB-only Market Intelligence pages.
 
-Pages import only this module (plus pandas/plotly/streamlit). No provider, filesystem
+Pages import only this module (plus pandas/streamlit). No provider, filesystem
 precomputed, QC or writer-DB imports. Data comes from the read-only role through
 :mod:`market_intelligence.readonly_db`; ``st.cache_data`` caches DB reads only.
 """
@@ -15,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from market_intelligence.catalog import FRED_ATTRIBUTION
+from market_intelligence.components.market_chart import lightweight_market_chart, time_series_points
 from market_intelligence.readonly_db import ReadOnlyUnavailable, readonly_connection
 
 CACHE_TTL_SECONDS = 300
@@ -366,18 +367,22 @@ def history_chart(rows: list[dict[str, Any]], *, x: str, y: str, title: str, uni
     if not rows:
         st.info("No history stored for this series.")
         return
-    frame = pd.DataFrame(rows)
-    frame[x] = pd.to_datetime(frame[x], errors="coerce")
-    frame[y] = pd.to_numeric(frame[y], errors="coerce")
-    frame = frame.dropna(subset=[x])
-    try:
-        import plotly.express as px
-
-        fig = px.line(frame, x=x, y=y, title=title)
-        fig.update_layout(height=320, margin=dict(l=10, r=10, t=40, b=10), yaxis_title=units or "")
-        st.plotly_chart(fig, use_container_width=True)
-    except ImportError:  # pragma: no cover
-        st.line_chart(frame.set_index(x)[y])
+    points = time_series_points([{"as_of": row.get(x), "value": row.get(y)} for row in rows])
+    if not points:
+        st.info("No history stored for this series.")
+        return
+    if title:
+        st.markdown("**{0}**".format(title))
+    if units:
+        st.caption(units)
+    slug = "".join(ch if ch.isalnum() else "-" for ch in (title or y))[:48]
+    lightweight_market_chart(
+        points,
+        series_label=title or y,
+        height=420,
+        key="history-{0}".format(slug or "series"),
+        ranges=True,
+    )
 
 
 def as_date(value: Any) -> date | None:

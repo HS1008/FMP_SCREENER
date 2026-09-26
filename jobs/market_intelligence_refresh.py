@@ -187,14 +187,14 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
         )
     from market_intelligence.yahoo_vol import SOURCE_ID as YAHOO_VOL_SOURCE_ID
 
-    if getattr(args, "yahoo_vol", False) or want_all:
+    if getattr(args, "yahoo_vol", False) or getattr(args, "yahoo_vol_backfill", False) or want_all:
         steps.append(
             {
                 "step": "yahoo_vol",
                 "source_id": YAHOO_VOL_SOURCE_ID,
                 "configured": True,
                 "action": "ingest",
-                "reason": "Free Yahoo closes for VIX, SKEW, VIX index tenors including ^VIX1D, and GSPC RV21.",
+                "reason": "Free Yahoo closes for VIX, SKEW, VIX index tenors ^VIX/^VIX3M/^VIX6M/^VIX1Y, and GSPC RV21.",
             }
         )
     cftc_on = str(env.get("MI_CFTC_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
@@ -285,7 +285,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--options", action="store_true", help="Ingest OpenBB/Cboe delayed options chains (fails if not configured)")
     parser.add_argument("--vix", action="store_true", help="Ingest OpenBB/Cboe VX_EOD curve (fails if not configured)")
-    parser.add_argument("--yahoo-vol", action="store_true", help="Ingest Yahoo VIX, SKEW, VIX index tenors including ^VIX1D, and GSPC RV21")
+    parser.add_argument("--yahoo-vol", action="store_true", help="Ingest recent Yahoo VIX, SKEW, VIX index tenors ^VIX/^VIX3M/^VIX6M/^VIX1Y, and GSPC RV21")
+    parser.add_argument(
+        "--yahoo-vol-backfill",
+        action="store_true",
+        help="Backfill maximum Yahoo history for ^VIX, ^VIX3M, ^VIX6M, and ^VIX1Y. Idempotent upsert. Does not run on the 10-minute refresh.",
+    )
     parser.add_argument("--cftc", action="store_true", help="Ingest public CFTC Commitments of Traders")
     parser.add_argument("--eia", action="store_true", help="Ingest EIA weekly energy statistics (requires EIA_API_KEY)")
     parser.add_argument("--openfigi", action="store_true", help="Resolve a bounded OpenFIGI mapping batch (requires MI_OPENFIGI_ENABLED)")
@@ -314,8 +319,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
-        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
+    if not any((args.fred, args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -608,7 +613,17 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             elif name == "yahoo_vol":
                 from market_intelligence.ingest_yahoo_vol import ingest_yahoo_vol
 
-                report = ingest_yahoo_vol(engine, parent_run_id=parent_run_id, today=as_of)
+                explicit_backfill = bool(getattr(args, "yahoo_vol_backfill", False)) or (
+                    bool(getattr(args, "yahoo_vol", False))
+                    and args.mode == "full"
+                    and not bool(getattr(args, "due_configured", False))
+                )
+                report = ingest_yahoo_vol(
+                    engine,
+                    parent_run_id=parent_run_id,
+                    today=as_of,
+                    mode="full" if explicit_backfill else "incremental",
+                )
                 status["results"][name] = report
                 if report.get("failed"):
                     failures += 1
