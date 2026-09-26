@@ -624,6 +624,15 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                     today=as_of,
                     mode="full" if explicit_backfill else "incremental",
                 )
+                if explicit_backfill:
+                    from market_intelligence.ingest_yahoo_vol import term_history_coverage
+
+                    report["term_coverage"] = term_history_coverage(engine)
+                    for row in report["term_coverage"]:
+                        print(
+                            "yahoo_vol_coverage ticker={ticker} metric={metric_id} earliest={earliest} latest={latest} rows={rows} nulls={nulls} zeros={zeros}".format(**row),
+                            flush=True,
+                        )
                 status["results"][name] = report
                 if report.get("failed"):
                     failures += 1

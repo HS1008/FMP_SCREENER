@@ -192,6 +192,47 @@ def ingest_yahoo_vol(
     return report
 
 
+def term_history_coverage(engine) -> list[dict[str, Any]]:
+    """Stored span for the four active term metrics. Does not read legacy 1D or 9D rows."""
+    with engine.connect() as conn:
+        found = {
+            row["metric_id"]: row
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT metric_id,
+                           min(as_of) AS earliest,
+                           max(as_of) AS latest,
+                           count(*) AS row_count,
+                           count(*) FILTER (WHERE value IS NULL) AS nulls,
+                           count(*) FILTER (WHERE value = 0) AS zeros
+                    FROM mi_metric_snapshots
+                    WHERE metric_id IN ('VIX_1M', 'VIX_3M', 'VIX_6M', 'VIX_1Y')
+                    GROUP BY metric_id
+                    """
+                )
+            ).mappings()
+        }
+    coverage: list[dict[str, Any]] = []
+    for ticker, tenor, metric_id in TERM_TENORS:
+        row = found.get(metric_id)
+        earliest = None if row is None else row["earliest"]
+        latest = None if row is None else row["latest"]
+        coverage.append(
+            {
+                "ticker": ticker,
+                "tenor": tenor,
+                "metric_id": metric_id,
+                "earliest": None if earliest is None else earliest.isoformat(),
+                "latest": None if latest is None else latest.isoformat(),
+                "rows": 0 if row is None else int(row["row_count"]),
+                "nulls": 0 if row is None else int(row["nulls"]),
+                "zeros": 0 if row is None else int(row["zeros"]),
+            }
+        )
+    return coverage
+
+
 def _session_close_ts(day: date) -> datetime:
     return datetime(day.year, day.month, day.day, 16, 0, tzinfo=NY)
 

@@ -472,4 +472,31 @@ if [ "$SKIP_RESTART" != 1 ]; then
 fi
 
 echo "migrations_applied=once"
+# One-shot max-history fetch for the four active VIX index tenors. The daily
+# timer stays incremental. A missing writer env is logged and does not roll back
+# the dashboard release.
+YAHOO_BACKFILL_MARKER="/var/lib/fmp/yahoo_vol_four_tenor_backfill.done"
+YAHOO_ENV="/etc/fmp/market_intelligence.env"
+if [ -f "$YAHOO_BACKFILL_MARKER" ]; then
+  echo "yahoo_vol_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "yahoo_vol_backfill=skipped_no_writer_env"
+else
+  echo "yahoo_vol_backfill=start"
+  YAHOO_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    staged_python -m jobs.market_intelligence_refresh --yahoo-vol-backfill
+  ) || YAHOO_RC=$?
+  if [ "$YAHOO_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$YAHOO_BACKFILL_MARKER"
+    echo "yahoo_vol_backfill=complete"
+  else
+    echo "yahoo_vol_backfill=failed rc=${YAHOO_RC}"
+  fi
+fi
 echo "deploy_host=complete sha=$SHA"

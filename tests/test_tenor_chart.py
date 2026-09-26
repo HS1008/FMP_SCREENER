@@ -170,6 +170,8 @@ def test_frontend_bundles_echarts_and_does_not_fetch():
     assert "borderWidth" in script
     assert 'color: "#f4f6f8"' in script
     assert " · " in script
+    assert "point.value == null" in script
+    assert "unavailable on this date" in script
     assert "touch-action: pan-y" in style
     assert "320px" not in style
     assert "390px" not in style

@@ -99,6 +99,9 @@ function finiteValue(point) {
   if (!point || typeof point !== "object") {
     return null;
   }
+  if (point.value == null || point.value === "") {
+    return null;
+  }
   var number = Number(point.value);
   return Number.isFinite(number) ? number : null;
 }
@@ -129,11 +132,12 @@ function formatTooltip(params) {
   }
   var point = row.data && typeof row.data === "object" ? row.data : null;
   var tenor = point && point.tenor ? point.tenor : row.name || row.axisValue || "";
-  var number = finiteValue(point);
-  if (number == null && typeof row.data === "number" && Number.isFinite(row.data)) {
+  var missingSlot = row.data == null || (point && (point.value == null || point.value === ""));
+  var number = missingSlot ? null : finiteValue(point || row.data);
+  if (!missingSlot && number == null && typeof row.data === "number" && Number.isFinite(row.data)) {
     number = row.data;
   }
-  if (number == null && row.value != null && typeof row.value === "number" && Number.isFinite(row.value)) {
+  if (!missingSlot && number == null && typeof row.value === "number" && Number.isFinite(row.value)) {
     number = row.value;
   }
   var ticker = point ? point.ticker || "" : "";
