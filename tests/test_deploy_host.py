@@ -26,7 +26,15 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "ssh-keyscan -t" not in deploy
     assert "DO_SSH_KNOWN_HOSTS" in deploy
     assert "StrictHostKeyChecking=yes" in deploy
+    assert "ServerAliveInterval=15" in deploy
+    assert "ServerAliveCountMax=240" in deploy
+    assert "TCPKeepAlive=yes" in deploy
     assert "bash -s -- --sha" in deploy
+    assert "fred_rates_backfill=heartbeat" in host
+    assert "staged_python -u -m jobs.market_intelligence_refresh --fred-rates-backfill --wait-lock" in host
+    refresh = (ROOT / "jobs" / "market_intelligence_refresh.py").read_text(encoding="utf-8")
+    assert "rates_backfill phase=ingest_start" in refresh
+    assert "rates_fed_funds_latest" in refresh
     assert "flock -n" in host
     assert "concurrency:" in deploy
     assert "cancel-in-progress: false" in deploy

@@ -27,6 +27,8 @@ from market_intelligence.catalog import (
     CATALOG_BY_ID,
     CATALOG_VERSION,
     CREDIT_SERIES,
+    FED_FUNDS_TARGET_LOWER,
+    FED_FUNDS_TARGET_UPPER,
     FLY_2S5S10S_METRIC,
     FRED_SOURCE_ID,
     RATES_MAX_BACKFILL_SERIES,
@@ -538,6 +540,46 @@ def rates_history_coverage(engine) -> list[dict[str, Any]]:
     return coverage
 
 
+def fed_funds_target_stored(engine) -> list[dict[str, Any]]:
+    """Latest current print of each fed funds target-range limit.
+
+    These are public policy levels. The newest stored observation is the range
+    in force until a later change is stored. Counts-only coverage stays in
+    ``rates_history_coverage``; this helper exists so a backfill log can name
+    the current range without printing unrelated series values.
+    """
+    series_ids = (FED_FUNDS_TARGET_LOWER, FED_FUNDS_TARGET_UPPER)
+    in_series = ", ".join("'{0}'".format(sid) for sid in series_ids)
+    with engine.connect() as conn:
+        found = {
+            row["series_id"]: row
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT DISTINCT ON (series_id)
+                           series_id, observation_date, value
+                    FROM mi_macro_observations
+                    WHERE is_current AND value IS NOT NULL AND series_id IN ({ids})
+                    ORDER BY series_id, observation_date DESC
+                    """.format(ids=in_series)
+                )
+            ).mappings()
+        }
+    stored: list[dict[str, Any]] = []
+    for sid in series_ids:
+        row = found.get(sid)
+        observed = None if row is None else row["observation_date"]
+        value = None if row is None else row["value"]
+        stored.append(
+            {
+                "series_id": sid,
+                "observation_date": None if observed is None else observed.isoformat(),
+                "value": None if value is None else format(value, "f"),
+            }
+        )
+    return stored
+
+
 __all__ = [
     "FRED_DATASET",
     "FredIngestReport",
@@ -547,6 +589,7 @@ __all__ = [
     "TRANSPORT_METADATA_REJECTED",
     "TRANSPORT_PARTIAL",
     "credit_history_coverage",
+    "fed_funds_target_stored",
     "rates_history_coverage",
     "ingest_fred_catalog",
     "ingest_series",
