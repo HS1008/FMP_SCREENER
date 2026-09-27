@@ -626,4 +626,60 @@ if [ -f "$YAHOO_ENV" ]; then
 else
   echo "rates_coverage_report=skipped_no_writer_env"
 fi
+# One-shot max FRED history for the Macro dashboard. Incremental refresh keeps
+# catalog backfill_years. Older stored rows are not deleted.
+MACRO_BACKFILL_MARKER="/var/lib/fmp/fred_macro_max_backfill.done"
+if [ -f "$MACRO_BACKFILL_MARKER" ]; then
+  echo "fred_macro_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "fred_macro_backfill=skipped_no_writer_env"
+else
+  echo "fred_macro_backfill=start"
+  MACRO_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    (
+      while sleep 20; do
+        echo "fred_macro_backfill=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      done
+    ) &
+    hb_pid=$!
+    set +e
+    staged_python -u -m jobs.market_intelligence_refresh --fred-macro-backfill --wait-lock
+    rc=$?
+    set -e
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+    exit "$rc"
+  ) || MACRO_RC=$?
+  if [ "$MACRO_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$MACRO_BACKFILL_MARKER"
+    echo "fred_macro_backfill=complete"
+  else
+    echo "fred_macro_backfill=failed rc=${MACRO_RC}"
+  fi
+fi
+if [ -f "$YAHOO_ENV" ]; then
+  echo "macro_coverage_report=start"
+  MCOV_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    staged_python -u -m jobs.market_intelligence_refresh --fred-macro-coverage --wait-lock
+  ) || MCOV_RC=$?
+  if [ "$MCOV_RC" != "0" ]; then
+    echo "macro_coverage_report=failed rc=${MCOV_RC}"
+  fi
+else
+  echo "macro_coverage_report=skipped_no_writer_env"
+fi
 echo "deploy_host=complete sha=$SHA"

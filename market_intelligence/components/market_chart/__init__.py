@@ -141,6 +141,18 @@ def _align_to_union(
     return aligned
 
 
+def _recession_bands(bands: Sequence[Mapping[str, Any]] | None) -> list[dict[str, str]]:
+    """Inclusive ``YYYY-MM-DD`` intervals. Invalid or inverted spans are dropped."""
+    cleaned: list[dict[str, str]] = []
+    for band in bands or ():
+        start = observation_day(band.get("start"))
+        end = observation_day(band.get("end"))
+        if start is None or end is None or start > end:
+            continue
+        cleaned.append({"start": start.isoformat(), "end": end.isoformat()})
+    return cleaned
+
+
 def build_market_chart_payload(
     points: Sequence[Mapping[str, Any]] | None = None,
     *,
@@ -150,22 +162,34 @@ def build_market_chart_payload(
     value_format: str = "number",
     reference_price: float | None = None,
     keep_missing: bool = False,
+    recession_bands: Sequence[Mapping[str, Any]] | None = None,
+    align_union: bool = True,
 ) -> dict[str, Any]:
     """Data passed to the chart, before the component mount.
 
     ``series`` items are ``{"label", "points"}``. Each points sequence is
     normalized with :func:`time_series_points`. When ``series`` is omitted,
     ``points`` and ``series_label`` are the single series. Dates are
-    ``YYYY-MM-DD`` strings. A gap against the union of dates is a whitespace
-    point with no ``value`` key, so the line is not zero-filled.
+    ``YYYY-MM-DD`` strings. With ``align_union``, a date present on another
+    series becomes a whitespace point so the crosshair shares one timeline.
+    ``align_union=False`` keeps each series on its own observation dates.
+    That is required for mixed frequencies: inserting the other series' dates
+    would split one line into a fragment per print.
     """
+    specs = _series_specs(points, series_label, series, keep_missing=keep_missing)
+    plotted = _align_to_union(specs) if align_union else [
+        {"label": label, "points": list(rows)} for label, rows in specs
+    ]
     payload: dict[str, Any] = {
-        "series": _align_to_union(_series_specs(points, series_label, series, keep_missing=keep_missing)),
+        "series": plotted,
         "ranges": bool(ranges),
         "value_format": value_format,
     }
     if reference_price is not None:
         payload["reference_price"] = float(reference_price)
+    cleaned_bands = _recession_bands(recession_bands)
+    if cleaned_bands:
+        payload["recession_bands"] = cleaned_bands
     return payload
 
 
@@ -192,6 +216,8 @@ def lightweight_market_chart(
     value_format: str = "number",
     reference_price: float | None = None,
     keep_missing: bool = False,
+    recession_bands: Sequence[Mapping[str, Any]] | None = None,
+    align_union: bool = True,
 ) -> None:
     """Render one or more time series on a shared calendar axis.
 
@@ -208,6 +234,8 @@ def lightweight_market_chart(
         value_format=value_format,
         reference_price=reference_price,
         keep_missing=keep_missing,
+        recession_bands=recession_bands,
+        align_union=align_union,
     )
     resolved_height = 420 if height is None else int(height)
     data: dict[str, Any] = {

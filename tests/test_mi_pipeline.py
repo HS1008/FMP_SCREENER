@@ -828,6 +828,9 @@ def test_pages_render_populated_state_db_only(consumer, page):
         assert at.metric or at.plotly_chart or at.subheader
     elif page.stem == "21_Options_Volatility":
         assert at.info or at.dataframe or at.metric
+    elif page.stem == "11_Macro_Overview":
+        assert "Fed Policy Rates" in text_out
+        assert len(at.dataframe) == 0
     else:
         assert len(at.dataframe) >= 1, "each page shows at least one table when data exists"
     fred_exempt = {

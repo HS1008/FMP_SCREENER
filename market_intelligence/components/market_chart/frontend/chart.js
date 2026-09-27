@@ -180,6 +180,25 @@ function formatReadoutValue(state, value) {
   if (state.valueFormat === "vol_points") {
     return text + " vol pts";
   }
+  if (state.valueFormat === "claims") {
+    var magnitude = Math.abs(value);
+    if (magnitude >= 1000000) {
+      return (value / 1000000).toFixed(2) + "m";
+    }
+    if (magnitude >= 1000) {
+      return (value / 1000).toFixed(0) + "k";
+    }
+    return value.toFixed(0);
+  }
+  if (state.valueFormat === "thousands") {
+    return Math.round(value).toLocaleString("en-US");
+  }
+  if (state.valueFormat === "hours" || state.valueFormat === "weeks") {
+    return value.toFixed(1);
+  }
+  if (state.valueFormat === "index" || state.valueFormat === "ratio") {
+    return value.toFixed(2);
+  }
   return text;
 }
 
@@ -747,6 +766,150 @@ function createState(root) {
   return state;
 }
 
+function RecessionRenderer(source) {
+  this._source = source;
+}
+
+RecessionRenderer.prototype.draw = function (target) {
+  var chart = this._source._chart;
+  var bands = this._source._bands || [];
+  if (!chart || !bands.length) {
+    return;
+  }
+  var fill = this._source._fill || "rgba(100, 116, 139, 0.14)";
+  target.useBitmapCoordinateSpace(function (scope) {
+    var ctx = scope.context;
+    var timeScale = chart.timeScale();
+    var width = scope.bitmapSize.width;
+    var height = scope.bitmapSize.height;
+    var ratio = scope.horizontalPixelRatio || 1;
+    ctx.save();
+    ctx.fillStyle = fill;
+    var index;
+    for (index = 0; index < bands.length; index++) {
+      var start = timeScale.timeToCoordinate(bands[index].start);
+      var end = timeScale.timeToCoordinate(bands[index].end);
+      if (start == null && end == null) {
+        continue;
+      }
+      var mediaWidth = scope.mediaSize && scope.mediaSize.width ? scope.mediaSize.width : width / ratio;
+      if (start == null) {
+        start = 0;
+      }
+      if (end == null) {
+        end = mediaWidth;
+      }
+      var left = Math.min(start, end) * ratio;
+      var right = Math.max(start, end) * ratio;
+      if (right - left < 2 * ratio) {
+        right = left + 2 * ratio;
+      }
+      if (right < 0 || left > width) {
+        continue;
+      }
+      ctx.fillRect(left, 0, right - left, height);
+    }
+    ctx.restore();
+  });
+};
+
+function RecessionPaneView(source) {
+  this._source = source;
+  this._renderer = new RecessionRenderer(source);
+}
+
+RecessionPaneView.prototype.zOrder = function () {
+  return "bottom";
+};
+
+RecessionPaneView.prototype.renderer = function () {
+  return this._renderer;
+};
+
+function RecessionPrimitive(bands) {
+  this._bands = bands || [];
+  this._chart = null;
+  this._requestUpdate = null;
+  this._fill = "rgba(100, 116, 139, 0.14)";
+  this._paneView = new RecessionPaneView(this);
+}
+
+RecessionPrimitive.prototype.attached = function (param) {
+  this._chart = param.chart;
+  this._requestUpdate = param.requestUpdate;
+};
+
+RecessionPrimitive.prototype.detached = function () {
+  this._chart = null;
+  this._requestUpdate = null;
+};
+
+RecessionPrimitive.prototype.paneViews = function () {
+  return [this._paneView];
+};
+
+RecessionPrimitive.prototype.updateAllViews = function () {};
+
+RecessionPrimitive.prototype.setBands = function (bands, fill) {
+  this._bands = bands || [];
+  if (fill) {
+    this._fill = fill;
+  }
+  if (this._requestUpdate) {
+    this._requestUpdate();
+  }
+};
+
+function recessionFill(palette) {
+  var level = luminance(palette.background);
+  if (level != null && level < 0.45) {
+    return "rgba(186, 198, 214, 0.18)";
+  }
+  return "rgba(71, 85, 105, 0.12)";
+}
+
+function normalizeBands(data) {
+  var raw = data && Array.isArray(data.recession_bands) ? data.recession_bands : [];
+  var bands = [];
+  var index;
+  for (index = 0; index < raw.length; index++) {
+    var band = raw[index] || {};
+    var start = String(band.start || "").slice(0, 10);
+    var end = String(band.end || "").slice(0, 10);
+    if (start.length === 10 && end.length === 10 && start <= end) {
+      bands.push({ start: start, end: end });
+    }
+  }
+  return bands;
+}
+
+function applyRecessionBands(state) {
+  var entry = state.seriesList[0];
+  var series = entry && entry.fragments.length ? entry.fragments[0] : null;
+  if (!series || typeof series.attachPrimitive !== "function") {
+    return;
+  }
+  var bands = normalizeBands(state.data);
+  var fill = recessionFill(paletteFor(state.root));
+  if (!state.recessionPrimitive) {
+    state.recessionPrimitive = new RecessionPrimitive(bands);
+    state.recessionPrimitive._fill = fill;
+    state.recessionSeries = series;
+    series.attachPrimitive(state.recessionPrimitive);
+    return;
+  }
+  if (state.recessionSeries !== series) {
+    try {
+      state.recessionSeries.detachPrimitive(state.recessionPrimitive);
+    } catch (err) {
+      /* The previous series was already removed. */
+    }
+    state.recessionSeries = series;
+    series.attachPrimitive(state.recessionPrimitive);
+  }
+  state.recessionPrimitive.setBands(bands, fill);
+}
+
 function applyReferenceLine(state) {
   var raw = state.data && state.data.reference_price;
   var price = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
@@ -802,7 +965,19 @@ function applyReferenceLine(state) {
 function updateState(state, data) {
   state.data = data || {};
   var requestedFormat = String(state.data.value_format || "").toLowerCase();
-  var nextFormat = requestedFormat === "percent" || requestedFormat === "bps" || requestedFormat === "signed_bps" || requestedFormat === "vol_points" ? requestedFormat : "number";
+  var allowedFormats = {
+    percent: true,
+    bps: true,
+    signed_bps: true,
+    vol_points: true,
+    claims: true,
+    thousands: true,
+    hours: true,
+    weeks: true,
+    index: true,
+    ratio: true,
+  };
+  var nextFormat = allowedFormats[requestedFormat] ? requestedFormat : "number";
   var formatChanged = nextFormat !== state.valueFormat;
   state.valueFormat = nextFormat;
   state.rangesEl.hidden = state.data.ranges !== true;
@@ -832,6 +1007,7 @@ function updateState(state, data) {
     }
   }
   applyReferenceLine(state);
+  applyRecessionBands(state);
   applyTheme(state);
 }
 

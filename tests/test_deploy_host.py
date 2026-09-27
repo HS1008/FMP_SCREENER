@@ -39,6 +39,9 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "deploy_lock=busy" in host
     assert "flock -w 5400" in host
     assert "--fred-rates-coverage" in host
+    assert "fred_macro_backfill=heartbeat" in host
+    assert "staged_python -u -m jobs.market_intelligence_refresh --fred-macro-backfill --wait-lock" in host
+    assert "--fred-macro-coverage" in host
     assert "concurrency:" in deploy
     assert "cancel-in-progress: false" in deploy
     assert "git pull --ff-only origin main" not in deploy

@@ -28,6 +28,7 @@ from market_intelligence.store import current_observations
 from market_intelligence.transforms import (
     TRANSFORM_VERSION,
     TransformResult,
+    anchored_yoy_pct,
     ann3m_pct,
     ann6m_pct,
     calendar_change,
@@ -164,6 +165,8 @@ def series_metrics(spec: SeriesSpec, obs: Mapping[date, Decimal | None], *, at: 
             add("chg_3m_bps", calendar_change(obs, at, months=3, cadence=cadence, units="bps", scale=100.0))
         elif transform == "yoy_pct":
             add("yoy_pct", yoy_pct(obs, at) if cadence != "Q" else _quarterly_yoy(obs, at))
+        elif transform == "weekly_yoy_pct":
+            add("yoy_pct", anchored_yoy_pct(obs, at, cadence=cadence))
         elif transform == "ann3m_pct":
             add("ann3m_pct", ann3m_pct(obs, at))
         elif transform == "ann6m_pct":
@@ -206,6 +209,8 @@ def _metric_names_for(spec: SeriesSpec) -> list[tuple[str, str]]:
         elif transform == "chg_bps":
             names.extend((n, "bps") for n in ("chg_prev_bps", "chg_1w_bps", "chg_1m_bps", "chg_3m_bps"))
         elif transform == "yoy_pct":
+            names.append(("yoy_pct", "pct"))
+        elif transform == "weekly_yoy_pct":
             names.append(("yoy_pct", "pct"))
         elif transform == "ann3m_pct":
             names.append(("ann3m_pct", "pct"))
@@ -454,7 +459,8 @@ _CREDIT_UPSERT = text(
 DEFAULT_HISTORY_DAYS = {"D": 3 * 366, "W": 5 * 366, "BW": 5 * 366, "M": 12 * 366, "Q": 12 * 366}
 # Safety ceiling for an explicit historical analytics backfill. Daily ICE history
 # since the mid-1990s fits. This does not delete older stored metric rows.
-MAX_HISTORY_DATES_PER_SERIES = 20000
+# DFF is a 7-day series from 1954 (~26k dates). 20k kept only the newest dates.
+MAX_HISTORY_DATES_PER_SERIES = 60000
 
 
 def _inputs_retrieved_max(conn, series_id: str, up_to: date) -> Any:

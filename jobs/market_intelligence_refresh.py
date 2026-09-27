@@ -28,7 +28,14 @@ from datetime import date
 from typing import Any
 
 from market_intelligence import CODE_VERSION
-from market_intelligence.catalog import CATALOG, CATALOG_VERSION, CREDIT_SERIES, FRED_SOURCE_ID, RATES_MAX_BACKFILL_SERIES
+from market_intelligence.catalog import (
+    CATALOG,
+    CATALOG_VERSION,
+    CREDIT_SERIES,
+    FRED_SOURCE_ID,
+    MACRO_MAX_BACKFILL_SERIES,
+    RATES_MAX_BACKFILL_SERIES,
+)
 from market_intelligence.fmp_mode import fmp_free_mode, legacy_fmp_enabled, treasury_enabled
 from market_intelligence.fred_client import api_key_from_env
 from market_intelligence.locking import EXIT_LOCK_CONTENTION, LockContention, writer_lock
@@ -105,6 +112,28 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
         steps.append(
             {
                 "step": "fred_rates_coverage",
+                "source_id": FRED_SOURCE_ID,
+                "configured": True,
+                "action": "report",
+                "mode": "read",
+            }
+        )
+    if getattr(args, "fred_macro_backfill", False):
+        steps.append(
+            {
+                "step": "fred_macro_backfill",
+                "source_id": FRED_SOURCE_ID,
+                "configured": fred_configured,
+                "action": "ingest" if fred_configured else "fail_unconfigured",
+                "mode": "max",
+                "series": list(MACRO_MAX_BACKFILL_SERIES),
+                "catalog_version": CATALOG_VERSION,
+            }
+        )
+    if getattr(args, "fred_macro_coverage", False):
+        steps.append(
+            {
+                "step": "fred_macro_coverage",
                 "source_id": FRED_SOURCE_ID,
                 "configured": True,
                 "action": "report",
@@ -318,6 +347,16 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print stored Treasury/TIPS/fed-funds coverage and the latest target-range prints. Does not call FRED and does not delete rows.",
     )
+    parser.add_argument(
+        "--fred-macro-backfill",
+        action="store_true",
+        help="Max-history FRED ingest for the Macro dashboard series, then rebuild their canonical metrics. Not part of the incremental refresh.",
+    )
+    parser.add_argument(
+        "--fred-macro-coverage",
+        action="store_true",
+        help="Print stored Macro series and chart-metric coverage. Does not call FRED and does not delete rows.",
+    )
     parser.add_argument("--finra", action="store_true", help="Ingest FINRA Query API corporate-bond aggregates")
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
@@ -363,6 +402,25 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _macro_coverage_only(the_plan: dict[str, Any]) -> bool:
+    """True when the plan is only the read-only macro coverage report."""
+    steps = the_plan.get("steps") or []
+    return len(steps) == 1 and steps[0].get("step") == "fred_macro_coverage"
+
+
+def _print_macro_coverage(engine) -> list[dict[str, Any]]:
+    """Print stored Macro spans. No provider calls and no row deletes."""
+    from market_intelligence.ingest_fred import macro_history_coverage
+
+    coverage = macro_history_coverage(engine)
+    for row in coverage:
+        print(
+            "macro_coverage kind={kind} series={series_id} earliest={earliest} latest={latest} rows={rows}".format(**row),
+            flush=True,
+        )
+    return coverage
+
+
 def _rates_coverage_only(the_plan: dict[str, Any]) -> bool:
     """True when the plan is only the read-only rates coverage report."""
     steps = the_plan.get("steps") or []
@@ -392,8 +450,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
-        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
+    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), getattr(args, "fred_macro_backfill", False), getattr(args, "fred_macro_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--fred-macro-backfill/--fred-macro-coverage/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -423,6 +481,10 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
         with writer_lock(engine, wait=args.wait_lock):
             if _rates_coverage_only(the_plan):
                 _print_rates_coverage(engine)
+                status["status"] = "REPORTED"
+                exit_code = EXIT_OK
+            elif _macro_coverage_only(the_plan):
+                _print_macro_coverage(engine)
                 status["status"] = "REPORTED"
                 exit_code = EXIT_OK
             else:
@@ -726,6 +788,73 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                     flush=True,
                 )
                 coverage = _print_rates_coverage(engine)
+                status["results"][name] = {
+                    "ingest": report.as_dict(),
+                    "analytics": analytics.as_dict(),
+                    "coverage": coverage,
+                }
+                if report.failed:
+                    failures += 1
+            elif name == "fred_macro_backfill":
+                from market_intelligence.analytics import build_analytics
+                from market_intelligence.fred_client import FredClient
+                from market_intelligence.ingest_fred import ingest_fred_catalog
+                from market_intelligence.store import finish_run, start_run
+
+                print(
+                    "macro_backfill phase=ingest_start series={0}".format(len(MACRO_MAX_BACKFILL_SERIES)),
+                    flush=True,
+                )
+                client = fred_client_factory() if fred_client_factory else FredClient(fred_key)
+                report = ingest_fred_catalog(
+                    engine,
+                    client,
+                    series_ids=list(MACRO_MAX_BACKFILL_SERIES),
+                    mode="max",
+                    parent_run_id=parent_run_id,
+                    today=as_of,
+                )
+                print(
+                    "macro_backfill phase=ingest_done succeeded={0} failed={1} quarantined={2}".format(
+                        len(report.succeeded),
+                        len(report.failed),
+                        len(report.quarantined),
+                    ),
+                    flush=True,
+                )
+                for result in report.results:
+                    print(
+                        "macro_backfill series={0} status={1} metadata={2} first={3} latest={4}".format(
+                            result.series_id,
+                            result.status,
+                            result.metadata_status,
+                            result.first_observation.isoformat() if result.first_observation else "none",
+                            result.latest_observation.isoformat() if result.latest_observation else "none",
+                        ),
+                        flush=True,
+                    )
+                print("macro_backfill phase=analytics_start", flush=True)
+                with engine.begin() as conn:
+                    rid = start_run(conn, source_id="ANALYTICS", dataset="macro_dashboard_backfill", parent_run_id=parent_run_id)
+                    analytics = build_analytics(
+                        conn,
+                        as_of=as_of,
+                        run_id=rid,
+                        history_start=date(1900, 1, 1),
+                        series_ids=list(MACRO_MAX_BACKFILL_SERIES),
+                    )
+                    finish_run(
+                        conn,
+                        rid,
+                        status="SUCCEEDED",
+                        counts={"inserted": analytics.metrics_written},
+                        details=analytics.as_dict(),
+                    )
+                print(
+                    "macro_backfill phase=analytics_done metrics_written={0}".format(analytics.metrics_written),
+                    flush=True,
+                )
+                coverage = _print_macro_coverage(engine)
                 status["results"][name] = {
                     "ingest": report.as_dict(),
                     "analytics": analytics.as_dict(),
