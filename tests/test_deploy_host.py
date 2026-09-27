@@ -35,7 +35,9 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     refresh = (ROOT / "jobs" / "market_intelligence_refresh.py").read_text(encoding="utf-8")
     assert "rates_backfill phase=ingest_start" in refresh
     assert "rates_fed_funds_latest" in refresh
-    assert "flock -n" in host
+    assert 'flock -w "${FMP_DEPLOY_LOCK_WAIT:-3600}" 9' in host
+    assert "deploy_lock=acquired" in host
+    assert "flock -n 9" not in host
     assert "concurrency:" in deploy
     assert "cancel-in-progress: false" in deploy
     assert "git pull --ff-only origin main" not in deploy
