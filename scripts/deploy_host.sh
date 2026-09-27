@@ -29,6 +29,29 @@ resolved_existing_path() {
   fi
 }
 
+# One-shot provider backfills can sit silent for several minutes. The deploy
+# SSH session is not a TTY; without stdout the client idle-drops (Broken pipe).
+run_with_heartbeat() {
+  local label="$1"
+  shift
+  local hb_pid rc
+  echo "starting ${label} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  (
+    while sleep 15; do
+      echo "${label}_heartbeat=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    done
+  ) &
+  hb_pid=$!
+  set +e
+  "$@"
+  rc=$?
+  set -e
+  kill "$hb_pid" 2>/dev/null || true
+  wait "$hb_pid" 2>/dev/null || true
+  echo "finished ${label} rc=${rc} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  return "$rc"
+}
+
 ROOT="${FMP_CHECKOUT:-/root/FMP_SCREENER}"
 RELEASE_ROOT="${FMP_RELEASE_ROOT:-/opt/fmp/releases}"
 CURRENT_LINK="${FMP_CURRENT_LINK:-/opt/fmp/current}"
@@ -490,7 +513,7 @@ else
     . "$YAHOO_ENV"
     set +a
     unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-    staged_python -m jobs.market_intelligence_refresh --yahoo-vol-backfill
+    run_with_heartbeat yahoo_vol_backfill staged_python -m jobs.market_intelligence_refresh --yahoo-vol-backfill
   ) || YAHOO_RC=$?
   if [ "$YAHOO_RC" = "0" ]; then
     printf '%s\n' "$SHA" > "$YAHOO_BACKFILL_MARKER"
@@ -515,7 +538,7 @@ else
     . "$YAHOO_ENV"
     set +a
     unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-    staged_python -m jobs.market_intelligence_refresh --yahoo-vol-backfill
+    run_with_heartbeat yahoo_vol_core_backfill staged_python -m jobs.market_intelligence_refresh --yahoo-vol-backfill
   ) || YAHOO_CORE_RC=$?
   if [ "$YAHOO_CORE_RC" = "0" ]; then
     printf '%s\n' "$SHA" > "$YAHOO_CORE_MARKER"
@@ -540,7 +563,7 @@ else
     . "$YAHOO_ENV"
     set +a
     unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-    staged_python -m jobs.market_intelligence_refresh --fred-credit-backfill
+    run_with_heartbeat fred_credit_backfill staged_python -m jobs.market_intelligence_refresh --fred-credit-backfill
   ) || CREDIT_RC=$?
   if [ "$CREDIT_RC" = "0" ]; then
     printf '%s\n' "$SHA" > "$CREDIT_BACKFILL_MARKER"
@@ -565,7 +588,7 @@ else
     . "$YAHOO_ENV"
     set +a
     unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-    staged_python -m jobs.market_intelligence_refresh --fred-rates-backfill
+    run_with_heartbeat fred_rates_backfill staged_python -m jobs.market_intelligence_refresh --fred-rates-backfill
   ) || RATES_RC=$?
   if [ "$RATES_RC" = "0" ]; then
     printf '%s\n' "$SHA" > "$RATES_BACKFILL_MARKER"

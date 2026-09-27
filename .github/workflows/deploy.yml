@@ -57,6 +57,7 @@ jobs:
           # Do not pull main on the host first: concurrent pushes must not
           # move the checkout to a different SHA before this script runs.
           ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            -o ServerAliveInterval=15 -o ServerAliveCountMax=120 \
             "$DO_USER@$DO_HOST" \
             "bash -s -- --sha $SHA" \
             < scripts/deploy_host.sh
