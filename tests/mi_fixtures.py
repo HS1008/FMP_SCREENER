@@ -284,10 +284,10 @@ def synthetic_fred_data(end: date = date(2024, 12, 31)) -> dict[str, list[tuple[
         ("W875RX1", 14000.0, 0.0018),
         ("UEMPMED", 8.5, 0.002),
         ("ISRATIO", 1.35, 0.0005),
+        ("BUSLOANS", 2700.0, 0.002),
     ):
         data[sid] = monthly_index(month_end, 40, start, growth)
     data["NFCI"] = [(d, "{0:.3f}".format(-0.2 + (i % 11) * 0.04)) for i, d in enumerate(weekly_days)]
-    data["BUSLOANS"] = [(d, "{0:.1f}".format(2700 + i * 2)) for i, d in enumerate(weekly_days)]
     data["USREC"] = []
     for i, (d, _) in enumerate(monthly_index(month_end, 40, 1, 0)):
         data["USREC"].append((d, "1" if 8 <= i <= 14 else "0"))

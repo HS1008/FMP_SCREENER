@@ -662,11 +662,11 @@
       "units_short": "Ratio"
     },
     "BUSLOANS": {
-      "frequency": "Weekly, Ending Wednesday",
-      "frequency_short": "W",
+      "frequency": "Monthly",
+      "frequency_short": "M",
       "id": "BUSLOANS",
-      "seasonal_adjustment": "Not Seasonally Adjusted",
-      "seasonal_adjustment_short": "NSA",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
       "source_url": "https://fred.stlouisfed.org/series/BUSLOANS",
       "title": "Commercial and Industrial Loans, All Commercial Banks",
       "units": "Billions of U.S. Dollars",

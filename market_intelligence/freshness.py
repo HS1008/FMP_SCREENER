@@ -203,7 +203,7 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
     "W875RX1": _fred_macro_monthly(lag_days=35),
     "UEMPMED": _fred_macro_monthly(lag_days=10),
     "ISRATIO": _fred_macro_monthly(lag_days=45),
-    "BUSLOANS": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(16, 15), overdue_sessions=8, stale_sessions=21, week_ending="WED", notes="H.8 commercial and industrial loans, week ending Wednesday. Typically released Friday."),
+    "BUSLOANS": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="M", typical_release=time(16, 15), overdue_sessions=5, stale_sessions=45, reference_lag_days=25, notes="H.8 commercial and industrial loans. Monthly, seasonally adjusted. Typically released the following month."),
     "DRBLACBS": _fred_macro_quarterly(),
     "ULCNFB": _fred_macro_quarterly(),
     "USREC": _fred_macro_monthly(lag_days=40),

@@ -588,7 +588,7 @@ def methodology_lines(group: str) -> list[str]:
         "Lags use the calendar date. A missing lag stays missing."
     )
     lines.append(
-        "Weekly C&I loan YoY uses the last observation on or before t−12 months within 8 days. "
+        "C&I loan growth is the monthly calendar YoY of BUSLOANS. "
         "Payroll growth is the monthly difference in thousands of persons. "
         "Claims 4-week average is the mean of the last four stored weekly prints."
     )
