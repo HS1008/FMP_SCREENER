@@ -26,6 +26,8 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "ssh-keyscan -t" not in deploy
     assert "DO_SSH_KNOWN_HOSTS" in deploy
     assert "StrictHostKeyChecking=yes" in deploy
+    assert "ServerAliveInterval=15" in deploy
+    assert "ServerAliveCountMax=120" in deploy
     assert "bash -s -- --sha" in deploy
     assert "flock -n" in host
     assert "concurrency:" in deploy
@@ -39,6 +41,22 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "Applying database migrations ONCE" in host
     assert "MIGRATIONS_BACKFILL_SHA256" not in host
     assert "MERGING TO MAIN IS A PRODUCTION DEPLOY EVENT" in deploy
+
+
+def test_deploy_host_heartbeats_silent_one_shot_backfills():
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    assert "run_with_heartbeat()" in host
+    assert "while sleep 15; do" in host
+    assert host.index("run_with_heartbeat()") < host.index("fred_rates_backfill")
+    for label, flag in (
+        ("yahoo_vol_backfill", "--yahoo-vol-backfill"),
+        ("yahoo_vol_core_backfill", "--yahoo-vol-backfill"),
+        ("fred_credit_backfill", "--fred-credit-backfill"),
+        ("fred_rates_backfill", "--fred-rates-backfill"),
+    ):
+        assert "run_with_heartbeat {0} staged_python -m jobs.market_intelligence_refresh {1}".format(
+            label, flag
+        ) in host
 
 
 def test_deploy_host_migrates_once_from_staged_sha():
