@@ -30,7 +30,7 @@ from market_intelligence.macro_dashboard import (
     selected_lines,
 )
 from market_intelligence.read_models import MACRO_HISTORY_LIMIT, MAX_HISTORY_ROWS
-from market_intelligence.transforms import ann3m_pct, ann6m_pct, anchored_yoy_pct, period_difference, qoq_annualized_pct, yoy_pct
+from market_intelligence.transforms import ann3m_pct, ann6m_pct, period_difference, qoq_annualized_pct, yoy_pct
 from tests.mi_fixtures import official_metadata
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -125,16 +125,14 @@ def test_payroll_change_and_claims_average_do_not_invent_gaps():
     assert len(missing_week) == 4
 
 
-def test_weekly_loan_yoy_uses_anchor_lag_not_exact_date():
-    start = date(2023, 1, 4)
-    loans = {start + timedelta(days=7 * i): 1000.0 + i for i in range(70)}
-    at = start + timedelta(days=7 * 60)
-    result = anchored_yoy_pct(loans, at, cadence="W")
-    assert result.value is not None
-    assert result.detail["anchor_lag_days"] <= 8
-    assert anchored_yoy_pct({at: loans[at]}, at, cadence="W").value is None
-    stored = series_metrics(CATALOG_BY_ID["BUSLOANS"], loans, at=at)
-    assert any(row.metric_id == "BUSLOANS.yoy_pct" and row.result.value is not None for row in stored)
+def test_loan_yoy_uses_the_monthly_calendar_lag():
+    loans = {date(2024, month, 1): 1000.0 + month for month in range(1, 13)}
+    loans[date(2025, 1, 1)] = 1120.0
+    stored = series_metrics(CATALOG_BY_ID["BUSLOANS"], loans, at=date(2025, 1, 1))
+    yoy = next(row for row in stored if row.metric_id == "BUSLOANS.yoy_pct")
+    assert yoy.result.value == 100.0 * (1120.0 / 1001.0 - 1.0)
+    assert CATALOG_BY_ID["BUSLOANS"].expected_frequency == "M"
+    assert CATALOG_BY_ID["BUSLOANS"].expected_sa == "SA"
 
 
 def test_liquidity_display_scale_is_one_conversion():

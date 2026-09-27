@@ -49,7 +49,6 @@ AGG_WEEK_AVG_WED = "week_average_ending_wednesday"  # H.4.1 week averages (WTREG
 AGG_WED_LEVEL = "wednesday_level"  # H.4.1 Wednesday level (WALCL)
 AGG_WEEK_END_SAT = "week_ending_saturday"  # DOL claims
 AGG_WEEK_END_FRI = "week_ending_friday"  # Chicago Fed NFCI
-AGG_WEEK_END_WED = "week_ending_wednesday"  # H.8 week-ending Wednesday level
 AGG_PERIOD_TOTAL = "period_total"  # flows over the period (retail sales, GDP SAAR)
 AGG_PERIOD_LEVEL = "period_level"  # end/average level for the month (M2, payrolls, indexes)
 
@@ -262,10 +261,10 @@ CATALOG: tuple[SeriesSpec, ...] = (
     _s("ISRATIO", "growth", "inventories", CADENCE_MONTHLY, ("ratio",), expected_sa="SA", value_kind="level",
        label="Inventory-to-sales ratio", aggregation=AGG_PERIOD_LEVEL,
        notes="Total business inventories to sales ratio. Monthly, SA. Ratio, not a percent."),
-    _s("BUSLOANS", "banking", "loans", CADENCE_WEEKLY, _BLN, expected_sa="NSA", value_kind="balance",
-       transforms=("weekly_yoy_pct",), label="C&I loans", aggregation=AGG_WEEK_END_WED,
-       notes="Commercial and industrial loans, all commercial banks. Billions of USD, weekly ending Wednesday, NSA. "
-             "YoY uses the weekly anchored comparison, not an exact calendar-date match."),
+    _s("BUSLOANS", "banking", "loans", CADENCE_MONTHLY, _BLN, expected_sa="SA", value_kind="balance",
+       transforms=("yoy_pct",), label="C&I loans", aggregation=AGG_PERIOD_LEVEL,
+       notes="Commercial and industrial loans, all commercial banks. Billions of USD, monthly, seasonally adjusted. "
+             "The current FRED series is monthly SA, not the weekly NSA print."),
     _s("DRBLACBS", "banking", "delinquency", CADENCE_QUARTERLY, _PCT, expected_sa="SA", value_kind="percent",
        label="Business loan delinquency rate", aggregation=AGG_PERIOD_LEVEL,
        notes="Delinquency rate on commercial and industrial loans, all commercial banks. Percent, quarterly, SA. Not interpolated."),
