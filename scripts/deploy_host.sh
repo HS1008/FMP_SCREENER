@@ -14,10 +14,16 @@ if ! (umask 077; : > "$LOCK_FILE") 2>/dev/null; then
   LOCK_FILE="/tmp/fmp-deploy.lock"
 fi
 exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
+# GitHub concurrency serializes Actions jobs only. A dropped SSH client can
+# leave the previous host script alive (sshd still holds the session), so the
+# next push fails immediately on flock -n. Wait for that leftover; still fail
+# closed if the lock is held past the timeout.
+echo "deploy_lock=acquire file=$LOCK_FILE wait=${FMP_DEPLOY_LOCK_WAIT:-3600}"
+if ! flock -w "${FMP_DEPLOY_LOCK_WAIT:-3600}" 9; then
   echo "FAIL: another deploy holds $LOCK_FILE"
   exit 75
 fi
+echo "deploy_lock=acquired"
 
 # GNU readlink -f prints a canonical path for a missing last component once
 # the parent exists. First deploy creates /opt/fmp via install -d of releases;
