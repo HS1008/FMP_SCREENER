@@ -183,3 +183,36 @@ def test_percent_format_is_passed_through_for_the_readout():
     assert payload["series"] == [
         {"label": "Move", "points": [{"time": "2026-09-18", "value": 1.25}]}
     ]
+
+
+def test_unaligned_series_keep_their_own_observation_dates():
+    payload = build_market_chart_payload(
+        series=[
+            {
+                "label": "Reserves",
+                "points": [
+                    {"as_of": "2020-01-01", "value": 1.0},
+                    {"as_of": "2020-01-08", "value": 2.0},
+                ],
+            },
+            {
+                "label": "RRP",
+                "points": [
+                    {"as_of": "2020-01-01", "value": 3.0},
+                    {"as_of": "2020-01-02", "value": 4.0},
+                ],
+            },
+        ],
+        align_union=False,
+    )
+    reserves = payload["series"][0]["points"]
+    rrp = payload["series"][1]["points"]
+    assert reserves == [
+        {"time": "2020-01-01", "value": 1.0},
+        {"time": "2020-01-08", "value": 2.0},
+    ]
+    assert rrp == [
+        {"time": "2020-01-01", "value": 3.0},
+        {"time": "2020-01-02", "value": 4.0},
+    ]
+    assert all("value" in point for point in reserves + rrp)

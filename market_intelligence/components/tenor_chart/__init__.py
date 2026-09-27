@@ -434,6 +434,126 @@ def build_category_line_option(
     }
 
 
+def build_policy_rate_option(frame: Mapping[str, Any]) -> dict[str, Any]:
+    """Fed funds target band plus effective funds and SOFR.
+
+    Dates stay ``YYYY-MM-DD`` strings. The span series is the upper-minus-lower
+    gap stacked on the lower limit so the fill sits between the two prints.
+    Recession intervals are mark areas on the time axis. Missing prints stay null.
+    """
+    def points(key: str) -> list[list[Any]]:
+        rows = []
+        for item in frame.get(key) or ():
+            if not isinstance(item, Sequence) or isinstance(item, (str, bytes)) or len(item) < 2:
+                continue
+            day = str(item[0])
+            value = _finite_number(item[1])
+            rows.append([day, value])
+        return rows
+
+    bands = []
+    for band in frame.get("bands") or ():
+        if not isinstance(band, Mapping):
+            continue
+        start = str(band.get("start") or "")[:10]
+        end = str(band.get("end") or "")[:10]
+        if len(start) == 10 and len(end) == 10 and start <= end:
+            bands.append([{"xAxis": start}, {"xAxis": end}])
+    mark_area = {
+        "silent": True,
+        "itemStyle": {"color": "rgba(148, 163, 184, 0.16)"},
+        "data": bands,
+    } if bands else None
+    lower = {
+        "name": "Target lower",
+        "type": "line",
+        "stack": "target",
+        "policyRole": "lower",
+        "data": points("lower"),
+        "connectNulls": False,
+        "showSymbol": False,
+        "step": "end",
+        "lineStyle": {"width": 1.5, "color": "#4c78a8"},
+        "itemStyle": {"color": "#4c78a8"},
+        "areaStyle": {"color": "rgba(76, 120, 168, 0)"},
+    }
+    span = {
+        "name": "Target span",
+        "type": "line",
+        "stack": "target",
+        "policyRole": "span",
+        "data": points("span"),
+        "connectNulls": False,
+        "showSymbol": False,
+        "step": "end",
+        "lineStyle": {"width": 0, "color": "transparent"},
+        "areaStyle": {"color": "rgba(76, 120, 168, 0.22)"},
+        "emphasis": {"disabled": True},
+        "tooltip": {"show": False},
+    }
+    upper = {
+        "name": "Target upper",
+        "type": "line",
+        "policyRole": "line",
+        "data": points("upper"),
+        "connectNulls": False,
+        "showSymbol": False,
+        "step": "end",
+        "lineStyle": {"width": 1.5, "color": "#4c78a8"},
+        "itemStyle": {"color": "#4c78a8"},
+    }
+    effective = {
+        "name": "Effective Fed Funds",
+        "type": "line",
+        "policyRole": "line",
+        "data": points("effective"),
+        "connectNulls": False,
+        "showSymbol": False,
+        "sampling": "lttb",
+        "lineStyle": {"width": 1.5, "color": "#e15759"},
+        "itemStyle": {"color": "#e15759"},
+    }
+    sofr = {
+        "name": "SOFR",
+        "type": "line",
+        "policyRole": "line",
+        "data": points("sofr"),
+        "connectNulls": False,
+        "showSymbol": False,
+        "sampling": "lttb",
+        "lineStyle": {"width": 1.5, "color": "#f2c14e"},
+        "itemStyle": {"color": "#f2c14e"},
+    }
+    if mark_area is not None:
+        effective["markArea"] = mark_area
+    return {
+        "chartKind": "policy_rates",
+        "animation": False,
+        "legend": {
+            "show": True,
+            "top": 0,
+            "data": ["Target lower", "Target upper", "Effective Fed Funds", "SOFR"],
+        },
+        "toolbox": {"show": False},
+        "dataZoom": [],
+        "grid": {"left": 8, "right": 16, "top": 36, "bottom": 8, "containLabel": True},
+        "tooltip": _dark_tooltip(),
+        "xAxis": {"type": "time", "axisLabel": {"hideOverlap": True}},
+        "yAxis": {"type": "value", "name": "Percent", "scale": True, "splitLine": {"show": True}},
+        "series": [lower, span, upper, effective, sofr],
+    }
+
+
+def policy_rate_chart(frame: Mapping[str, Any], *, key: str) -> None:
+    """Mount the policy-rate band. The browser does not fetch data."""
+    render_echarts(
+        build_policy_rate_option(frame),
+        key=key,
+        desktop_height=440,
+        mobile_height=360,
+    )
+
+
 def category_line_chart(
     categories: Sequence[Any],
     series: Sequence[Mapping[str, Any]],

@@ -92,6 +92,33 @@ def yoy_pct(obs: Mapping[date, Any], at: date) -> TransformResult:
     return period_ratio_pct(obs, at, 12)
 
 
+def anchored_yoy_pct(obs: Mapping[date, Any], at: date, *, cadence: str = "W") -> TransformResult:
+    """Year-over-year ratio using the last print on or before t−12 months.
+
+    Weekly series rarely land on the same calendar date one year later.
+    The comparison must fall within the cadence's allowed anchor lag.
+    Monthly and quarterly series keep exact-date :func:`yoy_pct`.
+    """
+    rows = _sorted_valid(obs)
+    current = next((value for day, value in rows if day == at), None)
+    anchor = shift_months(at, -12)
+    allowed = ALLOWED_ANCHOR_LAG_DAYS.get(cadence.upper(), 5)
+    detail = {"at": at.isoformat(), "anchor_date": anchor.isoformat(), "months": 12, "allowed_lag_days": allowed, "cadence": cadence.upper()}
+    if current is None:
+        return _missing("pct", "missing_current", **detail)
+    candidates = [(day, value) for day, value in rows if day <= anchor]
+    if not candidates:
+        return _missing("pct", "no_observation_on_or_before_anchor", **detail)
+    cmp_date, cmp_value = candidates[-1]
+    lag = (anchor - cmp_date).days
+    detail.update({"comparison_date": cmp_date.isoformat(), "anchor_lag_days": lag})
+    if lag > allowed:
+        return _missing("pct", "comparison_observation_outside_allowed_lag", **detail)
+    if cmp_value <= 0:
+        return _missing("pct", "non_positive_base", **detail)
+    return TransformResult(100.0 * (current / cmp_value - 1.0), "pct", detail=detail)
+
+
 def ann3m_pct(obs: Mapping[date, Any], at: date) -> TransformResult:
     return period_ratio_pct(obs, at, 3, annualize_periods=4.0)
 
@@ -316,6 +343,7 @@ __all__ = [
     "ONE_SESSION_MAX_GAP_DAYS",
     "TRANSFORM_VERSION",
     "TransformResult",
+    "anchored_yoy_pct",
     "ann3m_pct",
     "ann6m_pct",
     "calendar_change",

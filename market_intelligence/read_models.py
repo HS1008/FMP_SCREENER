@@ -53,6 +53,10 @@ from market_intelligence.yahoo_vol import (
 )
 
 MAX_HISTORY_ROWS = 4000
+# Safety cap for one Macro series. DFF from 1954-07-01 is about 26k daily rows.
+# The query is still date-bounded and series-scoped. Newest-N truncation below this
+# cap would hide the start of that history, so the cap sits above it.
+MACRO_HISTORY_LIMIT = 60000
 # Credit and volatility charts load stored history, then the page filters From/To.
 # This ceiling is large enough for multi-decade daily series. It is not a 3-year window.
 FULL_HISTORY_LIMIT = 20000
@@ -309,15 +313,29 @@ def metric_history(
     )[::-1]
 
 
-def observation_history(conn, series_id: str, *, start: date | None = None, limit: int = MAX_HISTORY_ROWS) -> list[dict[str, Any]]:
+def observation_history(
+    conn,
+    series_id: str,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = MAX_HISTORY_ROWS,
+) -> list[dict[str, Any]]:
+    """Current observations for one series, inclusive of ``start`` and ``end``.
+
+    ``limit`` is a safety cap on the newest rows inside that window. Macro charts
+    pass :data:`MACRO_HISTORY_LIMIT` so a long daily series is not cut at 4,000.
+    """
     return _rows(
         conn,
         """
         SELECT observation_date, value FROM mi_v_macro_observations_current
-        WHERE series_id = :series_id AND value IS NOT NULL AND (:start IS NULL OR observation_date >= :start)
+        WHERE series_id = :series_id AND value IS NOT NULL
+          AND (:start IS NULL OR observation_date >= :start)
+          AND (:end IS NULL OR observation_date <= :end)
         ORDER BY observation_date DESC LIMIT :limit
         """,
-        {"series_id": series_id, "start": start, "limit": int(limit)},
+        {"series_id": series_id, "start": start, "end": end, "limit": int(limit)},
     )[::-1]
 
 
@@ -1740,6 +1758,7 @@ __all__ = [
     "metric_latest",
     "morning_index",
     "morning_latest",
+    "MACRO_HISTORY_LIMIT",
     "observation_history",
     "complete_treasury_curve_on_or_before",
     "fed_funds_target_on_or_before",

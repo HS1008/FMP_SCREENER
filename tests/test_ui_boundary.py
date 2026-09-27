@@ -129,6 +129,7 @@ def test_market_intelligence_pages_read_postgresql_only():
     """MI page modules render DB reads; Treasury/FRED/FINRA/equity producers and the gateway are not imported."""
     modules = [
         ROOT / "market_intelligence" / "pages_ui.py",
+        ROOT / "market_intelligence" / "macro_ui.py",
         ROOT / "market_intelligence" / "ui.py",
         ROOT / "market_intelligence" / "page_registry.py",
         ROOT / "dashboard.py",

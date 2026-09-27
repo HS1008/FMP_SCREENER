@@ -168,6 +168,51 @@ function formatTooltip(params) {
   return tooltipBox(body);
 }
 
+function formatPolicyDay(value) {
+  var text = String(value == null ? "" : value);
+  if (text.length >= 10 && text.charAt(4) === "-" && text.charAt(7) === "-") {
+    return text.slice(0, 10);
+  }
+  var stamp = new Date(value);
+  if (Number.isNaN(stamp.getTime())) {
+    return text;
+  }
+  var month = String(stamp.getMonth() + 1).padStart(2, "0");
+  var day = String(stamp.getDate()).padStart(2, "0");
+  return String(stamp.getFullYear()) + "-" + month + "-" + day;
+}
+
+function formatPolicyTooltip(params) {
+  var rows = Array.isArray(params) ? params : [params];
+  var dateLabel = "";
+  var lines = [];
+  var index;
+  for (index = 0; index < rows.length; index++) {
+    var row = rows[index];
+    if (!row || row.seriesName === "Target span") {
+      continue;
+    }
+    var data = row.data;
+    var day = "";
+    var number = null;
+    if (Array.isArray(data)) {
+      day = formatPolicyDay(data[0]);
+      if (typeof data[1] === "number" && Number.isFinite(data[1])) {
+        number = data[1];
+      }
+    }
+    if (!dateLabel && day) {
+      dateLabel = day;
+    }
+    var shown = number == null ? "—" : number.toFixed(2) + "%";
+    lines.push(escapeHtml(row.seriesName || "Value") + "  " + shown);
+  }
+  if (!dateLabel && !lines.length) {
+    return "";
+  }
+  return tooltipBox(escapeHtml(dateLabel) + (lines.length ? "<br/>" + lines.join("<br/>") : ""));
+}
+
 function applyTheme(option, palette, compact) {
   option.backgroundColor = "transparent";
   option.textStyle = { color: palette.text, fontFamily: palette.font };
@@ -183,6 +228,15 @@ function applyTheme(option, palette, compact) {
   var paletteColors = [palette.line, "#4c78a8", "#f2c14e", "#59a14f", "#e15759", "#76b7b2"];
   for (var seriesIndex = 0; seriesIndex < seriesList.length; seriesIndex++) {
     var series = seriesList[seriesIndex];
+    if (series.policyRole === "span") {
+      series.showSymbol = false;
+      series.lineStyle = { width: 0, color: "transparent" };
+      series.areaStyle = series.areaStyle || { color: "rgba(76, 120, 168, 0.22)" };
+      continue;
+    }
+    if (option.chartKind === "policy_rates") {
+      series.showSymbol = false;
+    }
     var color = (series.itemStyle && series.itemStyle.color) || paletteColors[seriesIndex % paletteColors.length];
     if (!series.type || series.type === "line") {
       series.symbolSize = compact ? 8 : 10;
@@ -225,7 +279,7 @@ function applyTheme(option, palette, compact) {
     "background:rgba(22,24,28,0.96)!important;color:#f4f6f8!important;" +
     "border:1px solid rgba(255,255,255,0.14)!important;border-radius:8px;" +
     "box-shadow:none;padding:8px 10px;";
-  option.tooltip.formatter = formatTooltip;
+  option.tooltip.formatter = option.chartKind === "policy_rates" ? formatPolicyTooltip : formatTooltip;
   option.tooltip.axisPointer = {
     type: "line",
     snap: true,

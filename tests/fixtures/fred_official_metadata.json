@@ -550,6 +550,160 @@
       "title": "Liabilities and Capital: Liabilities: Deposits with F.R. Banks, Other Than Reserve Balances: U.S. Treasury, General Account: Week Average",
       "units": "Millions of U.S. Dollars",
       "units_short": "Mil. of U.S. $"
+    },
+    "NFCI": {
+      "frequency": "Weekly, Ending Friday",
+      "frequency_short": "W",
+      "id": "NFCI",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/NFCI",
+      "title": "Chicago Fed National Financial Conditions Index",
+      "units": "Index",
+      "units_short": "Index"
+    },
+    "CUSR0000SASL2RS": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "CUSR0000SASL2RS",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/CUSR0000SASL2RS",
+      "title": "CPI: Services Less Rent of Shelter in U.S. City Average",
+      "units": "Index 1982-1984=100",
+      "units_short": "Index 1982-1984=100"
+    },
+    "PERMIT": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "PERMIT",
+      "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+      "seasonal_adjustment_short": "SAAR",
+      "source_url": "https://fred.stlouisfed.org/series/PERMIT",
+      "title": "New Privately-Owned Housing Units Authorized in Permit-Issuing Places: Total Units",
+      "units": "Thousands of Units",
+      "units_short": "Thous. of Units"
+    },
+    "NEWORDER": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "NEWORDER",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/NEWORDER",
+      "title": "Manufacturers' New Orders: Nondefense Capital Goods Excluding Aircraft",
+      "units": "Millions of Dollars",
+      "units_short": "Mil. of $"
+    },
+    "AWHMAN": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "AWHMAN",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/AWHMAN",
+      "title": "Average Weekly Hours of Production and Nonsupervisory Employees, Manufacturing",
+      "units": "Hours",
+      "units_short": "Hours"
+    },
+    "CMRMT": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "CMRMT",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/CMRMT",
+      "title": "Real Manufacturing and Trade Industries Sales",
+      "units": "Millions of Chained 2017 Dollars",
+      "units_short": "Mil. of Chn. 2017 $"
+    },
+    "PCEC96": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "PCEC96",
+      "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+      "seasonal_adjustment_short": "SAAR",
+      "source_url": "https://fred.stlouisfed.org/series/PCEC96",
+      "title": "Real Personal Consumption Expenditures",
+      "units": "Billions of Chained 2017 Dollars",
+      "units_short": "Bil. of Chn. 2017 $"
+    },
+    "W875RX1": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "W875RX1",
+      "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+      "seasonal_adjustment_short": "SAAR",
+      "source_url": "https://fred.stlouisfed.org/series/W875RX1",
+      "title": "Real personal income excluding current transfer receipts",
+      "units": "Billions of Chained 2017 Dollars",
+      "units_short": "Bil. of Chn. 2017 $"
+    },
+    "UEMPMED": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "UEMPMED",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/UEMPMED",
+      "title": "Median Duration of Unemployment",
+      "units": "Weeks",
+      "units_short": "Weeks"
+    },
+    "ISRATIO": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "ISRATIO",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/ISRATIO",
+      "title": "Total Business: Inventories to Sales Ratio",
+      "units": "Ratio",
+      "units_short": "Ratio"
+    },
+    "BUSLOANS": {
+      "frequency": "Weekly, Ending Wednesday",
+      "frequency_short": "W",
+      "id": "BUSLOANS",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/BUSLOANS",
+      "title": "Commercial and Industrial Loans, All Commercial Banks",
+      "units": "Billions of U.S. Dollars",
+      "units_short": "Bil. of U.S. $"
+    },
+    "DRBLACBS": {
+      "frequency": "Quarterly",
+      "frequency_short": "Q",
+      "id": "DRBLACBS",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/DRBLACBS",
+      "title": "Delinquency Rate on Commercial and Industrial Loans, All Commercial Banks",
+      "units": "Percent",
+      "units_short": "%"
+    },
+    "ULCNFB": {
+      "frequency": "Quarterly",
+      "frequency_short": "Q",
+      "id": "ULCNFB",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/ULCNFB",
+      "title": "Nonfarm Business Sector: Unit Labor Costs for All Workers",
+      "units": "Index 2017=100",
+      "units_short": "Index 2017=100"
+    },
+    "USREC": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "USREC",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/USREC",
+      "title": "NBER based Recession Indicators for the United States from the Period following the Peak through the Trough",
+      "units": "+1 or 0",
+      "units_short": "+1 or 0"
     }
   }
 }

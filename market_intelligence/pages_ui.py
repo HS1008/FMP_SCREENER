@@ -56,6 +56,7 @@ from market_intelligence.curve_compare import (
     source_display,
 )
 from market_intelligence.freshness import is_current_status
+from market_intelligence.macro_ui import render_macro_dashboard
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
@@ -824,81 +825,7 @@ def render_market_pulse() -> None:
 # ---- Macro ---------------------------------------------------------------------------
 
 def render_macro_overview() -> None:
-    macro = load_or_stop("macro_context")
-    cats = macro.get("categories") or {}
-    dates = [block.get("latest", {}).get("observation_date") for blocks in cats.values() for block in blocks]
-    page_header(
-        "Macro & Liquidity",
-        "Growth, labor, inflation, and liquidity. Observation dates are the period being measured, not the retrieval time.",
-        as_of=compact_as_of(dates)[0],
-    )
-    if not cats:
-        st.info("No macro observations stored yet.")
-        return
-    if macro.get("series_without_data"):
-        with st.expander("Catalog series without stored observations"):
-            st.write(", ".join(macro["series_without_data"]))
-
-    chosen_default = None
-    for cat in PRIMARY_MACRO:
-        blocks = cats.get(cat) or []
-        if not blocks:
-            continue
-        st.subheader(CATEGORY_TITLES[cat])
-        rows = []
-        for block in blocks:
-            transforms = block.get("transforms") or {}
-            chosen_default = chosen_default or block["series_id"]
-            row = {
-                "Series": block.get("label") or block["series_id"],
-                "Latest": fmt(block["latest"].get("value"), None),
-                "Units": block["latest"].get("units") or block.get("catalog_units"),
-                "Observation": block["latest"].get("observation_date"),
-                "Change": _transform_text(transforms.get("yoy_pct") or transforms.get("qoq_saar_pct") or transforms.get("mom_change") or transforms.get("chg_4w") or transforms.get("wow_change") or transforms.get("chg_prev")),
-            }
-            rows.append(row)
-        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-        quarantined = [block["series_id"] for block in blocks if block.get("publication_status") and block.get("publication_status") != "PUBLISHED"]
-        if quarantined:
-            st.warning("The latest retrieval for {0} was quarantined; last validated values remain.".format(", ".join(quarantined)))
-        if cat == "liquidity":
-            st.caption("Balances differ in dating and scale. Display conversions keep provider units in storage; no composite liquidity score is computed.")
-        if cat == "inflation":
-            st.caption("YoY = 100·(I_t/I_{t−12} − 1); 3M annualized = 100·((I_t/I_{t−3})⁴ − 1). Exact calendar alignment, no forward fill.")
-
-    _render_commodities_panel(cats, heading="Commodities")
-    open_registered_page("commodities", "Open Commodities")
-
-    with st.expander("Policy rates and Treasury catalog"):
-        extra_rows = []
-        for cat in ("policy", "rates"):
-            for block in cats.get(cat) or []:
-                extra_rows.append({"Group": CATEGORY_TITLES[cat], "Series": block.get("label"), "Latest": fmt(block["latest"].get("value"), None), "Observation": block["latest"].get("observation_date")})
-        if extra_rows:
-            st.dataframe(pd.DataFrame(extra_rows), use_container_width=True, hide_index=True)
-        else:
-            st.caption("No additional policy or Treasury catalog rows on this page. See Rates.")
-
-    with st.expander("Series definitions and transforms"):
-        detail = []
-        for cat, blocks in cats.items():
-            for block in blocks:
-                transforms = block.get("transforms") or {}
-                row = {"Series": block.get("label"), "ID": block["series_id"], "Freq": block.get("frequency"), "SA": block.get("seasonal_adjustment"), "Vintage": block.get("vintage_kind")}
-                for key, label in TRANSFORM_LABELS.items():
-                    if key in transforms:
-                        row[label] = _transform_text(transforms[key])
-                detail.append(row)
-        if detail:
-            st.dataframe(pd.DataFrame(detail), use_container_width=True, hide_index=True)
-
-    st.subheader("History")
-    all_ids = sorted({block["series_id"] for blocks in cats.values() for block in blocks})
-    if all_ids:
-        chosen = st.selectbox("Series", all_ids, index=all_ids.index(chosen_default) if chosen_default in all_ids else 0, format_func=lambda series_id: "{0} — {1}".format(series_id, CATALOG_BY_ID[series_id].label if series_id in CATALOG_BY_ID else series_id))
-        history = load_or_stop("observation_history", chosen)
-        spec = CATALOG_BY_ID.get(chosen)
-        history_chart(history, x="observation_date", y="value", title="{0}".format(spec.label if spec else chosen), units=(spec.expected_units_contains[0] if spec and spec.expected_units_contains else None))
+    render_macro_dashboard()
 
 
 # ---- Rates ---------------------------------------------------------------------------

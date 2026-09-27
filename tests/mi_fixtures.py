@@ -273,6 +273,26 @@ def synthetic_fred_data(end: date = date(2024, 12, 31)) -> dict[str, list[tuple[
     data["DCOILWTICO"] = daily_series(end, 400, 75.0, 0.02)
     data["DHHNGSP"] = daily_series(end, 400, 2.50, 0.002)
     data["PCOPPUSDM"] = monthly_index(date(end.year, end.month, 1), 40, 8500.0, 0.004)
+    month_end = date(end.year, end.month, 1)
+    for sid, start, growth in (
+        ("CUSR0000SASL2RS", 380.0, 0.0024),
+        ("PERMIT", 1450.0, 0.001),
+        ("NEWORDER", 72000.0, 0.002),
+        ("AWHMAN", 41.5, 0.0002),
+        ("CMRMT", 1500000.0, 0.002),
+        ("PCEC96", 14500.0, 0.002),
+        ("W875RX1", 14000.0, 0.0018),
+        ("UEMPMED", 8.5, 0.002),
+        ("ISRATIO", 1.35, 0.0005),
+    ):
+        data[sid] = monthly_index(month_end, 40, start, growth)
+    data["NFCI"] = [(d, "{0:.3f}".format(-0.2 + (i % 11) * 0.04)) for i, d in enumerate(weekly_days)]
+    data["BUSLOANS"] = [(d, "{0:.1f}".format(2700 + i * 2)) for i, d in enumerate(weekly_days)]
+    data["USREC"] = []
+    for i, (d, _) in enumerate(monthly_index(month_end, 40, 1, 0)):
+        data["USREC"].append((d, "1" if 8 <= i <= 14 else "0"))
+    data["DRBLACBS"] = [(date(y, m, 1), "{0:.2f}".format(1.1 + 0.02 * i)) for i, (y, m) in enumerate((yy, mm) for yy in range(2019, 2025) for mm in (1, 4, 7, 10))]
+    data["ULCNFB"] = [(date(y, m, 1), "{0:.3f}".format(100 + 0.4 * i)) for i, (y, m) in enumerate((yy, mm) for yy in range(2019, 2025) for mm in (1, 4, 7, 10))]
     return data
 
 
