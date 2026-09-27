@@ -159,6 +159,12 @@ function formatTooltip(params) {
   if (dateLabel) {
     body += '<div style="color:#f4f6f8;opacity:0.82;font-size:12px">' + escapeHtml(dateLabel) + "</div>";
   }
+  if (point && Array.isArray(point.notes)) {
+    var noteIndex;
+    for (noteIndex = 0; noteIndex < point.notes.length; noteIndex++) {
+      body += '<div style="color:#f4f6f8;opacity:0.9;font-size:12px;margin-top:3px">' + escapeHtml(point.notes[noteIndex]) + "</div>";
+    }
+  }
   return tooltipBox(body);
 }
 

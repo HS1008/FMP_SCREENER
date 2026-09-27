@@ -22,6 +22,9 @@ from market_intelligence.catalog import (
     CREDIT_BROAD_TILES,
     CREDIT_RATING_TILES,
     CURVE_TENORS,
+    FLY_2S5S10S_METRIC,
+    SLOPE_10Y2Y_METRIC,
+    TIPS_TENORS,
 )
 from market_intelligence.history_range import (
     STORED_HISTORY_LIMIT,
@@ -47,6 +50,7 @@ from market_intelligence.curve_compare import (
     NO_CURVE_MESSAGE,
     REASON_AFTER_CURRENT,
     comparison_target,
+    fed_funds_overlay,
     format_curve_date,
     parse_curve_date,
     source_display,
@@ -957,6 +961,118 @@ def _render_comparison_note(comparison: dict[str, Any] | None, *, current_date: 
         st.caption("Using nearest prior complete curve: {0}".format(format_curve_date(comparison.get("effective_date"))))
 
 
+def _tips_custom_date(current_date: date | None) -> date | None:
+    if current_date is None:
+        st.info("A custom comparison needs a TIPS observation date.")
+        return None
+    bounds = load_or_stop("tips_curve_bounds", current_date.isoformat()) or {}
+    earliest = parse_curve_date((bounds or {}).get("earliest_date"))
+    latest = parse_curve_date((bounds or {}).get("latest_date")) or current_date
+    latest = min(latest, current_date)
+    if earliest is None or earliest > latest:
+        st.info("No TIPS real-yield observations are available on or before the selected date.")
+        return None
+    default = min(latest, max(earliest, current_date - timedelta(days=7)))
+    picked = st.date_input(
+        "TIPS comparison date",
+        value=default,
+        min_value=earliest,
+        max_value=latest,
+        key="rates_tips_custom_date",
+        help="Type a date or use the calendar. Dates with no TIPS print use the prior observation date.",
+    )
+    return parse_curve_date(picked)
+
+
+def _load_tips_comparison(mode: str, current_date: date | None, custom_date: date | None) -> dict[str, Any] | None:
+    if current_date is None or mode == COMPARE_NONE:
+        return None
+    target = comparison_target(mode, current_date, custom_date)
+    if target is None:
+        return None
+    loaded = load_or_stop("tips_curve_on_or_before", target.isoformat(), current_date.isoformat())
+    return loaded if isinstance(loaded, dict) else None
+
+
+def _tips_line(rows: list[dict[str, Any]], name: str) -> dict[str, Any]:
+    by_tenor = {str(row.get("tenor")): row.get("yield_pct") for row in rows}
+    return {"name": name, "values": [by_tenor.get(tenor) for tenor in TIPS_TENORS]}
+
+
+def _render_tips_curve(stored: dict[str, Any] | None = None) -> None:
+    st.subheader("TIPS real-yield curve")
+    st.caption("Treasury real yields. A missing tenor stays missing on that date. This is not the nominal Treasury curve.")
+    tips = stored if isinstance(stored, dict) and stored else None
+    if tips is None:
+        loaded = load_or_stop("tips_curve_on_or_before", date.today().isoformat())
+        tips = loaded if isinstance(loaded, dict) else {}
+    if not tips.get("found"):
+        st.info("No TIPS real-yield observations stored.")
+        return
+    current_date = parse_curve_date(tips.get("effective_date"))
+    st.caption("Curve date: {0}".format(format_curve_date(current_date)))
+    if tips.get("fallback"):
+        st.caption("Requested date: {0}".format(format_curve_date(tips.get("requested_date"))))
+        st.caption("Using nearest prior TIPS curve: {0}".format(format_curve_date(current_date)))
+    compare = st.radio("Compare TIPS with", list(COMPARE_OPTIONS), horizontal=True, key="rates_tips_compare")
+    custom_date = _tips_custom_date(current_date) if compare == COMPARE_CUSTOM else None
+    comparison = _load_tips_comparison(compare, current_date, custom_date)
+    series = [_tips_line(tips.get("curve") or [], "{0} — Current".format(format_curve_date(current_date)))]
+    if comparison and comparison.get("found"):
+        st.caption("{0} — Current · {1} — Comparison".format(format_curve_date(current_date), format_curve_date(comparison.get("effective_date"))))
+        if comparison.get("fallback"):
+            st.caption("Requested date: {0}".format(format_curve_date(comparison.get("requested_date"))))
+            st.caption("Using nearest prior TIPS curve: {0}".format(format_curve_date(comparison.get("effective_date"))))
+        series.append(_tips_line(comparison.get("curve") or [], "{0} — Comparison".format(format_curve_date(comparison.get("effective_date")))))
+    elif comparison and not comparison.get("found"):
+        st.info("No TIPS real-yield observations are available on or before the selected date.")
+    category_line_chart(
+        list(TIPS_TENORS),
+        series,
+        key="rates-tips-curve",
+        y_title="Real yield (%)",
+        connect_nulls=False,
+    )
+
+
+def _stored_metric_rows(metric_id: str) -> list[dict[str, Any]]:
+    rows = load_or_stop("metric_history", metric_id, limit=STORED_HISTORY_LIMIT)
+    return list(rows) if rows else []
+
+
+def _render_spread_chart(rows: list[dict[str, Any]], *, start: date, end: date, label: str, chart_key: str) -> None:
+    window = filter_history_rows(rows, start=start, end=end)
+    if not any(row.get("value") is not None for row in window):
+        st.caption("No stored observations in this range.")
+        return
+    lightweight_market_chart(
+        [{"as_of": row.get("as_of"), "value": row.get("value")} for row in window],
+        series_label=label,
+        ranges=True,
+        value_format="signed_bps",
+        reference_price=0,
+        keep_missing=True,
+        key=chart_key,
+        height=420,
+    )
+
+
+def _render_curve_spread_history() -> None:
+    st.subheader("Curve spread history")
+    slope_rows = _stored_metric_rows(SLOPE_10Y2Y_METRIC)
+    fly_rows = _stored_metric_rows(FLY_2S5S10S_METRIC)
+    earliest, latest = union_history_bounds([slope_rows, fly_rows])
+    start, end = historical_date_range(key="rates_spread_history", earliest=earliest, latest=latest)
+    st.markdown("**2s10s Treasury Spread**")
+    st.caption("10Y minus 2Y on the same observation date, in basis points. Positive means the 10Y yield is above the 2Y.")
+    if start is not None and end is not None and start <= end:
+        _render_spread_chart(slope_rows, start=start, end=end, label="2s10s", chart_key="rates-2s10s")
+    st.markdown("**2s5s10s Treasury Butterfly**")
+    st.caption("2s5s10s = 2×5Y − 2Y − 10Y. Positive = 5Y yield above the average of the 2Y/10Y wings. Negative = 5Y yield below the wings.")
+    if start is not None and end is not None and start <= end:
+        _render_spread_chart(fly_rows, start=start, end=end, label="2s5s10s", chart_key="rates-2s5s10s")
+
+
 def _comparison_frame(rows: list[dict[str, Any]]) -> pd.DataFrame | None:
     present = [row for row in rows if row.get("yield_pct") is not None and row.get("observation_date")]
     if not present:
@@ -1004,6 +1120,13 @@ def render_rates_curve() -> None:
                     "values": [aligned.get(str(tenor)) for tenor in frame["tenor"].tolist()],
                 }
             )
+    overlay = {"bands": [], "notes": [], "caption": None}
+    if current_date and not mixed:
+        current_ff = load_or_stop("fed_funds_target_on_or_before", current_date.isoformat()) or {}
+        compare_ff = None
+        if comparison and comparison.get("found") and comparison.get("effective_date"):
+            compare_ff = load_or_stop("fed_funds_target_on_or_before", str(comparison.get("effective_date"))[:10]) or {}
+        overlay = fed_funds_overlay(current_ff if isinstance(current_ff, dict) else None, compare_ff if isinstance(compare_ff, dict) else None)
     if mixed:
         category_bar_chart(
             frame["tenor"].tolist(),
@@ -1013,16 +1136,27 @@ def render_rates_curve() -> None:
         )
         st.caption("Points are latest observations per tenor and are not a single coherent curve print.")
     else:
-        category_line_chart(frame["tenor"].tolist(), curve_series, key="rates-treasury-curve", y_title="percent")
+        category_line_chart(
+            frame["tenor"].tolist(),
+            curve_series,
+            key="rates-treasury-curve",
+            y_title="percent",
+            bands=overlay.get("bands") or None,
+            point_notes=overlay.get("notes") or None,
+        )
+        if overlay.get("caption"):
+            st.caption(str(overlay["caption"]))
     headline = [row for row in present if row["tenor"] in {"2Y", "10Y", "30Y"}]
     cols = st.columns(max(1, len(headline)))
     for i, row in enumerate(headline):
         cols[i].metric("{0}".format(row["tenor"]), fmt(row.get("yield_pct"), "pct"), fmt_signed(row.get("chg_prev_bps"), "bps") if row.get("chg_prev_bps") is not None else None)
 
     slopes = rates.get("slopes") or {}
-    slope_2s10s = slopes.get("2s10s") or slopes.get("2Y10Y") or next(iter(slopes.values()), None)
+    slope_2s10s = slopes.get("10Y2Y") or slopes.get("2s10s") or slopes.get("2Y10Y")
     if slope_2s10s:
         st.metric("2s10s slope", _transform_text(slope_2s10s), help="Long minus short tenor on a common observation date, in basis points.")
+    _render_tips_curve(rates.get("tips_curve") if isinstance(rates.get("tips_curve"), dict) else None)
+    _render_curve_spread_history()
 
     history_choices = {
         "10Y yield": "DGS10",

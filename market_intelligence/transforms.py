@@ -206,6 +206,39 @@ def curve_slope(
     return TransformResult(pct_to_bps(long_v - short_v), units, detail=detail)
 
 
+def curve_butterfly(
+    two_year: Mapping[date, Any],
+    five_year: Mapping[date, Any],
+    ten_year: Mapping[date, Any],
+    at: date,
+    *,
+    units: str = "bps",
+) -> TransformResult:
+    """2×5Y − 2Y − 10Y on one observation date, in basis points.
+
+    Yields are percentage points. ``fly_bps = (2*DGS5 - DGS2 - DGS10) * 100``.
+    Positive means the 5Y yield is above the average of the 2Y and 10Y wings.
+    A missing leg stays missing. Nearby dates are not consulted, and the result
+    is not a backward fill of any Treasury tenor.
+    """
+    two = _f(two_year.get(at))
+    five = _f(five_year.get(at))
+    ten = _f(ten_year.get(at))
+    missing = [name for name, value in (("DGS2", two), ("DGS5", five), ("DGS10", ten)) if value is None]
+    detail = {
+        "at": at.isoformat(),
+        "legs": ["DGS2", "DGS5", "DGS10"],
+        "formula": "2*DGS5 - DGS2 - DGS10",
+        "same_date": True,
+        "transform": "percent_points_times_100",
+        "missing_legs": missing,
+        "sign": "positive when 5Y is above the average of the 2Y and 10Y wings",
+    }
+    if missing:
+        return _missing(units, "missing_leg", **detail)
+    return TransformResult(pct_to_bps((2.0 * five) - two - ten), units, detail=detail)
+
+
 def common_curve_date(legs: Mapping[str, Mapping[date, Any]], as_of: date) -> tuple[date | None, list[str]]:
     """Latest date <= as_of at which every leg with data has a value; also list legs missing there."""
     candidates: set[date] = set()
@@ -287,6 +320,7 @@ __all__ = [
     "ann6m_pct",
     "calendar_change",
     "common_curve_date",
+    "curve_butterfly",
     "curve_slope",
     "latest_date",
     "mom_pct",

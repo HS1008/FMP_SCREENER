@@ -163,6 +163,14 @@ CATALOG: tuple[SeriesSpec, ...] = (
     # Policy
     _s("DFF", "policy", "fed_funds", CADENCE_DAILY, _PCT, expected_sa="NSA", value_kind="percent",
        transforms=("level_pct", "chg_bps"), label="Effective Fed Funds"),
+    _s("DFEDTARL", "policy", "fed_funds_target", CADENCE_DAILY, _PCT, expected_sa="NSA", value_kind="percent",
+       transforms=("level_pct",), label="Fed funds target lower",
+       notes="Federal Funds Target Range - Lower Limit (DFEDTARL). FOMC policy state held until changed. "
+             "Not a Treasury maturity and not the effective federal funds rate (DFF)."),
+    _s("DFEDTARU", "policy", "fed_funds_target", CADENCE_DAILY, _PCT, expected_sa="NSA", value_kind="percent",
+       transforms=("level_pct",), label="Fed funds target upper",
+       notes="Federal Funds Target Range - Upper Limit (DFEDTARU). FOMC policy state held until changed. "
+             "Not a Treasury maturity and not the effective federal funds rate (DFF)."),
     _s("SOFR", "policy", "sofr", CADENCE_DAILY, _PCT, expected_sa="NSA", value_kind="percent",
        transforms=("level_pct", "chg_bps"), label="SOFR"),
     # Nominal curve
@@ -303,6 +311,33 @@ CURVE_SLOPES: dict[str, tuple[str, str]] = {
     "30Y5Y": ("DGS30", "DGS5"),
     "10Y3M": ("DGS10", "DGS3MO"),
 }
+# Real par yields only. No 2Y, 3Y, or 7Y is invented; Treasury XML has a 7Y real field with no FRED twin.
+TIPS_TENORS: dict[str, str] = {
+    "5Y": "DFII5",
+    "10Y": "DFII10",
+    "20Y": "DFII20",
+    "30Y": "DFII30",
+}
+# Body minus wings. Order is (2Y, 5Y, 10Y). Stored metric uses the exact formula 2*DGS5 - DGS2 - DGS10.
+CURVE_FLIES: dict[str, tuple[str, str, str]] = {
+    "2s5s10s": ("DGS2", "DGS5", "DGS10"),
+}
+SLOPE_10Y2Y_METRIC = "curve.slope_10Y2Y_bps"
+FLY_2S5S10S_METRIC = "curve.fly_2s5s10s_bps"
+FED_FUNDS_TARGET_LOWER = "DFEDTARL"
+FED_FUNDS_TARGET_UPPER = "DFEDTARU"
+# Explicit max-history path only. Incremental refresh keeps each series' catalog backfill_years.
+RATES_MAX_BACKFILL_SERIES: tuple[str, ...] = (
+    "DGS2",
+    "DGS5",
+    "DGS10",
+    "DFII5",
+    "DFII10",
+    "DFII20",
+    "DFII30",
+    FED_FUNDS_TARGET_LOWER,
+    FED_FUNDS_TARGET_UPPER,
+)
 
 
 def catalog_series(category: str | None = None) -> list[SeriesSpec]:

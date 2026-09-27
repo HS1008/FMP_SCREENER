@@ -303,8 +303,15 @@ def _dark_tooltip(*, trigger: str = "axis") -> dict[str, Any]:
     }
 
 
-def _category_slots(categories: Sequence[Any], values: Sequence[Any], *, unit: str | None) -> list[dict[str, Any] | None]:
+def _category_slots(
+    categories: Sequence[Any],
+    values: Sequence[Any],
+    *,
+    unit: str | None,
+    notes: Sequence[str] | None = None,
+) -> list[dict[str, Any] | None]:
     slots: list[dict[str, Any] | None] = []
+    note_lines = [str(line) for line in notes] if notes else []
     for index, label in enumerate(categories):
         raw = values[index] if index < len(values) else None
         number = _finite_number(raw)
@@ -314,8 +321,117 @@ def _category_slots(categories: Sequence[Any], values: Sequence[Any], *, unit: s
         point: dict[str, Any] = {"value": number, "name": str(label)}
         if unit:
             point["unit"] = unit
+        if note_lines:
+            point["notes"] = note_lines
         slots.append(point)
     return slots
+
+
+_BAND_STYLE = {
+    "current": {
+        "color": "#9ec1ff",
+        "fill": "rgba(158, 193, 255, 0.14)",
+        "dashed": False,
+        "upper_position": "insideEndTop",
+        "lower_position": "insideEndBottom",
+    },
+    "compare": {
+        "color": "#f2c14e",
+        "fill": "rgba(242, 193, 78, 0.08)",
+        "dashed": True,
+        "upper_position": "insideStartTop",
+        "lower_position": "insideStartBottom",
+    },
+}
+
+
+def _policy_mark(bands: Sequence[Mapping[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Horizontal policy references. They are not category-axis points."""
+    lines: list[dict[str, Any]] = []
+    areas: list[list[dict[str, Any]]] = []
+    for band in bands:
+        lower = _finite_number(band.get("lower"))
+        upper = _finite_number(band.get("upper"))
+        if lower is None or upper is None:
+            continue
+        style = _BAND_STYLE.get(str(band.get("role") or "current"), _BAND_STYLE["current"])
+        color = style["color"]
+        dashed = bool(style["dashed"])
+        for level, label, position in (
+            (upper, str(band.get("upper_label") or ""), style["upper_position"]),
+            (lower, str(band.get("lower_label") or ""), style["lower_position"]),
+        ):
+            lines.append(
+                {
+                    "yAxis": level,
+                    "name": label,
+                    "lineStyle": {"color": color, "type": "dashed" if dashed else "solid", "width": 1},
+                    "label": {
+                        "show": True,
+                        "formatter": label,
+                        "position": position,
+                        "color": color,
+                        "fontSize": 11,
+                    },
+                }
+            )
+        if band.get("fill"):
+            areas.append(
+                [
+                    {"yAxis": lower, "itemStyle": {"color": style["fill"]}},
+                    {"yAxis": upper},
+                ]
+            )
+    mark_line = {"silent": True, "symbol": "none", "data": lines} if lines else None
+    mark_area = {"silent": True, "data": areas} if areas else None
+    return mark_line, mark_area
+
+
+def build_category_line_option(
+    categories: Sequence[Any],
+    series: Sequence[Mapping[str, Any]],
+    *,
+    y_title: str = "",
+    connect_nulls: bool = False,
+    bands: Sequence[Mapping[str, Any]] | None = None,
+    point_notes: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Ordered category lines. Nulls stay null. Categories are not parsed as dates.
+
+    ``bands`` are y-axis mark lines and an optional shaded area. They are not
+    added to the category axis.
+    """
+    labels = [str(label) for label in categories]
+    encoded = []
+    for item in series:
+        encoded.append(
+            {
+                "type": "line",
+                "name": str(item.get("name") or ""),
+                "data": _category_slots(labels, list(item.get("values") or []), unit=item.get("unit"), notes=point_notes),
+                "connectNulls": bool(connect_nulls),
+                "showSymbol": True,
+                "symbol": "circle",
+                "label": {"show": False},
+            }
+        )
+    if bands and encoded:
+        mark_line, mark_area = _policy_mark(bands)
+        if mark_line is not None:
+            encoded[0]["markLine"] = mark_line
+        if mark_area is not None:
+            encoded[0]["markArea"] = mark_area
+    return {
+        "animation": False,
+        "legend": {"show": len(encoded) > 1, "top": 0},
+        "toolbox": {"show": False},
+        "dataZoom": [],
+        "grid": {"left": 8, "right": 16, "top": 48 if bands else 36, "bottom": 4, "containLabel": True},
+        "tooltip": _dark_tooltip(),
+        "xAxis": {"type": "category", "data": labels, "boundaryGap": True, "axisLabel": {"interval": 0}},
+        "yAxis": {"type": "value", "name": y_title, "scale": True, "splitLine": {"show": True}},
+        "series": encoded,
+    }
 
 
 def category_line_chart(
@@ -325,34 +441,19 @@ def category_line_chart(
     key: str,
     y_title: str = "",
     connect_nulls: bool = False,
+    bands: Sequence[Mapping[str, Any]] | None = None,
+    point_notes: Sequence[str] | None = None,
 ) -> None:
     """Ordered category lines. Nulls stay null. Categories are not parsed as dates."""
-    labels = [str(label) for label in categories]
-    encoded = []
-    for item in series:
-        encoded.append(
-            {
-                "type": "line",
-                "name": str(item.get("name") or ""),
-                "data": _category_slots(labels, list(item.get("values") or []), unit=item.get("unit")),
-                "connectNulls": bool(connect_nulls),
-                "showSymbol": True,
-                "symbol": "circle",
-                "label": {"show": False},
-            }
-        )
     render_echarts(
-        {
-            "animation": False,
-            "legend": {"show": len(encoded) > 1, "top": 0},
-            "toolbox": {"show": False},
-            "dataZoom": [],
-            "grid": {"left": 8, "right": 12, "top": 36, "bottom": 4, "containLabel": True},
-            "tooltip": _dark_tooltip(),
-            "xAxis": {"type": "category", "data": labels, "boundaryGap": True, "axisLabel": {"interval": 0}},
-            "yAxis": {"type": "value", "name": y_title, "scale": True, "splitLine": {"show": True}},
-            "series": encoded,
-        },
+        build_category_line_option(
+            categories,
+            series,
+            y_title=y_title,
+            connect_nulls=connect_nulls,
+            bands=bands,
+            point_notes=point_notes,
+        ),
         key=key,
     )
 

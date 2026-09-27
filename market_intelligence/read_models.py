@@ -16,7 +16,19 @@ from typing import Any, Mapping
 from sqlalchemy import text
 
 from market_intelligence.calendars import NY_TZ
-from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CURVE_SLOPES, CURVE_TENORS, EXPORT_ATTRIBUTION_REQUIRED, EXPORT_INTERNAL_ONLY, FRED_ATTRIBUTION, CREDIT_SERIES
+from market_intelligence.catalog import (
+    CATALOG,
+    CATALOG_BY_ID,
+    CREDIT_SERIES,
+    CURVE_SLOPES,
+    CURVE_TENORS,
+    EXPORT_ATTRIBUTION_REQUIRED,
+    EXPORT_INTERNAL_ONLY,
+    FED_FUNDS_TARGET_LOWER,
+    FED_FUNDS_TARGET_UPPER,
+    FRED_ATTRIBUTION,
+    TIPS_TENORS,
+)
 from market_intelligence.openbb_provider.config import CBOE_ATTRIBUTION, CBOE_TERMS_NOTES
 from market_intelligence.freshness import (
     FRESHNESS_POLICY_VERSION,
@@ -573,6 +585,7 @@ def rates_context(conn) -> dict[str, Any]:
         "inflation_compensation": comp,
         "derived_nominal_minus_real": derived_be,
         "policy": policy,
+        "tips_curve": tips_curve_on_or_before(conn, date.today().isoformat()),
         "source_ids": sources,
         "fallback": any(c.get("fallback") for c in curve),
         "units_note": "Yields in percent; changes in basis points (percent x 100). Same-date legs only.",
@@ -733,6 +746,237 @@ def complete_treasury_curve_on_or_before(conn, target_date: str, not_after: str 
         "latest_complete_date": latest.isoformat() if latest else None,
         "rejected_after_current": resolved["reason"] == REASON_AFTER_CURRENT,
     }
+
+
+def _tips_series_tenor_sql() -> tuple[str, list[str]]:
+    from market_intelligence.source_resolve import EQUIVALENTS
+
+    values: list[str] = []
+    series_ids: list[str] = []
+    for tenor, canonical in TIPS_TENORS.items():
+        for series_id in EQUIVALENTS.get(canonical, (canonical,)):
+            values.append("('{0}', '{1}')".format(series_id.replace("'", ""), tenor.replace("'", "")))
+            series_ids.append(series_id)
+    return ", ".join(values), series_ids
+
+
+def _tips_observation_dates(conn, *, ceiling: date | None) -> list[date]:
+    """Dates with any non-null TIPS tenor. A partial curve is still a valid date."""
+    values_sql, _series_ids = _tips_series_tenor_sql()
+    rows = _rows(
+        conn,
+        """
+        WITH series_tenor(series_id, tenor) AS (
+            VALUES {values}
+        )
+        SELECT o.observation_date
+        FROM mi_v_macro_observations_current o
+        INNER JOIN series_tenor st ON st.series_id = o.series_id
+        WHERE o.value IS NOT NULL
+          AND (CAST(:ceiling AS date) IS NULL OR o.observation_date <= CAST(:ceiling AS date))
+        GROUP BY o.observation_date
+        ORDER BY o.observation_date
+        """.format(values=values_sql),
+        {"ceiling": ceiling},
+    )
+    dates: list[date] = []
+    for row in rows:
+        parsed = row.get("observation_date")
+        if isinstance(parsed, date):
+            dates.append(parsed)
+        elif parsed:
+            dates.append(date.fromisoformat(str(parsed)[:10]))
+    return dates
+
+
+def tips_curve_bounds(conn, not_after: str | None = None) -> dict[str, Any]:
+    """Earliest and latest dates that have at least one TIPS tenor."""
+    from market_intelligence.curve_compare import parse_curve_date
+
+    dates = _tips_observation_dates(conn, ceiling=parse_curve_date(not_after))
+    return {
+        "earliest_date": dates[0].isoformat() if dates else None,
+        "latest_date": dates[-1].isoformat() if dates else None,
+    }
+
+
+def tips_curve_on_or_before(conn, target_date: str, not_after: str | None = None) -> dict[str, Any]:
+    """One TIPS observation date on or before ``target_date``.
+
+    The date is the latest day with any non-null real yield. Tenors missing on
+    that exact date stay missing. A missing tenor is not filled from an earlier
+    print, and the lookup never moves forward.
+    """
+    from market_intelligence.curve_compare import parse_curve_date, resolve_complete_date, tips_points_for_date
+    from market_intelligence.source_resolve import EQUIVALENTS, resolve_observation
+
+    target = parse_curve_date(target_date)
+    ceiling = parse_curve_date(not_after)
+    if target is None:
+        return {
+            "requested_date": None,
+            "effective_date": None,
+            "fallback": False,
+            "found": False,
+            "reason": "invalid_target_date",
+            "curve": [],
+            "source_ids": [],
+        }
+    dates = _tips_observation_dates(conn, ceiling=ceiling)
+    earliest = dates[0] if dates else None
+    latest = dates[-1] if dates else None
+    resolved = resolve_complete_date(dates, target, not_after=ceiling)
+    empty = {
+        "requested_date": target.isoformat(),
+        "effective_date": None,
+        "fallback": False,
+        "found": False,
+        "reason": resolved["reason"],
+        "curve": [],
+        "source_ids": [],
+        "earliest_date": earliest.isoformat() if earliest else None,
+        "latest_date": latest.isoformat() if latest else None,
+    }
+    if not resolved["found"]:
+        return empty
+    effective: date = resolved["effective_date"]
+    _values_sql, series_ids = _tips_series_tenor_sql()
+    rows = _rows(
+        conn,
+        """
+        SELECT o.series_id, o.observation_date, o.value, s.source_id
+        FROM mi_v_macro_observations_current o
+        INNER JOIN mi_v_macro_series s ON s.series_id = o.series_id
+        WHERE o.observation_date = :day
+          AND o.series_id = ANY(:series_ids)
+          AND o.value IS NOT NULL
+        """,
+        {"day": effective, "series_ids": series_ids},
+    )
+    by_tenor: dict[str, list[dict[str, Any]]] = {tenor: [] for tenor in TIPS_TENORS}
+    series_to_tenor = {
+        series_id: tenor
+        for tenor, canonical in TIPS_TENORS.items()
+        for series_id in EQUIVALENTS.get(canonical, (canonical,))
+    }
+    for row in rows:
+        tenor = series_to_tenor.get(str(row.get("series_id") or ""))
+        if tenor is None or row.get("value") is None:
+            continue
+        source_id = row.get("source_id") or ("TREASURY" if str(row.get("series_id") or "").startswith("UST_") else "FRED")
+        by_tenor[tenor].append(
+            {
+                "series_id": row.get("series_id"),
+                "source_id": source_id,
+                "observation_date": effective,
+                "value": row.get("value"),
+            }
+        )
+    resolved_levels: dict[str, dict[date, Any]] = {series_id: {} for series_id in TIPS_TENORS.values()}
+    curve: list[dict[str, Any]] = []
+    for tenor, canonical in TIPS_TENORS.items():
+        picked = resolve_observation(canonical, by_tenor.get(tenor) or [])
+        if picked is not None and picked.observation_date == effective and picked.value is not None:
+            resolved_levels[canonical][effective] = picked.value
+            curve.append(
+                {
+                    "tenor": tenor,
+                    "series_id": canonical,
+                    "provider_series_id": picked.series_id,
+                    "yield_pct": picked.value,
+                    "observation_date": effective.isoformat(),
+                    "source_id": picked.source_id,
+                    "fallback": picked.fallback,
+                }
+            )
+        else:
+            curve.append(
+                {
+                    "tenor": tenor,
+                    "series_id": canonical,
+                    "provider_series_id": canonical,
+                    "yield_pct": None,
+                    "observation_date": None,
+                    "source_id": None,
+                    "fallback": False,
+                }
+            )
+    # Guard: assembly only reads the coherent date. A tenor from another day cannot appear.
+    assembled = tips_points_for_date(resolved_levels, effective)
+    for point, row in zip(assembled, curve):
+        if point["yield_pct"] is None:
+            row["yield_pct"] = None
+            row["observation_date"] = None
+    source_ids = sorted({row["source_id"] for row in curve if row.get("source_id")})
+    return {
+        "requested_date": target.isoformat(),
+        "effective_date": effective.isoformat(),
+        "fallback": bool(resolved["fallback"]),
+        "found": any(row.get("yield_pct") is not None for row in curve),
+        "reason": None,
+        "curve": curve,
+        "source_ids": source_ids,
+        "earliest_date": earliest.isoformat() if earliest else None,
+        "latest_date": latest.isoformat() if latest else None,
+    }
+
+
+def fed_funds_target_on_or_before(conn, curve_date: str) -> dict[str, Any]:
+    """Policy target range in force on ``curve_date``.
+
+    Uses the latest stored DFEDTARL/DFEDTARU pair on or before that date.
+    This as-of rule is only for the policy target. Treasury tenors are not
+    filled this way. Future observations are ignored. No range is invented
+    when the series have not started.
+    """
+    from market_intelligence.curve_compare import FED_FUNDS_UNAVAILABLE, parse_curve_date, resolve_fed_funds_target
+
+    day = parse_curve_date(curve_date)
+    if day is None:
+        return {
+            "available": False,
+            "curve_date": None,
+            "effective_date": None,
+            "lower": None,
+            "upper": None,
+            "carried": False,
+            "message": FED_FUNDS_UNAVAILABLE,
+        }
+    rows = _rows(
+        conn,
+        """
+        SELECT series_id, observation_date, value
+        FROM mi_v_macro_observations_current
+        WHERE series_id = ANY(:series_ids)
+          AND observation_date <= :ceiling
+          AND value IS NOT NULL
+        """,
+        {"series_ids": [FED_FUNDS_TARGET_LOWER, FED_FUNDS_TARGET_UPPER], "ceiling": day},
+    )
+    lower: dict[date, Any] = {}
+    upper: dict[date, Any] = {}
+    for row in rows:
+        obs = _normalize_obs_date(row.get("observation_date"))
+        if obs is None or obs > day or row.get("value") is None:
+            continue
+        series_id = str(row.get("series_id") or "")
+        if series_id == FED_FUNDS_TARGET_LOWER:
+            lower[obs] = row.get("value")
+        elif series_id == FED_FUNDS_TARGET_UPPER:
+            upper[obs] = row.get("value")
+    resolved = resolve_fed_funds_target(lower, upper, day)
+    if resolved is None:
+        return {
+            "available": False,
+            "curve_date": day.isoformat(),
+            "effective_date": None,
+            "lower": None,
+            "upper": None,
+            "carried": False,
+            "message": FED_FUNDS_UNAVAILABLE,
+        }
+    resolved["message"] = None
+    return resolved
 
 
 def credit_context(conn) -> dict[str, Any]:
@@ -1498,7 +1742,10 @@ __all__ = [
     "morning_latest",
     "observation_history",
     "complete_treasury_curve_on_or_before",
+    "fed_funds_target_on_or_before",
     "rates_context",
+    "tips_curve_bounds",
+    "tips_curve_on_or_before",
     "treasury_complete_curve_bounds",
     "recent_runs",
     "research_ideas",

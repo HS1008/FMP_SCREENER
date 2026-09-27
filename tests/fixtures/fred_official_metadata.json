@@ -166,6 +166,28 @@
       "units": "Percent",
       "units_short": "%"
     },
+    "DFEDTARL": {
+      "frequency": "Daily",
+      "frequency_short": "D",
+      "id": "DFEDTARL",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/DFEDTARL",
+      "title": "Federal Funds Target Range - Lower Limit",
+      "units": "Percent",
+      "units_short": "%"
+    },
+    "DFEDTARU": {
+      "frequency": "Daily",
+      "frequency_short": "D",
+      "id": "DFEDTARU",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/DFEDTARU",
+      "title": "Federal Funds Target Range - Upper Limit",
+      "units": "Percent",
+      "units_short": "%"
+    },
     "DFII10": {
       "frequency": "Daily",
       "frequency_short": "D",
