@@ -14,7 +14,15 @@ from typing import Any, Iterable, Mapping
 
 from sqlalchemy import text
 
-from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CREDIT_SERIES, CURVE_SLOPES, SeriesSpec
+from market_intelligence.catalog import (
+    CATALOG,
+    CATALOG_BY_ID,
+    CREDIT_SERIES,
+    CURVE_FLIES,
+    CURVE_SLOPES,
+    FLY_2S5S10S_METRIC,
+    SeriesSpec,
+)
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.store import current_observations
 from market_intelligence.transforms import (
@@ -23,8 +31,9 @@ from market_intelligence.transforms import (
     ann3m_pct,
     ann6m_pct,
     calendar_change,
-    curve_slope,
     common_curve_date,
+    curve_butterfly,
+    curve_slope,
     latest_date,
     mom_pct,
     pct_to_bps,
@@ -258,9 +267,30 @@ def withdrawn_credit_params(spec: SeriesSpec, at: date) -> dict[str, Any]:
     }
 
 
-def withdrawn_curve_rows(as_of: date) -> list[MetricRow]:
+def active_curve_slope_names(wanted: set[str] | None) -> list[str]:
+    """Slope metrics whose both legs were requested.
+
+    A partial ``series_ids`` run (credit OAS, for example) must not null out
+    slopes whose Treasury legs were not loaded.
+    """
+    names: list[str] = []
+    for name, (long_id, short_id) in CURVE_SLOPES.items():
+        if wanted is None or (long_id in wanted and short_id in wanted):
+            names.append(name)
+    return names
+
+
+def active_fly_enabled(wanted: set[str] | None) -> bool:
+    """The 2s5s10s fly is computed only when DGS2, DGS5, and DGS10 are all in scope."""
+    if wanted is None:
+        return True
+    return all(leg in wanted for legs in CURVE_FLIES.values() for leg in legs)
+
+
+def withdrawn_curve_rows(as_of: date, names: Iterable[str] | None = None) -> list[MetricRow]:
     result = TransformResult(None, "bps", status=STATUS_WITHDRAWN, reason="a curve leg observation is NULL at this date", detail={"at": as_of.isoformat(), "withdrawn": True})
-    return [MetricRow("curve.slope_{0}_bps".format(name), None, "rates", as_of, result) for name in CURVE_SLOPES]
+    chosen = list(CURVE_SLOPES if names is None else names)
+    return [MetricRow("curve.slope_{0}_bps".format(name), None, "rates", as_of, result) for name in chosen]
 
 
 def _quarterly_yoy(obs: Mapping[date, Decimal | None], at: date) -> TransformResult:
@@ -347,12 +377,25 @@ def _bps_or_none(result: TransformResult, *, require_one_session: bool = False) 
     return result.value
 
 
-def curve_metrics(legs: Mapping[str, Mapping[date, Decimal | None]], as_of: date) -> tuple[list[MetricRow], date | None, list[str]]:
-    common, missing = common_curve_date({k: v for k, v in legs.items() if v}, as_of)
+def curve_metrics(
+    legs: Mapping[str, Mapping[date, Decimal | None]],
+    as_of: date,
+    names: Iterable[str] | None = None,
+) -> tuple[list[MetricRow], date | None, list[str]]:
+    chosen = [name for name in (CURVE_SLOPES if names is None else names) if name in CURVE_SLOPES]
+    scoped: dict[str, Mapping[date, Decimal | None]] = {}
+    for name in chosen:
+        long_id, short_id = CURVE_SLOPES[name]
+        if legs.get(long_id):
+            scoped[long_id] = legs[long_id]
+        if legs.get(short_id):
+            scoped[short_id] = legs[short_id]
+    common, missing = common_curve_date(scoped, as_of)
     rows: list[MetricRow] = []
     if common is None:
         return rows, None, missing
-    for name, (long_id, short_id) in CURVE_SLOPES.items():
+    for name in chosen:
+        long_id, short_id = CURVE_SLOPES[name]
         result = curve_slope(legs.get(long_id, {}), legs.get(short_id, {}), common)
         result.detail["long"] = long_id
         result.detail["short"] = short_id
@@ -532,21 +575,51 @@ def build_analytics(conn, *, as_of: date | None = None, run_id: str | None = Non
         if len(rows) >= 5000:
             report.metrics_written += _write_rows(conn, rows, run_id, inputs_max)
             rows = []
-    curve_legs = {sid: observations.get(sid, {}) for pair in CURVE_SLOPES.values() for sid in pair}
-    curve_dates = sorted({d for sid in curve_legs for d in per_series_dates.get(sid, [])})
-    curve_as_of = as_of or max((latest_date(o) for o in curve_legs.values() if o), default=None)
-    if curve_as_of is not None and curve_as_of not in curve_dates:
-        curve_dates.append(curve_as_of)
-        curve_dates.sort()
-    for cd in curve_dates:
-        withdrawn_leg = any(cd in (curve_legs.get(sid) or {}) and (curve_legs.get(sid) or {}).get(cd) is None for pair in CURVE_SLOPES.values() for sid in pair)
-        curve_rows, common, missing = curve_metrics(curve_legs, cd)
-        if withdrawn_leg or not curve_rows:
-            rows.extend(withdrawn_curve_rows(cd))
-        rows.extend(curve_rows)
-        if cd == curve_dates[-1]:
-            report.curve_date = None if withdrawn_leg else common
-            report.curve_missing_legs = missing
+    slope_names = active_curve_slope_names(wanted)
+    fly_on = active_fly_enabled(wanted)
+    involved: list[str] = []
+    for name in slope_names:
+        for sid in CURVE_SLOPES[name]:
+            if sid not in involved:
+                involved.append(sid)
+    if fly_on:
+        for legs in CURVE_FLIES.values():
+            for sid in legs:
+                if sid not in involved:
+                    involved.append(sid)
+    curve_legs = {sid: observations.get(sid, {}) for sid in involved}
+    loaded_curve = any(curve_legs.get(sid) for sid in involved)
+    if (slope_names or fly_on) and loaded_curve:
+        curve_dates = sorted({d for sid in involved for d in per_series_dates.get(sid, [])})
+        curve_as_of = as_of or max((latest_date(o) for o in curve_legs.values() if o), default=None)
+        if slope_names and curve_as_of is not None and curve_as_of not in curve_dates:
+            curve_dates.append(curve_as_of)
+            curve_dates.sort()
+        for cd in curve_dates:
+            if slope_names:
+                withdrawn_leg = any(
+                    cd in (curve_legs.get(sid) or {}) and (curve_legs.get(sid) or {}).get(cd) is None
+                    for name in slope_names
+                    for sid in CURVE_SLOPES[name]
+                )
+                curve_rows, common, missing = curve_metrics(curve_legs, cd, names=slope_names)
+                if withdrawn_leg or not curve_rows:
+                    rows.extend(withdrawn_curve_rows(cd, names=slope_names))
+                rows.extend(curve_rows)
+                if cd == curve_dates[-1]:
+                    report.curve_date = None if withdrawn_leg else common
+                    report.curve_missing_legs = missing
+            if fly_on:
+                # Exact observation date. Do not roll back through common_curve_date.
+                for fly_name, (two_id, five_id, ten_id) in CURVE_FLIES.items():
+                    fly = curve_butterfly(
+                        curve_legs.get(two_id, {}),
+                        curve_legs.get(five_id, {}),
+                        curve_legs.get(ten_id, {}),
+                        cd,
+                    )
+                    metric_id = FLY_2S5S10S_METRIC if fly_name == "2s5s10s" else "curve.fly_{0}_bps".format(fly_name)
+                    rows.append(MetricRow(metric_id, None, "rates", cd, fly))
     report.metrics_written += _write_rows(conn, rows, run_id, inputs_max)
     for sid in CREDIT_SERIES:
         obs = observations.get(sid)
@@ -565,4 +638,4 @@ def build_analytics(conn, *, as_of: date | None = None, run_id: str | None = Non
     return report
 
 
-__all__ = ["AnalyticsReport", "CREDIT_WINDOWS", "DEFAULT_HISTORY_DAYS", "MetricRow", "STATUS_WITHDRAWN", "build_analytics", "credit_snapshot_params", "curve_metrics", "last_analytics_run_at", "revised_since", "series_metrics", "withdrawn_credit_params", "withdrawn_curve_rows", "withdrawn_series_metrics"]
+__all__ = ["AnalyticsReport", "CREDIT_WINDOWS", "DEFAULT_HISTORY_DAYS", "MetricRow", "STATUS_WITHDRAWN", "active_curve_slope_names", "active_fly_enabled", "build_analytics", "credit_snapshot_params", "curve_metrics", "last_analytics_run_at", "revised_since", "series_metrics", "withdrawn_credit_params", "withdrawn_curve_rows", "withdrawn_series_metrics"]

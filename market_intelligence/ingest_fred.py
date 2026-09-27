@@ -22,7 +22,19 @@ from typing import Any, Iterable
 
 from sqlalchemy import text
 
-from market_intelligence.catalog import CATALOG, CATALOG_BY_ID, CATALOG_VERSION, CREDIT_SERIES, FRED_SOURCE_ID, SeriesSpec, publishable, validate_metadata
+from market_intelligence.catalog import (
+    CATALOG,
+    CATALOG_BY_ID,
+    CATALOG_VERSION,
+    CREDIT_SERIES,
+    FLY_2S5S10S_METRIC,
+    FRED_SOURCE_ID,
+    RATES_MAX_BACKFILL_SERIES,
+    SLOPE_10Y2Y_METRIC,
+    SeriesSpec,
+    publishable,
+    validate_metadata,
+)
 from market_intelligence.fred_client import FredClient, FredError, parse_fred_date, redact
 from market_intelligence.nulls import MalformedValueError, is_missing_token, normalize_numeric
 from market_intelligence.store import (
@@ -453,6 +465,79 @@ def credit_history_coverage(engine) -> list[dict[str, Any]]:
     return coverage
 
 
+def rates_history_coverage(engine) -> list[dict[str, Any]]:
+    """Stored span for the rates max-history series and the two curve metrics.
+
+    Counts only. Values are not printed. A shorter later provider response does
+    not remove older rows, so these dates are whatever PostgreSQL still holds.
+    """
+    series_ids = list(RATES_MAX_BACKFILL_SERIES)
+    metric_ids = [SLOPE_10Y2Y_METRIC, FLY_2S5S10S_METRIC]
+    in_series = ", ".join("'{0}'".format(sid) for sid in series_ids)
+    in_metrics = ", ".join("'{0}'".format(mid) for mid in metric_ids)
+    with engine.connect() as conn:
+        observations = {
+            row["series_id"]: row
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT series_id,
+                           min(observation_date) AS earliest,
+                           max(observation_date) AS latest,
+                           count(*) AS row_count
+                    FROM mi_macro_observations
+                    WHERE is_current AND value IS NOT NULL AND series_id IN ({ids})
+                    GROUP BY series_id
+                    """.format(ids=in_series)
+                )
+            ).mappings()
+        }
+        metrics = {
+            row["metric_id"]: row
+            for row in conn.execute(
+                text(
+                    """
+                    SELECT metric_id,
+                           min(as_of) AS earliest,
+                           max(as_of) AS latest,
+                           count(*) AS row_count
+                    FROM mi_metric_snapshots
+                    WHERE value IS NOT NULL AND metric_id IN ({ids})
+                    GROUP BY metric_id
+                    """.format(ids=in_metrics)
+                )
+            ).mappings()
+        }
+    coverage: list[dict[str, Any]] = []
+    for sid in series_ids:
+        obs = observations.get(sid)
+        first = None if obs is None else obs["earliest"]
+        last = None if obs is None else obs["latest"]
+        coverage.append(
+            {
+                "kind": "series",
+                "series_id": sid,
+                "earliest": None if first is None else first.isoformat(),
+                "latest": None if last is None else last.isoformat(),
+                "rows": 0 if obs is None else int(obs["row_count"]),
+            }
+        )
+    for mid in metric_ids:
+        metric = metrics.get(mid)
+        first = None if metric is None else metric["earliest"]
+        last = None if metric is None else metric["latest"]
+        coverage.append(
+            {
+                "kind": "metric",
+                "series_id": mid,
+                "earliest": None if first is None else first.isoformat(),
+                "latest": None if last is None else last.isoformat(),
+                "rows": 0 if metric is None else int(metric["row_count"]),
+            }
+        )
+    return coverage
+
+
 __all__ = [
     "FRED_DATASET",
     "FredIngestReport",
@@ -462,6 +547,7 @@ __all__ = [
     "TRANSPORT_METADATA_REJECTED",
     "TRANSPORT_PARTIAL",
     "credit_history_coverage",
+    "rates_history_coverage",
     "ingest_fred_catalog",
     "ingest_series",
     "latest_usable_observation_date",

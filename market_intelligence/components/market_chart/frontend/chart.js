@@ -170,6 +170,13 @@ function formatReadoutValue(state, value) {
   if (state.valueFormat === "bps") {
     return value.toFixed(0) + " bps";
   }
+  if (state.valueFormat === "signed_bps") {
+    var rounded = Math.round(value);
+    if (rounded > 0) {
+      return "+" + rounded + " bps";
+    }
+    return rounded + " bps";
+  }
   if (state.valueFormat === "vol_points") {
     return text + " vol pts";
   }
@@ -740,10 +747,62 @@ function createState(root) {
   return state;
 }
 
+function applyReferenceLine(state) {
+  var raw = state.data && state.data.reference_price;
+  var price = typeof raw === "number" && Number.isFinite(raw) ? raw : null;
+  if (state.referenceLine && state.referenceSeries) {
+    try {
+      state.referenceSeries.removePriceLine(state.referenceLine);
+    } catch (err) {
+      /* The series may already have been recreated. */
+    }
+    state.referenceLine = null;
+    state.referenceSeries = null;
+  }
+  var entry = state.seriesList[0];
+  if (!entry || !entry.fragments.length) {
+    return;
+  }
+  var fragmentIndex;
+  if (price == null) {
+    for (fragmentIndex = 0; fragmentIndex < entry.fragments.length; fragmentIndex++) {
+      entry.fragments[fragmentIndex].applyOptions({ autoscaleInfoProvider: undefined });
+    }
+    return;
+  }
+  for (fragmentIndex = 0; fragmentIndex < entry.fragments.length; fragmentIndex++) {
+    entry.fragments[fragmentIndex].applyOptions({
+      autoscaleInfoProvider: function (original) {
+        var info = original();
+        var minValue = price;
+        var maxValue = price;
+        if (info && info.priceRange && typeof info.priceRange.minValue === "number") {
+          minValue = Math.min(info.priceRange.minValue, price);
+          maxValue = Math.max(info.priceRange.maxValue, price);
+        } else if (info && typeof info.minValue === "number") {
+          minValue = Math.min(info.minValue, price);
+          maxValue = Math.max(info.maxValue, price);
+        }
+        return { priceRange: { minValue: minValue, maxValue: maxValue } };
+      },
+    });
+  }
+  var series = entry.fragments[0];
+  state.referenceSeries = series;
+  state.referenceLine = series.createPriceLine({
+    price: price,
+    color: "rgba(180, 186, 196, 0.9)",
+    lineWidth: 1,
+    lineStyle: 2,
+    axisLabelVisible: false,
+    title: "",
+  });
+}
+
 function updateState(state, data) {
   state.data = data || {};
   var requestedFormat = String(state.data.value_format || "").toLowerCase();
-  var nextFormat = requestedFormat === "percent" || requestedFormat === "bps" || requestedFormat === "vol_points" ? requestedFormat : "number";
+  var nextFormat = requestedFormat === "percent" || requestedFormat === "bps" || requestedFormat === "signed_bps" || requestedFormat === "vol_points" ? requestedFormat : "number";
   var formatChanged = nextFormat !== state.valueFormat;
   state.valueFormat = nextFormat;
   state.rangesEl.hidden = state.data.ranges !== true;
@@ -772,6 +831,7 @@ function updateState(state, data) {
       showAtTime(state, state.activeTime || null);
     }
   }
+  applyReferenceLine(state);
   applyTheme(state);
 }
 

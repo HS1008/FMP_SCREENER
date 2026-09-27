@@ -549,4 +549,29 @@ else
     echo "fred_credit_backfill=failed rc=${CREDIT_RC}"
   fi
 fi
+# One-shot max FRED history for nominal curve legs, TIPS, and the fed funds target range.
+# Incremental refresh keeps catalog backfill_years. Older stored rows are not deleted.
+RATES_BACKFILL_MARKER="/var/lib/fmp/fred_rates_max_backfill.done"
+if [ -f "$RATES_BACKFILL_MARKER" ]; then
+  echo "fred_rates_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "fred_rates_backfill=skipped_no_writer_env"
+else
+  echo "fred_rates_backfill=start"
+  RATES_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    staged_python -m jobs.market_intelligence_refresh --fred-rates-backfill
+  ) || RATES_RC=$?
+  if [ "$RATES_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$RATES_BACKFILL_MARKER"
+    echo "fred_rates_backfill=complete"
+  else
+    echo "fred_rates_backfill=failed rc=${RATES_RC}"
+  fi
+fi
 echo "deploy_host=complete sha=$SHA"

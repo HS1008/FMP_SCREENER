@@ -153,6 +153,27 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
         typical_release=time(16, 15),
         notes="EFFR/DFF: prior business day's effective rate; FRED/H.15 typically ~16:15 ET (T+1). Not same-day.",
     ),
+    # Target range is the policy state in force on the observation date. It is not DFF and is not lagged one session.
+    "DFEDTARL": FreshnessPolicy(
+        calendar=CAL_US_FEDERAL,
+        cadence="D",
+        typical_release=time(16, 0),
+        publication_guaranteed=False,
+        overdue_sessions=1,
+        stale_sessions=5,
+        same_day_available=True,
+        notes="FOMC federal funds target range lower limit. Held until changed. Not the effective funds rate (DFF).",
+    ),
+    "DFEDTARU": FreshnessPolicy(
+        calendar=CAL_US_FEDERAL,
+        cadence="D",
+        typical_release=time(16, 0),
+        publication_guaranteed=False,
+        overdue_sessions=1,
+        stale_sessions=5,
+        same_day_available=True,
+        notes="FOMC federal funds target range upper limit. Held until changed. Not the effective funds rate (DFF).",
+    ),
     **{sid: FreshnessPolicy(calendar=CAL_NYSE, cadence="D", typical_release=time(16, 0), overdue_sessions=1, stale_sessions=3, same_day_available=True, notes="US equity/ETF last completed session.") for sid in (
         "SPY", "XLK", "XLF", "XLE", "XLY", "XLP", "XLV", "XLI", "XLB", "XLU", "XLRE", "XLC", "SMH", "XSD",
         "equity_eod", "precomputed_sector_bundles",

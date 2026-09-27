@@ -61,20 +61,33 @@ def _finite_number(value: Any) -> float | None:
     return number
 
 
-def time_series_points(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+def time_series_points(rows: Sequence[Mapping[str, Any]], *, keep_missing: bool = False) -> list[dict[str, Any]]:
     """Ascending Lightweight Charts points: ``{"time": "YYYY-MM-DD", "value": float}``.
 
-    Missing values are omitted. Duplicate dates keep the last finite value.
+    Missing values are omitted unless ``keep_missing`` is set. A kept gap is
+    ``{"time"}`` with no value, so the line breaks instead of connecting across
+    a missing observation. Duplicate dates keep the last finite value.
     Times are date strings, never epoch timestamps.
     """
-    by_day: dict[str, float] = {}
+    by_day: dict[str, float | None] = {}
     for row in rows:
         day = observation_day(row.get("time") if "time" in row else row.get("as_of"))
-        number = _finite_number(row.get("value"))
-        if day is None or number is None:
+        if day is None:
             continue
-        by_day[day.isoformat()] = number
-    return [{"time": day, "value": by_day[day]} for day in sorted(by_day)]
+        number = _finite_number(row.get("value"))
+        key = day.isoformat()
+        if number is None:
+            if keep_missing and key not in by_day:
+                by_day[key] = None
+            continue
+        by_day[key] = number
+    points: list[dict[str, Any]] = []
+    for day in sorted(by_day):
+        if by_day[day] is None:
+            points.append({"time": day})
+        else:
+            points.append({"time": day, "value": by_day[day]})
+    return points
 
 
 def _series_label(value: Any) -> str:
@@ -88,31 +101,39 @@ def _series_specs(
     points: Sequence[Mapping[str, Any]] | None,
     series_label: str,
     series: Sequence[Mapping[str, Any]] | None,
+    *,
+    keep_missing: bool = False,
 ) -> list[tuple[str, list[dict[str, Any]]]]:
     if series is not None:
         return [
-            (_series_label(item.get("label")), time_series_points(item.get("points") or ()))
+            (_series_label(item.get("label")), time_series_points(item.get("points") or (), keep_missing=keep_missing))
             for item in series
         ]
-    return [(_series_label(series_label), time_series_points(points or ()))]
+    return [(_series_label(series_label), time_series_points(points or (), keep_missing=keep_missing))]
 
 
 def _align_to_union(
     specs: Sequence[tuple[str, Sequence[Mapping[str, Any]]]],
 ) -> list[dict[str, Any]]:
     """Share one timeline. A series missing a date gets ``{"time"}`` only."""
-    lookups: list[tuple[str, dict[str, float]]] = []
+    lookups: list[tuple[str, dict[str, float | None]]] = []
     days: set[str] = set()
     for label, rows in specs:
-        values = {str(row["time"]): row["value"] for row in rows}
-        days.update(values)
+        values: dict[str, float | None] = {}
+        for row in rows:
+            day = str(row["time"])
+            if "value" in row and row["value"] is not None:
+                values[day] = row["value"]
+            else:
+                values[day] = None
+            days.add(day)
         lookups.append((label, values))
     ordered = sorted(days)
     aligned: list[dict[str, Any]] = []
     for label, values in lookups:
         series_points: list[dict[str, Any]] = []
         for day in ordered:
-            if day in values:
+            if values.get(day) is not None:
                 series_points.append({"time": day, "value": values[day]})
             else:
                 series_points.append({"time": day})
@@ -127,6 +148,8 @@ def build_market_chart_payload(
     series: Sequence[Mapping[str, Any]] | None = None,
     ranges: bool = False,
     value_format: str = "number",
+    reference_price: float | None = None,
+    keep_missing: bool = False,
 ) -> dict[str, Any]:
     """Data passed to the chart, before the component mount.
 
@@ -136,11 +159,14 @@ def build_market_chart_payload(
     ``YYYY-MM-DD`` strings. A gap against the union of dates is a whitespace
     point with no ``value`` key, so the line is not zero-filled.
     """
-    return {
-        "series": _align_to_union(_series_specs(points, series_label, series)),
+    payload: dict[str, Any] = {
+        "series": _align_to_union(_series_specs(points, series_label, series, keep_missing=keep_missing)),
         "ranges": bool(ranges),
         "value_format": value_format,
     }
+    if reference_price is not None:
+        payload["reference_price"] = float(reference_price)
+    return payload
 
 
 def _component():
@@ -164,6 +190,8 @@ def lightweight_market_chart(
     key: str | None = None,
     ranges: bool = False,
     value_format: str = "number",
+    reference_price: float | None = None,
+    keep_missing: bool = False,
 ) -> None:
     """Render one or more time series on a shared calendar axis.
 
@@ -178,6 +206,8 @@ def lightweight_market_chart(
         series=series,
         ranges=ranges,
         value_format=value_format,
+        reference_price=reference_price,
+        keep_missing=keep_missing,
     )
     resolved_height = 420 if height is None else int(height)
     data: dict[str, Any] = {
