@@ -625,9 +625,13 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             elif name == "fred_rates_backfill":
                 from market_intelligence.analytics import build_analytics
                 from market_intelligence.fred_client import FredClient
-                from market_intelligence.ingest_fred import ingest_fred_catalog, rates_history_coverage
+                from market_intelligence.ingest_fred import fed_funds_target_stored, ingest_fred_catalog, rates_history_coverage
                 from market_intelligence.store import finish_run, start_run
 
+                print(
+                    "rates_backfill phase=ingest_start series={0}".format(len(RATES_MAX_BACKFILL_SERIES)),
+                    flush=True,
+                )
                 client = fred_client_factory() if fred_client_factory else FredClient(fred_key)
                 report = ingest_fred_catalog(
                     engine,
@@ -637,6 +641,26 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                     parent_run_id=parent_run_id,
                     today=as_of,
                 )
+                print(
+                    "rates_backfill phase=ingest_done succeeded={0} failed={1} quarantined={2}".format(
+                        len(report.succeeded),
+                        len(report.failed),
+                        len(report.quarantined),
+                    ),
+                    flush=True,
+                )
+                for result in report.results:
+                    print(
+                        "rates_backfill series={0} status={1} metadata={2} first={3} latest={4}".format(
+                            result.series_id,
+                            result.status,
+                            result.metadata_status,
+                            result.first_observation.isoformat() if result.first_observation else "none",
+                            result.latest_observation.isoformat() if result.latest_observation else "none",
+                        ),
+                        flush=True,
+                    )
+                print("rates_backfill phase=analytics_start", flush=True)
                 with engine.begin() as conn:
                     rid = start_run(conn, source_id="ANALYTICS", dataset="rates_curve_backfill", parent_run_id=parent_run_id)
                     analytics = build_analytics(
@@ -653,10 +677,19 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                         counts={"inserted": analytics.metrics_written},
                         details=analytics.as_dict(),
                     )
+                print(
+                    "rates_backfill phase=analytics_done metrics_written={0}".format(analytics.metrics_written),
+                    flush=True,
+                )
                 coverage = rates_history_coverage(engine)
                 for row in coverage:
                     print(
                         "rates_coverage kind={kind} series={series_id} earliest={earliest} latest={latest} rows={rows}".format(**row),
+                        flush=True,
+                    )
+                for row in fed_funds_target_stored(engine):
+                    print(
+                        "rates_fed_funds_latest series={series_id} observation_date={observation_date} value={value}".format(**row),
                         flush=True,
                     )
                 status["results"][name] = {

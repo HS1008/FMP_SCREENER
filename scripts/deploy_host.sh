@@ -565,7 +565,21 @@ else
     . "$YAHOO_ENV"
     set +a
     unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
-    staged_python -m jobs.market_intelligence_refresh --fred-rates-backfill
+    export PYTHONUNBUFFERED=1
+    # Heartbeat so a multi-minute FRED pull is not an idle SSH channel.
+    (
+      while sleep 20; do
+        echo "fred_rates_backfill=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      done
+    ) &
+    hb_pid=$!
+    set +e
+    staged_python -u -m jobs.market_intelligence_refresh --fred-rates-backfill --wait-lock
+    rc=$?
+    set -e
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+    exit "$rc"
   ) || RATES_RC=$?
   if [ "$RATES_RC" = "0" ]; then
     printf '%s\n' "$SHA" > "$RATES_BACKFILL_MARKER"

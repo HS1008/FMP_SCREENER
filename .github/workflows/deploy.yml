@@ -56,7 +56,13 @@ jobs:
           # Pipe this SHA's deploy_host.sh. The host script takes the flock.
           # Do not pull main on the host first: concurrent pushes must not
           # move the checkout to a different SHA before this script runs.
+          # ServerAliveInterval keeps the session up while a max-history
+          # FRED backfill is quiet. An idle pipe was dropped after ~5 minutes
+          # (client_loop: Broken pipe) before rates coverage could print.
           ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=240 \
+            -o TCPKeepAlive=yes \
             "$DO_USER@$DO_HOST" \
             "bash -s -- --sha $SHA" \
             < scripts/deploy_host.sh
