@@ -15,8 +15,25 @@ if ! (umask 077; : > "$LOCK_FILE") 2>/dev/null; then
 fi
 exec 9>"$LOCK_FILE"
 if ! flock -n 9; then
-  echo "FAIL: another deploy holds $LOCK_FILE"
-  exit 75
+  # A dropped SSH session can leave the previous deploy_host.sh running
+  # (rates max-history backfill). Queue behind it instead of failing the
+  # new SHA in a few seconds. Client keepalives cover this quiet wait.
+  echo "deploy_lock=busy file=$LOCK_FILE; waiting up to 90 minutes"
+  (
+    while sleep 20; do
+      echo "deploy_lock=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    done
+  ) &
+  lock_hb_pid=$!
+  lock_rc=0
+  flock -w 5400 9 || lock_rc=$?
+  kill "$lock_hb_pid" 2>/dev/null || true
+  wait "$lock_hb_pid" 2>/dev/null || true
+  if [ "$lock_rc" != "0" ]; then
+    echo "FAIL: another deploy holds $LOCK_FILE"
+    exit 75
+  fi
+  echo "deploy_lock=acquired_after_wait"
 fi
 
 # GNU readlink -f prints a canonical path for a missing last component once
@@ -587,5 +604,26 @@ else
   else
     echo "fred_rates_backfill=failed rc=${RATES_RC}"
   fi
+fi
+# Read-only report. Runs when the one-shot already finished on an earlier
+# attempt (marker present) and again after this attempt, so coverage is in
+# the deploy log even if the first SSH session died before it could print.
+if [ -f "$YAHOO_ENV" ]; then
+  echo "rates_coverage_report=start"
+  RCOV_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    staged_python -u -m jobs.market_intelligence_refresh --fred-rates-coverage --wait-lock
+  ) || RCOV_RC=$?
+  if [ "$RCOV_RC" != "0" ]; then
+    echo "rates_coverage_report=failed rc=${RCOV_RC}"
+  fi
+else
+  echo "rates_coverage_report=skipped_no_writer_env"
 fi
 echo "deploy_host=complete sha=$SHA"

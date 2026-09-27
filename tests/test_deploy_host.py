@@ -36,6 +36,9 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "rates_backfill phase=ingest_start" in refresh
     assert "rates_fed_funds_latest" in refresh
     assert "flock -n" in host
+    assert "deploy_lock=busy" in host
+    assert "flock -w 5400" in host
+    assert "--fred-rates-coverage" in host
     assert "concurrency:" in deploy
     assert "cancel-in-progress: false" in deploy
     assert "git pull --ff-only origin main" not in deploy
@@ -47,6 +50,20 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "Applying database migrations ONCE" in host
     assert "MIGRATIONS_BACKFILL_SHA256" not in host
     assert "MERGING TO MAIN IS A PRODUCTION DEPLOY EVENT" in deploy
+
+
+def test_rates_coverage_plan_is_read_only_and_not_part_of_refresh():
+    from jobs.market_intelligence_refresh import _rates_coverage_only, build_parser, plan
+
+    coverage = plan(build_parser().parse_args(["--fred-rates-coverage"]), {})
+    assert _rates_coverage_only(coverage)
+    assert coverage["steps"][0]["action"] == "report"
+    assert coverage["steps"][0]["mode"] == "read"
+    combined = plan(build_parser().parse_args(["--fred-rates-coverage", "--fred-rates-backfill"]), {})
+    assert not _rates_coverage_only(combined)
+    scheduled = plan(build_parser().parse_args(["--all-configured"]), {})
+    assert "fred_rates_coverage" not in {step["step"] for step in scheduled["steps"]}
+    assert "fred_rates_backfill" not in {step["step"] for step in scheduled["steps"]}
 
 
 def test_deploy_host_migrates_once_from_staged_sha():

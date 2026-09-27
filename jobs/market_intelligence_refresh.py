@@ -101,6 +101,16 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "catalog_version": CATALOG_VERSION,
             }
         )
+    if getattr(args, "fred_rates_coverage", False):
+        steps.append(
+            {
+                "step": "fred_rates_coverage",
+                "source_id": FRED_SOURCE_ID,
+                "configured": True,
+                "action": "report",
+                "mode": "read",
+            }
+        )
     from market_intelligence.finra_catalog import FINRA_QUERY_SOURCE_ID
     from market_intelligence.finra_client import configured_from_env as finra_configured_from_env
 
@@ -303,6 +313,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Max-history FRED ingest for Treasury curve legs, TIPS real yields, and the fed funds target range, then rebuild 2s10s and the 2s5s10s butterfly. Not part of the incremental refresh.",
     )
+    parser.add_argument(
+        "--fred-rates-coverage",
+        action="store_true",
+        help="Print stored Treasury/TIPS/fed-funds coverage and the latest target-range prints. Does not call FRED and does not delete rows.",
+    )
     parser.add_argument("--finra", action="store_true", help="Ingest FINRA Query API corporate-bond aggregates")
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
@@ -348,13 +363,37 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _rates_coverage_only(the_plan: dict[str, Any]) -> bool:
+    """True when the plan is only the read-only rates coverage report."""
+    steps = the_plan.get("steps") or []
+    return len(steps) == 1 and steps[0].get("step") == "fred_rates_coverage"
+
+
+def _print_rates_coverage(engine) -> list[dict[str, Any]]:
+    """Print stored spans and the latest fed funds target prints. No provider calls."""
+    from market_intelligence.ingest_fred import fed_funds_target_stored, rates_history_coverage
+
+    coverage = rates_history_coverage(engine)
+    for row in coverage:
+        print(
+            "rates_coverage kind={kind} series={series_id} earliest={earliest} latest={latest} rows={rows}".format(**row),
+            flush=True,
+        )
+    for row in fed_funds_target_stored(engine):
+        print(
+            "rates_fed_funds_latest series={series_id} observation_date={observation_date} value={value}".format(**row),
+            flush=True,
+        )
+    return coverage
+
+
 def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None, env: dict[str, str] | None = None) -> int:
     env = os.environ if env is None else env
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
-        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
+    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -382,7 +421,12 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
 
     try:
         with writer_lock(engine, wait=args.wait_lock):
-            exit_code = _execute(args, the_plan, status, engine, fred_client_factory, env)
+            if _rates_coverage_only(the_plan):
+                _print_rates_coverage(engine)
+                status["status"] = "REPORTED"
+                exit_code = EXIT_OK
+            else:
+                exit_code = _execute(args, the_plan, status, engine, fred_client_factory, env)
     except LockContention as exc:
         status["status"] = "LOCK_CONTENTION"
         status["error"] = str(exc)
@@ -625,7 +669,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             elif name == "fred_rates_backfill":
                 from market_intelligence.analytics import build_analytics
                 from market_intelligence.fred_client import FredClient
-                from market_intelligence.ingest_fred import fed_funds_target_stored, ingest_fred_catalog, rates_history_coverage
+                from market_intelligence.ingest_fred import ingest_fred_catalog
                 from market_intelligence.store import finish_run, start_run
 
                 print(
@@ -681,17 +725,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                     "rates_backfill phase=analytics_done metrics_written={0}".format(analytics.metrics_written),
                     flush=True,
                 )
-                coverage = rates_history_coverage(engine)
-                for row in coverage:
-                    print(
-                        "rates_coverage kind={kind} series={series_id} earliest={earliest} latest={latest} rows={rows}".format(**row),
-                        flush=True,
-                    )
-                for row in fed_funds_target_stored(engine):
-                    print(
-                        "rates_fed_funds_latest series={series_id} observation_date={observation_date} value={value}".format(**row),
-                        flush=True,
-                    )
+                coverage = _print_rates_coverage(engine)
                 status["results"][name] = {
                     "ingest": report.as_dict(),
                     "analytics": analytics.as_dict(),
