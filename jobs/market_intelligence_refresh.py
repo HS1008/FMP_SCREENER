@@ -969,7 +969,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             elif name in {"equity_markets", "equity_markets_backfill"}:
                 from market_intelligence.equity_eod import ingest_market_monitor
 
-                print("equity_markets phase=ingest_start mode={0}".format(step.get("mode")), flush=True)
+                print("equity_markets phase=ingest_start mode={0}".format(step.get("mode")), file=sys.stderr, flush=True)
                 report = ingest_market_monitor(
                     engine,
                     mode=str(step.get("mode") or "incremental"),
@@ -984,6 +984,7 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                         bars=report.get("bars_written"),
                         failed=report.get("failed"),
                     ),
+                    file=sys.stderr,
                     flush=True,
                 )
                 status["results"][name] = report

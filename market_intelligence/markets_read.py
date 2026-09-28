@@ -40,20 +40,23 @@ def _iso(day: date | None) -> str | None:
 
 
 def load_monitor_history(conn, symbols: Sequence[str]) -> dict[str, Any]:
-    """Adjusted EQUITY_EOD closes and canonical session returns for ``symbols`` only."""
+    """Adjusted EQUITY_EOD closes and canonical session returns for ``symbols`` only.
+
+    Reads ``mi_v_equity_daily_closes``. The dashboard role can select that view
+    and cannot select ``mi_market_bars``.
+    """
     wanted = [str(symbol) for symbol in symbols]
     grouped: dict[str, dict[str, list[tuple[date, float, str | None]]]] = {symbol: {} for symbol in wanted}
     if wanted:
         rows = conn.execute(
             text(
                 """
-                SELECT instrument_id, bar_date, adj_close_price, provider, adjustment_basis, source_id
-                FROM mi_market_bars
+                SELECT symbol, bar_date, adj_close_price, provider, adjustment_basis, source_id
+                FROM mi_v_equity_daily_closes
                 WHERE source_id = 'EQUITY_EOD'
-                  AND bar_interval = '1D'
                   AND adj_close_price IS NOT NULL
-                  AND instrument_id IN :syms
-                ORDER BY instrument_id, bar_date
+                  AND symbol IN :syms
+                ORDER BY symbol, bar_date
                 """
             ).bindparams(bindparam("syms", expanding=True)),
             {"syms": wanted},

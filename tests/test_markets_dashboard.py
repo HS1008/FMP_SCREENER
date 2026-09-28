@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -24,7 +25,7 @@ from market_intelligence.markets_analytics import (
     session_window_returns,
     trailing_drawdown,
 )
-from market_intelligence.markets_read import choose_provider, yahoo_backfill_symbols
+from market_intelligence.markets_read import choose_provider, load_monitor_history, yahoo_backfill_symbols
 from market_intelligence.taxonomy import (
     GLOBAL_MARKET_ETFS,
     MARKET_MONITOR_SYMBOLS,
@@ -375,3 +376,17 @@ def test_chart_code_does_not_call_providers_or_the_database():
     assert "import yfinance" not in ui
     assert "st.line_chart" not in ui
     assert "plotly" not in ui.lower()
+
+
+def test_dashboard_history_reads_the_readonly_closes_view():
+    source = inspect.getsource(load_monitor_history)
+    assert "FROM mi_v_equity_daily_closes" in source
+    assert "FROM mi_market_bars" not in source
+
+
+def test_equity_markets_progress_does_not_prefix_json_stdout():
+    text = (ROOT / "jobs" / "market_intelligence_refresh.py").read_text(encoding="utf-8")
+    for marker in ("equity_markets phase=ingest_start", "equity_markets phase=ingest_done"):
+        start = text.index(marker)
+        window = text[start : start + 500]
+        assert "sys.stderr" in window
