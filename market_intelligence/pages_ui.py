@@ -294,7 +294,8 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
         "Streamlit does not call Yahoo."
     )
     if not yahoo or yahoo.get("status") != "OK":
-        st.info((yahoo or {}).get("reason") or "Yahoo volatility metrics are unavailable.")
+        reason = (yahoo or {}).get("reason") or "Yahoo volatility metrics are unavailable."
+        st.info("{0} This optional source is not a platform outage.".format(reason))
         return
 
     def _num(row: dict[str, Any] | None) -> Any:

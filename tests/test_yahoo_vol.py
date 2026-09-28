@@ -627,6 +627,7 @@ def test_options_page_nulls_stay_unavailable(monkeypatch):
     assert not at.exception
     text = " ".join(str(el.value) for el in at.info)
     assert "unavailable" in text.lower() or "No Yahoo" in text
+    assert "platform outage" in text.lower()
 
 
 def test_full_backfill_uses_max_history_only_for_active_term_tickers():
