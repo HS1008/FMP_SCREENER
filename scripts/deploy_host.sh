@@ -782,4 +782,120 @@ if [ -f "$YAHOO_ENV" ]; then
 else
   echo "equity_markets_coverage_report=skipped_no_writer_env"
 fi
+# One-shot maximum history for the new Yahoo FX, futures-proxy, and crypto bars.
+# Existing equity and market-monitor markers are not reused or cleared.
+CROSS_ASSET_MARKER="/var/lib/fmp/yahoo_cross_asset_max_backfill.done"
+if [ -f "$CROSS_ASSET_MARKER" ]; then
+  echo "yahoo_cross_asset_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "yahoo_cross_asset_backfill=skipped_no_writer_env"
+else
+  echo "yahoo_cross_asset_backfill=start"
+  CROSS_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    (
+      while sleep 20; do
+        echo "yahoo_cross_asset_backfill=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      done
+    ) &
+    hb_pid=$!
+    set +e
+    staged_python -u -m jobs.market_intelligence_refresh --yahoo-cross-asset-backfill --wait-lock
+    rc=$?
+    set -e
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+    exit "$rc"
+  ) || CROSS_RC=$?
+  if [ "$CROSS_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$CROSS_ASSET_MARKER"
+    echo "yahoo_cross_asset_backfill=complete"
+  else
+    echo "yahoo_cross_asset_backfill=failed rc=${CROSS_RC}"
+  fi
+fi
+CFTC_POSITION_MARKER="/var/lib/fmp/cftc_positions_max_backfill.done"
+if [ -f "$CFTC_POSITION_MARKER" ]; then
+  echo "cftc_positions_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "cftc_positions_backfill=skipped_no_writer_env"
+else
+  echo "cftc_positions_backfill=start"
+  CFTC_POS_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    (
+      while sleep 20; do
+        echo "cftc_positions_backfill=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      done
+    ) &
+    hb_pid=$!
+    set +e
+    staged_python -u -m jobs.market_intelligence_refresh --cftc-positions-backfill --wait-lock
+    rc=$?
+    set -e
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+    exit "$rc"
+  ) || CFTC_POS_RC=$?
+  if [ "$CFTC_POS_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$CFTC_POSITION_MARKER"
+    echo "cftc_positions_backfill=complete"
+  else
+    echo "cftc_positions_backfill=failed rc=${CFTC_POS_RC}"
+  fi
+fi
+EIA_BACKFILL_MARKER="/var/lib/fmp/eia_fundamentals_max_backfill.done"
+if [ -f "$EIA_BACKFILL_MARKER" ]; then
+  echo "eia_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "eia_backfill=skipped_no_writer_env"
+else
+  echo "eia_backfill=start"
+  EIA_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    staged_python -u -m jobs.market_intelligence_refresh --eia-backfill --wait-lock
+  ) || EIA_RC=$?
+  if [ "$EIA_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$EIA_BACKFILL_MARKER"
+    echo "eia_backfill=complete"
+  else
+    echo "eia_backfill=failed rc=${EIA_RC}"
+  fi
+fi
+if [ -f "$YAHOO_ENV" ]; then
+  echo "cross_asset_coverage_report=start"
+  COV_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    staged_python -u -m jobs.market_intelligence_refresh --cross-asset-coverage --wait-lock
+  ) || COV_RC=$?
+  if [ "$COV_RC" != "0" ]; then
+    echo "cross_asset_coverage_report=failed rc=${COV_RC}"
+  fi
+else
+  echo "cross_asset_coverage_report=skipped_no_writer_env"
+fi
 echo "deploy_host=complete sha=$SHA"

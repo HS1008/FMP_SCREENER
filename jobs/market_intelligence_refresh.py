@@ -292,6 +292,50 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "reason": "Free Yahoo closes for VIX, SKEW, VIX index tenors ^VIX/^VIX3M/^VIX6M/^VIX1Y, and GSPC RV21.",
             }
         )
+    if getattr(args, "yahoo_cross_asset", False) or getattr(args, "yahoo_cross_asset_backfill", False) or getattr(args, "due_configured", False):
+        steps.append(
+            {
+                "step": "yahoo_cross_asset",
+                "source_id": "YAHOO_FX",
+                "configured": True,
+                "action": "ingest",
+                "mode": "full" if getattr(args, "yahoo_cross_asset_backfill", False) else "incremental",
+                "reason": "Yahoo FX, commodity futures proxies, and BTC/ETH daily bars.",
+            }
+        )
+    if getattr(args, "cftc_positions_backfill", False):
+        steps.append(
+            {
+                "step": "cftc_positions_backfill",
+                "source_id": "CFTC_COT",
+                "configured": True,
+                "action": "ingest",
+                "mode": "full",
+                "reason": "Maximum TFF and Disaggregated COT history for the mapped contracts.",
+            }
+        )
+    if getattr(args, "cross_asset_coverage", False):
+        steps.append(
+            {
+                "step": "cross_asset_coverage",
+                "source_id": "YAHOO_FX",
+                "configured": True,
+                "action": "report",
+                "mode": "read",
+                "reason": "Read stored FX, futures-proxy, crypto, CFTC, and EIA coverage.",
+            }
+        )
+    if getattr(args, "eia_backfill", False):
+        steps.append(
+            {
+                "step": "eia_backfill",
+                "source_id": "EIA_ENERGY",
+                "configured": bool(str(env.get("EIA_API_KEY") or "").strip()),
+                "action": "ingest" if str(env.get("EIA_API_KEY") or "").strip() else "skip_unconfigured",
+                "mode": "max",
+                "reason": "Maximum EIA weekly history for crude stocks, Cushing, production, and gas storage.",
+            }
+        )
     cftc_on = str(env.get("MI_CFTC_ENABLED", "1")).strip().lower() not in {"0", "false", "no", "off"}
     if getattr(args, "cftc", False) or want_all:
         steps.append(
@@ -421,8 +465,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Backfill maximum Yahoo history for ^VIX, ^VIX3M, ^VIX6M, and ^VIX1Y. Idempotent upsert. Does not run on the 10-minute refresh.",
     )
+    parser.add_argument("--yahoo-cross-asset", action="store_true", help="Incremental Yahoo FX, futures-proxy, and crypto daily bars")
+    parser.add_argument("--yahoo-cross-asset-backfill", action="store_true", help="Maximum Yahoo history for FX, futures proxies, and BTC/ETH. Not part of the 10-minute refresh.")
     parser.add_argument("--cftc", action="store_true", help="Ingest public CFTC Commitments of Traders")
+    parser.add_argument("--cftc-positions-backfill", action="store_true", help="Maximum TFF and Disaggregated COT history. Not part of the 10-minute refresh.")
     parser.add_argument("--eia", action="store_true", help="Ingest EIA weekly energy statistics (requires EIA_API_KEY)")
+    parser.add_argument("--eia-backfill", action="store_true", help="Maximum EIA weekly history. Not part of the 10-minute refresh.")
+    parser.add_argument("--cross-asset-coverage", action="store_true", help="Print stored FX, futures-proxy, crypto, CFTC position, and EIA coverage. No provider calls.")
     parser.add_argument("--openfigi", action="store_true", help="Resolve a bounded OpenFIGI mapping batch (requires MI_OPENFIGI_ENABLED)")
     parser.add_argument("--edgar", action="store_true", help="Bounded SEC EDGAR submissions/facts ingest (requires SEC_USER_AGENT and MI_EDGAR_ENABLED)")
     parser.add_argument("--build-analytics", action="store_true", help="Recompute versioned analytics")
@@ -519,8 +568,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), getattr(args, "fred_macro_backfill", False), getattr(args, "fred_macro_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, getattr(args, "equity_markets_backfill", False), getattr(args, "equity_markets_coverage", False), args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
-        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--fred-macro-backfill/--fred-macro-coverage/--finra/--legacy-sector/--treasury/--equity/--equity-markets-backfill/--equity-markets-coverage/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
+    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), getattr(args, "fred_macro_backfill", False), getattr(args, "fred_macro_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, getattr(args, "equity_markets_backfill", False), getattr(args, "equity_markets_coverage", False), args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), getattr(args, "yahoo_cross_asset", False), getattr(args, "yahoo_cross_asset_backfill", False), args.cftc, getattr(args, "cftc_positions_backfill", False), args.eia, getattr(args, "eia_backfill", False), getattr(args, "cross_asset_coverage", False), args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--fred-macro-backfill/--fred-macro-coverage/--finra/--legacy-sector/--treasury/--equity/--equity-markets-backfill/--equity-markets-coverage/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--yahoo-cross-asset/--yahoo-cross-asset-backfill/--cftc/--cftc-positions-backfill/--eia/--eia-backfill/--cross-asset-coverage/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -1068,20 +1117,97 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 status["results"][name] = report
                 if report.get("failed"):
                     failures += 1
-            elif name == "cftc":
-                from market_intelligence.ingest_cftc import ingest_cftc
+            elif name == "yahoo_cross_asset":
+                from market_intelligence.ingest_yahoo_cross_asset import coverage_rows, ingest_yahoo_cross_asset
 
-                report = ingest_cftc(engine, parent_run_id=parent_run_id, today=as_of)
+                mode = "full" if step.get("mode") == "full" else "incremental"
+                report = ingest_yahoo_cross_asset(engine, parent_run_id=parent_run_id, today=as_of, mode=mode)
+                if mode == "full":
+                    with engine.connect() as conn:
+                        report.symbols = coverage_rows(conn)
+                    for row in report.symbols:
+                        print(
+                            "yahoo_cross_asset_coverage symbol={provider_symbol} instrument={instrument_id} asset_class={asset_type} source={source_id} earliest={earliest} latest={latest} rows={rows}".format(**row),
+                            flush=True,
+                        )
                 status["results"][name] = report.as_dict()
                 if report.failed:
+                    failures += 1
+            elif name == "cftc":
+                from market_intelligence.ingest_cftc import ingest_cftc
+                from market_intelligence.ingest_cftc_positions import ingest_cftc_positions
+
+                report = ingest_cftc(engine, parent_run_id=parent_run_id, today=as_of)
+                positions = ingest_cftc_positions(engine, parent_run_id=parent_run_id, today=as_of, mode="incremental")
+                status["results"][name] = {"legacy": report.as_dict(), "positions": positions.as_dict()}
+                if report.failed or positions.failed:
+                    failures += 1
+            elif name == "cftc_positions_backfill":
+                from market_intelligence.ingest_cftc_positions import ingest_cftc_positions
+
+                positions = ingest_cftc_positions(engine, parent_run_id=parent_run_id, today=as_of, mode="full")
+                for row in positions.coverage:
+                    print(
+                        "cftc_position_coverage market={market_key} report={report_family} code={cftc_contract_market_code} earliest={earliest} latest={latest} rows={rows} categories={categories}".format(**row),
+                        flush=True,
+                    )
+                status["results"][name] = positions.as_dict()
+                if positions.failed:
                     failures += 1
             elif name == "eia":
                 from market_intelligence.ingest_eia import ingest_eia
 
-                report = ingest_eia(engine, env=env, parent_run_id=parent_run_id, today=as_of)
+                report = ingest_eia(engine, env=env, parent_run_id=parent_run_id, today=as_of, history="incremental")
                 status["results"][name] = report.as_dict()
                 if report.failed:
                     failures += 1
+            elif name == "eia_backfill":
+                from market_intelligence.ingest_eia import ingest_eia
+
+                report = ingest_eia(engine, env=env, parent_run_id=parent_run_id, today=as_of, history="max")
+                status["results"][name] = report.as_dict()
+                print(
+                    "eia_backfill status={status} rows={rows_written} latest={latest_observation} series={series}".format(**report.as_dict()),
+                    flush=True,
+                )
+                if report.failed:
+                    failures += 1
+            elif name == "cross_asset_coverage":
+                from sqlalchemy import text
+
+                from market_intelligence.ingest_cftc_positions import position_coverage
+                from market_intelligence.ingest_yahoo_cross_asset import coverage_rows
+
+                with engine.connect() as conn:
+                    yahoo_rows = coverage_rows(conn)
+                    cftc_rows = position_coverage(conn) if conn.execute(text("SELECT to_regclass('mi_cftc_position_observations')")).scalar() else []
+                    eia_rows = conn.execute(
+                        text(
+                            """
+                            SELECT series_id, MIN(observation_date) AS earliest, MAX(observation_date) AS latest, COUNT(*) AS rows
+                            FROM mi_eia_observations
+                            WHERE source_id = 'EIA_ENERGY'
+                            GROUP BY series_id
+                            ORDER BY series_id
+                            """
+                        )
+                    ).mappings().all() if conn.execute(text("SELECT to_regclass('mi_eia_observations')")).scalar() else []
+                for row in yahoo_rows:
+                    print(
+                        "yahoo_cross_asset_coverage symbol={provider_symbol} instrument={instrument_id} asset_class={asset_type} source={source_id} earliest={earliest} latest={latest} rows={rows}".format(**row),
+                        flush=True,
+                    )
+                for row in cftc_rows:
+                    print(
+                        "cftc_position_coverage market={market_key} report={report_family} code={cftc_contract_market_code} earliest={earliest} latest={latest} rows={rows} categories={categories}".format(**row),
+                        flush=True,
+                    )
+                for row in eia_rows:
+                    print(
+                        "eia_coverage series={series_id} earliest={earliest} latest={latest} rows={rows}".format(**row),
+                        flush=True,
+                    )
+                status["results"][name] = {"yahoo": yahoo_rows, "cftc": cftc_rows, "eia": [dict(row) for row in eia_rows]}
             elif name == "openfigi":
                 from market_intelligence.openfigi_client import OpenFIGIClient, api_key_from_env as figi_key
                 from market_intelligence.ingest_openfigi import persist_mapping_results

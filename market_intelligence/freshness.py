@@ -14,9 +14,11 @@ from datetime import date, datetime, time, timedelta
 from typing import Any, Mapping
 
 from market_intelligence.calendars import (
+    CAL_EVERY_DAY,
     CAL_NYSE,
     CAL_US_FEDERAL,
     CAL_US_TREASURY,
+    CAL_WEEKDAY,
     NY_TZ,
     is_session,
     last_completed_session,
@@ -237,6 +239,9 @@ SOURCE_DEFAULT_CALENDAR = {
     "IBKR_CORPORATE_BONDS": CAL_NYSE,
     "CFTC_COT": CAL_US_FEDERAL,
     "EIA_ENERGY": CAL_US_FEDERAL,
+    "YAHOO_FX": CAL_WEEKDAY,
+    "YAHOO_FUTURES_PROXY": CAL_NYSE,
+    "YAHOO_CRYPTO": CAL_EVERY_DAY,
 }
 
 
@@ -246,6 +251,35 @@ def policy_for(*, series_id: str | None = None, source_id: str | None = None, ca
     if source_id and source_id in SOURCE_DEFAULT_CALENDAR:
         cal = SOURCE_DEFAULT_CALENDAR[source_id]
         freq = str(cadence or "D").upper()
+        if source_id == "YAHOO_CRYPTO" and freq in {"D", "INTRADAY"}:
+            return FreshnessPolicy(
+                calendar=CAL_EVERY_DAY,
+                cadence="D",
+                typical_release=time(0, 0),
+                overdue_sessions=3,
+                stale_sessions=5,
+                same_day_available=True,
+                notes="Yahoo crypto daily bars use the provider UTC date, including weekends. Not an NYSE calendar.",
+            )
+        if source_id == "YAHOO_FX" and freq in {"D", "INTRADAY"}:
+            return FreshnessPolicy(
+                calendar=CAL_WEEKDAY,
+                cadence="D",
+                overdue_sessions=1,
+                stale_sessions=3,
+                same_day_available=True,
+                notes="Yahoo FX daily observations. Saturday and Sunday are not expected sessions.",
+            )
+        if source_id == "YAHOO_FUTURES_PROXY" and freq in {"D", "INTRADAY"}:
+            return FreshnessPolicy(
+                calendar=CAL_NYSE,
+                cadence="D",
+                typical_release=time(16, 0),
+                overdue_sessions=1,
+                stale_sessions=3,
+                same_day_available=True,
+                notes="Yahoo futures-proxy daily bars. Not an official continuous settlement history.",
+            )
         if freq in {"D", "INTRADAY"}:
             # Equity daily bars: expected observation is the last completed NYSE session.
             if cal == CAL_NYSE:

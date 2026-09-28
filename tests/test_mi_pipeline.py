@@ -837,6 +837,21 @@ def test_pages_render_populated_state_db_only(consumer, page):
     elif page.stem == "23_Global_Markets":
         assert "Global Equity Performance" in text_out
         assert len(at.dataframe) == 0
+    elif page.stem == "20_Commodities":
+        assert "Commodity Performance" in text_out
+        assert "Energy" in text_out and "Metals" in text_out and "Agriculture" in text_out
+    elif page.stem == "24_Forex":
+        assert "US Dollar Index" in text_out
+        assert "Major Currencies vs USD" in text_out
+        assert "FX Performance vs USD" in text_out
+        assert "FX Return Heatmap" in text_out
+    elif page.stem == "25_CFTC_COT":
+        assert "Cross-Asset Positioning" in text_out
+        assert "Net Positioning / Open Interest" in text_out or "No TFF" in text_out
+    elif page.stem == "26_Crypto":
+        assert "Bitcoin" in text_out and "Ethereum" in text_out
+        assert "Crypto Performance" in text_out
+        assert "52-Week Drawdown" in text_out
     else:
         assert len(at.dataframe) >= 1, "each page shows at least one table when data exists"
     fred_exempt = {
@@ -848,6 +863,9 @@ def test_pages_render_populated_state_db_only(consumer, page):
         "21_Options_Volatility",
         "22_US_Markets",
         "23_Global_Markets",
+        "24_Forex",
+        "25_CFTC_COT",
+        "26_Crypto",
     }
     if page.stem not in fred_exempt:
         assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in text_out
@@ -890,7 +908,7 @@ def test_dashboard_entry_point_overview_links_use_registry(consumer):
         ("macro", "Macro & Liquidity"),
         ("order_flow", "Bond Trading Activity"),
         ("fixed_income", "Bond Research"),
-        ("commodities", "Commodities & Energy"),
+        ("commodities", "Commodities"),
         ("options", "Options & Volatility"),
     )
     for route_id, title in journeys:

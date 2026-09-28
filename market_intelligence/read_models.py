@@ -29,6 +29,7 @@ from market_intelligence.catalog import (
     FRED_ATTRIBUTION,
     TIPS_TENORS,
 )
+from market_intelligence.cross_asset_read import commodities_context, crypto_context, forex_context, positioning_context
 from market_intelligence.markets_read import global_markets_history, us_markets_history
 from market_intelligence.freshness import (
     FRESHNESS_POLICY_VERSION,
@@ -1786,4 +1787,8 @@ __all__ = [
     "strategies_context",
     "strategy_summary",
     "term_structure_display_rows",
+    "forex_context",
+    "positioning_context",
+    "commodities_context",
+    "crypto_context",
 ]

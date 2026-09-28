@@ -405,6 +405,44 @@ def yahoo_eod_prior_due(*, enabled: bool, now: datetime) -> DueDecision:
     )
 
 
+def yahoo_cross_asset_due(
+    *,
+    now: datetime,
+    freshness: Mapping[tuple[str, str], date | None],
+) -> DueDecision:
+    """Due when FX, a futures proxy, or crypto is due on its own calendar.
+
+    A current Friday FX row must not skip weekend crypto. Crypto is evaluated
+    even outside the weekday equity catch-up window.
+    """
+    units = (
+        ("YAHOO_FX", "fx_daily"),
+        ("YAHOO_FUTURES_PROXY", "commodity_futures_proxy"),
+        ("YAHOO_CRYPTO", "crypto_daily"),
+    )
+    decisions = [
+        daily_source_due(
+            step="yahoo_cross_asset",
+            source_id=source_id,
+            cadence="D",
+            latest_observation=freshness.get((source_id, dataset)),
+            now=now,
+        )
+        for source_id, dataset in units
+    ]
+    due = [item for item in decisions if item.due]
+    chosen = due[0] if due else decisions[0]
+    return DueDecision(
+        step="yahoo_cross_asset",
+        source_id=chosen.source_id,
+        due=bool(due),
+        reason=chosen.reason,
+        outcome_if_skip=chosen.outcome_if_skip,
+        details={"sources": [item.as_dict() for item in decisions]},
+        dataset="crypto_daily" if any(item.source_id == "YAHOO_CRYPTO" and item.due for item in decisions) else chosen.dataset,
+    )
+
+
 def evaluate_due_steps(
     *,
     now: datetime,
@@ -418,16 +456,17 @@ def evaluate_due_steps(
 
     Prefer ``freshness`` keyed by (source_id, dataset). ``latest_by_source`` remains as a
     compatibility fallback for single-dataset sources in older call sites/tests.
+    Yahoo crypto is the exception: it can be due on Saturday and Sunday.
     """
-    if not in_catchup_window(now):
-        return [
-            DueDecision(step, step.upper(), False, "outside_catchup_window", "SKIPPED_NOT_DUE")
-            for step in configured_steps
-        ]
     index = dict(freshness or {})
     if latest_by_source:
         for source_id, obs in latest_by_source.items():
             index.setdefault((source_id, "_source"), obs)
+    if not in_catchup_window(now):
+        return [
+            yahoo_cross_asset_due(now=now, freshness=index) if step == "yahoo_cross_asset" else DueDecision(step, step.upper(), False, "outside_catchup_window", "SKIPPED_NOT_DUE")
+            for step in configured_steps
+        ]
 
     def _source_latest(source_id: str, dataset: str | None = None) -> date | None:
         if dataset:
@@ -516,13 +555,15 @@ def evaluate_due_steps(
                         now=now,
                     )
                 )
+        elif step == "yahoo_cross_asset":
+            out.append(yahoo_cross_asset_due(now=now, freshness=index))
         elif step == "cftc":
             out.append(
                 release_calendar_due(
                     step=step,
                     source_id="CFTC_COT",
                     cadence="W",
-                    latest_observation=_source_latest("CFTC_COT"),
+                    latest_observation=index.get(("CFTC_COT", "tff_disaggregated_positions")),
                     now=now,
                 )
             )

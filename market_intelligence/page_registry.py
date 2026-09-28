@@ -82,8 +82,8 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
     ),
     PageSpec(
         "commodities",
-        "Commodities & Energy",
-        "Markets",
+        "Commodities",
+        "Commodities",
         "Commodities",
         render_name="render_commodities",
         legacy_path="pages/20_Commodities.py",
@@ -106,6 +106,30 @@ PAGE_SPECS: tuple[PageSpec, ...] = (
         render_name="render_order_flow",
         legacy_path="pages/18_Order_Flow.py",
         file_path="pages/18_Order_Flow.py",
+    ),
+    PageSpec(
+        "forex",
+        "FOREX",
+        "FOREX",
+        "Forex",
+        render_name="render_forex",
+        file_path="pages/24_Forex.py",
+    ),
+    PageSpec(
+        "positioning",
+        "CFTC COT",
+        "Positioning",
+        "CFTC_COT",
+        render_name="render_positioning",
+        file_path="pages/25_CFTC_COT.py",
+    ),
+    PageSpec(
+        "crypto",
+        "Crypto",
+        "Crypto",
+        "Crypto",
+        render_name="render_crypto",
+        file_path="pages/26_Crypto.py",
     ),
     PageSpec(
         "macro",
@@ -189,7 +213,17 @@ def visible_page_specs() -> tuple[PageSpec, ...]:
 
 
 PAGE_BY_ROUTE: dict[str, PageSpec] = {spec.route_id: spec for spec in PAGE_SPECS}
-NAV_SECTIONS: tuple[str, ...] = ("Overview", "Markets", "Economy", "Research", "System")
+NAV_SECTIONS: tuple[str, ...] = (
+    "Overview",
+    "Markets",
+    "FOREX",
+    "Positioning",
+    "Commodities",
+    "Crypto",
+    "Economy",
+    "Research",
+    "System",
+)
 
 _REGISTERED_PAGES: dict[str, Any] = {}
 
