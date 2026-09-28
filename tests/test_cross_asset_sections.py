@@ -4,8 +4,11 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
+
+from market_intelligence.due_state import evaluate_due_steps
 
 from market_intelligence.cftc_positions import (
     CONTRACT_BY_CODE,
@@ -262,6 +265,54 @@ def test_cftc_metrics_missing_oi_changes_percentiles_and_price_alignment():
     assert align_price_to_position(position, prices) == (date(2024, 6, 3), 9.0)
     assert align_price_to_position(position, {position: 11.0, date(2024, 6, 5): 99.0}) == (position, 11.0)
     assert align_price_to_position(position, {date(2024, 6, 5): 99.0}) is None
+
+
+def test_reads_use_curated_views_not_raw_tables():
+    source = (ROOT / "market_intelligence" / "cross_asset_read.py").read_text(encoding="utf-8")
+    for relation in ("mi_market_bars", "mi_macro_observations", "mi_eia_observations", "mi_cftc_position_observations"):
+        assert "FROM {0}".format(relation) not in source
+    for view in (
+        "mi_v_yahoo_cross_asset_history",
+        "mi_v_cftc_position_history",
+        "mi_v_eia_history",
+        "mi_v_macro_observations_current",
+        "mi_v_market_monitor_closes",
+    ):
+        assert view in source
+
+
+def test_cross_asset_due_follows_each_source_calendar():
+    et = ZoneInfo("America/New_York")
+    saturday = datetime(2026, 9, 19, 12, 0, tzinfo=et)
+    weekend = evaluate_due_steps(
+        now=saturday,
+        env={},
+        freshness={
+            ("YAHOO_FX", "fx_daily"): date(2026, 9, 18),
+            ("YAHOO_FUTURES_PROXY", "commodity_futures_proxy"): date(2026, 9, 18),
+            ("YAHOO_CRYPTO", "crypto_daily"): date(2026, 9, 18),
+        },
+        configured_steps=["yahoo_cross_asset", "treasury"],
+    )
+    by_step = {item.step: item for item in weekend}
+    assert by_step["treasury"].due is False
+    assert by_step["treasury"].reason == "outside_catchup_window"
+    assert by_step["yahoo_cross_asset"].due is True
+    friday = datetime(2026, 9, 18, 16, 0, tzinfo=et)
+    current_tff = evaluate_due_steps(
+        now=friday,
+        env={},
+        freshness={("CFTC_COT", "tff_disaggregated_positions"): date(2026, 9, 15)},
+        configured_steps=["cftc"],
+    )
+    legacy_only = evaluate_due_steps(
+        now=friday,
+        env={},
+        freshness={("CFTC_COT", "commitment_of_traders"): date(2026, 9, 15)},
+        configured_steps=["cftc"],
+    )
+    assert current_tff[0].due is False
+    assert legacy_only[0].due is True
 
 
 def test_pages_are_database_only_and_render_required_sections():

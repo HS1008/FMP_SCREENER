@@ -52,35 +52,29 @@ def _bounds(groups: Sequence[Sequence[Mapping[str, Any]]]) -> tuple[date | None,
 
 
 def _yahoo_bars(conn) -> list[dict[str, Any]]:
-    if not _has_relation(conn, "mi_market_bars"):
+    if not _has_relation(conn, "mi_v_yahoo_cross_asset_history"):
         return []
     return _rows(
         conn,
         """
         SELECT instrument_id, source_id, bar_date, close_price AS close, adj_close_price,
                provider_symbol, provider
-        FROM mi_market_bars
-        WHERE source_id IN ('YAHOO_FX', 'YAHOO_FUTURES_PROXY', 'YAHOO_CRYPTO')
-          AND bar_interval = '1D'
-          AND provider = 'YAHOO'
+        FROM mi_v_yahoo_cross_asset_history
         ORDER BY instrument_id, bar_date
         """,
     )
 
 
 def _monitor_prices(conn) -> dict[str, dict[date, float]]:
-    if not _has_relation(conn, "mi_market_bars"):
+    if not _has_relation(conn, "mi_v_market_monitor_closes"):
         return {}
     rows = _rows(
         conn,
         """
-        SELECT instrument_id, bar_date, COALESCE(adj_close_price, close_price) AS close
-        FROM mi_market_bars
-        WHERE source_id = 'MARKET_MONITOR_EOD'
-          AND provider = 'YAHOO'
-          AND bar_interval = '1D'
-          AND instrument_id IN ('SPY', 'QQQ', 'IWM')
-        ORDER BY instrument_id, bar_date
+        SELECT symbol AS instrument_id, bar_date, COALESCE(adj_close_price, close_price) AS close
+        FROM mi_v_market_monitor_closes
+        WHERE symbol IN ('SPY', 'QQQ', 'IWM')
+        ORDER BY symbol, bar_date
         """,
     )
     grouped: dict[str, dict[date, float]] = {}
@@ -94,15 +88,15 @@ def _monitor_prices(conn) -> dict[str, dict[date, float]]:
 
 
 def _fred_history(conn) -> dict[str, list[dict[str, Any]]]:
-    if not _has_relation(conn, "mi_macro_observations"):
+    if not _has_relation(conn, "mi_v_macro_observations_current"):
         return {}
     ids = [series_id for series_id, _label in FRED_COMMODITY_SERIES]
     rows = _rows(
         conn,
         """
         SELECT series_id, observation_date, value
-        FROM mi_macro_observations
-        WHERE series_id = ANY(:ids) AND is_current IS TRUE AND value IS NOT NULL
+        FROM mi_v_macro_observations_current
+        WHERE series_id = ANY(:ids) AND value IS NOT NULL
         ORDER BY series_id, observation_date
         """,
         {"ids": ids},
@@ -114,14 +108,13 @@ def _fred_history(conn) -> dict[str, list[dict[str, Any]]]:
 
 
 def _eia_history(conn) -> dict[str, dict[str, Any]]:
-    if not _has_relation(conn, "mi_eia_observations"):
+    if not _has_relation(conn, "mi_v_eia_history"):
         return {}
     rows = _rows(
         conn,
         """
         SELECT series_id, observation_date, value, units
-        FROM mi_eia_observations
-        WHERE source_id = 'EIA_ENERGY' AND value IS NOT NULL
+        FROM mi_v_eia_history
         ORDER BY series_id, observation_date
         """,
     )
@@ -176,14 +169,14 @@ def _price_book(conn, bars: Sequence[Mapping[str, Any]]) -> dict[str, dict[date,
 
 
 def positioning_context(conn) -> dict[str, Any]:
-    if not _has_relation(conn, "mi_cftc_position_observations"):
+    if not _has_relation(conn, "mi_v_cftc_position_history"):
         return {"status": "UNAVAILABLE", "markets": [], "as_of": None, "published": None}
     stored = _rows(
         conn,
         """
         SELECT market_key, trader_category, position_date, scheduled_publication_date,
                long_contracts, short_contracts, open_interest, asset_group, report_family
-        FROM mi_cftc_position_observations
+        FROM mi_v_cftc_position_history
         ORDER BY market_key, trader_category, position_date
         """,
     )

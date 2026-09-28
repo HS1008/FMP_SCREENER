@@ -132,3 +132,57 @@ ORDER BY market_key, trader_category, position_date DESC;
 
 COMMENT ON TABLE mi_cftc_position_observations IS
     'TFF and Disaggregated COT category rows. Does not replace mi_cftc_cot_observations.';
+
+CREATE OR REPLACE VIEW mi_v_cftc_position_history AS
+SELECT
+    source_id,
+    report_family,
+    cftc_contract_market_code,
+    market_key,
+    market_name,
+    asset_group,
+    position_date,
+    scheduled_publication_date,
+    trader_category,
+    long_contracts,
+    short_contracts,
+    open_interest,
+    retrieved_at
+FROM mi_cftc_position_observations
+ORDER BY market_key, trader_category, position_date;
+
+COMMENT ON VIEW mi_v_cftc_position_history IS
+    'Full TFF and Disaggregated position history. Percentiles use this view, not the latest-only view.';
+
+CREATE OR REPLACE VIEW mi_v_yahoo_cross_asset_history AS
+SELECT
+    b.instrument_id,
+    b.source_id,
+    b.bar_date,
+    b.close_price,
+    b.adj_close_price,
+    b.provider_symbol,
+    b.provider
+FROM mi_market_bars b
+WHERE b.bar_interval = '1D'
+  AND b.provider = 'YAHOO'
+  AND b.source_id IN ('YAHOO_FX', 'YAHOO_FUTURES_PROXY', 'YAHOO_CRYPTO');
+
+COMMENT ON VIEW mi_v_yahoo_cross_asset_history IS
+    'Yahoo daily history for FX, futures proxies, and crypto. Provider must be YAHOO. Equity and market-monitor bars are excluded.';
+
+CREATE OR REPLACE VIEW mi_v_eia_history AS
+SELECT
+    source_id,
+    series_id,
+    observation_date,
+    value,
+    units,
+    retrieved_at
+FROM mi_eia_observations
+WHERE source_id = 'EIA_ENERGY'
+  AND value IS NOT NULL
+ORDER BY series_id, observation_date;
+
+COMMENT ON VIEW mi_v_eia_history IS
+    'EIA weekly history. Not interpolated. Distinct from mi_v_eia_latest.';

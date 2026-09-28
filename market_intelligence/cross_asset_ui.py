@@ -300,7 +300,7 @@ def _commodity_rank_and_heat(histories: Mapping[str, Sequence[Mapping[str, Any]]
 def render_commodities_page() -> None:
     page_header(
         "Commodities",
-        "Yahoo futures proxies for prices. FRED spot and EIA weekly fundamentals stay separate series.",
+        "Yahoo futures proxies for prices. Overview, Energy, Metals, and Agriculture. FRED spot and EIA weekly fundamentals stay separate series.",
     )
     st.caption("Gold (LBMA daily) was removed from FRED in 2022. No substitute is invented for that FRED series. Gold here is a Yahoo futures proxy.")
     payload = load_or_stop("commodities_context")

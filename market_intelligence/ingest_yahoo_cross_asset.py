@@ -320,5 +320,5 @@ def ingest_yahoo_cross_asset(engine, *, parent_run_id: str | None = None, today:
                 today=today,
                 coverage_json=coverage_with_provider_latest(latest_by_source.get(source_id), provider="YAHOO"),
             )
-    status = RUN_FAILED if any_failed and written == 0 else RUN_SUCCEEDED
-    return YahooCrossAssetReport(status=status, rows_written=written, failed=status == RUN_FAILED, error="yahoo_fetch_failed" if errors and written == 0 else None, symbols=symbols)
+    status = RUN_FAILED if any_failed else RUN_SUCCEEDED
+    return YahooCrossAssetReport(status=status, rows_written=written, failed=any_failed, error="yahoo_fetch_failed" if any_failed else None, symbols=symbols)
