@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from market_intelligence.due_state import evaluate_due_steps
+from market_intelligence.ingest_eia import _candidate_queries
 
 from market_intelligence.cftc_positions import (
     CONTRACT_BY_CODE,
@@ -59,7 +60,7 @@ def test_yahoo_symbols_match_the_verified_universe():
         "HG=F": "HG",
         "ZC=F": "ZC",
         "ZW=F": "ZW",
-        "ZS=F": "ZS",
+        "ZS=F": "ZS_F",
         "BTC-USD": "BTC",
         "ETH-USD": "ETH",
     }
@@ -163,6 +164,10 @@ def test_commodity_same_date_ratio_and_eia_mapping():
     assert aliases["cushing_crude_stocks"]["series_id"] == "WCESTCUS1"
     assert aliases["crude_production"]["series_id"] == "WCRFPUS2"
     assert aliases["working_gas_storage"]["series_id"] == "NW2_EPG0_SWO_R48_BCF"
+    cushing = _candidate_queries("petroleum/stoc/wstk/data", "WCESTCUS1", "cushing_crude_stocks")
+    assert cushing[0][1]["facets[series][]"] == "WCESTCUS1"
+    assert any(facets.get("facets[duoarea][]") == "YCUOK" for _route, facets in cushing)
+    assert "ZS_F" == INSTRUMENT_BY_SYMBOL["ZS=F"].instrument_id
     assert all(row["frequency"] == "weekly" for row in EIA_FUNDAMENTALS)
 
 

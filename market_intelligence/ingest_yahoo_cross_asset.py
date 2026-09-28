@@ -281,7 +281,14 @@ def ingest_yahoo_cross_asset(engine, *, parent_run_id: str | None = None, today:
                 errors_by_source.setdefault(instrument.source_id, []).append(instrument.yahoo_symbol)
                 symbols.append({"symbol": instrument.yahoo_symbol, "error": exc.__class__.__name__})
                 continue
-            count = upsert_cross_asset_bars(conn, bars, run_id=runs[(instrument.source_id, instrument.dataset)], retrieved_at=retrieved)
+            try:
+                with conn.begin_nested():
+                    count = upsert_cross_asset_bars(conn, bars, run_id=runs[(instrument.source_id, instrument.dataset)], retrieved_at=retrieved)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(instrument.yahoo_symbol)
+                errors_by_source.setdefault(instrument.source_id, []).append(instrument.yahoo_symbol)
+                symbols.append({"symbol": instrument.yahoo_symbol, "error": "{0}: {1}".format(exc.__class__.__name__, str(exc)[:120])})
+                continue
             written += count
             written_by_source[instrument.source_id] = written_by_source.get(instrument.source_id, 0) + count
             if bars:
@@ -320,5 +327,6 @@ def ingest_yahoo_cross_asset(engine, *, parent_run_id: str | None = None, today:
                 today=today,
                 coverage_json=coverage_with_provider_latest(latest_by_source.get(source_id), provider="YAHOO"),
             )
-    status = RUN_FAILED if any_failed else RUN_SUCCEEDED
-    return YahooCrossAssetReport(status=status, rows_written=written, failed=any_failed, error="yahoo_fetch_failed" if any_failed else None, symbols=symbols)
+    symbol_errors = bool(errors)
+    status = RUN_FAILED if any_failed or symbol_errors else RUN_SUCCEEDED
+    return YahooCrossAssetReport(status=status, rows_written=written, failed=status == RUN_FAILED, error="yahoo_fetch_failed" if status == RUN_FAILED else None, symbols=symbols)

@@ -370,8 +370,8 @@ def render_commodities_page() -> None:
             _line([{"label": "PCOPPUSDM", "points": _clip(fred, start, end) if start and end else fred}], key="pcoppusdm", )
     else:
         st.subheader("Agriculture")
-        options = [("ZC", "Corn"), ("ZW", "Wheat"), ("ZS", "Soybeans")]
-        chosen = series_toggles(options, key="ags", group_label="Agriculture", default=["ZC", "ZW", "ZS"])
+        options = [("ZC", "Corn"), ("ZW", "Wheat"), ("ZS_F", "Soybeans")]
+        chosen = series_toggles(options, key="ags", group_label="Agriculture", default=["ZC", "ZW", "ZS_F"])
         picked = [item for item in options if item[0] in chosen]
         if len(picked) <= 1 and picked:
             _line([{"label": picked[0][1], "points": histories.get(picked[0][0]) or []}], key="ags_one")
