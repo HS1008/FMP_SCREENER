@@ -113,6 +113,57 @@ class FixtureAdapter:
         return [b for b in self.bars if b.instrument_id in wanted and start <= b.bar_date <= end]
 
 
+def _finite_price(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
+
+
+def _bars_from_ohlc_frame(frame: Any, symbol: str) -> list[EquityBar]:
+    bars: list[EquityBar] = []
+    for idx, row in frame.iterrows():
+        close = _finite_price(row.get("Close") if hasattr(row, "get") else None)
+        if close is None:
+            continue
+        day = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
+        bars.append(
+            EquityBar(
+                symbol,
+                day,
+                close,
+                close,
+                provider_symbol=symbol,
+                source_id=EQUITY_SOURCE_ID,
+                provider="YAHOO",
+            )
+        )
+    return bars
+
+
+def bars_from_yahoo_frame(data: Any, symbols: list[str]) -> list[EquityBar]:
+    """Parse a yfinance download frame. A one-ticker download is still grouped by ticker."""
+    if data is None or getattr(data, "empty", True):
+        return []
+    columns = getattr(data, "columns", None)
+    grouped = getattr(columns, "nlevels", 1) > 1 or len(symbols) != 1
+    if not grouped:
+        return _bars_from_ohlc_frame(data, symbols[0])
+    bars: list[EquityBar] = []
+    for symbol in symbols:
+        try:
+            frame = data[symbol]
+        except (KeyError, TypeError):
+            continue
+        bars.extend(_bars_from_ohlc_frame(frame, symbol))
+    return bars
+
+
 class YahooAdapter:
     """Optional Yahoo/yfinance adapter. Entitlement for production storage is unverified."""
 
@@ -125,7 +176,6 @@ class YahooAdapter:
             import yfinance as yf
         except ImportError as exc:
             raise AdapterUnavailable("yfinance is not installed") from exc
-        out: list[EquityBar] = []
         data = yf.download(
             symbols,
             start=start.isoformat(),
@@ -135,30 +185,7 @@ class YahooAdapter:
             group_by="ticker",
             threads=False,
         )
-        if data is None or data.empty:
-            return out
-        if len(symbols) == 1:
-            frame = data
-            symbol = symbols[0]
-            for idx, row in frame.iterrows():
-                day = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-                close = float(row.get("Close")) if row.get("Close") == row.get("Close") else None
-                if close is None:
-                    continue
-                out.append(EquityBar(symbol, day, close, close, provider_symbol=symbol, source_id=EQUITY_SOURCE_ID, provider="YAHOO"))
-            return out
-        for symbol in symbols:
-            try:
-                frame = data[symbol]
-            except Exception:
-                continue
-            for idx, row in frame.iterrows():
-                day = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-                close = row.get("Close")
-                if close != close:
-                    continue
-                out.append(EquityBar(symbol, day, float(close), float(close), provider_symbol=symbol, source_id=EQUITY_SOURCE_ID, provider="YAHOO"))
-        return out
+        return bars_from_yahoo_frame(data, symbols)
 
 
 @dataclass

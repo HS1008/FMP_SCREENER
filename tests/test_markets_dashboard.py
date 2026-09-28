@@ -7,10 +7,11 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import pandas as pd
 import pytest
 from streamlit.testing.v1 import AppTest
 
-from market_intelligence.equity_eod import RETURN_WINDOWS
+from market_intelligence.equity_eod import RETURN_WINDOWS, bars_from_yahoo_frame
 from market_intelligence.freshness import SERIES_POLICIES
 from market_intelligence.markets_analytics import (
     DRAWDOWN_SESSIONS,
@@ -376,6 +377,22 @@ def test_chart_code_does_not_call_providers_or_the_database():
     assert "import yfinance" not in ui
     assert "st.line_chart" not in ui
     assert "plotly" not in ui.lower()
+
+
+def test_yahoo_one_ticker_frame_uses_grouped_columns_and_skips_null_closes():
+    index = pd.to_datetime(["2024-12-10", "2024-12-11"])
+    columns = pd.MultiIndex.from_tuples([("SPY", "Close"), ("SPY", "Open")])
+    frame = pd.DataFrame([[589.2, 591.0], [None, 592.0]], index=index, columns=columns)
+    bars = bars_from_yahoo_frame(frame, ["SPY"])
+    assert len(bars) == 1
+    assert bars[0].instrument_id == "SPY"
+    assert bars[0].bar_date == date(2024, 12, 10)
+    assert bars[0].adj_close == pytest.approx(589.2)
+    flat = pd.DataFrame({"Close": [100.0]}, index=pd.to_datetime(["2024-12-12"]))
+    flat_bars = bars_from_yahoo_frame(flat, ["DIA"])
+    assert len(flat_bars) == 1
+    assert flat_bars[0].instrument_id == "DIA"
+    assert flat_bars[0].adj_close == pytest.approx(100.0)
 
 
 def test_dashboard_history_reads_the_readonly_closes_view():
