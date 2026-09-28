@@ -14,6 +14,7 @@ import pandas as pd
 import streamlit as st
 
 from market_intelligence.bond_ladder import LadderBond, aggregate_ladder, theoretical_rungs
+from market_intelligence.cross_asset_ui import render_commodities_page, render_crypto_page, render_forex_page, render_positioning_page
 from market_intelligence.bond_tax import ASSET_CORPORATE, ASSET_MUNI, ASSET_TREASURY, BondTaxInputs, TaxAssumptions, compare_three, muni_treasury_ratio
 from market_intelligence.bonds import interpolate_par_yield
 from market_intelligence.catalog import (
@@ -558,13 +559,13 @@ def _render_overview_cards(
         headline = transforms.get("chg_prev") or transforms.get("mom_pct") or transforms.get("wow_change")
         cards.append(
             {
-                "title": "Commodities & Energy",
+                "title": "Commodities",
                 "primary": str(block.get("label") or block.get("series_id")),
                 "primary_delta": _transform_text(headline) if headline else fmt(block.get("latest", {}).get("value"), None),
                 "support": "Cadence-aware release; not a live futures quote",
                 "as_of": block.get("latest", {}).get("observation_date"),
                 "route": "commodities",
-                "link": "Open Commodities & Energy",
+                "link": "Open Commodities",
             }
         )
     yahoo = (options or {}).get("yahoo_core") or {}
@@ -2393,99 +2394,22 @@ def render_fixed_income() -> None:
             st.write({"call_exposure_share": mixed_out.get("call_exposure_share"), "issuer_concentration": mixed_out.get("issuer_concentration")})
 
 
+def render_forex() -> None:
+    render_forex_page()
+
+
+def render_positioning() -> None:
+    render_positioning_page()
+
+
+def render_crypto() -> None:
+    render_crypto_page()
+
+
 def render_commodities() -> None:
-    macro = load_or_stop("macro_context")
-    health = load_or_stop("source_health")
-    cats = macro.get("categories") or {}
-    blocks = cats.get("commodities") or []
-    dates = [block.get("latest", {}).get("observation_date") for block in blocks]
-    page_header(
-        "Commodities & Energy",
-        "Stored energy and metal levels from PostgreSQL. Copper (PCOPPUSDM) is monthly. Not a futures curve and not a live quote.",
-        as_of=compact_as_of(dates)[0],
-    )
-    st.caption("Gold (LBMA daily) was removed from FRED in 2022. No substitute gold price is invented.")
-    st.dataframe(
-        pd.DataFrame(
-            [
-                {"Coverage": "WTI spot", "Source": "FRED / EIA (DCOILWTICO)", "Notes": "daily dollars per barrel"},
-                {"Coverage": "Henry Hub natural gas", "Source": "FRED / EIA (DHHNGSP)", "Notes": "daily dollars per MMBtu"},
-                {"Coverage": "Global copper", "Source": "FRED / IMF (PCOPPUSDM)", "Notes": "monthly USD per metric ton"},
-                {"Coverage": "Gold spot", "Source": "FRED LBMA daily", "Notes": "unavailable — IBA/LBMA series were removed from FRED in 2022; no substitute is invented"},
-                {"Coverage": "EIA inventories / production", "Source": "EIA_ENERGY", "Notes": "weekly stocks/storage when the official EIA Open Data key is set; otherwise signup at https://www.eia.gov/opendata/"},
-                {"Coverage": "CFTC positioning", "Source": "CFTC_COT", "Notes": "public weekly COT watchlist; no API key"},
-            ]
-        ),
-        use_container_width=True,
-        hide_index=True,
-    )
-    _render_commodities_panel(cats, heading="Stored levels")
-    cot = load_or_stop("cftc_context")
-    if cot.get("rows"):
-        st.subheader("CFTC positioning")
-        st.caption(cot.get("attribution") or "CFTC public COT. Futures-only watchlist.")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Market": row.get("market"),
-                        "Report date": row.get("report_date"),
-                        "Open interest": row.get("open_interest"),
-                        "Noncomm long": row.get("noncomm_long"),
-                        "Noncomm short": row.get("noncomm_short"),
-                        "Noncomm net": row.get("noncomm_net"),
-                        "Comm long": row.get("comm_long"),
-                        "Comm short": row.get("comm_short"),
-                    }
-                    for row in cot["rows"]
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-    eia = load_or_stop("eia_context")
-    if eia.get("rows"):
-        st.subheader("EIA weekly energy")
-        st.caption(eia.get("attribution") or "EIA Open Data.")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Series": row.get("series_id"),
-                        "Observation": row.get("observation_date"),
-                        "Value": row.get("value"),
-                        "Units": row.get("units") or "—",
-                    }
-                    for row in eia["rows"]
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-    if not blocks and not cot.get("rows") and not eia.get("rows"):
-        st.info("No commodity observations stored.")
-    gate_ids = {"CFTC_COT", "EIA_ENERGY", "FRED"}
-    gate_rows = [row for row in health if str(row.get("source_id") or "") in gate_ids]
-    if gate_rows:
-        st.subheader("Source gates")
-        st.caption("A blocked EIA or CFTC feed does not fail the FRED energy/metal series that are already stored.")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Source": row.get("source_id"),
-                        "State": row.get("policy_status") or row.get("access_status") or "—",
-                        "Freshness": row.get("freshness_status") or "—",
-                        "Latest observation": row.get("latest_observation_date") or "—",
-                        "Why": exception_note(row),
-                    }
-                    for row in gate_rows
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+    render_commodities_page()
     open_registered_page("macro", "Open Macro")
+
 
 
 __all__ = [

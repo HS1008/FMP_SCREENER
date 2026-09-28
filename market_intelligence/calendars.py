@@ -16,6 +16,8 @@ NY_TZ = ZoneInfo("America/New_York")
 CAL_US_FEDERAL = "US_FEDERAL"
 CAL_NYSE = "NYSE"
 CAL_US_TREASURY = "US_TREASURY"
+CAL_WEEKDAY = "WEEKDAY"
+CAL_EVERY_DAY = "EVERY_DAY"
 
 
 def _nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
@@ -127,6 +129,11 @@ def holiday_set(calendar: str, year: int) -> set[date]:
 
 
 def is_session(d: date, calendar: str = CAL_NYSE) -> bool:
+    cal = (calendar or CAL_NYSE).upper()
+    if cal == CAL_EVERY_DAY:
+        return True
+    if cal == CAL_WEEKDAY:
+        return d.weekday() < 5
     if d.weekday() >= 5:
         return False
     holidays = holiday_set(calendar, d.year) | holiday_set(calendar, d.year - 1) | holiday_set(calendar, d.year + 1)
@@ -174,9 +181,11 @@ def sessions_between(start: date, end: date, calendar: str = CAL_NYSE) -> int:
 
 
 __all__ = [
+    "CAL_EVERY_DAY",
     "CAL_NYSE",
     "CAL_US_FEDERAL",
     "CAL_US_TREASURY",
+    "CAL_WEEKDAY",
     "NY_TZ",
     "easter_sunday",
     "good_friday",

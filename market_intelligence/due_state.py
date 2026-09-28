@@ -516,6 +516,16 @@ def evaluate_due_steps(
                         now=now,
                     )
                 )
+        elif step == "yahoo_cross_asset":
+            out.append(
+                daily_source_due(
+                    step=step,
+                    source_id="YAHOO_FX",
+                    cadence="D",
+                    latest_observation=_source_latest("YAHOO_FX", "fx_daily"),
+                    now=now,
+                )
+            )
         elif step == "cftc":
             out.append(
                 release_calendar_due(

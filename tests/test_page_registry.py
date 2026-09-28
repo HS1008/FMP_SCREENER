@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_registry_covers_required_routes_and_sections():
-    assert NAV_SECTIONS == ("Overview", "Markets", "Economy", "Research", "System")
+    assert NAV_SECTIONS == ("Overview", "Markets", "FOREX", "Positioning", "Commodities", "Crypto", "Economy", "Research", "System")
     required = {
         "overview",
         "sectors",
@@ -41,7 +41,6 @@ def test_registry_covers_required_routes_and_sections():
         "Equities & Sectors",
         "Rates & Curve",
         "Credit",
-        "Commodities & Energy",
         "Options & Volatility",
         "Bond Trading Activity",
     }
