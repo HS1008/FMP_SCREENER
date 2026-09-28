@@ -54,8 +54,9 @@ def _iso(day: date | None) -> str | None:
 def load_monitor_history(conn, symbols: Sequence[str]) -> dict[str, Any]:
     """Adjusted market-monitor closes and session returns for ``symbols`` only.
 
-    Reads ``mi_v_market_monitor_closes``. That view is Yahoo ``MARKET_MONITOR_EOD``
-    only, so a short IBKR ``EQUITY_EOD`` history cannot truncate the chart.
+    Reads ``mi_v_market_monitor_closes``. That view requires provider YAHOO on
+    ``MARKET_MONITOR_EOD`` and excludes every other provider, so a short IBKR
+    ``EQUITY_EOD`` history cannot truncate the chart.
     The dashboard role can select the view and cannot select ``mi_market_bars``.
     """
     wanted = [str(symbol) for symbol in symbols]

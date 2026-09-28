@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import inspect
+import os
+import shlex
+import subprocess
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -426,6 +429,81 @@ def test_dashboard_history_reads_the_market_monitor_view():
     assert choose_provider({"IBKR", "YAHOO"}) == "IBKR"
 
 
+def test_market_monitor_view_requires_yahoo_and_keeps_source_split():
+    sql = (ROOT / "db" / "migrations" / "040_market_monitor_yahoo_only.sql").read_text(encoding="utf-8")
+    assert "source_id = 'MARKET_MONITOR_EOD'" in sql
+    assert "provider = 'YAHOO'" in sql
+    assert "DROP TABLE" not in sql.upper()
+    assert "DELETE FROM" not in sql.upper()
+    where = sql.split("WHERE", 1)[1].split("COMMENT", 1)[0]
+    assert "EQUITY_EOD" not in where
+
+
+def _cboe_residue_function() -> str:
+    host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
+    start = host.index("remove_abandoned_cboe_residue() {")
+    end = host.index("\n}\n", start)
+    return host[start : end + 2]
+
+
+def test_deploy_removes_only_untracked_cboe_residue(tmp_path):
+    function = _cboe_residue_function()
+    for path in (
+        "db/migrations/038_cboe_volatility.sql",
+        "jobs/probe_cboe_entitlement.py",
+        "jobs/probe_cboe_three_shot.py",
+        "market_intelligence/cboe_analytics.py",
+        "market_intelligence/cboe_client.py",
+        "market_intelligence/ingest_cboe.py",
+        "tmp_cboe_provision",
+        "tmp_cboe_sync",
+    ):
+        assert path in function
+    assert "openbb_provider" not in function
+    verifier = (ROOT / "scripts" / "verify_stage1_production.py").read_text(encoding="utf-8")
+    assert "038_cboe_volatility.sql" not in verifier
+    assert "probe_cboe" not in verifier
+    assert "tmp_cboe" not in verifier
+    repo = tmp_path / "checkout"
+    (repo / "market_intelligence").mkdir(parents=True)
+    (repo / "jobs").mkdir()
+    (repo / "db" / "migrations").mkdir(parents=True)
+    (repo / "market_intelligence" / "cboe_client.py").write_text("keep\n", encoding="utf-8")
+    (repo / "market_intelligence" / "openbb_provider.py").write_text("openbb\n", encoding="utf-8")
+    (repo / "db" / "migrations" / "038_yahoo_volatility.sql").write_text("real\n", encoding="utf-8")
+    subprocess.check_call(["git", "init", "-q"], cwd=repo)
+    subprocess.check_call(
+        ["git", "add", "market_intelligence/cboe_client.py", "market_intelligence/openbb_provider.py", "db/migrations/038_yahoo_volatility.sql"],
+        cwd=repo,
+    )
+    env = os.environ.copy()
+    env.update(
+        {
+            "GIT_AUTHOR_NAME": "residue-test",
+            "GIT_AUTHOR_EMAIL": "residue-test@example.com",
+            "GIT_COMMITTER_NAME": "residue-test",
+            "GIT_COMMITTER_EMAIL": "residue-test@example.com",
+        }
+    )
+    subprocess.check_call(["git", "commit", "-q", "-m", "keep tracked files"], cwd=repo, env=env)
+    (repo / "jobs" / "probe_cboe_entitlement.py").write_text("probe\n", encoding="utf-8")
+    (repo / "tmp_cboe_sync").mkdir()
+    (repo / "tmp_cboe_sync" / "note.txt").write_text("scratch\n", encoding="utf-8")
+    script = function + "\nROOT={0}\nremove_abandoned_cboe_residue\n".format(shlex.quote(str(repo)))
+    completed = subprocess.run(["bash", "-c", script], check=True, capture_output=True, text=True)
+    assert "cboe_residue_skip_tracked path=market_intelligence/cboe_client.py" in completed.stdout
+    assert "cboe_residue_removed path=jobs/probe_cboe_entitlement.py" in completed.stdout
+    assert "cboe_residue_removed path=tmp_cboe_sync" in completed.stdout
+    assert "cboe_residue_absent path=db/migrations/038_cboe_volatility.sql" in completed.stdout
+    assert (repo / "market_intelligence" / "cboe_client.py").read_text(encoding="utf-8") == "keep\n"
+    assert (repo / "market_intelligence" / "openbb_provider.py").read_text(encoding="utf-8") == "openbb\n"
+    assert (repo / "db" / "migrations" / "038_yahoo_volatility.sql").read_text(encoding="utf-8") == "real\n"
+    assert not (repo / "jobs" / "probe_cboe_entitlement.py").exists()
+    assert not (repo / "tmp_cboe_sync").exists()
+    refused = subprocess.run(["bash", "-c", function + "\nROOT=/\nremove_abandoned_cboe_residue\n"], capture_output=True, text=True)
+    assert refused.returncode != 0
+
+
 def test_us_and_global_comparisons_use_pre_2024_yahoo_history():
     """A short IBKR series must not set the common start when Yahoo history is longer."""
     bars = {
@@ -558,6 +636,88 @@ def test_monitor_history_ignores_short_ibkr_equity_eod(mi_db):
         ("QQQ", "YAHOO", "1990-01-02", 1.0),
         ("RSP", "IBKR", "2024-09-18", 180.0),
         ("SPY", "IBKR", "2024-09-12", 500.0),
+    }
+
+
+def test_market_monitor_view_hides_non_yahoo_rows_on_the_same_source(mi_db):
+    retrieved = datetime(2026, 9, 25, tzinfo=timezone.utc)
+    with mi_db.begin() as conn:
+        upsert_bars(
+            conn,
+            [
+                EquityBar("SPY", date(1993, 1, 29), 40.0, 40.0, source_id=MARKET_MONITOR_SOURCE_ID, provider="YAHOO"),
+                EquityBar("RSP", date(2003, 5, 1), 30.0, 30.0, source_id=MARKET_MONITOR_SOURCE_ID, provider="YAHOO"),
+                EquityBar(
+                    "SPY",
+                    date(2024, 1, 2),
+                    480.0,
+                    480.0,
+                    source_id=MARKET_MONITOR_SOURCE_ID,
+                    provider="IBKR",
+                    adjustment_basis="IBKR_ADJUSTED_LAST",
+                ),
+                EquityBar(
+                    "SPY",
+                    date(2024, 9, 12),
+                    500.0,
+                    500.0,
+                    source_id=EQUITY_EOD_SOURCE_ID,
+                    provider="IBKR",
+                    adjustment_basis="IBKR_ADJUSTED_LAST",
+                ),
+                EquityBar(
+                    "RSP",
+                    date(2024, 9, 18),
+                    180.0,
+                    180.0,
+                    source_id=EQUITY_EOD_SOURCE_ID,
+                    provider="IBKR",
+                    adjustment_basis="IBKR_ADJUSTED_LAST",
+                ),
+            ],
+            run_id="provider-gate",
+            retrieved_at=retrieved,
+            provider="YAHOO",
+        )
+    with mi_db.connect() as conn:
+        visible = conn.execute(
+            text(
+                """
+                SELECT symbol, provider, bar_date
+                FROM mi_v_market_monitor_closes
+                WHERE symbol IN ('SPY', 'RSP')
+                ORDER BY symbol, bar_date
+                """
+            )
+        ).all()
+        stored = conn.execute(
+            text(
+                """
+                SELECT instrument_id, source_id, provider, bar_date
+                FROM mi_market_bars
+                WHERE instrument_id IN ('SPY', 'RSP')
+                ORDER BY source_id, instrument_id, bar_date
+                """
+            )
+        ).all()
+        history = load_monitor_history(conn, ["SPY", "RSP"])
+    assert [(row[0], row[1], row[2].isoformat()) for row in visible] == [
+        ("RSP", "YAHOO", "2003-05-01"),
+        ("SPY", "YAHOO", "1993-01-29"),
+    ]
+    assert history["meta"]["SPY"]["earliest"] == "1993-01-29"
+    assert history["meta"]["SPY"]["provider"] == "YAHOO"
+    assert history["meta"]["RSP"]["earliest"] == "2003-05-01"
+    assert "2024-01-02" not in {point["date"] for point in history["bars"]["SPY"]}
+    assert {
+        (row[0], row[1], row[2], row[3].isoformat())
+        for row in stored
+    } == {
+        ("RSP", EQUITY_EOD_SOURCE_ID, "IBKR", "2024-09-18"),
+        ("RSP", MARKET_MONITOR_SOURCE_ID, "YAHOO", "2003-05-01"),
+        ("SPY", EQUITY_EOD_SOURCE_ID, "IBKR", "2024-09-12"),
+        ("SPY", MARKET_MONITOR_SOURCE_ID, "IBKR", "2024-01-02"),
+        ("SPY", MARKET_MONITOR_SOURCE_ID, "YAHOO", "1993-01-29"),
     }
 
 

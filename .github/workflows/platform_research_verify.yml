@@ -52,7 +52,27 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          ssh_connect_retry() {
+            local script attempt=1 max=4 rc
+            script=$(cat)
+            while true; do
+              set +e
+              printf '%s\n' "$script" | ssh -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes "$DO_USER@$DO_HOST"
+              rc=$?
+              set -e
+              if [ "$rc" -eq 0 ]; then
+                return 0
+              fi
+              if [ "$rc" -eq 255 ] && [ "$attempt" -lt "$max" ]; then
+                echo "ssh connect attempt ${attempt} failed rc=255; retrying"
+                sleep $((attempt * 5))
+                attempt=$((attempt + 1))
+                continue
+              fi
+              return "$rc"
+            done
+          }
+          ssh_connect_retry << 'EOF'
             set -euo pipefail
             if [ -d /opt/fmp/current ] && [ -f /opt/fmp/current/qc_research/verify_tlt_monitor.py ]; then
               CODE_ROOT=/opt/fmp/current
@@ -115,7 +135,27 @@ jobs:
           DO_HOST: ${{ secrets.DO_HOST }}
           DO_USER: ${{ secrets.DO_USER }}
         run: |
-          ssh "$DO_USER@$DO_HOST" << 'EOF'
+          ssh_connect_retry() {
+            local script attempt=1 max=4 rc
+            script=$(cat)
+            while true; do
+              set +e
+              printf '%s\n' "$script" | ssh -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=120 -o TCPKeepAlive=yes "$DO_USER@$DO_HOST"
+              rc=$?
+              set -e
+              if [ "$rc" -eq 0 ]; then
+                return 0
+              fi
+              if [ "$rc" -eq 255 ] && [ "$attempt" -lt "$max" ]; then
+                echo "ssh connect attempt ${attempt} failed rc=255; retrying"
+                sleep $((attempt * 5))
+                attempt=$((attempt + 1))
+                continue
+              fi
+              return "$rc"
+            done
+          }
+          ssh_connect_retry << 'EOF'
             set -euo pipefail
             if [ -d /opt/fmp/current ] && [ -f /opt/fmp/current/qc_research/verify_tlt_monitor.py ]; then
               CODE_ROOT=/opt/fmp/current
