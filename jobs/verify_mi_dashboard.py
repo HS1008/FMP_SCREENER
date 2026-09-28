@@ -43,6 +43,25 @@ def _texts(at) -> str:
     return "\n".join(parts)
 
 
+def query_error_class(text: str) -> str | None:
+    """Class name from ``Query failed (Name)``. A stopped query is a failed page."""
+    marker = "Query failed ("
+    start = text.find(marker)
+    if start < 0:
+        return None
+    rest = text[start + len(marker):]
+    end = rest.find(")")
+    name = rest[:end] if end >= 0 else ""
+    if name.isidentifier():
+        return name
+    return "query_failed"
+
+
+def page_ok(*, text: str, exceptions: list[str], has_title: bool) -> bool:
+    configured = "CONFIGURATION_REQUIRED" not in text
+    return not exceptions and has_title and configured and query_error_class(text) is None
+
+
 def run(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", action="store_true")
@@ -67,17 +86,19 @@ def run(argv: list[str] | None = None) -> int:
         exceptions = [str(e.value.__class__.__name__) for e in at.exception]
         configured = "CONFIGURATION_REQUIRED" not in text
         has_title = bool(at.title)
-        page_ok = not exceptions and has_title and configured
-        if not page_ok:
+        query_error = query_error_class(text)
+        ok = page_ok(text=text, exceptions=exceptions, has_title=has_title)
+        if not ok:
             failed.append(path.stem)
         report["pages"].append(
             {
                 "page": path.stem,
-                "ok": page_ok,
+                "ok": ok,
                 "configured": configured,
                 "has_title": has_title,
                 "has_table": len(at.dataframe) > 0,
                 "exceptions": exceptions,
+                "query_error": query_error,
                 "unconfigured": "CONFIGURATION_REQUIRED" in text,
                 "empty_like": any(w in text for w in ("No ", "not been published", "No sources")),
             }

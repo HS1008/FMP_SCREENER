@@ -23,6 +23,7 @@ from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 from market_intelligence.catalog import CATALOG, CATALOG_BY_ID
+from market_intelligence.markets_read import MARKET_MONITOR_SOURCE_ID
 from market_intelligence.freshness import (
     AWAITING_RELEASE,
     assess_freshness,
@@ -473,7 +474,7 @@ def evaluate_due_steps(
                 out.append(
                     DueDecision(
                         step,
-                        "EQUITY_EOD",
+                        MARKET_MONITOR_SOURCE_ID,
                         False,
                         "before_equity_eod_window",
                         "SKIPPED_NOT_DUE",
@@ -484,9 +485,9 @@ def evaluate_due_steps(
                 out.append(
                     daily_source_due(
                         step=step,
-                        source_id="EQUITY_EOD",
+                        source_id=MARKET_MONITOR_SOURCE_ID,
                         cadence="D",
-                        latest_observation=index.get(("EQUITY_EOD", "market_monitor_etfs")),
+                        latest_observation=index.get((MARKET_MONITOR_SOURCE_ID, "market_monitor_etfs")),
                         now=now,
                         series_id="market_monitor_etfs",
                     )

@@ -8,7 +8,7 @@ export entitlements here. IBKR connection settings are not changed.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from typing import Any, Mapping, Protocol
@@ -38,7 +38,7 @@ from market_intelligence.store import (
     utcnow,
 )
 from market_intelligence.calendars import CAL_NYSE, previous_session
-from market_intelligence.markets_read import stored_equity_providers, yahoo_backfill_symbols
+from market_intelligence.markets_read import MARKET_MONITOR_SOURCE_ID
 from market_intelligence.taxonomy import (
     ALL_BASKETS,
     BENCHMARK_SPY,
@@ -886,6 +886,11 @@ def ingest_equity_eod(
     return report
 
 
+def _monitor_bars(bars: list[EquityBar]) -> list[EquityBar]:
+    """Stamp Yahoo bars onto the market-monitor source. The adapter's EQUITY_EOD default is not stored."""
+    return [replace(bar, source_id=MARKET_MONITOR_SOURCE_ID, provider="YAHOO") for bar in bars]
+
+
 def ingest_market_monitor(
     engine,
     *,
@@ -895,13 +900,13 @@ def ingest_market_monitor(
     symbols: list[str] | None = None,
     parent_run_id: str | None = None,
 ) -> dict[str, Any]:
-    """Yahoo EQUITY_EOD history for market-monitor symbols that are not already another provider.
+    """Yahoo history for every market-monitor ETF, stored only as MARKET_MONITOR_EOD.
 
     ``mode='max'`` requests history from 1990-01-01 (the provider returns the
     fund's actual inception onward). ``mode='incremental'`` requests the last
-    21 calendar days and does not redownload the full series. Rows for a
-    symbol that already has a non-Yahoo provider are not written. This does
-    not open a TWS socket and does not rewrite sector snapshots.
+    21 calendar days and does not redownload the full series. IBKR EQUITY_EOD
+    rows are not read, skipped, overwritten, or spliced. This does not open a
+    TWS socket and does not rewrite sector snapshots.
     """
     today = today or utcnow().date()
     if mode not in {"max", "incremental"}:
@@ -912,18 +917,39 @@ def ingest_market_monitor(
     errors: list[dict[str, str]] = []
     written = 0
     with engine.begin() as conn:
-        providers = stored_equity_providers(conn, requested)
-        eligible, skipped = yahoo_backfill_symbols(providers)
+        upsert_source_registry(
+            conn,
+            [
+                {
+                    "source_id": MARKET_MONITOR_SOURCE_ID,
+                    "provider": "YAHOO",
+                    "dataset": MARKET_MONITOR_DATASET,
+                    "source_url": "",
+                    "expected_cadence": "D",
+                    "usage_scope": "INTERNAL_ONLY",
+                    "attribution": "Yahoo Finance via yfinance (unofficial; no SLA).",
+                    "terms_notes": "Dashboard market-monitor history only. Never written into EQUITY_EOD and never spliced with IBKR.",
+                    "units_metadata": {"price": "adjusted_close", "adjustment_basis": "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND"},
+                    "catalog_version": "market_monitor_eod_v1",
+                    "enabled": True,
+                    "access_status": "CONFIGURED",
+                }
+            ],
+            enabled={MARKET_MONITOR_SOURCE_ID: True},
+            access={MARKET_MONITOR_SOURCE_ID: "CONFIGURED"},
+        )
+        eligible = list(requested)
+        skipped: list[dict[str, Any]] = []
         rid = start_run(
             conn,
-            source_id=EQUITY_SOURCE_ID,
+            source_id=MARKET_MONITOR_SOURCE_ID,
             dataset=MARKET_MONITOR_DATASET,
             parent_run_id=parent_run_id,
         )
         retrieved = utcnow()
         for symbol in eligible:
             try:
-                bars = adapter.fetch([symbol], start, today)
+                bars = _monitor_bars(adapter.fetch([symbol], start, today))
             except Exception as exc:  # noqa: BLE001 - one symbol must not discard the others
                 errors.append({"symbol": symbol, "error": exc.__class__.__name__})
                 continue
@@ -932,11 +958,11 @@ def ingest_market_monitor(
                 continue
             counts = upsert_bars(conn, bars, run_id=rid, retrieved_at=retrieved, provider="YAHOO")
             written += int(counts.get("inserted") or 0) + int(counts.get("unchanged") or 0)
-        latest = latest_stored_bar_date(conn, eligible) if eligible else today
+        latest = latest_stored_bar_date(conn, eligible, source_id=MARKET_MONITOR_SOURCE_ID) if eligible else today
         failed = bool(errors)
         record_freshness(
             conn,
-            source_id=EQUITY_SOURCE_ID,
+            source_id=MARKET_MONITOR_SOURCE_ID,
             dataset=MARKET_MONITOR_DATASET,
             cadence="D",
             transport_status=TRANSPORT_FAILED if failed else TRANSPORT_OK,
@@ -953,12 +979,13 @@ def ingest_market_monitor(
             status=RUN_FAILED if failed else RUN_SUCCEEDED,
             counts={"bars": written, "eligible": len(eligible), "skipped": len(skipped)},
             error_redacted=errors[0]["error"] if errors else None,
-            details={"mode": mode, "skipped": skipped, "errors": errors, "tws_socket": False},
+            details={"mode": mode, "skipped": skipped, "errors": errors, "tws_socket": False, "source_id": MARKET_MONITOR_SOURCE_ID},
         )
     return {
         "status": RUN_FAILED if failed else RUN_SUCCEEDED,
         "failed": failed,
         "mode": mode,
+        "source_id": MARKET_MONITOR_SOURCE_ID,
         "eligible": eligible,
         "skipped_existing_provider": skipped,
         "bars_written": written,
@@ -975,6 +1002,7 @@ __all__ = [
     "FixtureAdapter",
     "MARKET_HISTORY_START",
     "MARKET_MONITOR_DATASET",
+    "MARKET_MONITOR_SOURCE_ID",
     "UnavailableAdapter",
     "YahooAdapter",
     "adapter_from_env",
