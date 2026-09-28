@@ -16,6 +16,7 @@ from market_intelligence.cftc_positions import (
     CONTRACTS,
     align_price_to_position,
     enrich_category_history,
+    positive_price_days,
 )
 from market_intelligence.commodity_analytics import close_points
 from market_intelligence.cross_asset_universe import (
@@ -51,18 +52,20 @@ def _bounds(groups: Sequence[Sequence[Mapping[str, Any]]]) -> tuple[date | None,
     return min(days), max(days)
 
 
-def _yahoo_bars(conn) -> list[dict[str, Any]]:
+def _yahoo_bars(conn, instrument_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
     if not _has_relation(conn, "mi_v_yahoo_cross_asset_history"):
         return []
-    return _rows(
-        conn,
-        """
+    sql = """
         SELECT instrument_id, source_id, bar_date, close_price AS close, adj_close_price,
                provider_symbol, provider
         FROM mi_v_yahoo_cross_asset_history
-        ORDER BY instrument_id, bar_date
-        """,
-    )
+    """
+    params: dict[str, Any] = {}
+    if instrument_ids is not None:
+        sql += " WHERE instrument_id = ANY(:instrument_ids)"
+        params["instrument_ids"] = list(instrument_ids)
+    sql += " ORDER BY instrument_id, bar_date"
+    return _rows(conn, sql, params)
 
 
 def _monitor_prices(conn) -> dict[str, dict[date, float]]:
@@ -180,11 +183,16 @@ def positioning_context(conn) -> dict[str, Any]:
         ORDER BY market_key, trader_category, position_date
         """,
     )
-    bars = _yahoo_bars(conn)
+    proxy_ids = [contract.price_proxy for contract in CONTRACTS if contract.price_proxy and contract.price_proxy not in {"SPY", "QQQ", "IWM"}]
+    bars = _yahoo_bars(conn, proxy_ids)
     prices = _price_book(conn, bars)
+    ordered_days = {instrument_id: positive_price_days(series) for instrument_id, series in prices.items()}
     grouped: dict[tuple[str, str], list[dict[str, Any]]] = {}
     for row in stored:
-        grouped.setdefault((row["market_key"], row["trader_category"]), []).append(row)
+        position_day = as_day(row.get("position_date"))
+        if position_day is None:
+            continue
+        grouped.setdefault((row["market_key"], row["trader_category"]), []).append({**row, "position_date": position_day})
     markets: list[dict[str, Any]] = []
     latest_position = None
     latest_published = None
@@ -195,9 +203,10 @@ def positioning_context(conn) -> dict[str, Any]:
                 continue
             history = enrich_category_history(rows)
             price_map = prices.get(contract.price_proxy or "", {})
+            price_days = ordered_days.get(contract.price_proxy or "", [])
             series: list[dict[str, Any]] = []
             for item in history:
-                aligned = align_price_to_position(item["position_date"], price_map) if contract.price_proxy else None
+                aligned = align_price_to_position(item["position_date"], price_map, ordered_days=price_days) if contract.price_proxy else None
                 series.append({**item, "price": None if aligned is None else aligned[1], "price_date": None if aligned is None else aligned[0]})
                 if latest_position is None or item["position_date"] > latest_position:
                     latest_position = item["position_date"]

@@ -13,6 +13,7 @@ interest, in percent. Open interest of zero or missing stays missing.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any, Mapping, Sequence
@@ -180,41 +181,49 @@ def _percentile(values: Sequence[float], current: float) -> float:
     return 100.0 * rank / len(values)
 
 
-def _zscore(values: Sequence[float], current: float) -> float | None:
-    count = len(values)
+def _zscore_moments(total: float, total_sq: float, count: int, current: float) -> float | None:
+    """Sample z-score of ``current`` inside the expanding window that produced the moments.
+
+    Variance is the sum of squared deviations from the mean, divided by count minus one.
+    A zero standard deviation stays missing.
+    """
     if count < 2:
         return None
-    mean = sum(values) / count
-    variance = sum((value - mean) ** 2 for value in values) / (count - 1)
+    variance = (total_sq - (total * total) / count) / (count - 1)
     if variance <= 0:
         return None
-    return (current - mean) / math.sqrt(variance)
+    return (current - (total / count)) / math.sqrt(variance)
 
 
 def enrich_category_history(points: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Chronological metrics. Each row uses only observations on or before its date."""
     ordered = sorted(points, key=lambda row: row["position_date"])
     enriched: list[dict[str, Any]] = []
+    pcts: list[float | None] = []
+    start_1y = 0
+    start_3y = 0
+    moment_n = 0
+    moment_sum = 0.0
+    moment_sq = 0.0
     for row in ordered:
         current_pct = net_oi_pct(row.get("long_contracts"), row.get("short_contracts"), row.get("open_interest"))
-        prior = enriched[-1]["net_oi_pct"] if enriched else None
-        four = enriched[-4]["net_oi_pct"] if len(enriched) >= 4 else None
-        window_1y = [
-            item["net_oi_pct"]
-            for item in enriched
-            if item["net_oi_pct"] is not None and item["position_date"] >= row["position_date"] - timedelta(days=365)
-        ]
-        window_3y = [
-            item["net_oi_pct"]
-            for item in enriched
-            if item["net_oi_pct"] is not None and item["position_date"] >= row["position_date"] - timedelta(days=365 * 3)
-        ]
+        prior = pcts[-1] if pcts else None
+        four = pcts[-4] if len(pcts) >= 4 else None
+        cutoff_1y = row["position_date"] - timedelta(days=365)
+        cutoff_3y = row["position_date"] - timedelta(days=365 * 3)
+        while start_1y < len(enriched) and enriched[start_1y]["position_date"] < cutoff_1y:
+            start_1y += 1
+        while start_3y < len(enriched) and enriched[start_3y]["position_date"] < cutoff_3y:
+            start_3y += 1
+        window_1y = [value for value in pcts[start_1y:] if value is not None]
+        window_3y = [value for value in pcts[start_3y:] if value is not None]
         if current_pct is not None:
             window_1y.append(current_pct)
             window_3y.append(current_pct)
-        expanding = [item["net_oi_pct"] for item in enriched if item["net_oi_pct"] is not None]
-        if current_pct is not None:
-            expanding.append(current_pct)
+            moment_n += 1
+            moment_sum += current_pct
+            moment_sq += current_pct * current_pct
+        pcts.append(current_pct)
         enriched.append(
             {
                 **row,
@@ -224,10 +233,15 @@ def enrich_category_history(points: Sequence[Mapping[str, Any]]) -> list[dict[st
                 "change_4w": None if current_pct is None or four is None else current_pct - four,
                 "percentile_1y": _percentile(window_1y, current_pct) if current_pct is not None and len(window_1y) >= MIN_PERCENTILE_1Y else None,
                 "percentile_3y": _percentile(window_3y, current_pct) if current_pct is not None and len(window_3y) >= MIN_PERCENTILE_3Y else None,
-                "zscore": _zscore(expanding, current_pct) if current_pct is not None and len(expanding) >= MIN_ZSCORE else None,
+                "zscore": _zscore_moments(moment_sum, moment_sq, moment_n, current_pct) if current_pct is not None and moment_n >= MIN_ZSCORE else None,
             }
         )
     return enriched
+
+
+def positive_price_days(prices: Mapping[date, float]) -> list[date]:
+    """Ascending dates whose price is present and positive."""
+    return sorted(day for day, value in prices.items() if value is not None and value > 0)
 
 
 def align_price_to_position(
@@ -235,20 +249,25 @@ def align_price_to_position(
     prices: Mapping[date, float],
     *,
     lookback_days: int = PRICE_LOOKBACK_DAYS,
+    ordered_days: Sequence[date] | None = None,
 ) -> tuple[date, float] | None:
     """Exact position date, else the latest price on or before it within the lookback.
 
-    Never returns a price after the position date.
+    Never returns a price after the position date. ``ordered_days`` is the sorted
+    positive-price calendar from :func:`positive_price_days` so each weekly row
+    does not rescan the whole price history.
     """
     exact = prices.get(position_date)
     if exact is not None and exact > 0:
         return position_date, exact
-    candidates = [
-        day
-        for day, value in prices.items()
-        if value is not None and value > 0 and day < position_date and (position_date - day).days <= lookback_days
-    ]
-    if not candidates:
+    days = ordered_days if ordered_days is not None else positive_price_days(prices)
+    index = bisect_left(days, position_date) - 1
+    if index < 0:
         return None
-    day = max(candidates)
-    return day, prices[day]
+    day = days[index]
+    if day >= position_date or (position_date - day).days > lookback_days:
+        return None
+    value = prices.get(day)
+    if value is None or value <= 0:
+        return None
+    return day, value
