@@ -682,10 +682,11 @@ if [ -f "$YAHOO_ENV" ]; then
 else
   echo "macro_coverage_report=skipped_no_writer_env"
 fi
-# One-shot max Yahoo history for Markets ETF proxies that have no EQUITY_EOD
-# provider yet. Symbols that already have IBKR (or any non-Yahoo) rows are
-# skipped. Incremental refresh keeps a short lookback. Older rows are not deleted.
-MARKETS_BACKFILL_MARKER="/var/lib/fmp/equity_markets_max_backfill.done"
+# One-shot max Yahoo history into MARKET_MONITOR_EOD. The previous
+# equity_markets_max_backfill.done marker is left in place and is not reused:
+# that run skipped IBKR symbols and wrote into EQUITY_EOD. This marker runs
+# the separated Yahoo history once. Canonical EQUITY_EOD rows are not deleted.
+MARKETS_BACKFILL_MARKER="/var/lib/fmp/market_monitor_eod_max_backfill.done"
 if [ -f "$MARKETS_BACKFILL_MARKER" ]; then
   echo "equity_markets_backfill=already_recorded"
 elif [ ! -f "$YAHOO_ENV" ]; then

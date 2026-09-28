@@ -199,31 +199,31 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
         steps.append(
             {
                 "step": "equity_markets",
-                "source_id": "EQUITY_EOD",
+                "source_id": "MARKET_MONITOR_EOD",
                 "dataset": "market_monitor_etfs",
                 "configured": True,
                 "action": "ingest",
                 "mode": "incremental",
-                "reason": "Incremental Yahoo history only for market-monitor symbols with no non-Yahoo EQUITY_EOD provider.",
+                "reason": "Incremental Yahoo history for every market-monitor ETF, stored only as MARKET_MONITOR_EOD.",
             }
         )
     if getattr(args, "equity_markets_backfill", False):
         steps.append(
             {
                 "step": "equity_markets_backfill",
-                "source_id": "EQUITY_EOD",
+                "source_id": "MARKET_MONITOR_EOD",
                 "dataset": "market_monitor_etfs",
                 "configured": True,
                 "action": "ingest",
                 "mode": "max",
-                "reason": "One-shot max Yahoo history. Skips symbols that already have another provider.",
+                "reason": "One-shot max Yahoo history into MARKET_MONITOR_EOD. Does not write EQUITY_EOD.",
             }
         )
     if getattr(args, "equity_markets_coverage", False):
         steps.append(
             {
                 "step": "equity_markets_coverage",
-                "source_id": "EQUITY_EOD",
+                "source_id": "MARKET_MONITOR_EOD",
                 "configured": True,
                 "action": "report",
                 "mode": "read",
@@ -464,6 +464,12 @@ def _print_market_coverage(engine) -> list[dict[str, Any]]:
             flush=True,
         )
     print("market_coverage duplicate_dates={0}".format(report["duplicate_dates"]), flush=True)
+    for row in report.get("canonical_rows") or []:
+        print(
+            "canonical_equity_coverage symbol={symbol} source={source_id} provider={provider} earliest={earliest} latest={latest} rows={rows} adjustment_basis={adjustment_basis}".format(**row),
+            flush=True,
+        )
+    print("canonical_equity_coverage duplicate_dates={0}".format(report.get("canonical_duplicate_dates")), flush=True)
     return list(report["rows"])
 
 

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import json
 from datetime import date, datetime, time, timezone
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy import text
 
@@ -301,17 +301,52 @@ def metric_history(
     end: date | None = None,
     limit: int = MAX_HISTORY_ROWS,
 ) -> list[dict[str, Any]]:
+    clauses = ["metric_id = :metric_id"]
+    params: dict[str, Any] = {"metric_id": metric_id, "limit": int(limit)}
+    if start is not None:
+        clauses.append("as_of >= :start")
+        params["start"] = start
+    if end is not None:
+        clauses.append("as_of <= :end")
+        params["end"] = end
     return _rows(
         conn,
         """
         SELECT as_of, value, units, status FROM mi_v_metric_history
-        WHERE metric_id = :metric_id
-          AND (:start IS NULL OR as_of >= :start)
-          AND (:end IS NULL OR as_of <= :end)
+        WHERE {where}
         ORDER BY as_of DESC LIMIT :limit
-        """,
-        {"metric_id": metric_id, "start": start, "end": end, "limit": int(limit)},
+        """.format(where=" AND ".join(clauses)),
+        params,
     )[::-1]
+
+
+def _bounded_history_sql(table: str, date_column: str, value_column: str, *, start: date | None, end: date | None, extra_where: str) -> tuple[str, dict[str, Any]]:
+    """Index-friendly window. Absent bounds are omitted so a generic plan can use the series index.
+
+    ``(:start IS NULL OR date >= :start)`` blocks the ``(series_id, observation_date)``
+    index once PostgreSQL switches to a generic plan. A sequential scan of the
+    macro history then exceeds the 15s read-only statement timeout and the page
+    stops before its title.
+    """
+    clauses = [extra_where, "{0} IS NOT NULL".format(value_column)]
+    params: dict[str, Any] = {}
+    if start is not None:
+        clauses.append("{0} >= :start".format(date_column))
+        params["start"] = start
+    if end is not None:
+        clauses.append("{0} <= :end".format(date_column))
+        params["end"] = end
+    sql = """
+        SELECT {date_column}, {value_column} FROM {table}
+        WHERE {where}
+        ORDER BY {date_column} DESC LIMIT :limit
+    """.format(
+        date_column=date_column,
+        value_column=value_column,
+        table=table,
+        where=" AND ".join(clauses),
+    )
+    return sql, params
 
 
 def observation_history(
@@ -327,17 +362,53 @@ def observation_history(
     ``limit`` is a safety cap on the newest rows inside that window. Macro charts
     pass :data:`MACRO_HISTORY_LIMIT` so a long daily series is not cut at 4,000.
     """
-    return _rows(
+    sql, params = _bounded_history_sql(
+        "mi_v_macro_observations_current",
+        "observation_date",
+        "value",
+        start=start,
+        end=end,
+        extra_where="series_id = :series_id",
+    )
+    params.update({"series_id": series_id, "limit": int(limit)})
+    return _rows(conn, sql, params)[::-1]
+
+
+def recent_observations(
+    conn,
+    series_ids: Sequence[str],
+    *,
+    limit: int = 40,
+) -> dict[str, list[dict[str, Any]]]:
+    """Newest ``limit`` current observations for each series, in one indexed read."""
+    wanted = [str(series_id) for series_id in series_ids if series_id]
+    grouped: dict[str, list[dict[str, Any]]] = {series_id: [] for series_id in wanted}
+    if not wanted:
+        return grouped
+    binds = {"s{0}".format(index): series_id for index, series_id in enumerate(wanted)}
+    values_sql = ", ".join("(CAST(:s{0} AS varchar))".format(index) for index in range(len(wanted)))
+    rows = _rows(
         conn,
         """
-        SELECT observation_date, value FROM mi_v_macro_observations_current
-        WHERE series_id = :series_id AND value IS NOT NULL
-          AND (:start IS NULL OR observation_date >= :start)
-          AND (:end IS NULL OR observation_date <= :end)
-        ORDER BY observation_date DESC LIMIT :limit
-        """,
-        {"series_id": series_id, "start": start, "end": end, "limit": int(limit)},
-    )[::-1]
+        SELECT ids.series_id, o.observation_date, o.value
+        FROM (VALUES {values}) AS ids(series_id)
+        JOIN LATERAL (
+            SELECT observation_date, value
+            FROM mi_v_macro_observations_current
+            WHERE series_id = ids.series_id
+              AND value IS NOT NULL
+            ORDER BY observation_date DESC
+            LIMIT :limit
+        ) o ON TRUE
+        ORDER BY ids.series_id, o.observation_date
+        """.format(values=values_sql),
+        {**binds, "limit": int(limit)},
+    )
+    for row in rows:
+        series_id = str(row.get("series_id") or "")
+        if series_id in grouped:
+            grouped[series_id].append({"observation_date": row.get("observation_date"), "value": row.get("value")})
+    return grouped
 
 
 def credit_latest(conn) -> list[dict[str, Any]]:
@@ -485,6 +556,8 @@ def rates_context(conn) -> dict[str, Any]:
     latest_rows = list(macro_latest(conn))
     latest = {r["series_id"]: r for r in latest_rows}
     metrics = metric_latest(conn)
+    curve_series_ids = [alt for sid in CURVE_TENORS.values() for alt in EQUIVALENTS.get(sid, (sid,))]
+    histories = recent_observations(conn, curve_series_ids, limit=40)
     per_tenor_resolved: dict[str, dict[date, Any]] = {}
     per_tenor_row: dict[str, dict[date, dict[str, Any]]] = {}
     for tenor, sid in CURVE_TENORS.items():
@@ -493,7 +566,7 @@ def rates_context(conn) -> dict[str, Any]:
         for alt in alts:
             meta = latest.get(alt) or {}
             source = meta.get("source_id") or ("TREASURY" if str(alt).startswith("UST_") else "FRED")
-            for hist in observation_history(conn, alt, limit=40):
+            for hist in histories.get(alt, []):
                 day = _normalize_obs_date(hist.get("observation_date"))
                 if day is None or hist.get("value") is None:
                     continue

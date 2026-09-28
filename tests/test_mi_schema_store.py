@@ -60,6 +60,7 @@ def test_new_migrations_are_additive_and_numbered_after_007():
         "036_sec_openfigi.sql",
         "037_equity_live_quotes.sql",
         "038_yahoo_volatility.sql",
+        "039_market_monitor_eod.sql",
     ]
     for name in new:
         sql = (MIGRATIONS / name).read_text(encoding="utf-8").upper()

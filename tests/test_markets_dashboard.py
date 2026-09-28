@@ -3,15 +3,25 @@
 from __future__ import annotations
 
 import inspect
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
 import pytest
+from sqlalchemy import text
 from streamlit.testing.v1 import AppTest
 
-from market_intelligence.equity_eod import RETURN_WINDOWS, bars_from_yahoo_frame
+from jobs.verify_mi_dashboard import page_ok, query_error_class
+from market_intelligence.equity_eod import (
+    RETURN_WINDOWS,
+    EquityBar,
+    FixtureAdapter,
+    _monitor_bars,
+    bars_from_yahoo_frame,
+    ingest_market_monitor,
+    upsert_bars,
+)
 from market_intelligence.freshness import SERIES_POLICIES
 from market_intelligence.markets_analytics import (
     DRAWDOWN_SESSIONS,
@@ -26,7 +36,16 @@ from market_intelligence.markets_analytics import (
     session_window_returns,
     trailing_drawdown,
 )
-from market_intelligence.markets_read import choose_provider, load_monitor_history, yahoo_backfill_symbols
+from market_intelligence.markets_read import (
+    EQUITY_EOD_SOURCE_ID,
+    MARKET_MONITOR_SOURCE_ID,
+    choose_monitor_provider,
+    choose_provider,
+    load_monitor_history,
+    market_monitor_coverage,
+    yahoo_backfill_symbols,
+)
+from market_intelligence.read_models import _bounded_history_sql, rates_context, recent_observations
 from market_intelligence.taxonomy import (
     GLOBAL_MARKET_ETFS,
     MARKET_MONITOR_SYMBOLS,
@@ -201,12 +220,14 @@ def test_backfill_is_outside_the_scheduled_refresh():
     assert "equity_markets_coverage" not in names
     incremental = next(step for step in scheduled["steps"] if step["step"] == "equity_markets")
     assert incremental["mode"] == "incremental"
+    assert incremental["source_id"] == "MARKET_MONITOR_EOD"
     explicit = plan(build_parser().parse_args(["--equity-markets-backfill"]), {})
     assert explicit["steps"][0]["mode"] == "max"
     host = (ROOT / "scripts" / "deploy_host.sh").read_text(encoding="utf-8")
     assert "--equity-markets-backfill" in host
     assert "--equity-markets-coverage" in host
-    assert "equity_markets_max_backfill.done" in host
+    assert "market_monitor_eod_max_backfill.done" in host
+    assert "equity_markets_max_backfill.done" not in host.split("MARKETS_BACKFILL_MARKER", 1)[-1][:180]
 
 
 def test_market_monitor_due_after_the_close_and_not_before():
@@ -395,10 +416,149 @@ def test_yahoo_one_ticker_frame_uses_grouped_columns_and_skips_null_closes():
     assert flat_bars[0].adj_close == pytest.approx(100.0)
 
 
-def test_dashboard_history_reads_the_readonly_closes_view():
+def test_dashboard_history_reads_the_market_monitor_view():
     source = inspect.getsource(load_monitor_history)
-    assert "FROM mi_v_equity_daily_closes" in source
+    assert "FROM mi_v_market_monitor_closes" in source
+    assert "FROM mi_v_equity_daily_closes" not in source
     assert "FROM mi_market_bars" not in source
+    assert "choose_monitor_provider" in source
+    assert choose_monitor_provider({"IBKR", "YAHOO"}) == "YAHOO"
+    assert choose_provider({"IBKR", "YAHOO"}) == "IBKR"
+
+
+def test_us_and_global_comparisons_use_pre_2024_yahoo_history():
+    """A short IBKR series must not set the common start when Yahoo history is longer."""
+    bars = {
+        "SPY": [{"date": "1993-01-29", "value": 40.0}, {"date": "2000-05-26", "value": 140.0}, {"date": "2007-07-26", "value": 150.0}, {"date": "2026-09-25", "value": 560.0}],
+        "QQQ": [{"date": "1999-03-10", "value": 50.0}, {"date": "2000-05-26", "value": 90.0}, {"date": "2007-07-26", "value": 48.0}, {"date": "2026-09-25", "value": 480.0}],
+        "IWM": [{"date": "2000-05-26", "value": 45.0}, {"date": "2007-07-26", "value": 80.0}, {"date": "2026-09-25", "value": 210.0}],
+        "DIA": [{"date": "1998-01-20", "value": 80.0}, {"date": "2000-05-26", "value": 110.0}, {"date": "2007-07-26", "value": 130.0}, {"date": "2026-09-25", "value": 420.0}],
+        "VEA": [{"date": "2007-07-26", "value": 50.0}, {"date": "2026-09-25", "value": 55.0}],
+        "VWO": [{"date": "2005-03-10", "value": 30.0}, {"date": "2007-07-26", "value": 42.0}, {"date": "2026-09-25", "value": 48.0}],
+    }
+    us = normalize_selected_to_100(bars, ["SPY", "QQQ", "IWM", "DIA"])
+    assert us["start"] == date(2000, 5, 26)
+    assert us["start"] < date(2024, 1, 1)
+    global_core = normalize_selected_to_100(bars, ["SPY", "VEA", "VWO"])
+    assert global_core["start"] == date(2007, 7, 26)
+    assert global_core["start"] < date(2024, 1, 1)
+
+
+def test_market_monitor_bars_do_not_reuse_the_equity_eod_source():
+    original = EquityBar("SPY", date(1993, 1, 29), 40.0, 40.0, provider="YAHOO")
+    stamped = _monitor_bars([original])
+    assert original.source_id == "EQUITY_EOD"
+    assert stamped[0].source_id == MARKET_MONITOR_SOURCE_ID
+    assert stamped[0].provider == "YAHOO"
+    assert "yahoo_backfill_symbols" not in inspect.getsource(ingest_market_monitor)
+
+
+def test_rates_history_query_stays_indexable_and_batched():
+    sql, params = _bounded_history_sql(
+        "mi_v_macro_observations_current",
+        "observation_date",
+        "value",
+        start=None,
+        end=None,
+        extra_where="series_id = :series_id",
+    )
+    assert "IS NULL OR" not in sql
+    assert "start" not in params
+    bounded, bounded_params = _bounded_history_sql(
+        "mi_v_macro_observations_current",
+        "observation_date",
+        "value",
+        start=date(2020, 1, 1),
+        end=date(2020, 2, 1),
+        extra_where="series_id = :series_id",
+    )
+    assert "observation_date >= :start" in bounded
+    assert "observation_date <= :end" in bounded
+    assert bounded_params["start"] == date(2020, 1, 1)
+    body = inspect.getsource(rates_context)
+    assert "recent_observations(" in body
+    assert "observation_history(" not in body
+    batched = inspect.getsource(recent_observations)
+    assert "JOIN LATERAL" in batched
+    assert "IS NULL OR" not in batched
+
+
+def test_verifier_treats_a_query_failure_as_a_failed_page():
+    assert query_error_class("Query failed (OperationalError). Check Data Health for migration status.") == "OperationalError"
+    assert page_ok(text="Rates & Curve", exceptions=[], has_title=True) is True
+    assert page_ok(text="Query failed (OperationalError). Check Data Health.", exceptions=[], has_title=True) is False
+    assert page_ok(text="Query failed (OperationalError). Check Data Health.", exceptions=[], has_title=False) is False
+
+
+def test_monitor_history_ignores_short_ibkr_equity_eod(mi_db):
+    retrieved = datetime(2026, 9, 25, tzinfo=timezone.utc)
+    symbols = ["SPY", "QQQ", "IWM", "DIA", "RSP", "VEA", "VWO"]
+    starts = {
+        "SPY": date(1993, 1, 29),
+        "QQQ": date(1999, 3, 10),
+        "IWM": date(2000, 5, 26),
+        "DIA": date(1998, 1, 20),
+        "RSP": date(2003, 4, 24),
+        "VEA": date(2007, 7, 26),
+        "VWO": date(2005, 3, 10),
+    }
+    with mi_db.begin() as conn:
+        upsert_bars(
+            conn,
+            [
+                EquityBar("SPY", date(2024, 9, 12), 500.0, 500.0, source_id=EQUITY_EOD_SOURCE_ID, provider="IBKR", adjustment_basis="IBKR_ADJUSTED_LAST"),
+                EquityBar("RSP", date(2024, 9, 18), 180.0, 180.0, source_id=EQUITY_EOD_SOURCE_ID, provider="IBKR", adjustment_basis="IBKR_ADJUSTED_LAST"),
+                EquityBar("QQQ", date(1990, 1, 2), 1.0, 1.0, source_id=EQUITY_EOD_SOURCE_ID, provider="YAHOO"),
+            ],
+            run_id="canonical",
+            retrieved_at=retrieved,
+            provider="IBKR",
+        )
+    yahoo_bars = []
+    for symbol, start in starts.items():
+        yahoo_bars.append(EquityBar(symbol, start, 100.0, 100.0, provider="YAHOO"))
+        for day, price in ((date(2000, 5, 26), 110.0), (date(2007, 7, 26), 120.0), (date(2026, 9, 25), 200.0)):
+            if day > start:
+                yahoo_bars.append(EquityBar(symbol, day, price, price, provider="YAHOO"))
+    report = ingest_market_monitor(
+        mi_db,
+        mode="max",
+        adapter=FixtureAdapter(bars=yahoo_bars),
+        today=date(2026, 9, 25),
+        symbols=symbols,
+    )
+    assert report["failed"] is False
+    assert report["source_id"] == MARKET_MONITOR_SOURCE_ID
+    assert report["eligible"] == symbols
+    assert report["skipped_existing_provider"] == []
+    with mi_db.connect() as conn:
+        history = load_monitor_history(conn, symbols)
+        coverage = market_monitor_coverage(conn, symbols)
+        canonical = conn.execute(
+            text(
+                """
+                SELECT instrument_id, provider, bar_date, adj_close_price
+                FROM mi_market_bars
+                WHERE source_id = 'EQUITY_EOD'
+                ORDER BY instrument_id, bar_date
+                """
+            )
+        ).all()
+    assert history["meta"]["SPY"]["earliest"] == "1993-01-29"
+    assert history["meta"]["SPY"]["provider"] == "YAHOO"
+    assert history["meta"]["SPY"]["source_id"] == MARKET_MONITOR_SOURCE_ID
+    assert history["meta"]["QQQ"]["earliest"] == "1999-03-10"
+    us = normalize_selected_to_100(history["bars"], ["SPY", "QQQ", "IWM", "DIA"])
+    assert us["start"] == date(2000, 5, 26)
+    global_core = normalize_selected_to_100(history["bars"], ["SPY", "VEA", "VWO"])
+    assert global_core["start"] == date(2007, 7, 26)
+    assert coverage["duplicate_dates"] == 0
+    assert {row["provider"] for row in coverage["rows"]} == {"YAHOO"}
+    assert {(row[0], row[1], row[2].isoformat(), float(row[3])) for row in canonical} == {
+        ("QQQ", "YAHOO", "1990-01-02", 1.0),
+        ("RSP", "IBKR", "2024-09-18", 180.0),
+        ("SPY", "IBKR", "2024-09-12", 500.0),
+    }
 
 
 def test_equity_markets_progress_does_not_prefix_json_stdout():

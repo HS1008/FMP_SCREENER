@@ -1,8 +1,8 @@
 """PostgreSQL reads for the Markets pages.
 
-One EQUITY_EOD provider per symbol. If more than one provider is stored, the
-series uses IBKR, then Yahoo, and never concatenates the two. Adjusted close
-is the only price used.
+Dashboard comparisons read ``MARKET_MONITOR_EOD`` only: one Yahoo history for
+every market-monitor ETF. Canonical IBKR rows stay on ``EQUITY_EOD`` and are
+not concatenated into these series. Adjusted close is the only price used.
 """
 
 from __future__ import annotations
@@ -19,15 +19,27 @@ from market_intelligence.taxonomy import (
     US_MARKET_SYMBOLS,
 )
 
+MARKET_MONITOR_SOURCE_ID = "MARKET_MONITOR_EOD"
+EQUITY_EOD_SOURCE_ID = "EQUITY_EOD"
 _PROVIDER_PREFERENCE = ("IBKR", "YAHOO", "FIXTURE")
+_MONITOR_PROVIDER_PREFERENCE = ("YAHOO", "FIXTURE")
 
 
 def choose_provider(providers: set[str]) -> str | None:
-    """Single provider for a symbol. Never a splice."""
+    """Single canonical EQUITY_EOD provider. Never a splice."""
+    return _prefer(providers, _PROVIDER_PREFERENCE)
+
+
+def choose_monitor_provider(providers: set[str]) -> str | None:
+    """Single market-monitor provider. Yahoo wins; IBKR is not preferred."""
+    return _prefer(providers, _MONITOR_PROVIDER_PREFERENCE)
+
+
+def _prefer(providers: set[str], order: tuple[str, ...]) -> str | None:
     present = {provider for provider in providers if provider}
     if not present:
         return None
-    for name in _PROVIDER_PREFERENCE:
+    for name in order:
         if name in present:
             return name
     return sorted(present)[0]
@@ -40,10 +52,11 @@ def _iso(day: date | None) -> str | None:
 
 
 def load_monitor_history(conn, symbols: Sequence[str]) -> dict[str, Any]:
-    """Adjusted EQUITY_EOD closes and canonical session returns for ``symbols`` only.
+    """Adjusted market-monitor closes and session returns for ``symbols`` only.
 
-    Reads ``mi_v_equity_daily_closes``. The dashboard role can select that view
-    and cannot select ``mi_market_bars``.
+    Reads ``mi_v_market_monitor_closes``. That view is Yahoo ``MARKET_MONITOR_EOD``
+    only, so a short IBKR ``EQUITY_EOD`` history cannot truncate the chart.
+    The dashboard role can select the view and cannot select ``mi_market_bars``.
     """
     wanted = [str(symbol) for symbol in symbols]
     grouped: dict[str, dict[str, list[tuple[date, float, str | None]]]] = {symbol: {} for symbol in wanted}
@@ -52,9 +65,8 @@ def load_monitor_history(conn, symbols: Sequence[str]) -> dict[str, Any]:
             text(
                 """
                 SELECT symbol, bar_date, adj_close_price, provider, adjustment_basis, source_id
-                FROM mi_v_equity_daily_closes
-                WHERE source_id = 'EQUITY_EOD'
-                  AND adj_close_price IS NOT NULL
+                FROM mi_v_market_monitor_closes
+                WHERE adj_close_price IS NOT NULL
                   AND symbol IN :syms
                 ORDER BY symbol, bar_date
                 """
@@ -74,7 +86,7 @@ def load_monitor_history(conn, symbols: Sequence[str]) -> dict[str, Any]:
     latest: date | None = None
     for symbol in wanted:
         by_provider = grouped.get(symbol) or {}
-        provider = choose_provider(set(by_provider))
+        provider = choose_monitor_provider(set(by_provider))
         chosen = by_provider.get(provider or "", [])
         chosen.sort(key=lambda item: item[0])
         points = [{"date": day.isoformat(), "value": price} for day, price, _basis in chosen]
@@ -92,7 +104,7 @@ def load_monitor_history(conn, symbols: Sequence[str]) -> dict[str, Any]:
             "providers_present": sorted(name for name in by_provider if name),
             "adjustment_basis": bases[-1] if len(bases) == 1 else None,
             "adjustment_bases": bases,
-            "source_id": "EQUITY_EOD",
+            "source_id": MARKET_MONITOR_SOURCE_ID,
             "rows": len(points),
             "earliest": _iso(first),
             "latest": _iso(last),
@@ -116,35 +128,33 @@ def global_markets_history(conn) -> dict[str, Any]:
     return load_monitor_history(conn, GLOBAL_MARKET_SYMBOLS)
 
 
-def market_monitor_coverage(conn, symbols: Sequence[str] | None = None) -> dict[str, Any]:
-    """Stored EQUITY_EOD spans for the market-monitor symbols, plus duplicate-date count."""
-    wanted = list(symbols or MARKET_MONITOR_SYMBOLS)
+def _source_coverage(conn, symbols: Sequence[str], source_id: str) -> dict[str, Any]:
     rows = conn.execute(
         text(
             """
             SELECT instrument_id, source_id, COALESCE(provider, ''), COALESCE(adjustment_basis, ''),
                    MIN(bar_date), MAX(bar_date), COUNT(*)
             FROM mi_market_bars
-            WHERE source_id = 'EQUITY_EOD'
+            WHERE source_id = :source
               AND bar_interval = '1D'
               AND instrument_id IN :syms
             GROUP BY instrument_id, source_id, COALESCE(provider, ''), COALESCE(adjustment_basis, '')
             ORDER BY instrument_id, source_id, 3
             """
         ).bindparams(bindparam("syms", expanding=True)),
-        {"syms": wanted},
+        {"syms": list(symbols), "source": source_id},
     ).all()
     coverage = [
         {
             "symbol": str(symbol),
-            "source_id": str(source_id),
+            "source_id": str(stored_source),
             "provider": str(provider),
             "adjustment_basis": str(basis),
             "earliest": day.isoformat() if isinstance(day, date) else str(day)[:10],
             "latest": last.isoformat() if isinstance(last, date) else str(last)[:10],
             "rows": int(count),
         }
-        for symbol, source_id, provider, basis, day, last, count in rows
+        for symbol, stored_source, provider, basis, day, last, count in rows
     ]
     duplicate_dates = int(
         conn.execute(
@@ -153,7 +163,7 @@ def market_monitor_coverage(conn, symbols: Sequence[str] | None = None) -> dict[
                 SELECT COUNT(*) FROM (
                     SELECT instrument_id, bar_date
                     FROM mi_market_bars
-                    WHERE source_id = 'EQUITY_EOD'
+                    WHERE source_id = :source
                       AND bar_interval = '1D'
                       AND instrument_id IN :syms
                     GROUP BY instrument_id, bar_date
@@ -161,11 +171,25 @@ def market_monitor_coverage(conn, symbols: Sequence[str] | None = None) -> dict[
                 ) duplicated
                 """
             ).bindparams(bindparam("syms", expanding=True)),
-            {"syms": wanted},
+            {"syms": list(symbols), "source": source_id},
         ).scalar()
         or 0
     )
-    return {"rows": coverage, "duplicate_dates": duplicate_dates, "symbols": wanted}
+    return {"rows": coverage, "duplicate_dates": duplicate_dates}
+
+
+def market_monitor_coverage(conn, symbols: Sequence[str] | None = None) -> dict[str, Any]:
+    """Dashboard Yahoo spans, plus untouched canonical EQUITY_EOD spans."""
+    wanted = list(symbols or MARKET_MONITOR_SYMBOLS)
+    dashboard = _source_coverage(conn, wanted, MARKET_MONITOR_SOURCE_ID)
+    canonical = _source_coverage(conn, wanted, EQUITY_EOD_SOURCE_ID)
+    return {
+        "rows": dashboard["rows"],
+        "duplicate_dates": dashboard["duplicate_dates"],
+        "canonical_rows": canonical["rows"],
+        "canonical_duplicate_dates": canonical["duplicate_dates"],
+        "symbols": wanted,
+    }
 
 
 def stored_equity_providers(conn, symbols: Sequence[str]) -> dict[str, set[str]]:
@@ -209,6 +233,9 @@ def yahoo_backfill_symbols(provider_by_symbol: Mapping[str, set[str]]) -> tuple[
 
 
 __all__ = [
+    "EQUITY_EOD_SOURCE_ID",
+    "MARKET_MONITOR_SOURCE_ID",
+    "choose_monitor_provider",
     "choose_provider",
     "global_markets_history",
     "load_monitor_history",
