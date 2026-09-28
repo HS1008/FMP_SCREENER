@@ -511,6 +511,26 @@ def publishable(metadata_status: str) -> bool:
     return metadata_status == META_VALIDATED
 
 
+RETIRED_CBOE_TERMS = (
+    "Intentionally retired. CBOE/OpenBB-CBOE is no longer an active data provider. "
+    "Yahoo volatility replaced it for active dashboard use. Historical observations are retained. "
+    "This is not a platform outage and does not require CBOE credentials."
+)
+RETIRED_CBOE_ATTRIBUTION = (
+    "Retired CBOE/OpenBB-CBOE provider. Not an active integration. "
+    "Index names such as the Cboe SKEW Index identify the index, not a CBOE data feed."
+)
+# Inserted when missing. ON CONFLICT updates only retirement fields so an existing
+# production provider/dataset label is preserved.
+RETIRED_CBOE_REGISTRY: tuple[dict[str, str], ...] = (
+    {"source_id": "CBOE_ALL_ACCESS", "provider": "Cboe (retired)", "dataset": "cboe_all_access"},
+    {"source_id": "OPENBB_CBOE", "provider": "OpenBB / Cboe (retired)", "dataset": "openbb_cboe"},
+    {"source_id": "OPENBB_CBOE_OPTIONS", "provider": "OpenBB / Cboe (retired)", "dataset": "cboe_delayed_options_chains"},
+    {"source_id": "OPENBB_CBOE_VIX", "provider": "OpenBB / Cboe (retired)", "dataset": "cboe_vx_eod_curve"},
+)
+RETIRED_CBOE_SOURCE_IDS = tuple(row["source_id"] for row in RETIRED_CBOE_REGISTRY)
+
+
 SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
     {
         "source_id": FRED_SOURCE_ID,
@@ -646,24 +666,28 @@ SOURCE_REGISTRY_DEFAULTS: tuple[dict, ...] = (
     },
     {
         "source_id": "OPENBB_CBOE_OPTIONS",
-        "provider": "OpenBB / Cboe",
+        "provider": "OpenBB / Cboe (retired)",
         "dataset": "cboe_delayed_options_chains",
         "source_url": "https://www.cboe.com/delayed_quotes/",
         "expected_cadence": "D",
         "usage_scope": EXPORT_INTERNAL_ONLY,
-        "attribution": "Cboe delayed quotes via OpenBB. Delayed / EOD. Not OPRA consolidated.",
-        "terms_notes": "Cboe website Terms (updated 2022-11-16) allow one personal copy; storage and derived analytics need written consent via permissions@cboe.com. Collection stays off until MI_OPENBB_OPTIONS_RIGHTS_ACK=1 after that consent. The legacy MI_OPENBB_CBOE_RIGHTS_ACK umbrella does not authorize this product.",
+        "enabled": False,
+        "access_status": "RETIRED_OPTIONAL",
+        "attribution": RETIRED_CBOE_ATTRIBUTION,
+        "terms_notes": RETIRED_CBOE_TERMS,
         "units_metadata": {"implied_volatility": "decimal", "greeks": "decimal"},
     },
     {
         "source_id": "OPENBB_CBOE_VIX",
-        "provider": "OpenBB / Cboe",
+        "provider": "OpenBB / Cboe (retired)",
         "dataset": "cboe_vx_eod_curve",
         "source_url": "https://www.cboe.com/delayed_quotes/",
         "expected_cadence": "D",
         "usage_scope": EXPORT_INTERNAL_ONLY,
-        "attribution": "Cboe VX_EOD via OpenBB (4 p.m. ET levels; not labelled official settlement).",
-        "terms_notes": "VX_EOD uses CFE delayed quotes. Cboe North American Data Policies require a Data Agreement for CFE. Collection stays off until MI_OPENBB_VIX_RIGHTS_ACK=1 after that agreement. OPTIONS consent does not cover VIX.",
+        "enabled": False,
+        "access_status": "RETIRED_OPTIONAL",
+        "attribution": RETIRED_CBOE_ATTRIBUTION,
+        "terms_notes": RETIRED_CBOE_TERMS,
         "units_metadata": {"price": "index_points", "expiration": "month"},
     },
     {

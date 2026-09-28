@@ -244,6 +244,13 @@ def exception_note(row: dict[str, Any]) -> str:
     if "TRACE" in joined and ("INDIVIDUAL" in joined or "ENTITLEMENT" in joined or transport in {"FAILED", "METADATA_REJECTED"}):
         return "Individual TRACE is an entitlement/capability limit. Aggregate Query API rows are a different dataset."
     policy = str(row.get("policy_status") or "")
+    if access in {"RETIRED_OPTIONAL", "RETIRED"} or policy == "RETIRED":
+        if source.startswith("OPENBB_") or source.startswith("CBOE"):
+            return (
+                "RETIRED. CBOE/OpenBB-CBOE was intentionally retired and replaced by Yahoo volatility "
+                "for active dashboard use. Historical rows remain. Not a platform outage."
+            )
+        return "RETIRED. This source is not an active dependency. Historical rows remain. Not a platform outage."
     if row.get("optional_disabled") or policy in {
         "DISABLED",
         "AWAITING_RIGHTS_ACK",

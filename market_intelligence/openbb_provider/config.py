@@ -6,6 +6,7 @@ import importlib.util
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from market_intelligence.adapters import ACCESS_RETIRED_OPTIONAL, AdapterStatus
 from market_intelligence.catalog import EXPORT_INTERNAL_ONLY
 
 OPENBB_SOURCE_ID = "OPENBB_CBOE"
@@ -259,38 +260,23 @@ class OpenBBProbe:
     vix: Any
 
 
+def _retired_status(source_id: str) -> AdapterStatus:
+    return AdapterStatus(
+        source_id,
+        ACCESS_RETIRED_OPTIONAL,
+        False,
+        "CBOE/OpenBB-CBOE is retired. This probe does not call CBOE. Yahoo volatility is the active dashboard source.",
+        (),
+        {"collection": "retired", "export": "INTERNAL_ONLY"},
+    )
+
+
 def probe_openbb(env: Mapping[str, str] | None = None) -> OpenBBProbe:
-    environ = _env(env)
+    """Retired provider probe. Enable and rights flags cannot turn collection back on."""
+    _ = env
     return OpenBBProbe(
-        options=_status(
-            OPENBB_OPTIONS_SOURCE_ID,
-            environ,
-            dataset_flag=OPTIONS_ENABLE_FLAG,
-            sibling_flag=VIX_ENABLE_FLAG,
-            rights_flag=OPTIONS_RIGHTS_ACK_FLAG,
-            rights_ok=options_rights_acked(environ),
-            missing_access="ENTITLEMENT_REQUIRED",
-            missing_reason=(
-                "{0} is not set. Cboe website Terms require prior written consent before storing "
-                "delayed-quotes JSON in PostgreSQL or creating derived analytics. Project governance "
-                "is not that consent."
-            ).format(OPTIONS_RIGHTS_ACK_FLAG),
-            capabilities={"options_chains": "cboe delayed quotes", "export": "INTERNAL_ONLY"},
-        ),
-        vix=_status(
-            OPENBB_VIX_SOURCE_ID,
-            environ,
-            dataset_flag=VIX_ENABLE_FLAG,
-            sibling_flag=OPTIONS_ENABLE_FLAG,
-            rights_flag=VIX_RIGHTS_ACK_FLAG,
-            rights_ok=vix_rights_acked(environ),
-            missing_access="AGREEMENT_REQUIRED",
-            missing_reason=(
-                "{0} is not set. CFE delayed data requires a Cboe Data Agreement before collection. "
-                "OPTIONS consent and project governance do not cover VIX futures."
-            ).format(VIX_RIGHTS_ACK_FLAG),
-            capabilities={"vix_curve": "cboe VX_EOD", "export": "INTERNAL_ONLY"},
-        ),
+        options=_retired_status(OPENBB_OPTIONS_SOURCE_ID),
+        vix=_retired_status(OPENBB_VIX_SOURCE_ID),
     )
 
 

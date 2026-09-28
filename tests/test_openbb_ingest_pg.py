@@ -52,7 +52,9 @@ def test_failed_attempt_keeps_last_valid(mi_db):
         current = conn.execute(text("SELECT snapshot_id FROM mi_openbb_snapshots WHERE is_current AND publication_status = 'COMPLETE'")).scalar()
         ctx = options_volatility_context(conn)
     assert current == published["snapshot_id"]
-    assert ctx["symbols"][0]["snapshot_id"] == published["snapshot_id"]
+    assert ctx["symbols"] == []
+    assert ctx["vix"] is None
+    assert ctx["source_id"] == "YAHOO_VOL"
 
 
 def test_one_symbol_failure_does_not_block_other(mi_db):
@@ -90,14 +92,15 @@ def test_vix_read_model_and_export(mi_db):
         publish_curve(conn, curve, run_id="run_vix")
     with mi_db.connect() as conn:
         ctx = options_volatility_context(conn)
-    assert ctx["vix"] is not None
-    redacted = filter_for_export(ctx, export_mode="external")
+        points = conn.execute(text("SELECT COUNT(*) FROM mi_openbb_vix_points")).scalar()
+    assert ctx["symbols"] == []
+    assert ctx["vix"] is None
+    assert ctx["source_id"] == "YAHOO_VOL"
+    assert points >= 1
+    historical = {"export_scope": "INTERNAL_ONLY", "vix": {"points": [{"price": 15.2}], "m1": {"price": 15.2}}}
+    redacted = filter_for_export(historical, export_mode="external")
     assert (redacted.get("vix") or {}).get("restricted") is True
     assert "points" not in (redacted.get("vix") or {})
-    owner = filter_for_export(ctx, export_mode="owner")
-    assert owner.get("vix") is not None
-    assert owner["vix"].get("restricted") is not True
-    assert owner["vix"].get("front_shape") or owner["vix"].get("m1")
 
 
 def test_provenance_and_freshness_are_stored(mi_db):
@@ -143,14 +146,15 @@ def test_provider_exception_does_not_clobber_complete_or_invent_zeroes(mi_db):
     with mi_db.connect() as conn:
         current = conn.execute(text("SELECT snapshot_id, publication_status FROM mi_openbb_snapshots WHERE is_current AND publication_status = 'COMPLETE'")).mappings().one()
         failed_row = conn.execute(text("SELECT is_current, publication_status, quality_json FROM mi_openbb_snapshots WHERE snapshot_id = :id"), {"id": failed["snapshot_id"]}).mappings().one()
+        stored = conn.execute(text("SELECT snapshot_id FROM mi_v_options_latest")).scalar()
         ctx = options_volatility_context(conn)
     assert current["snapshot_id"] == first["snapshot_id"]
     assert failed_row["is_current"] is False
     assert failed_row["publication_status"] == "FAILED"
     assert (failed_row["quality_json"] or {}).get("error") == "TIMEOUT"
-    assert ctx["symbols"][0]["snapshot_id"] == first["snapshot_id"]
-    gex = ctx["symbols"][0]["gex"]
-    assert gex.get("dealer_gex") is False
+    assert stored == first["snapshot_id"]
+    assert ctx["symbols"] == []
+    assert ctx["vix"] is None
 
 
 def test_read_models_do_not_call_openbb(mi_db, monkeypatch):
@@ -182,14 +186,15 @@ def test_read_models_do_not_call_openbb(mi_db, monkeypatch):
     with mi_db.connect() as conn:
         ctx = options_volatility_context(conn)
         health = data_health_context(conn)
+        stored = conn.execute(
+            text("SELECT COUNT(*) FROM mi_openbb_snapshots WHERE is_current AND publication_status = 'COMPLETE'")
+        ).scalar()
     assert "openbb" not in sys.modules
-    assert ctx["symbols"][0]["underlying_symbol"] == "SPY"
-    assert ctx["vix"] is not None
-    assert health["options_volatility"]["symbols"][0]["snapshot_id"] == ctx["symbols"][0]["snapshot_id"]
-    remote = filter_for_export(ctx, export_mode="external")
-    assert remote["symbols"][0].get("restricted") is True
-    assert (remote.get("vix") or {}).get("restricted") is True
-    assert "iv_30d" not in remote["symbols"][0]
+    assert ctx["symbols"] == []
+    assert ctx["vix"] is None
+    assert health["options_volatility"]["symbols"] == []
+    assert health["options_volatility"]["vix"] is None
+    assert stored == 2
 
 
 def test_stale_snapshot_is_labelled_not_rewritten(mi_db):
@@ -198,7 +203,7 @@ def test_stale_snapshot_is_labelled_not_rewritten(mi_db):
         publish_chain(conn, snap, run_id="run_stale")
     with mi_db.connect() as conn:
         ctx = options_volatility_context(conn)
-    row = ctx["symbols"][0]
+        row = conn.execute(text("SELECT session_date, snapshot_id FROM mi_openbb_snapshots WHERE is_current")).mappings().one()
     assessment = assess_freshness(
         date(2026, 9, 11),
         "D",
@@ -206,8 +211,8 @@ def test_stale_snapshot_is_labelled_not_rewritten(mi_db):
         source_id="OPENBB_CBOE_OPTIONS",
     )
     assert assessment.status == "STALE"
+    assert ctx["symbols"] == []
     assert str(row["session_date"]) == "2026-09-11"
-    assert row["gex"].get("dealer_gex") is False
     assert row["snapshot_id"]
 
 
@@ -217,13 +222,12 @@ def test_stored_term_structure_is_flattened_for_ui(mi_db):
         publish_chain(conn, snap, run_id="run_term")
     with mi_db.connect() as conn:
         ctx = options_volatility_context(conn)
-    point = ctx["symbols"][0]["atm_term_structure"][0]
-    assert point["atm_iv"] is not None
-    assert "one_sided" in point
-    assert "call_iv" in point
-    assert "put_iv" in point
-    assert "expiration" in point
-    assert "dte_session" in point
+        stored = conn.execute(text("SELECT metrics_json FROM mi_v_options_latest")).mappings().one()
+    metrics = stored["metrics_json"] or {}
+    points = metrics.get("atm_term_structure") or metrics.get("term_structure") or []
+    assert points
+    assert ctx["symbols"] == []
+    assert ctx["vix"] is None
 
 
 def test_unexpected_provider_exception_is_durable(mi_db):
@@ -271,8 +275,6 @@ def test_unexpected_provider_exception_is_durable(mi_db):
 
 
 def test_sibling_registry_rows_stay_independent(mi_db):
-    from market_intelligence.openbb_provider.config import openbb_installed
-
     client = OpenBBClient(
         chain_fn=lambda symbol=None: _raw([_row()], fetched_at=datetime(2026, 9, 11, 16, 5, tzinfo=NY)),
         curve_fn=lambda: (_ for _ in ()).throw(AssertionError("vix must not fetch")),
@@ -289,13 +291,9 @@ def test_sibling_registry_rows_stay_independent(mi_db):
             for r in conn.execute(text("SELECT source_id, enabled, access_status FROM mi_source_registry WHERE source_id LIKE 'OPENBB%'"))
         }
     assert rows["OPENBB_CBOE_VIX"]["enabled"] is False
-    assert rows["OPENBB_CBOE_VIX"]["access"] == "AGREEMENT_REQUIRED"
-    if openbb_installed():
-        assert rows["OPENBB_CBOE_OPTIONS"]["enabled"] is True
-        assert rows["OPENBB_CBOE_OPTIONS"]["access"] == "CONFIGURED"
-    else:
-        assert rows["OPENBB_CBOE_OPTIONS"]["enabled"] is False
-        assert rows["OPENBB_CBOE_OPTIONS"]["access"] == "CONFIGURATION_REQUIRED"
+    assert rows["OPENBB_CBOE_VIX"]["access"] == "RETIRED_OPTIONAL"
+    assert rows["OPENBB_CBOE_OPTIONS"]["enabled"] is False
+    assert rows["OPENBB_CBOE_OPTIONS"]["access"] == "RETIRED_OPTIONAL"
 
 
 def test_disabled_openbb_sources_are_policy_not_failures(mi_db):
@@ -316,9 +314,17 @@ def test_disabled_openbb_sources_are_policy_not_failures(mi_db):
         assert "outage" in exception_note(row).lower()
         assert "BROKEN" not in str(row.get("freshness_status") or "").upper()
         assert str(row.get("freshness_status") or "").upper() != "FAILED"
-    assert options["access_status"] == "ENTITLEMENT_REQUIRED"
-    assert options["policy_status"] == "RIGHTS_PENDING"
-    assert vix["access_status"] == "AGREEMENT_REQUIRED"
-    assert vix["policy_status"] == "AGREEMENT_REQUIRED"
+    assert options["access_status"] == "RETIRED_OPTIONAL"
+    assert options["policy_status"] == "RETIRED"
+    assert options.get("retired_optional") is True
+    assert vix["access_status"] == "RETIRED_OPTIONAL"
+    assert vix["policy_status"] == "RETIRED"
+    assert vix.get("retired_optional") is True
+    failed = [
+        row
+        for row in rows
+        if row.get("transport_status") in {"FAILED", "METADATA_REJECTED", "PARTIAL"} and not row.get("retired_optional")
+    ]
+    assert failed == []
 
 

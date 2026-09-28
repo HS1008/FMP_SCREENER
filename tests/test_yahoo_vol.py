@@ -570,6 +570,9 @@ def test_options_page_shows_yahoo_core_without_provider_imports(monkeypatch):
     )
     assert "Cboe SKEW Index" in text
     assert "Core volatility" in text
+    assert "Options chains and VX futures" not in text
+    assert "OpenBB" not in text
+    assert "VX futures" not in text
     assert "Implied − Realized Vol" in text
     assert "Implied vs Realized Vol" not in text
     assert "VIX − GSPC RV21" in text
@@ -624,6 +627,7 @@ def test_options_page_nulls_stay_unavailable(monkeypatch):
     assert not at.exception
     text = " ".join(str(el.value) for el in at.info)
     assert "unavailable" in text.lower() or "No Yahoo" in text
+    assert "platform outage" in text.lower()
 
 
 def test_full_backfill_uses_max_history_only_for_active_term_tickers():

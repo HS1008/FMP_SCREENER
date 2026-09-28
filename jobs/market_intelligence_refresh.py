@@ -35,6 +35,7 @@ from market_intelligence.catalog import (
     FRED_SOURCE_ID,
     MACRO_MAX_BACKFILL_SERIES,
     RATES_MAX_BACKFILL_SERIES,
+    RETIRED_CBOE_SOURCE_IDS,
 )
 from market_intelligence.fmp_mode import fmp_free_mode, legacy_fmp_enabled, treasury_enabled
 from market_intelligence.fred_client import api_key_from_env
@@ -253,33 +254,30 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "reason": "Exact-session prior-close fallback when IBKR EQUITY_EOD bar is missing. Separate YAHOO_EOD source.",
             }
         )
-    from market_intelligence.openbb_provider.config import (
-        OPENBB_OPTIONS_SOURCE_ID,
-        OPENBB_VIX_SOURCE_ID,
-        probe_openbb,
-    )
+    from market_intelligence.openbb_provider.config import OPENBB_OPTIONS_SOURCE_ID, OPENBB_VIX_SOURCE_ID
 
-    openbb_probe = probe_openbb(env)
+    retired_reason = (
+        "CBOE/OpenBB-CBOE is retired and is not an active data provider. "
+        "This step does not call CBOE. Yahoo volatility is the active source."
+    )
     if getattr(args, "options", False) or want_all:
-        options_ok = openbb_probe.options.enabled and openbb_probe.options.access_status == "CONFIGURED"
         steps.append(
             {
                 "step": "options",
                 "source_id": OPENBB_OPTIONS_SOURCE_ID,
-                "configured": options_ok,
-                "action": "ingest" if options_ok else ("skip_unconfigured" if want_all else "fail_unconfigured"),
-                "reason": openbb_probe.options.reason,
+                "configured": False,
+                "action": "skip_retired",
+                "reason": retired_reason,
             }
         )
     if getattr(args, "vix", False) or want_all:
-        vix_ok = openbb_probe.vix.enabled and openbb_probe.vix.access_status == "CONFIGURED"
         steps.append(
             {
                 "step": "vix",
                 "source_id": OPENBB_VIX_SOURCE_ID,
-                "configured": vix_ok,
-                "action": "ingest" if vix_ok else ("skip_unconfigured" if want_all else "fail_unconfigured"),
-                "reason": openbb_probe.vix.reason,
+                "configured": False,
+                "action": "skip_retired",
+                "reason": retired_reason,
             }
         )
     from market_intelligence.yahoo_vol import SOURCE_ID as YAHOO_VOL_SOURCE_ID
@@ -415,8 +413,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Optional Yahoo exact-session prior-close fallback (YAHOO_EOD; never mixes into EQUITY_EOD history)",
     )
-    parser.add_argument("--options", action="store_true", help="Ingest OpenBB/Cboe delayed options chains (fails if not configured)")
-    parser.add_argument("--vix", action="store_true", help="Ingest OpenBB/Cboe VX_EOD curve (fails if not configured)")
+    parser.add_argument("--options", action="store_true", help="Retired. Does not call CBOE or OpenBB. Yahoo volatility is the active source.")
+    parser.add_argument("--vix", action="store_true", help="Retired. Does not call CBOE or OpenBB. Yahoo volatility is the active source.")
     parser.add_argument("--yahoo-vol", action="store_true", help="Ingest recent Yahoo VIX, SKEW, VIX index tenors ^VIX/^VIX3M/^VIX6M/^VIX1Y, and GSPC RV21")
     parser.add_argument(
         "--yahoo-vol-backfill",
@@ -604,7 +602,15 @@ def _probe(engine) -> dict[str, Any]:
 
 
 def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
-    from market_intelligence.store import RUN_FAILED, RUN_SKIPPED, RUN_SUCCEEDED, finish_run, start_run, upsert_source_registry
+    from market_intelligence.store import (
+        RUN_FAILED,
+        RUN_SKIPPED,
+        RUN_SUCCEEDED,
+        finish_run,
+        retire_cboe_registry,
+        start_run,
+        upsert_source_registry,
+    )
 
     failures = 0
     as_of = date.fromisoformat(args.as_of) if args.as_of else None
@@ -641,9 +647,13 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
             continue
         enabled[source_id] = False
         access[source_id] = probe.access_status
+    for source_id in RETIRED_CBOE_SOURCE_IDS:
+        enabled[source_id] = False
+        access[source_id] = "RETIRED_OPTIONAL"
     status["external_adapters"] = {sid: {"access_status": p.access_status, "reason": p.reason} for sid, p in adapter_status.items()}
     with engine.begin() as conn:
         upsert_source_registry(conn, enabled=enabled, access=access, preserve={IBKR_SOURCE_ID})
+        retire_cboe_registry(conn)
         from market_intelligence.ingest_finra import ensure_finra_sources, record_individual_trace_limitation
 
         ensure_finra_sources(conn, query_enabled=bool(finra_key), query_access=access[FINRA_QUERY_SOURCE_ID])
@@ -729,6 +739,13 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
         if step.get("action") == "fail_unconfigured":
             status["results"][name] = {"status": RUN_FAILED, "reason": "explicitly requested source is not configured"}
             failures += 1
+            continue
+        if step.get("action") == "skip_retired":
+            status["results"][name] = {
+                "status": RUN_SKIPPED,
+                "reason": step.get("reason") or "retired",
+                "outcome": "SKIPPED_RETIRED",
+            }
             continue
         try:
             if name == "fred":
@@ -1015,20 +1032,12 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 status["results"][name] = result
                 if result.get("status") not in {"OK", "SKIPPED"}:
                     failures += 1
-            elif name == "options":
-                from market_intelligence.openbb_provider.ingest import ingest_openbb
-
-                report = ingest_openbb(engine, parent_run_id=parent_run_id, today=as_of, env=env, include_options=True, include_vix=False)
-                status["results"][name] = report.as_dict()
-                if report.failed:
-                    failures += 1
-            elif name == "vix":
-                from market_intelligence.openbb_provider.ingest import ingest_openbb
-
-                report = ingest_openbb(engine, parent_run_id=parent_run_id, today=as_of, env=env, include_options=False, include_vix=True)
-                status["results"][name] = report.as_dict()
-                if report.failed:
-                    failures += 1
+            elif name in {"options", "vix"}:
+                status["results"][name] = {
+                    "status": RUN_SKIPPED,
+                    "reason": "CBOE/OpenBB-CBOE is retired. This step does not call CBOE.",
+                    "outcome": "SKIPPED_RETIRED",
+                }
             elif name == "yahoo_vol":
                 from market_intelligence.ingest_yahoo_vol import core_history_coverage, ingest_yahoo_vol, term_history_coverage
 

@@ -24,15 +24,25 @@ def test_package_import_does_not_load_openbb():
     assert "options_volatility" in morning_context.SECTION_ORDER
 
 
-def test_probe_default_is_rights_gated():
+def test_probe_is_retired_regardless_of_flags():
     probe = probe_openbb({})
-    assert probe.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert probe.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert probe.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert probe.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
     assert probe.options.enabled is False
     assert probe.vix.enabled is False
-    rights = probe_openbb({"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_VIX_ENABLED": "1"})
-    assert rights.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert rights.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    rights = probe_openbb(
+        {
+            "MI_OPENBB_OPTIONS_ENABLED": "1",
+            "MI_OPENBB_VIX_ENABLED": "1",
+            "MI_OPENBB_OPTIONS_RIGHTS_ACK": "1",
+            "MI_OPENBB_VIX_RIGHTS_ACK": "1",
+        }
+    )
+    assert rights.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert rights.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert rights.options.enabled is False
+    assert rights.vix.enabled is False
+    assert "does not call CBOE" in rights.options.reason
 
 
 def test_dry_run_and_probe_config_do_not_fetch():
@@ -42,18 +52,19 @@ def test_dry_run_and_probe_config_do_not_fetch():
     assert code == EXIT_OK
 
 
-def test_explicit_options_plan_fails_when_disabled():
+def test_explicit_options_plan_is_retired():
     args = build_parser().parse_args(["--options", "--dry-run"])
-    the_plan = plan(args, {"MI_TREASURY_ENABLED": "0"})
+    the_plan = plan(args, {"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_OPTIONS_RIGHTS_ACK": "1", "MI_TREASURY_ENABLED": "0"})
     step = next(s for s in the_plan["steps"] if s["step"] == "options")
-    assert step["action"] == "fail_unconfigured"
+    assert step["action"] == "skip_retired"
+    assert step["configured"] is False
 
 
-def test_all_configured_skips_disabled_options():
+def test_all_configured_skips_retired_options():
     args = build_parser().parse_args(["--all-configured", "--dry-run"])
     the_plan = plan(args, {"MI_TREASURY_ENABLED": "0"})
     step = next(s for s in the_plan["steps"] if s["step"] == "options")
-    assert step["action"] == "skip_unconfigured"
+    assert step["action"] == "skip_retired"
 
 
 def test_retries_are_bounded():
@@ -179,21 +190,21 @@ def test_pinned_openbb_extra_imports_when_installed():
     assert version("openbb-cboe") == "1.6.1"
 
 
-def test_options_and_vix_probes_are_independent():
+def test_options_and_vix_probes_stay_retired():
     both_off = probe_openbb({})
-    assert both_off.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert both_off.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert both_off.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert both_off.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
     assert both_off.options.enabled is False
     assert both_off.vix.enabled is False
 
     opt_only = probe_openbb({"MI_OPENBB_OPTIONS_ENABLED": "1"})
-    assert opt_only.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert opt_only.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert opt_only.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert opt_only.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
     assert opt_only.vix.enabled is False
 
     vix_only = probe_openbb({"MI_OPENBB_VIX_ENABLED": "1"})
-    assert vix_only.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert vix_only.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert vix_only.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert vix_only.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
     assert vix_only.options.enabled is False
 
     from market_intelligence.openbb_provider.config import options_enabled_from_env, vix_enabled_from_env
@@ -210,27 +221,31 @@ def test_options_and_vix_probes_are_independent():
     assert vix_enabled_from_env(ack_vix) is True
 
     both_on = probe_openbb({"MI_OPENBB_OPTIONS_ENABLED": "1", "MI_OPENBB_VIX_ENABLED": "1"})
-    assert both_on.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert both_on.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert both_on.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert both_on.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert both_on.options.enabled is False
+    assert both_on.vix.enabled is False
 
     umbrella = probe_openbb({"MI_OPENBB_ENABLED": "1", "MI_OPENBB_CBOE_RIGHTS_ACK": "1"})
-    assert umbrella.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert umbrella.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert umbrella.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert umbrella.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
     assert umbrella.options.enabled is False
     assert umbrella.vix.enabled is False
 
     mixed = probe_openbb({"MI_OPENBB_ENABLED": "1", "MI_OPENBB_OPTIONS_ENABLED": "1"})
-    assert mixed.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert mixed.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert mixed.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert mixed.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
     assert mixed.vix.enabled is False
 
     opt_rights_collection_off = probe_openbb({"MI_OPENBB_OPTIONS_RIGHTS_ACK": "1"})
-    assert opt_rights_collection_off.options.access_status == adapters.ACCESS_DISABLED
-    assert opt_rights_collection_off.vix.access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert opt_rights_collection_off.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert opt_rights_collection_off.options.enabled is False
+    assert opt_rights_collection_off.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
 
     vix_rights_collection_off = probe_openbb({"MI_OPENBB_VIX_RIGHTS_ACK": "1"})
-    assert vix_rights_collection_off.vix.access_status == adapters.ACCESS_DISABLED
-    assert vix_rights_collection_off.options.access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
+    assert vix_rights_collection_off.vix.access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert vix_rights_collection_off.vix.enabled is False
+    assert vix_rights_collection_off.options.access_status == adapters.ACCESS_RETIRED_OPTIONAL
 
 
 def test_disabled_openbb_exception_note_is_not_broken():

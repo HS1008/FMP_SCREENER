@@ -453,35 +453,18 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
     strategies = strategies_context(conn)
     order_flow = order_flow_context(conn, today=capture_date, include_history=False)
     options_vol = options_volatility_context(conn)
+    yahoo_core = options_vol.get("yahoo_core") or {}
     compact_options = None
-    if options_vol.get("symbols") or options_vol.get("vix"):
+    if yahoo_core.get("status") == "OK":
         compact_options = {
-            "status": options_vol.get("status"),
-            "attribution": options_vol.get("attribution"),
+            "status": "OK",
             "export_scope": "INTERNAL_ONLY",
-            "source_id": "OPENBB_CBOE_OPTIONS",
-            "delay_note": "Cboe delayed / VX_EOD. Not OPRA. Not official VIX settlement.",
-            "symbols": [
-                {
-                    "underlying_symbol": row.get("underlying_symbol"),
-                    "session_date": row.get("session_date"),
-                    "observation_time": row.get("observation_time"),
-                    "delay_label": row.get("delay_label"),
-                    "export_scope": "INTERNAL_ONLY",
-                    "source_id": row.get("source_id"),
-                    "iv_30d": row.get("iv_30d"),
-                    "selected_skew_25d": row.get("selected_skew_25d"),
-                    "oi_put_call": row.get("oi_put_call"),
-                    "gex": {
-                        "signed_net": (row.get("gex") or {}).get("signed_net"),
-                        "gross_unsigned": (row.get("gex") or {}).get("gross_unsigned"),
-                        "largest_gamma_concentration": (row.get("gex") or {}).get("largest_gamma_concentration"),
-                        "method": (row.get("gex") or {}).get("method"),
-                    },
-                }
-                for row in (options_vol.get("symbols") or [])
-            ],
-            "vix": options_vol.get("vix"),
+            "source_id": "YAHOO_VOL",
+            "vix": yahoo_core.get("vix"),
+            "skew": yahoo_core.get("skew"),
+            "spread": yahoo_core.get("spread"),
+            "curve_state": yahoo_core.get("curve_state"),
+            "curve_observation_date": yahoo_core.get("curve_observation_date"),
         }
     compact_flow = None
     if order_flow:
@@ -537,7 +520,7 @@ def build_snapshot_body(conn, *, generated_at: datetime, cutoff_at: datetime, ge
         "order_flow": section_status("order_flow", compact_flow, required=["coverage"], capture_date=capture_date, empty_reason="No FINRA capability coverage stored.", presence="registry"),
         "sectors": section_status("sectors", sectors if sectors.get("datasets") else None, required=["datasets"], capture_date=capture_date, empty_reason="No sector snapshots stored (legacy bridge not run)."),
         "industries": section_status("industries", industries if industries.get("datasets") else None, required=["datasets"], capture_date=capture_date, empty_reason="No industry snapshots stored."),
-        "options_volatility": section_status("options_volatility", compact_options, required=["symbols"], capture_date=capture_date, empty_reason="No published OpenBB/Cboe snapshots (optional source; not a platform outage).", presence="registry"),
+        "options_volatility": section_status("options_volatility", compact_options, required=["source_id"], capture_date=capture_date, empty_reason="No Yahoo volatility metrics stored (optional source; not a platform outage).", presence="registry"),
         "strategy_monitor_summary": section_status("strategy_monitor_summary", strategies if strategies.get("strategies") else None, required=["strategies"], capture_date=capture_date, empty_reason="No research runs in PostgreSQL.", presence="registry"),
     }
     _status_keys = ("status", "reason", "required_missing", "latest_observation_date", "captured_freshness", "required_inputs", "stale_required", "missing_required")

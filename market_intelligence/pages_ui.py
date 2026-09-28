@@ -68,7 +68,6 @@ from market_intelligence.read_models import (
     classify_slope,
     curve_levels_on_date,
     resolve_curve_date,
-    term_structure_display_rows,
 )
 from market_intelligence.signals import build_what_matters, credit_sector_coverage
 from market_intelligence.surface_status import worst_surface_status
@@ -146,6 +145,8 @@ def _actionable_health(health: list[dict[str, Any]]) -> list[dict[str, Any]]:
     )
     out = []
     for row in health:
+        if row.get("retired_optional"):
+            continue
         dataset = str(row.get("freshness_dataset") or row.get("dataset") or "")
         if treasury_ok and str(row.get("source_id") or "") == "FRED" and (
             dataset.startswith("series:DGS") or dataset.startswith("series:DFII")
@@ -293,7 +294,8 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
         "Streamlit does not call Yahoo."
     )
     if not yahoo or yahoo.get("status") != "OK":
-        st.info((yahoo or {}).get("reason") or "Yahoo volatility metrics are unavailable.")
+        reason = (yahoo or {}).get("reason") or "Yahoo volatility metrics are unavailable."
+        st.info("{0} This optional source is not a platform outage.".format(reason))
         return
 
     def _num(row: dict[str, Any] | None) -> Any:
@@ -429,76 +431,11 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
     yahoo = (ctx or {}).get("yahoo_core") or {}
     _render_yahoo_vol_core(yahoo)
 
-    st.subheader("Options chains and VX futures")
-    st.caption("Stored PostgreSQL option snapshots only. Delay label is provider-specific (not hardcoded Cboe). Not a live quote. GEX is an OI-derived gamma-exposure proxy (estimated, CALL_PLUS_PUT_MINUS_V1), not observed dealer inventory. IBKR OPRA is gated until the TWS API delivers NBBO.")
-    if not ctx or (not ctx.get("symbols") and not ctx.get("vix")):
-        st.info(ctx.get("reason") if ctx else "Options schema is not available. This optional source is not a platform outage.")
-        if yahoo.get("status") != "OK":
-            open_registered_page("data_health", "Open Data Health")
-        return
-    symbols = ctx.get("symbols") or []
-    if symbols:
-        frame = pd.DataFrame(
-            [
-                {
-                    "Underlying": row.get("underlying_symbol"),
-                    "Session": row.get("session_date") or "unknown",
-                    "As-of": str(row.get("observation_time") or row.get("observation_date") or "unknown"),
-                    "Delay": row.get("delay_label") or "—",
-                    "30D ATM IV": _fmt_or_dash(row.get("iv_30d"), "pct") if row.get("iv_30d") is not None else "—",
-                    "25Δ skew (vol pts)": _fmt_or_dash(row.get("selected_skew_25d"), None) if row.get("selected_skew_25d") is not None else "—",
-                    "P/C OI": _fmt_or_dash(row.get("oi_put_call"), None) if row.get("oi_put_call") is not None else "—",
-                    "Estimated GEX proxy (signed)": _fmt_or_dash((row.get("gex") or {}).get("signed_net"), None),
-                    "Largest gamma conc.": ((row.get("gex") or {}).get("largest_gamma_concentration") or {}).get("strike") or "—",
-                }
-                for row in symbols
-            ]
-        )
-        st.dataframe(frame, use_container_width=True, hide_index=True)
-        with st.expander("Term structure and methodology"):
-            for row in symbols:
-                st.caption("{0} session {1} · {2}".format(row.get("underlying_symbol"), row.get("session_date") or "unknown", row.get("delay_label")))
-                term = term_structure_display_rows(row.get("atm_term_structure") or [])
-                if term:
-                    st.dataframe(
-                        pd.DataFrame(
-                            [
-                                {
-                                    "Expiry": p.get("expiration"),
-                                    "DTE (session)": p.get("dte_session"),
-                                    "Spot ATM IV": _fmt_or_dash(p.get("atm_iv"), "pct") if p.get("atm_iv") is not None else "—",
-                                    "Call IV": _fmt_or_dash(p.get("call_iv"), "pct") if p.get("call_iv") is not None else "—",
-                                    "Put IV": _fmt_or_dash(p.get("put_iv"), "pct") if p.get("put_iv") is not None else "—",
-                                    "One-sided": "yes" if p.get("one_sided") else "no",
-                                }
-                                for p in term
-                            ]
-                        ),
-                        use_container_width=True,
-                        hide_index=True,
-                    )
-                details = load_optional("options_chain_details", row.get("underlying_symbol"), limit=40, default=[])
-                chain = details.get("data") or []
-                if chain:
-                    st.caption("Bounded chain sample (not the full chain).")
-                    st.dataframe(pd.DataFrame([{"Contract": d.get("contract_symbol"), "Exp": d.get("expiration"), "K": d.get("strike"), "CP": d.get("call_put"), "OI": d.get("open_interest"), "IV": d.get("implied_volatility")} for d in chain]), use_container_width=True, hide_index=True)
-    vix = ctx.get("vix")
-    if vix:
-        cols = st.columns(4)
-        cols[0].metric("VX M1", _fmt_or_dash((vix.get("m1") or {}).get("price"), None), (vix.get("m1") or {}).get("expiration"))
-        cols[1].metric("VX M2", _fmt_or_dash((vix.get("m2") or {}).get("price"), None), (vix.get("m2") or {}).get("expiration"))
-        cols[2].metric("M2−M1", _fmt_or_dash(vix.get("m2_minus_m1_points"), None))
-        cols[3].metric("Front shape", str(vix.get("front_shape") or "—"))
-        st.caption("VX_EOD 4 p.m. ET levels on {0}. Not official settlement. Not live quotes. Front-curve shape only.".format(vix.get("observation_date") or "unknown date"))
-        points = vix.get("points") or []
-        if points:
-            st.dataframe(pd.DataFrame([{"Expiry": p.get("expiration"), "Precision": p.get("precision"), "Price": p.get("price")} for p in points]), use_container_width=True, hide_index=True)
-
 
 def render_options_volatility() -> None:
     page_header(
         "Options & Volatility",
-        "Yahoo VIX, Cboe SKEW, implied minus realized volatility, and the VIX index term structure, plus stored option chains and VX futures. Spot VIX is distinct from a VIX futures curve.",
+        "Yahoo VIX, the Cboe SKEW Index, implied minus realized volatility, and the VIX index term structure. Spot VIX is distinct from a VIX futures curve.",
         fred=False,
     )
     result = load_optional("options_volatility_context", default={})
@@ -630,34 +567,20 @@ def _render_overview_cards(
                 "link": "Open Commodities & Energy",
             }
         )
-    if options and (options.get("symbols") or options.get("vix")):
-        symbols = options.get("symbols") or []
-        if symbols and symbols[0].get("iv_30d") is not None:
-            row = symbols[0]
-            cards.append(
-                {
-                    "title": "Options & Volatility",
-                    "primary": "{0} ATM IV {1}".format(row.get("underlying_symbol") or "", _fmt_or_dash(row.get("iv_30d"), "pct")),
-                    "primary_delta": row.get("delay_label"),
-                    "support": "Session {0}".format(row.get("session_date") or "—"),
-                    "as_of": row.get("session_date") or row.get("observation_date"),
-                    "route": "options",
-                    "link": "Open Options & Volatility",
-                }
-            )
-        elif options.get("vix"):
-            vix = options["vix"]
-            cards.append(
-                {
-                    "title": "Options & Volatility",
-                    "primary": "VX M1 {0}".format(_fmt_or_dash((vix.get("m1") or {}).get("price"), None)),
-                    "primary_delta": str(vix.get("front_shape") or ""),
-                    "support": "Futures curve EOD {0}".format(vix.get("observation_date") or "—"),
-                    "as_of": vix.get("observation_date"),
-                    "route": "options",
-                    "link": "Open Options & Volatility",
-                }
-            )
+    yahoo = (options or {}).get("yahoo_core") or {}
+    yahoo_vix = yahoo.get("vix") or {}
+    if yahoo.get("status") == "OK" and yahoo_vix.get("value") is not None:
+        cards.append(
+            {
+                "title": "Options & Volatility",
+                "primary": "VIX {0}".format(_fmt_or_dash(yahoo_vix.get("value"), None)),
+                "primary_delta": None,
+                "support": "Yahoo spot as of {0}".format(yahoo_vix.get("as_of") or "—"),
+                "as_of": yahoo_vix.get("as_of"),
+                "route": "options",
+                "link": "Open Options & Volatility",
+            }
+        )
     breadth = next((row for row in ((order_flow.get("breadth") or {}).get("rows") or []) if (row.get("product_category") or "").lower() == "all securities"), None)
     if breadth and len(cards) < 6:
         cards.append(
@@ -1703,6 +1626,12 @@ def render_pit_sector_internals() -> None:
 # available for a future subscription, but omit it from this operational surface.
 _DATA_HEALTH_HIDDEN_SOURCES = frozenset({"MSRB_EMMA"})
 
+
+def _retired_history(row: dict[str, Any]) -> bool:
+    access = str(row.get("access_status") or "").upper()
+    policy = str(row.get("policy_status") or "").upper()
+    return access in {"RETIRED", "RETIRED_OPTIONAL"} or policy == "RETIRED"
+
 def render_data_health() -> None:
     health = [row for row in load_or_stop("source_health") if row.get("source_id") not in _DATA_HEALTH_HIDDEN_SOURCES]
     runs = [row for row in load_or_stop("recent_runs", 200) if row.get("source_id") not in _DATA_HEALTH_HIDDEN_SOURCES]
@@ -1755,8 +1684,31 @@ def render_data_health() -> None:
             use_container_width=True,
             hide_index=True,
         )
-    if gated:
-        with st.expander("Optional / not active ({0})".format(len(gated)), expanded=False):
+    retired = [row for row in health if _retired_history(row)]
+    optional = [row for row in gated if not _retired_history(row)]
+    if retired:
+        with st.expander("Retired history ({0})".format(len(retired)), expanded=False):
+            st.caption("Retired providers are historical registry rows. They are not active dependencies and are not platform outages.")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Source": row.get("source_id"),
+                            "Provider": row.get("provider") or "—",
+                            "Product": row.get("dataset") or row.get("freshness_dataset") or "—",
+                            "State": row.get("policy_status") or row.get("access_status") or "RETIRED",
+                            "Collection": "off",
+                            "Latest observation": row.get("latest_observation_date") or "—",
+                            "Why": exception_note(row),
+                        }
+                        for row in retired
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+    if optional:
+        with st.expander("Optional / not active ({0})".format(len(optional)), expanded=False):
             st.caption("Licensing and configuration gates are not platform outages. RIGHTS_PENDING / AGREEMENT_REQUIRED are not FAILED.")
             st.dataframe(
                 pd.DataFrame(
@@ -1773,7 +1725,7 @@ def render_data_health() -> None:
                             "Latest observation": row.get("latest_observation_date") or "—",
                             "Why": exception_note(row),
                         }
-                        for row in gated
+                        for row in optional
                     ]
                 ),
                 use_container_width=True,
@@ -1811,33 +1763,6 @@ def render_data_health() -> None:
             st.dataframe(pd.DataFrame([{"Instrument": row.get("display_name") or row.get("instrument_id"), "Bid": row.get("bid"), "Ask": row.get("ask"), "Last": row.get("last_price"), "Status": row.get("quote_status") or "—", "Received": age_text(row.get("retrieved_at"))} for row in quotes]), use_container_width=True, hide_index=True)
     elif collectors:
         st.caption("Collector registered, but no quotes have been persisted yet.")
-
-    options_health = ctx.get("options_volatility") or load_or_stop("options_volatility_context")
-    with st.expander("OpenBB / Cboe options and VX_EOD"):
-        st.caption("Optional delayed/EOD source. Disabled or rights-gated is not a platform outage.")
-        if options_health.get("symbols") or options_health.get("vix"):
-            st.dataframe(
-                pd.DataFrame(
-                    [
-                        {
-                            "Symbol": row.get("underlying_symbol"),
-                            "Session": row.get("session_date") or "unknown",
-                            "Delay": row.get("delay_label"),
-                            "Contracts": row.get("contract_count"),
-                            "Snapshot": row.get("snapshot_id"),
-                        }
-                        for row in (options_health.get("symbols") or [])
-                    ]
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-            attempts = options_health.get("last_attempts") or []
-            if attempts:
-                st.caption("Latest acquisition attempts (including failures). Last valid snapshot is unchanged by a failed attempt.")
-                st.dataframe(pd.DataFrame(attempts), use_container_width=True, hide_index=True)
-        else:
-            st.info(options_health.get("reason") or "No published options/VIX snapshots.")
 
     with st.expander("IBKR options and storage rights"):
         st.caption("OPRA L1 in Client Portal is not treated as TWS API entitlement. Frozen Type 2 on 2026-09-14 still returned 354 / no NBBO.")
