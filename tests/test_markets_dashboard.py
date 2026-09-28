@@ -335,6 +335,33 @@ def _fake_read(fn_name, *args, **kwargs):
         return {"datasets": {"ETF_RS_VS_SPY": rows}}
     if fn_name == "equity_live_context":
         return {"by_symbol": {}, "quotes_available": False, "quotes_as_of_label": "Live quotes unavailable", "spy": None}
+    if fn_name == "industries_context":
+        return {
+            "datasets": {
+                "THEME_RS": {
+                    "Technology": [
+                        {
+                            "industry_key": "AI Compute / GPUs",
+                            "instrument_id": "AI_COMPUTE_GPUS",
+                            "as_of": "2024-02-10",
+                            "metrics": {"ret_1d": 0.01, "ret_1w": 0.02, "ret_1m": 0.03, "ret_3m": 0.04, "ret_6m": 0.05, "ret_12m": 0.06},
+                            "coverage": {"kind": "CUSTOM_EQUAL_DOLLAR_BASKET", "membership": ["NVDA", "AMD"]},
+                        }
+                    ],
+                    "Financials": [
+                        {
+                            "industry_key": "KRE (regional banks ETF comparison)",
+                            "instrument_id": "KRE",
+                            "as_of": "2024-02-10",
+                            "metrics": {"ret_1d": 0.02},
+                            "coverage": {"kind": "ETF_COMPARISON", "membership": ["KRE"]},
+                        }
+                    ],
+                }
+            }
+        }
+    if fn_name == "subsector_constituent_returns":
+        return {"available": False, "by_sector": {}}
     raise AssertionError(fn_name)
 
 
@@ -352,17 +379,21 @@ def test_us_and_global_pages_render_required_sections(monkeypatch):
     assert not us.exception, [item.value for item in us.exception]
     us_text = _texts(us)
     for heading in (
-        "U.S. Equity Performance",
-        "QQQ / SPY",
-        "IWM / SPY",
+        "Index Snapshot",
+        "Index Performance",
+        "Relative Performance",
         "RSP / SPY",
+        "IWM / SPY",
+        "QQQ / SPY",
+        "DIA / SPY",
         "Sector Performance",
-        "Sector Relative Strength vs SPY",
-        "U.S. Market Return Heatmap",
-        "Drawdown From 52-Week High",
+        "Subsector Performance",
+        "Drawdowns",
         "Methodology & sources",
     ):
         assert heading in us_text
+    assert "Equal-Weight S&P 500" in us_text
+    assert "1D" in us_text and "1W" in us_text and "1M" in us_text
     assert len(us.dataframe) == 0
     global_page = AppTest.from_file(str(ROOT / "pages" / "23_Global_Markets.py"), default_timeout=40)
     global_page.run()

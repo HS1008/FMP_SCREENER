@@ -25,8 +25,16 @@ from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 from market_intelligence.baskets import window_return
+from market_intelligence.sector_mapping import CANONICAL_SECTORS
+from market_intelligence.taxonomy import KIND_ETF_COMPARISON, SECTOR_PROXIES, stock_subsector_baskets
 
 DRAWDOWN_SESSIONS = 252
+MIN_SUBSECTOR_CONSTITUENTS = 2
+_HEAT_RED = (179, 64, 64)
+_HEAT_NEUTRAL = (44, 48, 54)
+_HEAT_GREEN = (61, 140, 90)
+_COMPARISON_ETFS = frozenset({"SMH", "XSD", "KRE", "XBI", "XOP", "XRT", "KBE", "BOTZ"})
+_ETF_PROXIES = frozenset(SECTOR_PROXIES.values()) | _COMPARISON_ETFS
 
 # Labels, snapshot field, stored-session count. Counts must match RETURN_WINDOWS.
 HORIZONS: tuple[tuple[str, str, int], ...] = (
@@ -70,12 +78,13 @@ US_METHODOLOGY: tuple[str, ...] = (
     "ETF proxies: SPY (S&P 500), QQQ (Nasdaq-100), IWM (Russell 2000), DIA (Dow Jones Industrial Average), RSP (S&P 500 equal weight). These are current investable proxies, not a point-in-time or survivorship-free universe.",
     "Historical comparisons use stored adjusted closes (`adj_close_price`) from EQUITY_EOD. Raw closes are not mixed into the same return. Each symbol keeps a single stored provider for its whole history; providers are not spliced. The stored `adjustment_basis` is shown with the coverage metadata. Yahoo history uses auto-adjusted closes labeled SPLIT_ADJUSTED_UNKNOWN_DIVIDEND when that is the stored basis. IBKR rows keep their own basis.",
     "Normalized performance rebases every selected series to 100 on the first date inside From/To where all selected series have a valid adjusted close. Changing the selection recomputes that date. Later missing sessions stay missing. Nothing is forward-filled.",
-    "Relative leadership is the point-in-time price ratio (asset / SPY), rebased to 100 at the start of the selected interval. Rising means the numerator outperformed SPY. It is not the windowed `rs_chg_*` ratio change.",
-    "Return windows are stored trading sessions: 1D = 1, 1W = 5, 1M = 21, 3M = 63, 6M = 126, 1Y = 252. They are not calendar-day offsets.",
-    "Sector ETFs follow the repository taxonomy: XLK Technology, XLF Financials, XLI Industrials, XLY Consumer Discretionary, XLC Communication Services, XLV Health Care, XLP Consumer Staples, XLE Energy, XLU Utilities, XLRE Real Estate, XLB Materials.",
-    "Sector relative strength reuses stored `rs_chg_*` (and live 1D only when every sector has a fresh stored quote). The formula is the change in the price ratio versus SPY, not a return spread.",
-    "Live 1D is current last / prior completed session close, and only when the stored quote is fresh. Otherwise the page uses the latest finalized EOD 1D for every sector. Stale live quotes are not mixed with fresh EOD rows. The return heatmap stays on finalized EOD.",
-    "Drawdown from the 52-week high is adjusted_close / max(adjusted_close over the trailing 252 stored sessions, including that session) - 1. Fewer than 252 sessions stays missing. The value is never positive. It is not replaced with zero.",
+    "Relative leadership is the point-in-time price ratio (asset / SPY). Indexed mode rebases that ratio to 100 at the start of the selected interval. Absolute mode shows the raw price ratio. The ratio of two already-indexed price series is not used. Rising means the numerator outperformed SPY. It is not the windowed `rs_chg_*` ratio change.",
+    "Return windows are stored trading sessions: 1D = 1, 1W = 5, 1M = 21, 3M = 63, 6M = 126, 1Y = 252. They are not calendar-day offsets. Header badges, the sector heatmap, and subsector returns share these windows.",
+    "Sector ETFs follow the repository taxonomy: XLK Technology, XLF Financials, XLI Industrials, XLY Consumer Discretionary, XLC Communication Services, XLV Health Care, XLP Consumer Staples, XLE Energy, XLU Utilities, XLRE Real Estate, XLB Materials. The canonical Technology label is the Information Technology sector.",
+    "Sector heatmap absolute mode is the sector ETF session return. Relative vs SPY is that return minus the SPY return over the same window, in percentage points. It is not `rs_chg_*` and it is not a ratio of the two percentage returns. Each horizon column has its own symmetric color scale.",
+    "Subsectors use the canonical current-context industry baskets (not a guessed GICS list and not industry ETFs). When constituent adjusted closes are stored, each horizon is the equal-weighted mean of valid constituent returns, with at least 2 names. Otherwise the stored equal-dollar basket return is shown. A missing constituent does not become zero.",
+    "Live 1D is current last / prior completed session close, and only when the stored quote is fresh. The index snapshot and both heatmaps stay on finalized EOD session returns. Stale live quotes are not mixed into those cells.",
+    "Drawdown from the 52-week high is adjusted_close / max(adjusted_close over the trailing 252 stored sessions, including that session) - 1. Fewer than 252 sessions stays missing. The value is never positive. It is not replaced with zero. The same price/peak formula on a full running peak is the definition inside each window.",
 )
 
 GLOBAL_METHODOLOGY: tuple[str, ...] = (
@@ -321,6 +330,373 @@ def heatmap_rows(
     return {"columns": columns, "rows": rows}
 
 
+def classify_return(value: Any) -> str:
+    """positive, negative, neutral, or unavailable. Zero is neutral, not missing."""
+    number = _finite(value)
+    if number is None:
+        return "unavailable"
+    if number > 0:
+        return "positive"
+    if number < 0:
+        return "negative"
+    return "neutral"
+
+
+def normalize_to_100(levels: Sequence[Any]) -> list[float | None]:
+    """Scale a single series so its first finite observation is 100.
+
+    Later missing values stay missing. A zero base cannot be a start and stays missing.
+    """
+    base: float | None = None
+    out: list[float | None] = []
+    for value in levels:
+        number = _finite(value)
+        if number is None:
+            out.append(None)
+            continue
+        if base is None:
+            if number == 0:
+                out.append(None)
+                continue
+            base = number
+        out.append(100.0 * number / base)
+    return out
+
+
+def return_spread(asset: Any, benchmark: Any) -> float | None:
+    """Percentage-point spread. Missing on either side stays missing, never zero."""
+    left = _finite(asset)
+    right = _finite(benchmark)
+    if left is None or right is None:
+        return None
+    return left - right
+
+
+def column_color_scale(values: Sequence[Any]) -> dict[str, Any]:
+    """Symmetric scale around zero for one horizon column.
+
+    ``max_abs`` is zero when the column is empty or every finite value is zero,
+    so callers do not divide by that range.
+    """
+    finite = [number for number in (_finite(value) for value in values) if number is not None]
+    if not finite:
+        return {"max_abs": 0.0, "min": None, "max": None, "degenerate": True}
+    low = min(finite)
+    high = max(finite)
+    max_abs = max(abs(low), abs(high))
+    return {"max_abs": max_abs, "min": low, "max": high, "degenerate": max_abs <= 1e-12}
+
+
+def column_color_scales(matrix: Sequence[Sequence[Any]]) -> list[dict[str, Any]]:
+    """One scale per column. A wide 1Y range does not flatten 1D."""
+    if not matrix:
+        return []
+    width = max((len(row) for row in matrix), default=0)
+    columns: list[list[Any]] = []
+    for index in range(width):
+        columns.append([row[index] if index < len(row) else None for row in matrix])
+    return [column_color_scale(column) for column in columns]
+
+
+def _lerp(start: tuple[int, int, int], end: tuple[int, int, int], weight: float) -> tuple[int, int, int]:
+    bounded = max(0.0, min(1.0, weight))
+    return tuple(int(round(left + (right - left) * bounded)) for left, right in zip(start, end))
+
+
+def _rgb(color: tuple[int, int, int]) -> str:
+    return "rgb({0}, {1}, {2})".format(color[0], color[1], color[2])
+
+
+def heatmap_cell_color(value: Any, max_abs: float) -> str:
+    """Map one cell onto its column scale. Missing and a zero range stay neutral."""
+    number = _finite(value)
+    if number is None or not math.isfinite(max_abs) or max_abs <= 1e-12:
+        return _rgb(_HEAT_NEUTRAL)
+    weight = max(-1.0, min(1.0, number / max_abs))
+    if weight >= 0:
+        return _rgb(_lerp(_HEAT_NEUTRAL, _HEAT_GREEN, weight))
+    return _rgb(_lerp(_HEAT_NEUTRAL, _HEAT_RED, -weight))
+
+
+def running_peak_drawdown(prices: Sequence[Any]) -> list[float | None]:
+    """Drawdown versus the running peak: price / peak - 1. Never positive.
+
+    This is the definition used inside the trailing 252-session window. A missing
+    price stays missing and does not move the peak.
+    """
+    peak: float | None = None
+    out: list[float | None] = []
+    for price in prices:
+        number = _finite(price)
+        if number is None:
+            out.append(None)
+            continue
+        peak = number if peak is None else max(peak, number)
+        if peak == 0:
+            out.append(None)
+            continue
+        out.append(min(number / peak - 1.0, 0.0))
+    return out
+
+
+def period_change(points: Sequence[tuple[date, float]]) -> dict[str, Any]:
+    """Latest level and change from the first visible point. No fabricated start."""
+    if not points:
+        return {"latest": None, "change": None, "start": None, "end": None}
+    start_day, start_value = points[0]
+    end_day, end_value = points[-1]
+    change = None
+    if len(points) > 1 and start_value not in (0, None):
+        change = end_value / start_value - 1.0
+    return {"latest": end_value, "change": change, "start": start_day, "end": end_day}
+
+
+def sector_heatmap_matrix(
+    rows: Sequence[Mapping[str, Any]],
+    spy_returns: Mapping[str, Any] | None,
+    *,
+    mode: str,
+) -> dict[str, Any]:
+    """Canonical sector rows by horizon. Relative mode is a return spread versus SPY."""
+    if mode not in {"absolute", "relative"}:
+        raise ValueError("mode must be absolute or relative")
+    columns = [label for label, _field, _sessions in HORIZONS]
+    by_name: dict[str, Mapping[str, Any]] = {}
+    for row in rows:
+        name = str(row.get("canonical_sector") or row.get("sector_key") or "")
+        if name:
+            by_name[name] = row
+    matrix_rows: list[dict[str, Any]] = []
+    for name in CANONICAL_SECTORS:
+        metrics = (by_name.get(name) or {}).get("metrics") or {}
+        symbol = str((by_name.get(name) or {}).get("instrument_id") or SECTOR_PROXIES.get(name) or "")
+        values: list[float | None] = []
+        for label, field, _sessions in HORIZONS:
+            asset = _finite(metrics.get(field))
+            if mode == "relative":
+                values.append(return_spread(asset, (spy_returns or {}).get(label)))
+            else:
+                values.append(asset)
+        matrix_rows.append({"label": name, "symbol": symbol, "values": values})
+    return {
+        "columns": columns,
+        "rows": matrix_rows,
+        "scales": column_color_scales([row["values"] for row in matrix_rows]),
+        "mode": mode,
+    }
+
+
+def equal_weight_return(values: Sequence[Any], *, minimum: int = MIN_SUBSECTOR_CONSTITUENTS) -> tuple[float | None, int]:
+    """Mean of finite returns. Missing values are dropped, never treated as zero."""
+    valid = [number for number in (_finite(value) for value in values) if number is not None]
+    if len(valid) < minimum:
+        return None, len(valid)
+    return sum(valid) / float(len(valid)), len(valid)
+
+
+def aggregate_subsectors(
+    constituents: Sequence[Mapping[str, Any]],
+    *,
+    minimum: int = MIN_SUBSECTOR_CONSTITUENTS,
+) -> dict[str, list[dict[str, Any]]]:
+    """Equal-weight each industry inside a sector. Horizons stay independent.
+
+    Rows are alphabetical and are not reordered per column.
+    """
+    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+    for item in constituents:
+        sector = str(item.get("sector") or "")
+        industry = str(item.get("industry") or "")
+        if not sector or not industry:
+            continue
+        grouped.setdefault((sector, industry), []).append(item)
+    by_sector: dict[str, list[dict[str, Any]]] = {}
+    for (sector, industry), members in grouped.items():
+        values: list[float | None] = []
+        counts: list[int] = []
+        for label, _field, _sessions in HORIZONS:
+            number, count = equal_weight_return(
+                [(member.get("returns") or {}).get(label) for member in members],
+                minimum=minimum,
+            )
+            values.append(number)
+            counts.append(count)
+        detail = []
+        for member in sorted(members, key=lambda row: str(row.get("symbol") or "")):
+            detail.append(
+                {
+                    "symbol": str(member.get("symbol") or ""),
+                    "company": str(member.get("company") or member.get("symbol") or ""),
+                    "returns": {label: _finite((member.get("returns") or {}).get(label)) for label, _field, _sessions in HORIZONS},
+                }
+            )
+        by_sector.setdefault(sector, []).append(
+            {
+                "industry": industry,
+                "sector": sector,
+                "values": values,
+                "counts": counts,
+                "constituents": detail,
+            }
+        )
+    for sector, rows in by_sector.items():
+        rows.sort(key=lambda row: row["industry"])
+        by_sector[sector] = rows
+    return by_sector
+
+
+def constituent_horizon_rows(bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[dict[str, Any]]:
+    """One horizon-return record per canonical stock-basket member.
+
+    A name can sit in more than one basket. Each copy shares that symbol's returns.
+    A short history leaves the long horizons missing without affecting shorter ones.
+    """
+    cached: dict[str, dict[str, float | None]] = {}
+    rows: list[dict[str, Any]] = []
+    for basket in stock_subsector_baskets():
+        for symbol in basket.members:
+            if symbol not in cached:
+                series = bars_to_series(bars_by_symbol.get(symbol) or ())
+                if not series:
+                    cached[symbol] = {label: None for label in HORIZON_SESSIONS}
+                else:
+                    cached[symbol] = session_window_returns(series, max(series))
+            rows.append(
+                {
+                    "symbol": symbol,
+                    "company": symbol,
+                    "sector": basket.parent_sector,
+                    "industry": basket.label,
+                    "returns": cached[symbol],
+                }
+            )
+    return rows
+
+
+def _member_symbols(row: Mapping[str, Any]) -> list[str]:
+    coverage = row.get("coverage") or {}
+    membership = [str(symbol) for symbol in (coverage.get("membership") or []) if symbol]
+    if membership:
+        return membership
+    instrument = str(row.get("instrument_id") or "")
+    if "," in instrument:
+        return [part.strip() for part in instrument.split(",") if part.strip()]
+    return []
+
+
+def is_constituent_subsector(row: Mapping[str, Any]) -> bool:
+    """Drop ETF comparisons and the explicit unavailable placeholder."""
+    industry = str(row.get("industry_key") or "")
+    if not industry or industry == "NO_CURATED_SUBGROUP":
+        return False
+    coverage = row.get("coverage") or {}
+    if str(coverage.get("kind") or "") == KIND_ETF_COMPARISON:
+        return False
+    symbols = _member_symbols(row)
+    instrument = str(row.get("instrument_id") or "").strip()
+    if not symbols and instrument and "," not in instrument and " " not in instrument:
+        symbols = [instrument]
+    if symbols and all(symbol in _ETF_PROXIES for symbol in symbols):
+        return False
+    return True
+
+
+def snapshot_subsector_table(rows_by_sector: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
+    """Stored basket returns. Membership below the minimum becomes N/A."""
+    table: dict[str, list[dict[str, Any]]] = {}
+    for sector, rows in rows_by_sector.items():
+        built: list[dict[str, Any]] = []
+        for row in rows:
+            if not is_constituent_subsector(row):
+                continue
+            metrics = row.get("metrics") or {}
+            symbols = _member_symbols(row)
+            known_count = len(symbols) if symbols else None
+            values: list[float | None] = []
+            counts: list[int | None] = []
+            for label, field, _sessions in HORIZONS:
+                number = _finite(metrics.get(field))
+                if known_count is not None and known_count < MIN_SUBSECTOR_CONSTITUENTS:
+                    number = None
+                values.append(number)
+                counts.append(known_count)
+            built.append(
+                {
+                    "industry": str(row.get("industry_key") or ""),
+                    "sector": sector,
+                    "values": values,
+                    "counts": counts,
+                    "constituents": [{"symbol": symbol, "company": symbol, "returns": {}} for symbol in symbols],
+                }
+            )
+        built.sort(key=lambda item: item["industry"])
+        if built:
+            table[str(sector)] = built
+    return table
+
+
+def compose_subsector_view(
+    computed: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+    snapshot: Mapping[str, Sequence[Mapping[str, Any]]] | None,
+) -> dict[str, dict[str, Any]]:
+    """Prefer equal-weight constituent math when any horizon is finite.
+
+    A sector with no constituent prices keeps the stored basket series.
+    """
+    view: dict[str, dict[str, Any]] = {}
+    for sector in CANONICAL_SECTORS:
+        computed_rows = list((computed or {}).get(sector) or [])
+        finite = any(_finite(value) is not None for row in computed_rows for value in row.get("values") or [])
+        if finite:
+            view[sector] = {"rows": computed_rows, "method": "equal_weight"}
+            continue
+        stored = list((snapshot or {}).get(sector) or [])
+        if stored:
+            view[sector] = {"rows": stored, "method": "stored_basket"}
+        else:
+            view[sector] = {"rows": [], "method": "unavailable"}
+    return view
+
+
+def subsector_matrix(rows: Sequence[Mapping[str, Any]], spy_returns: Mapping[str, Any] | None, *, mode: str) -> dict[str, Any]:
+    """Apply absolute or relative-to-SPY mode without recomputing constituent returns."""
+    if mode not in {"absolute", "relative"}:
+        raise ValueError("mode must be absolute or relative")
+    columns = [label for label, _field, _sessions in HORIZONS]
+    matrix_rows: list[dict[str, Any]] = []
+    for row in rows:
+        absolute = list(row.get("values") or [])
+        counts = list(row.get("counts") or [])
+        values: list[float | None] = []
+        notes: list[str | None] = []
+        for index, label in enumerate(columns):
+            asset = absolute[index] if index < len(absolute) else None
+            if mode == "relative":
+                shown = return_spread(asset, (spy_returns or {}).get(label))
+            else:
+                shown = _finite(asset)
+            values.append(shown)
+            count = counts[index] if index < len(counts) else None
+            if isinstance(count, int):
+                notes.append("Constituents: {0}".format(count))
+            else:
+                notes.append(None)
+        matrix_rows.append(
+            {
+                "label": str(row.get("industry") or ""),
+                "values": values,
+                "notes": notes,
+                "constituents": list(row.get("constituents") or []),
+            }
+        )
+    return {
+        "columns": columns,
+        "rows": matrix_rows,
+        "scales": column_color_scales([row["values"] for row in matrix_rows]),
+        "mode": mode,
+    }
+
+
 __all__ = [
     "DRAWDOWN_SESSIONS",
     "EOD_RETURN_STATE",
@@ -332,17 +708,34 @@ __all__ = [
     "HORIZONS",
     "LIVE_RETURN_STATE",
     "LIVE_RS_STATE",
+    "MIN_SUBSECTOR_CONSTITUENTS",
     "RS_HORIZONS",
     "US_METHODOLOGY",
+    "aggregate_subsectors",
     "as_day",
     "bars_to_series",
+    "classify_return",
     "clip_points",
+    "column_color_scale",
+    "column_color_scales",
+    "compose_subsector_view",
+    "constituent_horizon_rows",
+    "equal_weight_return",
+    "heatmap_cell_color",
     "heatmap_rows",
+    "is_constituent_subsector",
     "live_field_complete",
     "normalize_selected_to_100",
+    "normalize_to_100",
     "normalized_ratio",
+    "period_change",
     "price_ratio_points",
+    "return_spread",
+    "running_peak_drawdown",
     "sector_bar_pairs",
+    "sector_heatmap_matrix",
     "session_window_returns",
+    "snapshot_subsector_table",
+    "subsector_matrix",
     "trailing_drawdown",
 ]

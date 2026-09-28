@@ -12,11 +12,17 @@ from typing import Any, Mapping, Sequence
 
 from sqlalchemy import bindparam, text
 
-from market_intelligence.markets_analytics import bars_to_series, session_window_returns
+from market_intelligence.markets_analytics import (
+    aggregate_subsectors,
+    bars_to_series,
+    constituent_horizon_rows,
+    session_window_returns,
+)
 from market_intelligence.taxonomy import (
     GLOBAL_MARKET_SYMBOLS,
     MARKET_MONITOR_SYMBOLS,
     US_MARKET_SYMBOLS,
+    stock_subsector_baskets,
 )
 
 MARKET_MONITOR_SOURCE_ID = "MARKET_MONITOR_EOD"
@@ -123,6 +129,61 @@ def load_monitor_history(conn, symbols: Sequence[str]) -> dict[str, Any]:
 
 def us_markets_history(conn) -> dict[str, Any]:
     return load_monitor_history(conn, US_MARKET_SYMBOLS)
+
+
+def load_equity_eod_closes(conn, symbols: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+    """Adjusted EQUITY_EOD closes for ``symbols`` in one query.
+
+    IBKR is preferred when both providers exist. Yahoo is the fallback, not a splice.
+    Duplicate dates keep the last row after sorting. Null adjusted closes are omitted.
+    """
+    wanted = [str(symbol) for symbol in symbols]
+    bars: dict[str, list[dict[str, Any]]] = {symbol: [] for symbol in wanted}
+    if not wanted:
+        return bars
+    rows = conn.execute(
+        text(
+            """
+            SELECT symbol, bar_date, adj_close_price, provider
+            FROM mi_v_equity_daily_closes
+            WHERE source_id = 'EQUITY_EOD'
+              AND adj_close_price IS NOT NULL
+              AND symbol IN :syms
+            ORDER BY symbol, bar_date
+            """
+        ).bindparams(bindparam("syms", expanding=True)),
+        {"syms": wanted},
+    ).all()
+    grouped: dict[str, dict[str, dict[date, float]]] = {symbol: {} for symbol in wanted}
+    for instrument_id, bar_date, price, provider in rows:
+        symbol = str(instrument_id)
+        day = bar_date if isinstance(bar_date, date) else date.fromisoformat(str(bar_date)[:10])
+        provider_name = str(provider) if provider else ""
+        grouped.setdefault(symbol, {}).setdefault(provider_name, {})[day] = float(price)
+    for symbol in wanted:
+        by_provider = grouped.get(symbol) or {}
+        provider = choose_provider(set(by_provider))
+        series = by_provider.get(provider or "", {})
+        bars[symbol] = [{"date": day.isoformat(), "value": series[day]} for day in sorted(series)]
+    return bars
+
+
+def subsector_constituent_returns(conn) -> dict[str, Any]:
+    """Horizon returns for canonical stock baskets, calculated once from stored closes."""
+    symbols: list[str] = []
+    for basket in stock_subsector_baskets():
+        for symbol in basket.members:
+            if symbol not in symbols:
+                symbols.append(symbol)
+    bars = load_equity_eod_closes(conn, symbols)
+    rows = constituent_horizon_rows(bars)
+    return {
+        "available": True,
+        "method": "equal_weight_constituents",
+        "symbols": symbols,
+        "by_sector": aggregate_subsectors(rows),
+        "classification": "canonical current-context industry baskets",
+    }
 
 
 def global_markets_history(conn) -> dict[str, Any]:
@@ -242,6 +303,8 @@ __all__ = [
     "load_monitor_history",
     "market_monitor_coverage",
     "stored_equity_providers",
+    "load_equity_eod_closes",
+    "subsector_constituent_returns",
     "us_markets_history",
     "yahoo_backfill_symbols",
 ]

@@ -42,19 +42,38 @@ EQUAL_WEIGHT_SPX = "RSP"
 # Investable ETF proxies for the Markets pages. These are current monitoring
 # symbols, not a point-in-time research universe, and they are not added to
 # UNIVERSE_SYMBOLS (that tuple drives IBKR equity coverage).
-US_PERFORMANCE_ETFS: tuple[tuple[str, str], ...] = (
+US_INDEX_ETFS: tuple[tuple[str, str], ...] = (
+    ("RSP", "Equal-Weight S&P 500"),
     ("SPY", "S&P 500"),
     ("QQQ", "Nasdaq-100"),
     ("IWM", "Russell 2000"),
     ("DIA", "Dow Jones Industrial Average"),
 )
+US_PERFORMANCE_ETFS: tuple[tuple[str, str], ...] = US_INDEX_ETFS
 US_HEATMAP_SYMBOLS: tuple[str, ...] = ("SPY", "QQQ", "IWM", "DIA", "RSP")
-US_DRAWDOWN_SYMBOLS: tuple[str, ...] = ("SPY", "QQQ", "IWM")
-US_SNAPSHOT_SYMBOLS: tuple[str, ...] = ("SPY", "QQQ", "IWM", "RSP")
+US_DRAWDOWN_SYMBOLS: tuple[str, ...] = ("SPY", "QQQ", "IWM", "RSP", "DIA")
+US_SNAPSHOT_SYMBOLS: tuple[str, ...] = tuple(symbol for symbol, _label in US_INDEX_ETFS)
 US_LEADERSHIP: tuple[tuple[str, str, str], ...] = (
-    ("QQQ", "Growth / Mega-Cap Leadership", "Growth / Nasdaq leadership relative to S&P 500"),
-    ("IWM", "Small-Cap Leadership", "Small-cap leadership relative to S&P 500"),
-    ("RSP", "Equal-Weight Leadership", "Equal-weight leadership / breadth relative to cap-weight S&P 500"),
+    (
+        "RSP",
+        "RSP / SPY",
+        "Numerator RSP (Equal-Weight S&P 500), denominator SPY (S&P 500). Rising: equal-weight S&P 500 is outperforming cap-weighted S&P 500, usually broader participation within large-cap equities and less dependence on the largest stocks. Falling: cap-weighted SPY is outperforming equal-weight RSP, usually increasing concentration in larger constituents.",
+    ),
+    (
+        "IWM",
+        "IWM / SPY",
+        "Numerator IWM (Russell 2000), denominator SPY (S&P 500). Rising: small caps are outperforming large caps. Falling: large caps are outperforming small caps.",
+    ),
+    (
+        "QQQ",
+        "QQQ / SPY",
+        "Numerator QQQ (Nasdaq-100), denominator SPY (S&P 500). Rising: Nasdaq-100 / growth-heavy mega-cap exposure is outperforming the broader S&P 500. Falling: the broader S&P 500 is outperforming QQQ.",
+    ),
+    (
+        "DIA",
+        "DIA / SPY",
+        "Numerator DIA (Dow 30), denominator SPY (S&P 500). Rising: Dow 30 / mature blue-chip exposure is outperforming the broader S&P 500. Falling: the broader S&P 500 is outperforming DIA. This compares the price-weighted Dow 30 with the cap-weighted S&P 500.",
+    ),
 )
 GLOBAL_MARKET_ETFS: tuple[tuple[str, str], ...] = (
     ("SPY", "United States"),
@@ -186,6 +205,11 @@ def baskets_for_sector(sector: str) -> tuple[BasketDef, ...]:
     return tuple(b for b in ALL_BASKETS if b.parent_sector == sector)
 
 
+def stock_subsector_baskets() -> tuple[BasketDef, ...]:
+    """Current-context stock baskets. ETF comparisons are not subsectors."""
+    return tuple(basket for basket in ALL_BASKETS if basket.kind != KIND_ETF_COMPARISON)
+
+
 __all__ = [
     "ALL_BASKETS",
     "BENCHMARK_SPY",
@@ -199,6 +223,7 @@ __all__ = [
     "MARKET_MONITOR_SYMBOLS",
     "US_DRAWDOWN_SYMBOLS",
     "US_HEATMAP_SYMBOLS",
+    "US_INDEX_ETFS",
     "US_LEADERSHIP",
     "US_MARKET_SYMBOLS",
     "US_PERFORMANCE_ETFS",
@@ -216,4 +241,5 @@ __all__ = [
     "TAXONOMY_VERSION",
     "UNIVERSE_SYMBOLS",
     "baskets_for_sector",
+    "stock_subsector_baskets",
 ]
