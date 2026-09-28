@@ -30,7 +30,6 @@ from market_intelligence.catalog import (
     TIPS_TENORS,
 )
 from market_intelligence.markets_read import global_markets_history, us_markets_history
-from market_intelligence.openbb_provider.config import CBOE_ATTRIBUTION, CBOE_TERMS_NOTES
 from market_intelligence.freshness import (
     FRESHNESS_POLICY_VERSION,
     HEALTHY_PUBLICATION_LAG,
@@ -1622,92 +1621,17 @@ def yahoo_vol_core(conn) -> dict[str, Any]:
 
 
 def options_volatility_context(conn) -> dict[str, Any]:
-    """Stored options / VIX analytics only. Never calls OpenBB or Yahoo."""
+    """Yahoo volatility for the active dashboard. Does not read OpenBB/Cboe snapshots or call a provider."""
     yahoo_core = yahoo_vol_core(conn)
-    if not _view_exists(conn, "mi_v_options_latest"):
-        return {
-            "status": "OK" if yahoo_core.get("status") == "OK" else "UNAVAILABLE",
-            "reason": None if yahoo_core.get("status") == "OK" else "options schema is not applied",
-            "export_scope": EXPORT_INTERNAL_ONLY,
-            "source_id": "OPENBB_CBOE_OPTIONS",
-            "attribution": CBOE_ATTRIBUTION,
-            "symbols": [],
-            "vix": None,
-            "last_attempts": [],
-            "yahoo_core": yahoo_core,
-        }
-    chains = _rows(conn, "SELECT * FROM mi_v_options_latest ORDER BY underlying_symbol")
-    attempts = _rows(conn, "SELECT * FROM mi_v_openbb_last_attempt ORDER BY source_id, symbol") if _view_exists(conn, "mi_v_openbb_last_attempt") else []
-    vix_rows = _rows(conn, "SELECT * FROM mi_v_vix_curve_latest LIMIT 1") if _view_exists(conn, "mi_v_vix_curve_latest") else []
-    symbols = []
-    for row in chains:
-        metrics = row.get("metrics_json") or {}
-        iv30 = metrics.get("iv_30d") or {}
-        gex = metrics.get("gex") or {}
-        selected_skew = metrics.get("selected_skew_25d") or {}
-        put_call = metrics.get("put_call") or {}
-        symbols.append(
-            {
-                "underlying_symbol": row.get("underlying_symbol"),
-                "snapshot_id": row.get("snapshot_id"),
-                "observation_time": row.get("observation_time"),
-                "observation_date": row.get("observation_date"),
-                "observation_precision": row.get("observation_precision"),
-                "session_date": row.get("session_date"),
-                "delay_label": row.get("delay_label"),
-                "permitted_use": row.get("permitted_use"),
-                "contract_count": row.get("contract_count"),
-                "export_scope": EXPORT_INTERNAL_ONLY,
-                "source_id": row.get("source_id") or "OPENBB_CBOE_OPTIONS",
-                "iv_30d": iv30.get("iv_percent"),
-                "iv_30d_decimal": iv30.get("iv_decimal"),
-                "selected_skew_25d": selected_skew.get("skew_25d_vol_points"),
-                "oi_put_call": put_call.get("oi_put_call"),
-                "volume_put_call": put_call.get("volume_put_call"),
-                "gex": gex,
-                "atm_term_structure": term_structure_display_rows(metrics.get("atm_term_structure") or metrics.get("term_structure") or []),
-                "expected_move": metrics.get("expected_move") or {},
-                "method_version": row.get("method_version"),
-                "payload_hash": row.get("payload_hash"),
-            }
-        )
-    vix = None
-    if vix_rows:
-        metrics = vix_rows[0].get("metrics_json") or {}
-        vix = {
-            "snapshot_id": vix_rows[0].get("snapshot_id"),
-            "observation_date": vix_rows[0].get("observation_date"),
-            "observation_precision": vix_rows[0].get("observation_precision"),
-            "level_type": vix_rows[0].get("level_type"),
-            "delay_label": vix_rows[0].get("delay_label"),
-            "export_scope": EXPORT_INTERNAL_ONLY,
-            "source_id": vix_rows[0].get("source_id") or "OPENBB_CBOE_VIX",
-            "m1": metrics.get("m1"),
-            "m2": metrics.get("m2"),
-            "m1_m2_ratio": metrics.get("m1_m2_ratio"),
-            "m2_minus_m1_points": metrics.get("m2_minus_m1_points"),
-            "m1_to_m2_slope_pct": metrics.get("m1_to_m2_slope_pct"),
-            "front_shape": metrics.get("front_shape"),
-            "points": metrics.get("points") or [],
-            "not_official_settlement": True,
-            "not_live_quotes": True,
-        }
-    openbb_ok = bool(symbols or vix)
     yahoo_ok = yahoo_core.get("status") == "OK"
-    status = "OK" if openbb_ok or yahoo_ok else "UNAVAILABLE"
-    reason = None
-    if status != "OK":
-        reason = "No published OpenBB/Cboe snapshots and no Yahoo volatility metrics. Optional sources are not a platform outage."
     return {
-        "status": status,
-        "reason": reason,
+        "status": "OK" if yahoo_ok else "UNAVAILABLE",
+        "reason": None if yahoo_ok else (yahoo_core.get("reason") or "Yahoo volatility metrics are unavailable."),
         "export_scope": EXPORT_INTERNAL_ONLY,
-        "source_id": "OPENBB_CBOE_OPTIONS",
-        "attribution": CBOE_ATTRIBUTION,
-        "terms_notes": CBOE_TERMS_NOTES,
-        "symbols": symbols,
-        "vix": vix,
-        "last_attempts": attempts,
+        "source_id": "YAHOO_VOL",
+        "symbols": [],
+        "vix": None,
+        "last_attempts": [],
         "yahoo_core": yahoo_core,
     }
 
@@ -1756,12 +1680,9 @@ def eia_context(conn) -> dict[str, Any]:
     }
 
 
-def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
-    health = source_health(conn, today=today)
-    quarantine = _rows(conn, "SELECT * FROM mi_v_macro_quarantine_summary ORDER BY series_id, reason") if _view_exists(conn, "mi_v_macro_quarantine_summary") else []
-    finra_quarantine = _rows(conn, "SELECT * FROM mi_v_finra_aggregate_quarantine ORDER BY created_at DESC LIMIT 200") if _view_exists(conn, "mi_v_finra_aggregate_quarantine") else []
+def partition_source_health(health: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    """Active-source buckets. Retired rows stay out of failed transport, stale, and coverage gaps."""
     return {
-        "sources": health,
         "stale": [h for h in health if h.get("freshness_status") in {"STALE", "STALE_INGESTION"} and not h.get("retired_optional")],
         "failed_transport": [
             h
@@ -1774,6 +1695,20 @@ def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
             if h.get("coverage_status") in ("PARTIAL", "EMPTY") and not h.get("retired_optional")
         ],
         "gated": [h for h in health if h.get("retired_optional") or h.get("optional_disabled")],
+    }
+
+
+def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
+    health = source_health(conn, today=today)
+    quarantine = _rows(conn, "SELECT * FROM mi_v_macro_quarantine_summary ORDER BY series_id, reason") if _view_exists(conn, "mi_v_macro_quarantine_summary") else []
+    finra_quarantine = _rows(conn, "SELECT * FROM mi_v_finra_aggregate_quarantine ORDER BY created_at DESC LIMIT 200") if _view_exists(conn, "mi_v_finra_aggregate_quarantine") else []
+    buckets = partition_source_health(health)
+    return {
+        "sources": health,
+        "stale": buckets["stale"],
+        "failed_transport": buckets["failed_transport"],
+        "incomplete_coverage": buckets["incomplete_coverage"],
+        "gated": buckets["gated"],
         "quarantine": quarantine,
         "finra_quarantine": finra_quarantine,
         "options_volatility": options_volatility_context(conn),

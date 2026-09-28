@@ -1,26 +1,22 @@
-"""Opt-in live Cboe ingest into disposable PostgreSQL. CI skips this by default."""
+"""Historical live Cboe ingest. Skipped: CBOE is not an active provider."""
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timezone
 
 import pytest
 from sqlalchemy import text
 
-from market_intelligence.export_policy import filter_for_export
 from market_intelligence.openbb_provider.client import OpenBBClient
-from market_intelligence.openbb_provider.config import openbb_installed
 from market_intelligence.openbb_provider.ingest import ingest_openbb
 from market_intelligence.openbb_provider.normalize import normalize_chain
 from market_intelligence.openbb_provider.store import publish_chain, publish_curve
 from market_intelligence.openbb_provider.vix import normalize_curve
 from market_intelligence.read_models import options_volatility_context
 
-pytestmark = [
-    pytest.mark.skipif(os.environ.get("OPENBB_LIVE_INGEST") != "1", reason="opt-in live Cboe ingest"),
-    pytest.mark.skipif(not openbb_installed(), reason="requirements-openbb.txt not installed"),
-]
+pytestmark = pytest.mark.skip(
+    reason="CBOE provider is retired. Live OpenBB/Cboe ingest is not part of the active refresh or dashboard."
+)
 
 
 def test_live_cboe_normalize_ingest_replay_and_readback(mi_db):
@@ -57,10 +53,9 @@ def test_live_cboe_normalize_ingest_replay_and_readback(mi_db):
     assert replay_n == 4
     assert contract_n == counts["SPY"]["kept"] + counts["QQQ"]["kept"] + counts["IWM"]["kept"]
     assert point_n == counts["VX_EOD"]["kept"]
-    symbols = {row["underlying_symbol"] for row in ctx["symbols"]}
-    assert symbols == {"SPY", "QQQ", "IWM"}
-    assert ctx["vix"] is not None
-    assert filter_for_export(ctx, export_mode="external")["symbols"][0].get("restricted") is True
+    assert ctx["symbols"] == []
+    assert ctx["vix"] is None
+    assert ctx["source_id"] == "YAHOO_VOL"
     print("LIVE_COUNTS", counts)
 
 

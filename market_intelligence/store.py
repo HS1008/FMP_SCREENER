@@ -15,7 +15,14 @@ from typing import Any, Iterable, Mapping
 from sqlalchemy import text
 
 from market_intelligence import CODE_VERSION
-from market_intelligence.catalog import CATALOG_VERSION, SOURCE_REGISTRY_DEFAULTS, publishable
+from market_intelligence.catalog import (
+    CATALOG_VERSION,
+    RETIRED_CBOE_ATTRIBUTION,
+    RETIRED_CBOE_REGISTRY,
+    RETIRED_CBOE_TERMS,
+    SOURCE_REGISTRY_DEFAULTS,
+    publishable,
+)
 from market_intelligence.calendars import NY_TZ
 from market_intelligence.freshness import FRESHNESS_POLICY_VERSION, assess_freshness, provider_latest_from_coverage
 from market_intelligence.nulls import MalformedValueError, normalize_numeric, strict_dumps
@@ -109,6 +116,45 @@ def upsert_source_registry(conn, entries: Iterable[Mapping[str, Any]] | None = N
                 "terms_notes": entry.get("terms_notes"),
                 "attribution": entry.get("attribution"),
                 "catalog_version": entry.get("catalog_version", CATALOG_VERSION),
+            },
+        )
+        count += 1
+    return count
+
+
+def retire_cboe_registry(conn) -> int:
+    """Re-assert CBOE/OpenBB-CBOE retirement without changing stored provider or dataset labels.
+
+    Scheduled refresh calls this after the catalog upsert so a probe cannot mark these
+    sources active again. Historical freshness and mi_openbb_* rows are left in place.
+    """
+    count = 0
+    for entry in RETIRED_CBOE_REGISTRY:
+        conn.execute(
+            text(
+                """
+                INSERT INTO mi_source_registry (
+                    source_id, provider, dataset, enabled, access_status, source_url, expected_cadence,
+                    units_metadata, usage_scope, terms_notes, attribution, catalog_version, updated_at
+                ) VALUES (
+                    :source_id, :provider, :dataset, FALSE, 'RETIRED_OPTIONAL', NULL, 'D',
+                    '{}'::jsonb, 'INTERNAL_ONLY', :terms_notes, :attribution, 'cboe_retired_v1', NOW()
+                )
+                ON CONFLICT (source_id) DO UPDATE SET
+                    enabled = FALSE,
+                    access_status = 'RETIRED_OPTIONAL',
+                    terms_notes = EXCLUDED.terms_notes,
+                    attribution = EXCLUDED.attribution,
+                    catalog_version = EXCLUDED.catalog_version,
+                    updated_at = NOW()
+                """
+            ),
+            {
+                "source_id": entry["source_id"],
+                "provider": entry["provider"],
+                "dataset": entry["dataset"],
+                "terms_notes": RETIRED_CBOE_TERMS,
+                "attribution": RETIRED_CBOE_ATTRIBUTION,
             },
         )
         count += 1

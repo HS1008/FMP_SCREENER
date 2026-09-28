@@ -378,8 +378,8 @@ def test_adapters_are_disabled_or_configuration_required_and_refuse_to_fetch():
     assert statuses["IBKR_CORPORATE_BONDS"].access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
     assert statuses["IBKR_MUNICIPAL_BONDS"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
     assert statuses["EIA_ENERGY"].access_status == adapters.ACCESS_CONFIGURATION_REQUIRED
-    assert statuses["OPENBB_CBOE_OPTIONS"].access_status == adapters.ACCESS_ENTITLEMENT_REQUIRED
-    assert statuses["OPENBB_CBOE_VIX"].access_status == adapters.ACCESS_AGREEMENT_REQUIRED
+    assert statuses["OPENBB_CBOE_OPTIONS"].access_status == adapters.ACCESS_RETIRED_OPTIONAL
+    assert statuses["OPENBB_CBOE_VIX"].access_status == adapters.ACCESS_RETIRED_OPTIONAL
     assert statuses["OPENBB_CBOE_OPTIONS"].enabled is False
     assert statuses["OPENBB_CBOE_VIX"].enabled is False
     assert statuses["IBKR_MARKET_DATA"].access_status == adapters.ACCESS_DISABLED
@@ -438,8 +438,8 @@ def test_refresh_plan_reports_external_adapter_status_without_db(capsys):
     external = payload["plan"]["external_adapters"]
     assert external["IBKR_MARKET_DATA"]["access_status"] == "DISABLED"
     assert external["SEC_EDGAR"]["access_status"] == "CONFIGURATION_REQUIRED"
-    assert external["OPENBB_CBOE_OPTIONS"]["access_status"] == "ENTITLEMENT_REQUIRED"
-    assert external["OPENBB_CBOE_VIX"]["access_status"] == "AGREEMENT_REQUIRED"
+    assert external["OPENBB_CBOE_OPTIONS"]["access_status"] == "RETIRED_OPTIONAL"
+    assert external["OPENBB_CBOE_VIX"]["access_status"] == "RETIRED_OPTIONAL"
     assert external["CFTC_COT"]["enabled"] is True
     assert not any(v["enabled"] for sid, v in external.items() if sid != "CFTC_COT")
 

@@ -570,6 +570,9 @@ def test_options_page_shows_yahoo_core_without_provider_imports(monkeypatch):
     )
     assert "Cboe SKEW Index" in text
     assert "Core volatility" in text
+    assert "Options chains and VX futures" not in text
+    assert "OpenBB" not in text
+    assert "VX futures" not in text
     assert "Implied − Realized Vol" in text
     assert "Implied vs Realized Vol" not in text
     assert "VIX − GSPC RV21" in text
