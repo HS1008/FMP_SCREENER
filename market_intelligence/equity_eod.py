@@ -20,6 +20,7 @@ from market_intelligence.baskets import (
     aligned_session_return,
     daily_rebalanced_equal_weight,
     ratio_change_rs,
+    window_return,
 )
 from market_intelligence.fmp_mode import equity_provider_name
 from market_intelligence.nulls import strict_dumps
@@ -37,11 +38,13 @@ from market_intelligence.store import (
     utcnow,
 )
 from market_intelligence.calendars import CAL_NYSE, previous_session
+from market_intelligence.markets_read import stored_equity_providers, yahoo_backfill_symbols
 from market_intelligence.taxonomy import (
     ALL_BASKETS,
     BENCHMARK_SPY,
     KIND_CUSTOM_BASKET,
     KIND_ETF_COMPARISON,
+    MARKET_MONITOR_SYMBOLS,
     SECTOR_PROXIES,
     TAXONOMY_VERSION,
     UNIVERSE_SYMBOLS,
@@ -49,6 +52,9 @@ from market_intelligence.taxonomy import (
 )
 
 EQUITY_SOURCE_ID = "EQUITY_EOD"
+MARKET_MONITOR_DATASET = "market_monitor_etfs"
+MARKET_HISTORY_START = date(1990, 1, 1)
+MARKET_INCREMENTAL_DAYS = 21
 METHODOLOGY_VERSION = "equity_metrics_v1"
 SCHEMA_VERSION = "sector_snapshot_v2"
 RETURN_WINDOWS = {"ret_1d": 1, "ret_1w": 5, "ret_1m": 21, "ret_3m": 63, "ret_6m": 126, "ret_12m": 252}
@@ -107,6 +113,57 @@ class FixtureAdapter:
         return [b for b in self.bars if b.instrument_id in wanted and start <= b.bar_date <= end]
 
 
+def _finite_price(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number:
+        return None
+    return number
+
+
+def _bars_from_ohlc_frame(frame: Any, symbol: str) -> list[EquityBar]:
+    bars: list[EquityBar] = []
+    for idx, row in frame.iterrows():
+        close = _finite_price(row.get("Close") if hasattr(row, "get") else None)
+        if close is None:
+            continue
+        day = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
+        bars.append(
+            EquityBar(
+                symbol,
+                day,
+                close,
+                close,
+                provider_symbol=symbol,
+                source_id=EQUITY_SOURCE_ID,
+                provider="YAHOO",
+            )
+        )
+    return bars
+
+
+def bars_from_yahoo_frame(data: Any, symbols: list[str]) -> list[EquityBar]:
+    """Parse a yfinance download frame. A one-ticker download is still grouped by ticker."""
+    if data is None or getattr(data, "empty", True):
+        return []
+    columns = getattr(data, "columns", None)
+    grouped = getattr(columns, "nlevels", 1) > 1 or len(symbols) != 1
+    if not grouped:
+        return _bars_from_ohlc_frame(data, symbols[0])
+    bars: list[EquityBar] = []
+    for symbol in symbols:
+        try:
+            frame = data[symbol]
+        except (KeyError, TypeError):
+            continue
+        bars.extend(_bars_from_ohlc_frame(frame, symbol))
+    return bars
+
+
 class YahooAdapter:
     """Optional Yahoo/yfinance adapter. Entitlement for production storage is unverified."""
 
@@ -119,7 +176,6 @@ class YahooAdapter:
             import yfinance as yf
         except ImportError as exc:
             raise AdapterUnavailable("yfinance is not installed") from exc
-        out: list[EquityBar] = []
         data = yf.download(
             symbols,
             start=start.isoformat(),
@@ -129,30 +185,7 @@ class YahooAdapter:
             group_by="ticker",
             threads=False,
         )
-        if data is None or data.empty:
-            return out
-        if len(symbols) == 1:
-            frame = data
-            symbol = symbols[0]
-            for idx, row in frame.iterrows():
-                day = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-                close = float(row.get("Close")) if row.get("Close") == row.get("Close") else None
-                if close is None:
-                    continue
-                out.append(EquityBar(symbol, day, close, close, provider_symbol=symbol, source_id=EQUITY_SOURCE_ID, provider="YAHOO"))
-            return out
-        for symbol in symbols:
-            try:
-                frame = data[symbol]
-            except Exception:
-                continue
-            for idx, row in frame.iterrows():
-                day = idx.date() if hasattr(idx, "date") else date.fromisoformat(str(idx)[:10])
-                close = row.get("Close")
-                if close != close:
-                    continue
-                out.append(EquityBar(symbol, day, float(close), float(close), provider_symbol=symbol, source_id=EQUITY_SOURCE_ID, provider="YAHOO"))
-        return out
+        return bars_from_yahoo_frame(data, symbols)
 
 
 @dataclass
@@ -315,21 +348,6 @@ def session_pair(series: Mapping[date, float], as_of: date) -> tuple[date | None
     # Refuse to label a multi-session gap as 1D when an expected session is missing:
     # caller supplies the expected previous session.
     return last, series.get(last), prev, series.get(prev) if prev else None
-
-
-def window_return(series: Mapping[date, float], as_of: date, sessions: int) -> float | None:
-    dates = [d for d in sorted(series) if d <= as_of]
-    if len(dates) <= sessions:
-        return None
-    end = dates[-1]
-    start = dates[-1 - sessions]
-    # Consecutive stored sessions only; do not jump a hole and call it 1D.
-    if sessions == 1 and (end - start).days > 4:
-        return None
-    left, right = series[start], series[end]
-    if left == 0:
-        return None
-    return right / left - 1.0
 
 
 def pct_vs_dma(series: Mapping[date, float], as_of: date, window: int) -> float | None:
@@ -868,20 +886,105 @@ def ingest_equity_eod(
     return report
 
 
+def ingest_market_monitor(
+    engine,
+    *,
+    mode: str = "max",
+    adapter: EquityDailyAdapter | None = None,
+    today: date | None = None,
+    symbols: list[str] | None = None,
+    parent_run_id: str | None = None,
+) -> dict[str, Any]:
+    """Yahoo EQUITY_EOD history for market-monitor symbols that are not already another provider.
+
+    ``mode='max'`` requests history from 1990-01-01 (the provider returns the
+    fund's actual inception onward). ``mode='incremental'`` requests the last
+    21 calendar days and does not redownload the full series. Rows for a
+    symbol that already has a non-Yahoo provider are not written. This does
+    not open a TWS socket and does not rewrite sector snapshots.
+    """
+    today = today or utcnow().date()
+    if mode not in {"max", "incremental"}:
+        raise ValueError("mode must be max or incremental")
+    start = MARKET_HISTORY_START if mode == "max" else today - timedelta(days=MARKET_INCREMENTAL_DAYS)
+    adapter = adapter or YahooAdapter()
+    requested = list(symbols or MARKET_MONITOR_SYMBOLS)
+    errors: list[dict[str, str]] = []
+    written = 0
+    with engine.begin() as conn:
+        providers = stored_equity_providers(conn, requested)
+        eligible, skipped = yahoo_backfill_symbols(providers)
+        rid = start_run(
+            conn,
+            source_id=EQUITY_SOURCE_ID,
+            dataset=MARKET_MONITOR_DATASET,
+            parent_run_id=parent_run_id,
+        )
+        retrieved = utcnow()
+        for symbol in eligible:
+            try:
+                bars = adapter.fetch([symbol], start, today)
+            except Exception as exc:  # noqa: BLE001 - one symbol must not discard the others
+                errors.append({"symbol": symbol, "error": exc.__class__.__name__})
+                continue
+            if not bars:
+                errors.append({"symbol": symbol, "error": "no_bars"})
+                continue
+            counts = upsert_bars(conn, bars, run_id=rid, retrieved_at=retrieved, provider="YAHOO")
+            written += int(counts.get("inserted") or 0) + int(counts.get("unchanged") or 0)
+        latest = latest_stored_bar_date(conn, eligible) if eligible else today
+        failed = bool(errors)
+        record_freshness(
+            conn,
+            source_id=EQUITY_SOURCE_ID,
+            dataset=MARKET_MONITOR_DATASET,
+            cadence="D",
+            transport_status=TRANSPORT_FAILED if failed else TRANSPORT_OK,
+            latest_observation=latest,
+            success=not failed,
+            error_redacted=errors[0]["error"] if errors else None,
+            run_id=rid,
+            today=today,
+            series_id="market_monitor_etfs",
+        )
+        finish_run(
+            conn,
+            rid,
+            status=RUN_FAILED if failed else RUN_SUCCEEDED,
+            counts={"bars": written, "eligible": len(eligible), "skipped": len(skipped)},
+            error_redacted=errors[0]["error"] if errors else None,
+            details={"mode": mode, "skipped": skipped, "errors": errors, "tws_socket": False},
+        )
+    return {
+        "status": RUN_FAILED if failed else RUN_SUCCEEDED,
+        "failed": failed,
+        "mode": mode,
+        "eligible": eligible,
+        "skipped_existing_provider": skipped,
+        "bars_written": written,
+        "errors": errors,
+        "latest_observation": latest.isoformat() if latest else None,
+    }
+
+
 __all__ = [
     "CollectorStoreAdapter",
     "EQUITY_SOURCE_ID",
     "EquityBar",
     "EquityIngestReport",
     "FixtureAdapter",
+    "MARKET_HISTORY_START",
+    "MARKET_MONITOR_DATASET",
     "UnavailableAdapter",
     "YahooAdapter",
     "adapter_from_env",
     "aligned_session_return",
     "compute_metrics",
     "ingest_equity_eod",
+    "ingest_market_monitor",
     "latest_stored_bar_date",
     "pct_vs_dma",
     "ratio_change_rs",
     "upsert_bars",
+    "window_return",
 ]

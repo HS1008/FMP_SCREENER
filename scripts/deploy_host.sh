@@ -682,4 +682,61 @@ if [ -f "$YAHOO_ENV" ]; then
 else
   echo "macro_coverage_report=skipped_no_writer_env"
 fi
+# One-shot max Yahoo history for Markets ETF proxies that have no EQUITY_EOD
+# provider yet. Symbols that already have IBKR (or any non-Yahoo) rows are
+# skipped. Incremental refresh keeps a short lookback. Older rows are not deleted.
+MARKETS_BACKFILL_MARKER="/var/lib/fmp/equity_markets_max_backfill.done"
+if [ -f "$MARKETS_BACKFILL_MARKER" ]; then
+  echo "equity_markets_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "equity_markets_backfill=skipped_no_writer_env"
+else
+  echo "equity_markets_backfill=start"
+  MARKETS_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    (
+      while sleep 20; do
+        echo "equity_markets_backfill=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      done
+    ) &
+    hb_pid=$!
+    set +e
+    staged_python -u -m jobs.market_intelligence_refresh --equity-markets-backfill --wait-lock
+    rc=$?
+    set -e
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+    exit "$rc"
+  ) || MARKETS_RC=$?
+  if [ "$MARKETS_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$MARKETS_BACKFILL_MARKER"
+    echo "equity_markets_backfill=complete"
+  else
+    echo "equity_markets_backfill=failed rc=${MARKETS_RC}"
+  fi
+fi
+if [ -f "$YAHOO_ENV" ]; then
+  echo "equity_markets_coverage_report=start"
+  MKTCOV_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    staged_python -u -m jobs.market_intelligence_refresh --equity-markets-coverage --wait-lock
+  ) || MKTCOV_RC=$?
+  if [ "$MKTCOV_RC" != "0" ]; then
+    echo "equity_markets_coverage_report=failed rc=${MKTCOV_RC}"
+  fi
+else
+  echo "equity_markets_coverage_report=skipped_no_writer_env"
+fi
 echo "deploy_host=complete sha=$SHA"

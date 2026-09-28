@@ -466,6 +466,31 @@ def evaluate_due_steps(
                     now=now,
                 )
             )
+        elif step == "equity_markets":
+            now_et = now.astimezone(ET)
+            after_close = now_et.hour > 16 or (now_et.hour == 16 and now_et.minute >= 5)
+            if not after_close and not is_final_catchup(now):
+                out.append(
+                    DueDecision(
+                        step,
+                        "EQUITY_EOD",
+                        False,
+                        "before_equity_eod_window",
+                        "SKIPPED_NOT_DUE",
+                        dataset="market_monitor_etfs",
+                    )
+                )
+            else:
+                out.append(
+                    daily_source_due(
+                        step=step,
+                        source_id="EQUITY_EOD",
+                        cadence="D",
+                        latest_observation=index.get(("EQUITY_EOD", "market_monitor_etfs")),
+                        now=now,
+                        series_id="market_monitor_etfs",
+                    )
+                )
         elif step == "equity":
             now_et = now.astimezone(ET)
             after_close = now_et.hour > 16 or (now_et.hour == 16 and now_et.minute >= 5)

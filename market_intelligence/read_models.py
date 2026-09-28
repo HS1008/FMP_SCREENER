@@ -29,6 +29,7 @@ from market_intelligence.catalog import (
     FRED_ATTRIBUTION,
     TIPS_TENORS,
 )
+from market_intelligence.markets_read import global_markets_history, us_markets_history
 from market_intelligence.openbb_provider.config import CBOE_ATTRIBUTION, CBOE_TERMS_NOTES
 from market_intelligence.freshness import (
     FRESHNESS_POLICY_VERSION,
@@ -1744,6 +1745,8 @@ __all__ = [
     "credit_latest",
     "data_health_context",
     "eia_context",
+    "global_markets_history",
+    "us_markets_history",
     "order_flow_context",
     "snapshot_age",
     "ibkr_collector_status",

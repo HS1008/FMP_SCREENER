@@ -158,6 +158,7 @@ def test_frontend_bundles_echarts_and_does_not_fetch():
     markup = (FRONTEND / "chart.html").read_text(encoding="utf-8")
     assert ECHARTS_VERSION == "6.1.0"
     assert 'version:"6.1.0"' in bundle or 'version: "6.1.0"' in bundle
+    assert 'type="series.heatmap"' in bundle
     assert "Apache License" in (FRONTEND / "echarts.LICENSE").read_text(encoding="utf-8")
     assert "export default function" in script
     assert "echarts.init" in script

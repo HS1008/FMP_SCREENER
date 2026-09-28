@@ -39,6 +39,73 @@ BENCHMARK_SPY = "SPY"
 # Equal-weight S&P 500 ETF for dashboard comparison charts only (not Stage 2 research).
 EQUAL_WEIGHT_SPX = "RSP"
 
+# Investable ETF proxies for the Markets pages. These are current monitoring
+# symbols, not a point-in-time research universe, and they are not added to
+# UNIVERSE_SYMBOLS (that tuple drives IBKR equity coverage).
+US_PERFORMANCE_ETFS: tuple[tuple[str, str], ...] = (
+    ("SPY", "S&P 500"),
+    ("QQQ", "Nasdaq-100"),
+    ("IWM", "Russell 2000"),
+    ("DIA", "Dow Jones Industrial Average"),
+)
+US_HEATMAP_SYMBOLS: tuple[str, ...] = ("SPY", "QQQ", "IWM", "DIA", "RSP")
+US_DRAWDOWN_SYMBOLS: tuple[str, ...] = ("SPY", "QQQ", "IWM")
+US_SNAPSHOT_SYMBOLS: tuple[str, ...] = ("SPY", "QQQ", "IWM", "RSP")
+US_LEADERSHIP: tuple[tuple[str, str, str], ...] = (
+    ("QQQ", "Growth / Mega-Cap Leadership", "Growth / Nasdaq leadership relative to S&P 500"),
+    ("IWM", "Small-Cap Leadership", "Small-cap leadership relative to S&P 500"),
+    ("RSP", "Equal-Weight Leadership", "Equal-weight leadership / breadth relative to cap-weight S&P 500"),
+)
+GLOBAL_MARKET_ETFS: tuple[tuple[str, str], ...] = (
+    ("SPY", "United States"),
+    ("VEA", "Developed ex-US"),
+    ("VGK", "Europe"),
+    ("EWJ", "Japan"),
+    ("VWO", "Emerging Markets"),
+    ("MCHI", "China"),
+    ("INDA", "India"),
+    ("EWZ", "Brazil"),
+)
+GLOBAL_DEFAULT_SELECTED: tuple[str, ...] = ("SPY", "VEA", "VGK", "EWJ", "VWO")
+GLOBAL_CORE_ETFS: tuple[tuple[str, str], ...] = (
+    ("SPY", "United States"),
+    ("VEA", "Developed ex-US"),
+    ("VWO", "Emerging Markets"),
+)
+GLOBAL_LEADERSHIP: tuple[tuple[str, str, str], ...] = (
+    (
+        "VEA",
+        "Developed ex-US vs US",
+        "Developed ex-US leadership relative to the S&P 500. Rising means VEA outperformed SPY.",
+    ),
+    (
+        "VWO",
+        "Emerging Markets vs US",
+        "Emerging-markets leadership relative to the S&P 500. Rising means VWO outperformed SPY.",
+    ),
+)
+GLOBAL_SNAPSHOT_SYMBOLS: tuple[str, ...] = ("SPY", "VEA", "VWO", "EWJ")
+
+
+def _ordered_symbols(*groups: tuple[str, ...] | tuple[tuple[str, ...], ...]) -> tuple[str, ...]:
+    ordered: list[str] = []
+    for group in groups:
+        for item in group:
+            symbol = item if isinstance(item, str) else item[0]
+            if symbol not in ordered:
+                ordered.append(symbol)
+    return tuple(ordered)
+
+
+US_MARKET_SYMBOLS: tuple[str, ...] = _ordered_symbols(
+    US_PERFORMANCE_ETFS,
+    US_HEATMAP_SYMBOLS,
+    US_DRAWDOWN_SYMBOLS,
+    US_SNAPSHOT_SYMBOLS,
+)
+GLOBAL_MARKET_SYMBOLS: tuple[str, ...] = _ordered_symbols(GLOBAL_MARKET_ETFS)
+MARKET_MONITOR_SYMBOLS: tuple[str, ...] = _ordered_symbols(US_MARKET_SYMBOLS, GLOBAL_MARKET_SYMBOLS)
+
 # Industry ETF comparisons we actually have as listed ETFs. Empty means explicit unavailable.
 INDUSTRY_PROXIES: dict[str, dict[str, str]] = {
     "Technology": {
@@ -123,6 +190,19 @@ __all__ = [
     "ALL_BASKETS",
     "BENCHMARK_SPY",
     "EQUAL_WEIGHT_SPX",
+    "GLOBAL_CORE_ETFS",
+    "GLOBAL_DEFAULT_SELECTED",
+    "GLOBAL_LEADERSHIP",
+    "GLOBAL_MARKET_ETFS",
+    "GLOBAL_MARKET_SYMBOLS",
+    "GLOBAL_SNAPSHOT_SYMBOLS",
+    "MARKET_MONITOR_SYMBOLS",
+    "US_DRAWDOWN_SYMBOLS",
+    "US_HEATMAP_SYMBOLS",
+    "US_LEADERSHIP",
+    "US_MARKET_SYMBOLS",
+    "US_PERFORMANCE_ETFS",
+    "US_SNAPSHOT_SYMBOLS",
     "BasketDef",
     "INDUSTRY_ETF_COMPARISONS",
     "INDUSTRY_PROXIES",

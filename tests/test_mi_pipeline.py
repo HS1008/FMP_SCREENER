@@ -831,6 +831,12 @@ def test_pages_render_populated_state_db_only(consumer, page):
     elif page.stem == "11_Macro_Overview":
         assert "Fed Policy Rates" in text_out
         assert len(at.dataframe) == 0
+    elif page.stem == "22_US_Markets":
+        assert "U.S. Equity Performance" in text_out
+        assert len(at.dataframe) == 0
+    elif page.stem == "23_Global_Markets":
+        assert "Global Equity Performance" in text_out
+        assert len(at.dataframe) == 0
     else:
         assert len(at.dataframe) >= 1, "each page shows at least one table when data exists"
     fred_exempt = {
@@ -840,6 +846,8 @@ def test_pages_render_populated_state_db_only(consumer, page):
         "18_Order_Flow",
         "19_Fixed_Income",
         "21_Options_Volatility",
+        "22_US_Markets",
+        "23_Global_Markets",
     }
     if page.stem not in fred_exempt:
         assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in text_out
@@ -965,6 +973,7 @@ def test_refresh_dry_run_makes_no_calls_and_no_writes(pg_engine, populated, caps
         "finra",
         "treasury",
         "equity",
+        "equity_markets",
         "options",
         "vix",
         "yahoo_vol",

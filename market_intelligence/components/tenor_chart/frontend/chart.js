@@ -125,6 +125,20 @@ function tooltipBox(html) {
   return '<div style="color:#f4f6f8;background:transparent;font-size:13px;line-height:1.35;padding:0;margin:0">' + html + "</div>";
 }
 
+function formatHeatmapTooltip(params) {
+  var row = Array.isArray(params) ? params[0] : params;
+  var point = row && row.data && typeof row.data === "object" ? row.data : null;
+  if (!point) {
+    return "";
+  }
+  var headline = escapeHtml(point.row || "") + " · " + escapeHtml(point.column || "");
+  var shown = point.display ? escapeHtml(point.display) : "unavailable";
+  return tooltipBox(
+    '<div style="font-weight:500">' + headline + "</div>" +
+    '<div style="color:#f4f6f8;font-size:18px;font-weight:650;margin:2px 0 1px">' + shown + "</div>"
+  );
+}
+
 function formatTooltip(params) {
   var row = Array.isArray(params) ? params[0] : params;
   if (!row) {
@@ -221,6 +235,13 @@ function applyTheme(option, palette, compact) {
   option.xAxis.axisLabel.fontSize = compact ? 11 : 12;
   option.xAxis.axisLine = { lineStyle: { color: palette.grid } };
   option.yAxis.axisLabel = { color: palette.text, fontSize: compact ? 11 : 12 };
+  if (option.chartKind === "heatmap") {
+    option.yAxis.axisLabel.interval = 0;
+    option.xAxis.axisLabel.interval = 0;
+    if (option.visualMap) {
+      option.visualMap.textStyle = { color: palette.text };
+    }
+  }
   option.yAxis.nameTextStyle = { color: palette.text, fontSize: 11, padding: [0, 0, 0, 4] };
   option.yAxis.splitLine = { show: true, lineStyle: { color: palette.grid } };
   option.yAxis.axisLine = { show: false };
@@ -236,6 +257,9 @@ function applyTheme(option, palette, compact) {
     }
     if (option.chartKind === "policy_rates") {
       series.showSymbol = false;
+    }
+    if (series.type === "heatmap") {
+      continue;
     }
     var color = (series.itemStyle && series.itemStyle.color) || paletteColors[seriesIndex % paletteColors.length];
     if (!series.type || series.type === "line") {
@@ -279,7 +303,12 @@ function applyTheme(option, palette, compact) {
     "background:rgba(22,24,28,0.96)!important;color:#f4f6f8!important;" +
     "border:1px solid rgba(255,255,255,0.14)!important;border-radius:8px;" +
     "box-shadow:none;padding:8px 10px;";
-  option.tooltip.formatter = option.chartKind === "policy_rates" ? formatPolicyTooltip : formatTooltip;
+  option.tooltip.formatter =
+    option.chartKind === "policy_rates"
+      ? formatPolicyTooltip
+      : option.chartKind === "heatmap"
+        ? formatHeatmapTooltip
+        : formatTooltip;
   option.tooltip.axisPointer = {
     type: "line",
     snap: true,

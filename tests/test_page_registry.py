@@ -36,6 +36,8 @@ def test_registry_covers_required_routes_and_sections():
     grouped = specs_by_section()
     assert [spec.title for spec in grouped["Overview"]] == ["Market Overview"]
     assert {spec.title for spec in grouped["Markets"]} == {
+        "US Markets",
+        "Global Markets",
         "Equities & Sectors",
         "Rates & Curve",
         "Credit",
