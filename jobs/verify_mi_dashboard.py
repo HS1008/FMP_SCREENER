@@ -30,6 +30,8 @@ PAGES = [
     ROOT / "pages" / "19_Fixed_Income.py",
     ROOT / "pages" / "20_Commodities.py",
     ROOT / "pages" / "21_Options_Volatility.py",
+    ROOT / "pages" / "22_US_Markets.py",
+    ROOT / "pages" / "23_Global_Markets.py",
 ]
 
 

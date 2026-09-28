@@ -175,8 +175,10 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
         notes="FOMC federal funds target range upper limit. Held until changed. Not the effective funds rate (DFF).",
     ),
     **{sid: FreshnessPolicy(calendar=CAL_NYSE, cadence="D", typical_release=time(16, 0), overdue_sessions=1, stale_sessions=3, same_day_available=True, notes="US equity/ETF last completed session.") for sid in (
-        "SPY", "XLK", "XLF", "XLE", "XLY", "XLP", "XLV", "XLI", "XLB", "XLU", "XLRE", "XLC", "SMH", "XSD",
-        "equity_eod", "precomputed_sector_bundles",
+        "SPY", "QQQ", "IWM", "DIA", "RSP",
+        "XLK", "XLF", "XLE", "XLY", "XLP", "XLV", "XLI", "XLB", "XLU", "XLRE", "XLC", "SMH", "XSD",
+        "VEA", "VGK", "EWJ", "VWO", "MCHI", "INDA", "EWZ",
+        "equity_eod", "market_monitor_etfs", "precomputed_sector_bundles",
     )},
     "PAYEMS": _fred_macro_monthly(lag_days=10),
     "UNRATE": _fred_macro_monthly(lag_days=10),

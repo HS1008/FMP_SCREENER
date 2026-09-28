@@ -57,6 +57,7 @@ from market_intelligence.curve_compare import (
 )
 from market_intelligence.freshness import is_current_status
 from market_intelligence.macro_ui import render_macro_dashboard
+from market_intelligence.markets_ui import render_global_markets_page, render_us_markets_page
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
@@ -826,6 +827,14 @@ def render_market_pulse() -> None:
 
 def render_macro_overview() -> None:
     render_macro_dashboard()
+
+
+def render_us_markets() -> None:
+    render_us_markets_page()
+
+
+def render_global_markets() -> None:
+    render_global_markets_page()
 
 
 # ---- Rates ---------------------------------------------------------------------------

@@ -195,6 +195,40 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "reason": equity_adapter.reason,
             }
         )
+    if want_all:
+        steps.append(
+            {
+                "step": "equity_markets",
+                "source_id": "EQUITY_EOD",
+                "dataset": "market_monitor_etfs",
+                "configured": True,
+                "action": "ingest",
+                "mode": "incremental",
+                "reason": "Incremental Yahoo history only for market-monitor symbols with no non-Yahoo EQUITY_EOD provider.",
+            }
+        )
+    if getattr(args, "equity_markets_backfill", False):
+        steps.append(
+            {
+                "step": "equity_markets_backfill",
+                "source_id": "EQUITY_EOD",
+                "dataset": "market_monitor_etfs",
+                "configured": True,
+                "action": "ingest",
+                "mode": "max",
+                "reason": "One-shot max Yahoo history. Skips symbols that already have another provider.",
+            }
+        )
+    if getattr(args, "equity_markets_coverage", False):
+        steps.append(
+            {
+                "step": "equity_markets_coverage",
+                "source_id": "EQUITY_EOD",
+                "configured": True,
+                "action": "report",
+                "mode": "read",
+            }
+        )
     from market_intelligence.live_session import YAHOO_LIVE_FALLBACK_ENV, yahoo_eod_fallback_enabled, yahoo_live_fallback_enabled
 
     yahoo_on = yahoo_live_fallback_enabled(env)
@@ -362,6 +396,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
     parser.add_argument("--equity", action="store_true", help="Ingest independent equity/ETF daily bars")
     parser.add_argument(
+        "--equity-markets-backfill",
+        action="store_true",
+        help="Max-history Yahoo EQUITY_EOD for market-monitor ETFs that do not already have another provider. Not part of the incremental refresh.",
+    )
+    parser.add_argument(
+        "--equity-markets-coverage",
+        action="store_true",
+        help="Print stored EQUITY_EOD coverage for the market-monitor symbols. Does not call a provider and does not delete rows.",
+    )
+    parser.add_argument(
         "--yahoo-live",
         action="store_true",
         help="Optional Yahoo live quote fallback ingest (requires MI_YAHOO_LIVE_FALLBACK=1; INTERNAL_ONLY, never labeled IBKR)",
@@ -400,6 +444,27 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--wait-lock", action="store_true", help="Wait for the writer lock instead of failing fast")
     parser.add_argument("--json", action="store_true", help="Print machine-readable JSON status")
     return parser
+
+
+def _markets_coverage_only(the_plan: dict[str, Any]) -> bool:
+    """True when the plan is only the read-only market-monitor coverage report."""
+    steps = the_plan.get("steps") or []
+    return len(steps) == 1 and steps[0].get("step") == "equity_markets_coverage"
+
+
+def _print_market_coverage(engine) -> list[dict[str, Any]]:
+    """Print stored market-monitor spans. No provider calls and no row deletes."""
+    from market_intelligence.markets_read import market_monitor_coverage
+
+    with engine.connect() as conn:
+        report = market_monitor_coverage(conn)
+    for row in report["rows"]:
+        print(
+            "market_coverage symbol={symbol} source={source_id} provider={provider} earliest={earliest} latest={latest} rows={rows} adjustment_basis={adjustment_basis}".format(**row),
+            flush=True,
+        )
+    print("market_coverage duplicate_dates={0}".format(report["duplicate_dates"]), flush=True)
+    return list(report["rows"])
 
 
 def _macro_coverage_only(the_plan: dict[str, Any]) -> bool:
@@ -450,8 +515,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), getattr(args, "fred_macro_backfill", False), getattr(args, "fred_macro_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
-        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--fred-macro-backfill/--fred-macro-coverage/--finra/--legacy-sector/--treasury/--equity/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
+    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), getattr(args, "fred_macro_backfill", False), getattr(args, "fred_macro_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, getattr(args, "equity_markets_backfill", False), getattr(args, "equity_markets_coverage", False), args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), args.cftc, args.eia, args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--fred-macro-backfill/--fred-macro-coverage/--finra/--legacy-sector/--treasury/--equity/--equity-markets-backfill/--equity-markets-coverage/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--cftc/--eia/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -485,6 +550,10 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
                 exit_code = EXIT_OK
             elif _macro_coverage_only(the_plan):
                 _print_macro_coverage(engine)
+                status["status"] = "REPORTED"
+                exit_code = EXIT_OK
+            elif _markets_coverage_only(the_plan):
+                _print_market_coverage(engine)
                 status["status"] = "REPORTED"
                 exit_code = EXIT_OK
             else:
@@ -896,6 +965,31 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 report = ingest_equity_eod(engine, parent_run_id=parent_run_id, today=as_of, env=env)
                 status["results"][name] = report.as_dict()
                 if report.failed:
+                    failures += 1
+            elif name in {"equity_markets", "equity_markets_backfill"}:
+                from market_intelligence.equity_eod import ingest_market_monitor
+
+                print("equity_markets phase=ingest_start mode={0}".format(step.get("mode")), flush=True)
+                report = ingest_market_monitor(
+                    engine,
+                    mode=str(step.get("mode") or "incremental"),
+                    today=as_of,
+                    parent_run_id=parent_run_id,
+                )
+                print(
+                    "equity_markets phase=ingest_done mode={mode} eligible={eligible} skipped={skipped} bars={bars} failed={failed}".format(
+                        mode=report.get("mode"),
+                        eligible=len(report.get("eligible") or []),
+                        skipped=len(report.get("skipped_existing_provider") or []),
+                        bars=report.get("bars_written"),
+                        failed=report.get("failed"),
+                    ),
+                    flush=True,
+                )
+                status["results"][name] = report
+                if name == "equity_markets_backfill":
+                    status["results"][name]["coverage"] = _print_market_coverage(engine)
+                if report.get("failed"):
                     failures += 1
             elif name == "yahoo_live":
                 from market_intelligence.yahoo_live_quotes import refresh_yahoo_live_quotes

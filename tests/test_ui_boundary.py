@@ -130,6 +130,7 @@ def test_market_intelligence_pages_read_postgresql_only():
     modules = [
         ROOT / "market_intelligence" / "pages_ui.py",
         ROOT / "market_intelligence" / "macro_ui.py",
+        ROOT / "market_intelligence" / "markets_ui.py",
         ROOT / "market_intelligence" / "ui.py",
         ROOT / "market_intelligence" / "page_registry.py",
         ROOT / "dashboard.py",

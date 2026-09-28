@@ -81,6 +81,26 @@ def aligned_session_return(px_t: float | None, px_prev: float | None) -> float |
     return px_t / px_prev - 1.0
 
 
+def window_return(series: Mapping[date, float], as_of: date, sessions: int) -> float | None:
+    """Return over ``sessions`` stored observations ending at the last date on or before ``as_of``.
+
+    This is the canonical session window used by equity snapshots (1, 5, 21, 63, 126, 252).
+    It is not a calendar-day offset. A 1-session gap longer than four calendar days is
+    missing rather than a stitched 1D return. Missing prices are not forward-filled.
+    """
+    dates = [d for d in sorted(series) if d <= as_of]
+    if len(dates) <= sessions:
+        return None
+    end = dates[-1]
+    start = dates[-1 - sessions]
+    if sessions == 1 and (end - start).days > 4:
+        return None
+    left, right = series[start], series[end]
+    if left == 0:
+        return None
+    return right / left - 1.0
+
+
 def ratio_change_rs(
     asset_t: float | None,
     asset_prev: float | None,
@@ -101,4 +121,5 @@ __all__ = [
     "aligned_session_return",
     "daily_rebalanced_equal_weight",
     "ratio_change_rs",
+    "window_return",
 ]

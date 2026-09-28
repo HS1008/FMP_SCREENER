@@ -1,8 +1,10 @@
 """Categorical tenor-curve chart for Streamlit.
 
-Apache ECharts 6.1.0 (Apache-2.0) is vendored in ``frontend/``. The component
-draws the ordered curve it is given. It does not fetch market data, and it does
-not turn tenor labels into dates.
+Apache ECharts 6.1.0 (Apache-2.0) is vendored in ``frontend/``. The file is
+still named ``echarts.common.min.js``, but it is the full build: the common
+build names heatmap without shipping the series renderer. The component draws
+the ordered curve or category chart it is given. It does not fetch market data,
+and it does not turn tenor labels into dates.
 
 Callers pass an explicit axis. Points are never sorted alphabetically, missing
 levels stay missing, and duplicate tenors keep the first row.
@@ -585,8 +587,13 @@ def ranked_bar_chart(
     key: str,
     unit: str | None = None,
     title: str = "",
+    benchmark: tuple[str, float] | None = None,
 ) -> None:
-    """Horizontal bars sorted by value. Missing values are omitted, never drawn as zero."""
+    """Horizontal bars sorted by value. Missing values are omitted, never drawn as zero.
+
+    ``benchmark`` is an optional ``(label, value)`` reference line on the same
+    numeric scale as the bars. It is not included in the ranking.
+    """
     pairs: list[tuple[str, float]] = []
     for label, raw in zip(categories, values):
         number = _finite_number(raw)
@@ -596,6 +603,18 @@ def ranked_bar_chart(
     pairs.sort(key=lambda item: item[1])
     labels = [label for label, _value in pairs]
     data = [{"value": value, "name": label, **({"unit": unit} if unit else {})} for label, value in pairs]
+    series: dict[str, Any] = {"type": "bar", "data": data, "label": {"show": False}}
+    if benchmark is not None:
+        bench_label, bench_value = benchmark
+        number = _finite_number(bench_value)
+        if number is not None:
+            series["markLine"] = {
+                "symbol": "none",
+                "silent": True,
+                "lineStyle": {"type": "dashed", "color": "#f4f6f8", "width": 1},
+                "label": {"formatter": str(bench_label), "color": "#f4f6f8"},
+                "data": [{"xAxis": number}],
+            }
     render_echarts(
         {
             "animation": False,
@@ -607,11 +626,100 @@ def ranked_bar_chart(
             "tooltip": _dark_tooltip(trigger="item"),
             "xAxis": {"type": "value", "scale": True, "splitLine": {"show": True}},
             "yAxis": {"type": "category", "data": labels, "axisLabel": {"interval": 0}},
-            "series": [{"type": "bar", "data": data, "label": {"show": False}}],
+            "series": [series],
         },
         key=key,
         desktop_height=min(640, max(280, 36 * max(len(labels), 1) + 48)),
         mobile_height=min(560, max(260, 32 * max(len(labels), 1) + 40)),
+    )
+
+
+def return_heatmap(
+    row_labels: Sequence[str],
+    column_labels: Sequence[str],
+    values: Sequence[Sequence[Any]],
+    *,
+    key: str,
+) -> None:
+    """Category heatmap. ``values[row][col]`` is a fractional return or null.
+
+    Null cells are omitted. They are not drawn as zero. Row order is the
+    order of ``row_labels``.
+    """
+    cells: list[dict[str, Any]] = []
+    numbers: list[float] = []
+    for row_index, row_label in enumerate(row_labels):
+        row = values[row_index] if row_index < len(values) else ()
+        for col_index, column in enumerate(column_labels):
+            raw = row[col_index] if col_index < len(row) else None
+            number = _finite_number(raw)
+            if number is None:
+                continue
+            percent = number * 100.0
+            numbers.append(percent)
+            cells.append(
+                {
+                    "value": [col_index, row_index, percent],
+                    "row": str(row_label),
+                    "column": str(column),
+                    "display": "{0:+.2f}%".format(percent),
+                }
+            )
+    if not cells:
+        return
+    low = min(0.0, min(numbers))
+    high = max(0.0, max(numbers))
+    if low == high:
+        high = low + 1.0
+    render_echarts(
+        {
+            "chartKind": "heatmap",
+            "animation": False,
+            "legend": {"show": False},
+            "toolbox": {"show": False},
+            "dataZoom": [],
+            "grid": {"left": 8, "right": 16, "top": 8, "bottom": 52, "containLabel": True},
+            "tooltip": _dark_tooltip(trigger="item"),
+            "xAxis": {
+                "type": "category",
+                "data": [str(label) for label in column_labels],
+                "axisLabel": {"interval": 0},
+                "splitArea": {"show": False},
+            },
+            "yAxis": {
+                "type": "category",
+                "data": [str(label) for label in row_labels],
+                "inverse": True,
+                "axisLabel": {"interval": 0},
+                "splitArea": {"show": False},
+            },
+            "visualMap": {
+                "min": low,
+                "max": high,
+                "dimension": 2,
+                "seriesIndex": 0,
+                "calculable": False,
+                "orient": "horizontal",
+                "left": "center",
+                "bottom": 0,
+                "itemWidth": 12,
+                "itemHeight": 120,
+                "inRange": {"color": ["#b34040", "#2c3036", "#3d8c5a"]},
+                "textStyle": {"color": "#f4f6f8"},
+            },
+            "series": [
+                {
+                    "type": "heatmap",
+                    "data": cells,
+                    "label": {"show": False},
+                    "emphasis": {"disabled": True},
+                    "itemStyle": {"borderColor": "rgba(255,255,255,0.08)", "borderWidth": 1},
+                }
+            ],
+        },
+        key=key,
+        desktop_height=min(640, max(320, 36 * max(len(row_labels), 1) + 96)),
+        mobile_height=min(680, max(340, 40 * max(len(row_labels), 1) + 108)),
     )
 
 

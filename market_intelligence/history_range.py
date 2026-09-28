@@ -198,16 +198,19 @@ def series_toggles(
     *,
     key: str,
     group_label: str,
+    default: Sequence[str] | None = None,
 ) -> list[str]:
     """Multi-select pills with Select all / Clear all.
 
-    Empty selection stays empty. Order follows ``options``.
+    Empty selection stays empty. Order follows ``options``. ``default`` is the
+    initial selection; Select all still selects every option.
     """
     labels = {series_id: label for series_id, label in options}
     ids = [series_id for series_id, _label in options]
     pills_key = "{0}_pills".format(key)
     if pills_key not in st.session_state:
-        st.session_state[pills_key] = list(ids)
+        chosen = list(default) if default is not None else list(ids)
+        st.session_state[pills_key] = [item for item in chosen if item in ids]
     select_col, clear_col = st.columns(2)
     if select_col.button("Select all", key="{0}_select_all".format(key)):
         st.session_state[pills_key] = list(ids)
