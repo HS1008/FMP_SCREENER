@@ -105,7 +105,7 @@ COMMODITY_INSTRUMENTS: tuple[YahooInstrument, ...] = (
     _future("HG", "HG=F", "Copper", "metals"),
     _future("ZC", "ZC=F", "Corn", "agriculture"),
     _future("ZW", "ZW=F", "Wheat", "agriculture"),
-    _future("ZS", "ZS=F", "Soybeans", "agriculture"),
+    _future("ZS_F", "ZS=F", "Soybeans", "agriculture"),
     YahooInstrument("VIX", "^VIX", "VIX spot", "INDEX", YAHOO_FUTURES_SOURCE, YAHOO_FUTURES_DATASET, "volatility"),
 )
 
