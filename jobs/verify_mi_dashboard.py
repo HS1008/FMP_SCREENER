@@ -32,6 +32,9 @@ PAGES = [
     ROOT / "pages" / "21_Options_Volatility.py",
     ROOT / "pages" / "22_US_Markets.py",
     ROOT / "pages" / "23_Global_Markets.py",
+    ROOT / "pages" / "24_Forex.py",
+    ROOT / "pages" / "25_CFTC_COT.py",
+    ROOT / "pages" / "26_Crypto.py",
 ]
 
 
