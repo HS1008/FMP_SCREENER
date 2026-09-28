@@ -403,6 +403,42 @@ restore_checkout() {
   fi
 }
 
+# Abandoned host probes. These names are not in the repository. Delete a path
+# only when this checkout's index does not track it. Never touch database data,
+# the OpenBB Cboe provider, or any other file.
+remove_abandoned_cboe_residue() {
+  local rel
+  local -a residue=(
+    db/migrations/038_cboe_volatility.sql
+    jobs/probe_cboe_entitlement.py
+    jobs/probe_cboe_three_shot.py
+    market_intelligence/cboe_analytics.py
+    market_intelligence/cboe_client.py
+    market_intelligence/ingest_cboe.py
+    tmp_cboe_provision
+    tmp_cboe_sync
+  )
+  if [ -z "${ROOT:-}" ] || [ "$ROOT" = "/" ] || { [ ! -d "$ROOT/.git" ] && [ ! -f "$ROOT/.git" ]; }; then
+    echo "FAIL: cboe residue cleanup requires the live git checkout"
+    return 1
+  fi
+  for rel in "${residue[@]}"; do
+    case "$rel" in
+      *..*|/*|*\\*) echo "FAIL: cboe residue path refused: $rel"; return 1 ;;
+    esac
+    if git -C "$ROOT" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+      echo "cboe_residue_skip_tracked path=$rel"
+      continue
+    fi
+    if [ -e "$ROOT/$rel" ] || [ -L "$ROOT/$rel" ]; then
+      rm -rf -- "$ROOT/$rel"
+      echo "cboe_residue_removed path=$rel"
+    else
+      echo "cboe_residue_absent path=$rel"
+    fi
+  done
+}
+
 if [ "$SKIP_RESTART" != 1 ]; then
   echo "Activating existing checkout to requested SHA (does not flip /opt/fmp/current)..."
   echo "Fetching $SHA from origin with ancestry; not from the shallow staged clone"
@@ -410,6 +446,12 @@ if [ "$SKIP_RESTART" != 1 ]; then
     echo "FAIL: live checkout git graph is incomplete after activation"
     restore_checkout || true
     exit 3
+  fi
+  echo "Removing abandoned untracked Cboe host residue..."
+  if ! remove_abandoned_cboe_residue; then
+    echo "FAIL: abandoned Cboe residue cleanup refused"
+    restore_checkout || true
+    exit 1
   fi
   echo "Restarting Streamlit..."
   if ! systemctl restart fmp-dashboard; then
