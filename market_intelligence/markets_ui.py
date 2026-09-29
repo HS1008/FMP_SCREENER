@@ -325,14 +325,16 @@ def _aligned_source_caption(panel: Mapping[str, Any]) -> None:
     )
 
 
-def _quote_snapshot(panel: Mapping[str, Any]) -> dict[str, Any]:
+def _quote_snapshot(panel: Mapping[str, Any], *, mode: str) -> dict[str, Any]:
     loaded = load_quote_optional("equity_live_context")
     payload = loaded.get("data") if loaded.get("available") else {}
     if not isinstance(payload, Mapping):
         payload = {}
     overlaid = overlay_stored_quote_returns(panel, payload.get("by_symbol") or {})
     freshness = overlaid.get("quote_freshness") or {}
-    updated = freshness.get("updated")
+    relative = mode == "Relative vs SPY"
+    updated = freshness.get("relative_updated") if relative else freshness.get("updated")
+    statuses = freshness.get("relative_statuses") if relative else freshness.get("statuses")
     parsed = None
     if updated:
         try:
@@ -341,7 +343,7 @@ def _quote_snapshot(panel: Mapping[str, Any]) -> dict[str, Any]:
             parsed = None
     endpoint = as_day(overlaid.get("endpoint"))
     caption = heatmap_freshness_label(
-        statuses=list(freshness.get("statuses") or []),
+        statuses=list(statuses or []),
         updated=parsed,
         market_state=market_session_state(),
         endpoint=endpoint,
@@ -349,10 +351,20 @@ def _quote_snapshot(panel: Mapping[str, Any]) -> dict[str, Any]:
     return {"panel": overlaid, "caption": caption}
 
 
+def _return_matrix(panel: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], *, mode: str) -> dict[str, Any]:
+    return subsector_matrix(
+        rows,
+        panel.get("spy_returns") or {},
+        mode=mode,
+        spy_eod_returns=panel.get("spy_eod_returns"),
+        spy_quote=panel.get("spy_quote_1d"),
+    )
+
+
 @st.fragment(run_every=15)
 def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
     """Heatmaps read the shared quote cache. This fragment does not open TWS."""
-    snapshot = _quote_snapshot(panel)
+    snapshot = _quote_snapshot(panel, mode=mode)
     priced = snapshot["panel"]
     st.caption(snapshot["caption"])
     _us_sector_heatmap(priced, mode=mode)
@@ -363,7 +375,7 @@ def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
     st.subheader("Sector Performance")
     analytical = "relative" if mode == "Relative vs SPY" else "absolute"
     if analytical == "relative":
-        st.caption("Relative vs SPY is the sector return minus the SPY return between the same trading sessions, in percentage points. +2.30% means the sector outperformed SPY by 2.30 percentage points.")
+        st.caption("Relative vs SPY subtracts the SPY return on the same session and price basis, in percentage points. +2.30% means the sector outperformed SPY by 2.30 percentage points. A live quote that does not share SPY's session uses the EQUITY_EOD pair.")
     else:
         st.caption("Absolute percentage return of each sector ETF between the shared trading sessions.")
     st.caption("Each horizon has its own color scale. Technology is the Information Technology sector (XLK). Missing cells are N/A.")
@@ -372,7 +384,7 @@ def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
     rows = list(panel.get("sectors") or [])
     if not rows:
         return
-    matrix = subsector_matrix(rows, panel.get("spy_returns") or {}, mode=analytical)
+    matrix = _return_matrix(panel, rows, mode=analytical)
     column_scaled_return_heatmap(
         [row["label"] for row in matrix["rows"]],
         matrix["columns"],
@@ -400,10 +412,10 @@ def _us_subsector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
         st.caption(NO_SUBSECTOR_CLASSIFICATION)
         return
     st.caption(
-        "Each horizon is the equal-dollar daily-rebalanced basket through the shared endpoint. A horizon keeps only members with prices on both sessions. Fewer than 2 members is N/A. One missing constituent does not hide the sector."
+        "Each horizon is the equal-dollar daily-rebalanced basket through the shared endpoint. A horizon keeps only members with prices on both sessions. Fewer than 2 members is N/A. One missing constituent does not hide the sector. A session with no observable member return is N/A."
     )
     analytical = "relative" if mode == "Relative vs SPY" else "absolute"
-    matrix = subsector_matrix(rows, panel.get("spy_returns") or {}, mode=analytical)
+    matrix = _return_matrix(panel, rows, mode=analytical)
     column_scaled_return_heatmap(
         [row["label"] for row in matrix["rows"]],
         matrix["columns"],
@@ -442,6 +454,13 @@ def _constituent_detail(rows: Sequence[Mapping[str, Any]]) -> None:
     for column, (label, _field, _sessions) in zip(columns, HORIZONS):
         value = returns.get(label)
         column.metric(label, "N/A" if not isinstance(value, (int, float)) else _signed_percent(value))
+    source = str(member.get("quote_1d") or "HISTORICAL")
+    if member.get("quote_unused"):
+        st.caption("1D is EQUITY_EOD. A stored quote was not applied because it does not share the basket session and price basis.")
+    elif source == "HISTORICAL":
+        st.caption("1D is EQUITY_EOD, the same session as this basket cell.")
+    else:
+        st.caption("1D is {0}, the same session as this basket cell.".format(source))
 
 
 def _snapshot_row(history: Mapping[str, Any], symbols: Sequence[str], labels: Mapping[str, str]) -> None:

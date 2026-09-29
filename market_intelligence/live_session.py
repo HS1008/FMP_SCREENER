@@ -180,7 +180,12 @@ def heatmap_freshness_label(
     if updated is not None:
         local = updated.astimezone(ET)
         stamp = local.strftime("%H:%M:%S")
-    if "LIVE" in present:
+    quoted = present - {"HISTORICAL"}
+    if quoted and "HISTORICAL" in present:
+        prefix = "Mixed 1D sources"
+    elif len(quoted) > 1:
+        prefix = "Mixed IBKR"
+    elif "LIVE" in present:
         prefix = "IBKR Live" if market_state == "OPEN" else "IBKR Live source · market {0}".format(market_state)
     elif "DELAYED" in present:
         prefix = "IBKR Delayed"
@@ -192,6 +197,11 @@ def heatmap_freshness_label(
         if endpoint is not None:
             return "EQUITY_EOD · {0}".format(endpoint.isoformat())
         return "EQUITY_EOD"
+    if prefix in {"Mixed 1D sources", "Mixed IBKR"}:
+        parts = [prefix, "cell notes name the source", "market {0}".format(market_state)]
+        if stamp:
+            parts.insert(2, "updated {0} ET".format(stamp))
+        return " · ".join(parts)
     if stamp:
         return "{0} · updated {1} ET".format(prefix, stamp)
     return prefix
@@ -207,6 +217,7 @@ class PriceObservation:
     session_date: date | None
     quality: str
     market_data_status: str = ""
+    adjustment_basis: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -441,6 +452,7 @@ def resolve_prior_close(
         session_date=session,
         quality="EOD",
         market_data_status="HISTORICAL",
+        adjustment_basis=str(chosen.get("adjustment_basis") or ""),
     )
 
 

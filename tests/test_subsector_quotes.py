@@ -183,7 +183,18 @@ def test_live_ibkr_beats_delayed_and_delayed_is_not_labeled_live():
     assert not label.startswith("IBKR Live")
 
 
-def test_previous_close_intraday_change_and_eod_fallback():
+def _aligned_quote(ret: float, *, status: str = "LIVE", basis: str = "IBKR_ADJUSTED_LAST", baseline: str = "2024-01-04", current: str = "2024-01-05") -> dict:
+    return {
+        "live_return": ret,
+        "current_session": current,
+        "baseline_session": baseline,
+        "basis": basis,
+        "current": {"market_data_status": status, "observation_ts": "2026-09-16T19:31:08+00:00", "session_date": current},
+        "prior_close": {"adjustment_basis": basis, "session_date": baseline},
+    }
+
+
+def test_partial_live_quote_keeps_the_eod_basket_and_relative_pair():
     assert live_return(101.0, 100.0) == pytest.approx(0.01)
     dates = [date(2024, 1, 2) + timedelta(days=offset) for offset in range(3)]
     endpoint = dates[-1]
@@ -200,22 +211,114 @@ def test_previous_close_intraday_change_and_eod_fallback():
     assert untouched["quote_freshness"]["active"] is False
     quoted = overlay_stored_quote_returns(
         panel,
-        {
-            "NVDA": {
-                "live_return": 0.02,
-                "current": {"market_data_status": "LIVE", "observation_ts": "2026-09-16T19:31:08+00:00"},
-            },
-            "AMD": {"live_return": None, "current": {}},
-        },
+        {"NVDA": _aligned_quote(0.02), "AMD": {"live_return": None, "current": {}}},
     )
     basket = next(row for row in quoted["subsectors"]["Technology"] if row["industry"] == "AI Compute / GPUs")
     nvda_row = next(member for member in basket["constituents"] if member["symbol"] == "NVDA")
     amd_row = next(member for member in basket["constituents"] if member["symbol"] == "AMD")
     original_basket = next(row for row in panel["subsectors"]["Technology"] if row["industry"] == "AI Compute / GPUs")
-    assert nvda_row["returns"]["1D"] == pytest.approx(0.02)
+    original_nvda = next(member for member in original_basket["constituents"] if member["symbol"] == "NVDA")
+    assert nvda_row["returns"]["1D"] == pytest.approx(original_nvda["returns"]["1D"])
+    assert nvda_row["returns"]["1D"] == pytest.approx(0.10)
+    assert nvda_row["quote_1d"] == "HISTORICAL"
+    assert nvda_row["quote_unused"] == "unaligned"
     assert amd_row["quote_1d"] == "HISTORICAL"
-    assert basket["values"][0] == pytest.approx((0.02 + amd_row["returns"]["1D"]) / 2.0)
+    assert basket["values"][0] == pytest.approx(original_basket["values"][0])
+    assert basket["values"][0] != pytest.approx((0.02 + amd_row["returns"]["1D"]) / 2.0)
     assert basket["values"][1:] == original_basket["values"][1:]
+    assert basket["counts"][0] == original_basket["counts"][0]
+    relative = subsector_matrix(
+        quoted["subsectors"]["Technology"],
+        quoted["spy_returns"],
+        mode="relative",
+        spy_eod_returns=quoted["spy_eod_returns"],
+        spy_quote=quoted["spy_quote_1d"],
+    )
+    shown = relative["rows"][0]
+    assert shown["values"][0] == pytest.approx(original_basket["values"][0] - panel["spy_returns"]["1D"])
+    assert "EQUITY_EOD" in shown["notes"][0]
+    assert "IBKR Live" not in shown["notes"][0]
+
+
+def test_aligned_live_basket_uses_only_that_session_and_labels_the_cell():
+    dates = [date(2024, 1, 2) + timedelta(days=offset) for offset in range(3)]
+    endpoint = dates[-1]
+    flat = {day: 100.0 for day in dates}
+    panel = build_aligned_us_panel({"SPY": _record(flat), "NVDA": _record(flat), "AMD": _record(flat), "XLK": _record(flat)})
+    quoted = overlay_stored_quote_returns(
+        panel,
+        {
+            "NVDA": _aligned_quote(0.02),
+            "AMD": _aligned_quote(0.04),
+            "XLK": _aligned_quote(0.03),
+            "SPY": _aligned_quote(0.01),
+        },
+    )
+    basket = next(row for row in quoted["subsectors"]["Technology"] if row["industry"] == "AI Compute / GPUs")
+    assert basket["values"][0] == pytest.approx(0.03)
+    assert basket["counts"][0] == 2
+    assert basket["quote_1d"] == "LIVE"
+    member_returns = {member["symbol"]: member["returns"]["1D"] for member in basket["constituents"]}
+    assert member_returns["NVDA"] == pytest.approx(0.02)
+    assert member_returns["AMD"] == pytest.approx(0.04)
+    absolute = subsector_matrix(quoted["subsectors"]["Technology"], quoted["spy_returns"], mode="absolute", spy_quote=quoted["spy_quote_1d"])
+    assert "IBKR Live" in absolute["rows"][0]["notes"][0]
+    assert "Constituents: 2" in absolute["rows"][0]["notes"][0]
+    assert "2024-01-05 vs 2024-01-04" in absolute["rows"][0]["notes"][0]
+    relative = subsector_matrix(
+        quoted["subsectors"]["Technology"],
+        quoted["spy_returns"],
+        mode="relative",
+        spy_eod_returns=quoted["spy_eod_returns"],
+        spy_quote=quoted["spy_quote_1d"],
+    )
+    assert relative["rows"][0]["values"][0] == pytest.approx(0.02)
+    assert "same session as SPY" in relative["rows"][0]["notes"][0]
+    tech = next(row for row in quoted["sectors"] if row["symbol"] == "XLK")
+    assert tech["values"][0] == pytest.approx(0.03)
+    assert tech["eod_values"][0] == pytest.approx(0.0)
+    mismatched = overlay_stored_quote_returns(
+        panel,
+        {"NVDA": _aligned_quote(0.02), "AMD": _aligned_quote(0.04), "XLK": _aligned_quote(0.03)},
+    )
+    live_basket = next(row for row in mismatched["subsectors"]["Technology"] if row["industry"] == "AI Compute / GPUs")
+    assert live_basket["values"][0] == pytest.approx(0.03)
+    eod_relative = subsector_matrix(
+        mismatched["subsectors"]["Technology"],
+        mismatched["spy_returns"],
+        mode="relative",
+        spy_eod_returns=mismatched["spy_eod_returns"],
+        spy_quote=mismatched["spy_quote_1d"],
+    )
+    assert eod_relative["rows"][0]["values"][0] == pytest.approx(0.0)
+    assert "EQUITY_EOD" in eod_relative["rows"][0]["notes"][0]
+    assert "IBKR Live" not in eod_relative["rows"][0]["notes"][0]
+    foreign_basis = overlay_stored_quote_returns(
+        panel,
+        {"NVDA": _aligned_quote(0.02, basis="SPLIT_ADJUSTED_UNKNOWN_DIVIDEND"), "AMD": _aligned_quote(0.04)},
+    )
+    fallback = next(row for row in foreign_basis["subsectors"]["Technology"] if row["industry"] == "AI Compute / GPUs")
+    assert fallback["values"][0] == pytest.approx(0.0)
+    assert fallback["quote_1d"] == "HISTORICAL"
+    other_session = overlay_stored_quote_returns(
+        panel,
+        {"NVDA": _aligned_quote(0.02, baseline="2024-01-03"), "AMD": _aligned_quote(0.04)},
+    )
+    split = next(row for row in other_session["subsectors"]["Technology"] if row["industry"] == "AI Compute / GPUs")
+    assert split["values"][0] == pytest.approx(0.0)
+    mixed_status = overlay_stored_quote_returns(
+        panel,
+        {"NVDA": _aligned_quote(0.02, status="LIVE"), "AMD": _aligned_quote(0.04, status="DELAYED"), "SPY": _aligned_quote(0.01)},
+    )
+    mixed = next(row for row in mixed_status["subsectors"]["Technology"] if row["industry"] == "AI Compute / GPUs")
+    assert mixed["values"][0] == pytest.approx(0.03)
+    assert mixed["quote_1d"] == "MIXED"
+    mixed_matrix = subsector_matrix(mixed_status["subsectors"]["Technology"], mixed_status["spy_returns"], mode="absolute")
+    assert "Mixed" in mixed_matrix["rows"][0]["notes"][0]
+    assert "DELAYED" in mixed_matrix["rows"][0]["notes"][0]
+    caption = heatmap_freshness_label(statuses=["LIVE", "HISTORICAL"], updated=None, market_state="OPEN")
+    assert caption.startswith("Mixed 1D sources")
+    assert not caption.startswith("IBKR Live")
 
 
 def test_stale_quote_is_not_called_live_when_the_market_is_closed():

@@ -25,6 +25,7 @@ from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 from market_intelligence.baskets import BASKET_METHOD_VERSION, daily_rebalanced_equal_weight, window_return
+from market_intelligence.live_session import equal_dollar_live_return
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.taxonomy import (
     BENCHMARK_SPY,
@@ -87,8 +88,8 @@ US_METHODOLOGY: tuple[str, ...] = (
     "Return windows are stored trading sessions: 1D = 1, 1W = 5, 1M = 21, 3M = 63, 6M = 126, 1Y = 252. They are not calendar-day offsets. Header badges, the sector heatmap, and subsector returns share these windows.",
     "Sector ETFs follow the repository taxonomy: XLK Technology, XLF Financials, XLI Industrials, XLY Consumer Discretionary, XLC Communication Services, XLV Health Care, XLP Consumer Staples, XLE Energy, XLU Utilities, XLRE Real Estate, XLB Materials. The canonical Technology label is the Information Technology sector.",
     "Sector heatmap absolute mode is the sector ETF return between the shared EQUITY_EOD SPY session endpoints for that horizon. Relative vs SPY subtracts the SPY return on those same dates, in percentage points. It is not `rs_chg_*` and it is not a ratio of the two percentage returns. Each horizon column has its own symmetric color scale. A sector ETF that misses either endpoint, or that uses a different adjustment basis than SPY, is N/A. Stored sector snapshots are not a substitute.",
-    "Subsector rows are curated current-context baskets, not official GICS industries and not industry ETFs. Cross-sector themes are omitted. The only basket method is equal-dollar daily rebalancing (`equal_dollar_daily_rebalance_v1`): each horizon rebuilds that index from members that have the shared start session and the shared SPY endpoint, then takes the index window return. Fewer than 2 such members is N/A. The count is those endpoint-eligible names. Each daily step includes only members with a price on that session and on the previous session inside the window. This is not the average of each name's holding-period return, and a stored snapshot is not used when constituent prices are missing. A missing price is not zero.",
-    "Index snapshot badges stay on finalized EOD session returns. Live 1D on a heatmap is a stored IBKR last divided by the prior regular EQUITY_EOD close when that quote is fresh. Delayed and frozen quotes are labeled and are not called live. A symbol without a stored quote keeps its EQUITY_EOD 1D return. Longer horizons stay EQUITY_EOD. Weighting stays equal-dollar daily rebalance. Streamlit reads the shared quote cache and does not open TWS.",
+    "Subsector rows are curated current-context baskets, not official GICS industries and not industry ETFs. Cross-sector themes are omitted. The only basket method is equal-dollar daily rebalancing (`equal_dollar_daily_rebalance_v1`): each horizon rebuilds that index from members that have the shared start session and the shared SPY endpoint, then takes the index window return. Fewer than 2 such members is N/A. The count is those endpoint-eligible names. Each daily step includes only members with a price on that session and on the previous session inside the window. A calendar session with no observable member return makes the horizon N/A. The index does not skip that session or carry it as a zero return. This is not the average of each name's holding-period return, and a stored snapshot is not used when constituent prices are missing. A missing price is not zero.",
+    "Index snapshot badges stay on finalized EOD session returns. Live 1D on a heatmap replaces a cell only when every contributor shares one session pair and the panel adjustment basis. A relative cell also requires SPY on that same pair. A partial quote, a different session, or a different basis keeps the coherent EQUITY_EOD 1D pair instead of averaging live returns with prior-day returns. Delayed and frozen quotes are labeled and are not called live. Longer horizons stay EQUITY_EOD. Weighting stays equal-dollar daily rebalance. Streamlit reads the shared quote cache and does not open TWS.",
     "Drawdown from the 52-week high is adjusted_close / max(adjusted_close over the trailing 252 stored sessions, including that session) - 1. Fewer than 252 sessions stays missing. The value is never positive. It is not replaced with zero. The same price/peak formula on a full running peak is the definition inside each window.",
 )
 
@@ -525,14 +526,19 @@ def series_basis(record: Mapping[str, Any] | None) -> str | None:
 
 
 def shared_session_bounds(calendar: Sequence[date], sessions: int) -> tuple[date, date] | None:
-    """Start and end sessions on one explicit calendar. Not each symbol's own last date."""
+    """Start and end sessions on one explicit calendar. Not each symbol's own last date.
+
+    Every adjacent step in the selected window must be a real session gap.
+    A hole longer than four calendar days rejects the horizon.
+    """
     if sessions < 1 or len(calendar) <= sessions:
         return None
-    end = calendar[-1]
-    start = calendar[-1 - sessions]
-    if sessions == 1 and (end - start).days > 4:
+    window = list(calendar[-(sessions + 1) :])
+    if len(window) != sessions + 1:
         return None
-    return start, end
+    if any((day - prev).days > 4 for prev, day in zip(window, window[1:])):
+        return None
+    return window[0], window[-1]
 
 
 def endpoint_session_return(prices: Mapping[date, float], start: date, end: date) -> float | None:
@@ -577,12 +583,19 @@ def rebalanced_basket_return(
     """
     if len(member_prices) < minimum:
         return None
-    allowed = {day for day in calendar if start <= day <= end}
+    sessions = sorted(day for day in calendar if start <= day <= end)
+    if len(sessions) < 2 or sessions[0] != start or sessions[-1] != end:
+        return None
+    if any((day - prev).days > 4 for prev, day in zip(sessions, sessions[1:])):
+        return None
+    allowed = set(sessions)
     restricted = {
         symbol: {day: price for day, price in prices.items() if day in allowed}
         for symbol, prices in member_prices.items()
     }
-    index = daily_rebalanced_equal_weight(restricted, start=start, end=end)
+    index = daily_rebalanced_equal_weight(restricted, start=start, end=end, calendar=sessions)
+    if [point.as_of for point in index] != sessions:
+        return None
     levels = {point.as_of: point.level for point in index}
     base = levels.get(start)
     last = levels.get(end)
@@ -749,127 +762,366 @@ def build_aligned_us_panel(
     }
 
 
-def _quote_return(symbol: str, by_symbol: Mapping[str, Any]) -> tuple[float | None, str, str | None]:
+def _quote_text(value: Any) -> str:
+    text = str(value or "").strip()
+    return text
+
+
+def _historical_quote_detail(panel: Mapping[str, Any], contributors: int | None) -> dict[str, Any]:
+    window = (panel.get("windows") or {}).get("1D") or {}
+    current = as_day(window.get("end") or panel.get("endpoint"))
+    baseline = as_day(window.get("start"))
+    return {
+        "status": "HISTORICAL",
+        "statuses": ["HISTORICAL"],
+        "current_session": current.isoformat() if current else None,
+        "baseline_session": baseline.isoformat() if baseline else None,
+        "basis": panel.get("adjustment_basis"),
+        "contributors": contributors,
+        "updated": None,
+    }
+
+
+def _quote_leg(symbol: str, by_symbol: Mapping[str, Any], *, panel_basis: str | None) -> dict[str, Any] | None:
+    """A live 1D leg is usable only with a session pair and the panel price basis."""
     row = by_symbol.get(symbol) or by_symbol.get(str(symbol).upper()) or {}
     if not isinstance(row, Mapping):
-        return None, "HISTORICAL", None
+        return None
     current = row.get("current") or {}
-    status = str((current or {}).get("market_data_status") or "HISTORICAL").upper()
-    updated = (current or {}).get("observation_ts")
-    live = row.get("live_return")
-    if status == "HISTORICAL" or not isinstance(live, (int, float)) or not math.isfinite(float(live)):
-        return None, "HISTORICAL", None
-    return float(live), status, str(updated) if updated else None
+    prior = row.get("prior_close") or {}
+    if not isinstance(current, Mapping):
+        current = {}
+    if not isinstance(prior, Mapping):
+        prior = {}
+    status = str(current.get("market_data_status") or "HISTORICAL").upper()
+    live = _finite(row.get("live_return"))
+    if status == "HISTORICAL" or live is None:
+        return None
+    current_session = as_day(row.get("current_session") or current.get("session_date"))
+    baseline_session = as_day(row.get("baseline_session") or row.get("prior_session") or prior.get("session_date"))
+    basis = _quote_text(row.get("basis") or row.get("adjustment_basis") or prior.get("adjustment_basis"))
+    if current_session is None or baseline_session is None or not basis or current_session <= baseline_session:
+        return None
+    if panel_basis and basis != panel_basis:
+        return None
+    updated = current.get("observation_ts")
+    return {
+        "live_return": live,
+        "status": status,
+        "current_session": current_session,
+        "baseline_session": baseline_session,
+        "basis": basis,
+        "updated": str(updated) if updated else None,
+    }
+
+
+def _same_quote_period(legs: Sequence[Mapping[str, Any]]) -> bool:
+    if not legs:
+        return False
+    first = legs[0]
+    return all(
+        leg.get("current_session") == first.get("current_session")
+        and leg.get("baseline_session") == first.get("baseline_session")
+        and leg.get("basis") == first.get("basis")
+        for leg in legs
+    )
+
+
+def _quote_detail_from_legs(legs: Sequence[Mapping[str, Any]], contributors: int) -> dict[str, Any]:
+    statuses: list[str] = []
+    updated: str | None = None
+    for leg in legs:
+        status = str(leg.get("status") or "")
+        if status and status not in statuses:
+            statuses.append(status)
+        stamp = leg.get("updated")
+        if stamp and (updated is None or str(stamp) > updated):
+            updated = str(stamp)
+    first = legs[0]
+    current = first.get("current_session")
+    baseline = first.get("baseline_session")
+    return {
+        "status": statuses[0] if len(statuses) == 1 else "MIXED",
+        "statuses": statuses or ["HISTORICAL"],
+        "current_session": current.isoformat() if isinstance(current, date) else None,
+        "baseline_session": baseline.isoformat() if isinstance(baseline, date) else None,
+        "basis": first.get("basis"),
+        "contributors": contributors,
+        "updated": updated,
+    }
+
+
+def quote_periods_match(left: Mapping[str, Any] | None, right: Mapping[str, Any] | None) -> bool:
+    """True when two non-historical 1D cells share a session pair and price basis."""
+    if not left or not right:
+        return False
+    if str(left.get("status") or "HISTORICAL") == "HISTORICAL":
+        return False
+    if str(right.get("status") or "HISTORICAL") == "HISTORICAL":
+        return False
+    return bool(
+        left.get("current_session")
+        and left.get("current_session") == right.get("current_session")
+        and left.get("baseline_session")
+        and left.get("baseline_session") == right.get("baseline_session")
+        and left.get("basis")
+        and left.get("basis") == right.get("basis")
+    )
+
+
+def _cell_source_note(detail: Mapping[str, Any] | None, *, count: int | None, relative: bool) -> str:
+    status = str((detail or {}).get("status") or "HISTORICAL")
+    statuses = [str(item) for item in ((detail or {}).get("statuses") or [status])]
+    captions = {
+        "LIVE": "IBKR Live",
+        "DELAYED": "IBKR Delayed",
+        "FROZEN": "IBKR Frozen",
+        "PROVIDER": "Yahoo",
+        "HISTORICAL": "EQUITY_EOD",
+    }
+    if status == "MIXED":
+        label = "Mixed · {0}".format(", ".join(statuses))
+    else:
+        label = captions.get(status, status)
+    current = (detail or {}).get("current_session")
+    baseline = (detail or {}).get("baseline_session")
+    session = " · {0} vs {1}".format(current, baseline) if current and baseline else ""
+    aligned = " · same session as SPY" if relative else ""
+    if isinstance(count, int):
+        return "Constituents: {0} · equal-dollar daily rebalance · {1}{2}{3}".format(count, label, session, aligned)
+    return "{0}{1}{2}".format(label, session, aligned)
+
+
+def _later_stamp(current: str | None, stamp: str | None) -> str | None:
+    if not stamp:
+        return current
+    if current is None or stamp > current:
+        return stamp
+    return current
+
+
+def _freshness_from_cells(
+    cells: Sequence[tuple[Mapping[str, Any], bool]],
+    spy_detail: Mapping[str, Any],
+) -> dict[str, Any]:
+    absolute_statuses: set[str] = set()
+    relative_statuses: set[str] = set()
+    updated: str | None = None
+    relative_updated: str | None = None
+    for detail, has_value in cells:
+        if not has_value:
+            continue
+        status = str(detail.get("status") or "HISTORICAL")
+        if status == "HISTORICAL":
+            absolute_statuses.add("HISTORICAL")
+            relative_statuses.add("HISTORICAL")
+            continue
+        for item in detail.get("statuses") or [status]:
+            absolute_statuses.add(str(item))
+        updated = _later_stamp(updated, detail.get("updated"))
+        if quote_periods_match(detail, spy_detail):
+            for item in detail.get("statuses") or [status]:
+                relative_statuses.add(str(item))
+            relative_updated = _later_stamp(relative_updated, detail.get("updated"))
+            relative_updated = _later_stamp(relative_updated, spy_detail.get("updated"))
+        else:
+            relative_statuses.add("HISTORICAL")
+    if not absolute_statuses:
+        absolute_statuses.add("HISTORICAL")
+    if not relative_statuses:
+        relative_statuses.add("HISTORICAL")
+    return {
+        "statuses": sorted(absolute_statuses),
+        "updated": updated,
+        "relative_statuses": sorted(relative_statuses),
+        "relative_updated": relative_updated,
+        "active": any(item != "HISTORICAL" for item in absolute_statuses),
+    }
 
 
 def overlay_stored_quote_returns(panel: Mapping[str, Any], by_symbol: Mapping[str, Any] | None) -> dict[str, Any]:
-    """Replace 1D cells from the shared quote cache. Longer horizons stay EQUITY_EOD.
+    """Replace a 1D cell only when every contributor shares one session and basis.
 
-    A missing quote keeps that symbol's stored session return. One missing quote
-    does not drop the basket. Weighting stays the equal-dollar 1-session mean.
+    A partial live quote does not average with the remaining prior-day EOD
+    returns. The cell keeps the coherent EQUITY_EOD value, and relative mode
+    subtracts SPY only on that same pair. Longer horizons stay EQUITY_EOD.
     """
     result = dict(panel)
     quotes = by_symbol or {}
+    spy_eod = dict(result.get("spy_returns") or {})
+    result["spy_eod_returns"] = spy_eod
     if not result.get("available") or not quotes:
-        result["quote_freshness"] = {"statuses": ["HISTORICAL"], "updated": None, "active": False}
+        result["spy_quote_1d"] = _historical_quote_detail(result, None)
+        result["quote_freshness"] = {
+            "statuses": ["HISTORICAL"],
+            "updated": None,
+            "relative_statuses": ["HISTORICAL"],
+            "relative_updated": None,
+            "active": False,
+        }
         return result
-    statuses: set[str] = set()
-    updated: str | None = None
-
-    def _note_update(stamp: str | None) -> None:
-        nonlocal updated
-        if stamp and (updated is None or stamp > updated):
-            updated = stamp
+    panel_basis = _quote_text(result.get("adjustment_basis")) or None
+    cells: list[tuple[Mapping[str, Any], bool]] = []
 
     sectors: list[dict[str, Any]] = []
     for row in result.get("sectors") or []:
         item = dict(row)
         values = list(item.get("values") or [])
-        live, status, stamp = _quote_return(str(item.get("symbol") or ""), quotes)
-        if values and live is not None:
-            values[0] = live
-            statuses.add(status)
-            _note_update(stamp)
-            item["quote_1d"] = status
+        item["eod_values"] = list(values)
+        item["eod_quote_1d"] = _historical_quote_detail(result, None)
+        leg = _quote_leg(str(item.get("symbol") or ""), quotes, panel_basis=panel_basis)
+        if values and leg is not None:
+            values[0] = leg["live_return"]
+            detail = _quote_detail_from_legs((leg,), 1)
+            item["quote_1d"] = detail["status"]
         else:
+            detail = _historical_quote_detail(result, None)
             item["quote_1d"] = "HISTORICAL"
         item["values"] = values
+        item["quote_1d_detail"] = detail
         sectors.append(item)
+        cells.append((detail, bool(values) and values[0] is not None))
+
     subsectors: dict[str, list[dict[str, Any]]] = {}
     for sector, rows in (result.get("subsectors") or {}).items():
         copied: list[dict[str, Any]] = []
         for row in rows:
             item = dict(row)
-            members: list[dict[str, Any]] = []
-            ones: list[float] = []
-            used_quote = False
+            values = list(item.get("values") or [])
+            counts = list(item.get("counts") or [])
+            item["eod_values"] = list(values)
+            item["eod_counts"] = list(counts)
+            item["eod_quote_1d"] = _historical_quote_detail(result, counts[0] if counts else None)
+            prepared: list[tuple[dict[str, Any], dict[str, Any] | None]] = []
+            eligible: list[str] = []
             for member in item.get("constituents") or []:
                 mem = dict(member)
                 returns = dict(mem.get("returns") or {})
-                live, status, stamp = _quote_return(str(mem.get("symbol") or ""), quotes)
-                if live is not None:
-                    returns["1D"] = live
-                    mem["quote_1d"] = status
-                    statuses.add(status)
-                    _note_update(stamp)
-                    used_quote = True
-                    ones.append(live)
-                else:
-                    mem["quote_1d"] = "HISTORICAL"
-                    eod = returns.get("1D")
-                    if mem.get("included") and isinstance(eod, (int, float)) and math.isfinite(float(eod)):
-                        ones.append(float(eod))
                 mem["returns"] = returns
-                members.append(mem)
-            values = list(item.get("values") or [])
-            if values and used_quote and len(ones) >= MIN_SUBSECTOR_CONSTITUENTS:
-                values[0] = sum(ones) / len(ones)
+                eod = _finite(returns.get("1D"))
+                leg = None
+                if mem.get("included") and eod is not None:
+                    eligible.append(str(mem.get("symbol") or "").upper())
+                    leg = _quote_leg(str(mem.get("symbol") or ""), quotes, panel_basis=panel_basis)
+                prepared.append((mem, leg))
+            legs = [leg for _mem, leg in prepared if leg is not None]
+            aligned = (
+                len(eligible) >= MIN_SUBSECTOR_CONSTITUENTS
+                and len(legs) == len(eligible)
+                and _same_quote_period(legs)
+            )
+            live_value = None
+            used: tuple[str, ...] = ()
+            if aligned:
+                live_value, used, _missing = equal_dollar_live_return(
+                    {str(mem.get("symbol") or "").upper(): leg["live_return"] for mem, leg in prepared if leg is not None},
+                    eligible,
+                )
+                aligned = live_value is not None
+            members: list[dict[str, Any]] = []
+            if aligned and live_value is not None and values:
+                detail = _quote_detail_from_legs(legs, len(used))
+                values[0] = live_value
+                if counts:
+                    counts[0] = len(used)
+                used_set = set(used)
+                for mem, leg in prepared:
+                    symbol = str(mem.get("symbol") or "").upper()
+                    if leg is not None and symbol in used_set:
+                        mem["returns"]["1D"] = leg["live_return"]
+                        mem["quote_1d"] = str(leg["status"])
+                        mem["quote_unused"] = None
+                    else:
+                        mem["quote_1d"] = "HISTORICAL"
+                        mem["quote_unused"] = None
+                    members.append(mem)
+                item["quote_1d"] = detail["status"]
+            else:
+                detail = _historical_quote_detail(result, counts[0] if counts else None)
+                for mem, leg in prepared:
+                    mem["quote_1d"] = "HISTORICAL"
+                    mem["quote_unused"] = "unaligned" if leg is not None else None
+                    members.append(mem)
+                item["quote_1d"] = "HISTORICAL"
             item["values"] = values
+            item["counts"] = counts
             item["constituents"] = members
+            item["quote_1d_detail"] = detail
             copied.append(item)
+            cells.append((detail, bool(values) and values[0] is not None))
         subsectors[sector] = copied
-    spy_returns = dict(result.get("spy_returns") or {})
-    spy_live, spy_status, spy_stamp = _quote_return(BENCHMARK_SPY, quotes)
-    if spy_live is not None:
-        spy_returns["1D"] = spy_live
-        statuses.add(spy_status)
-        _note_update(spy_stamp)
+
+    spy_returns = dict(spy_eod)
+    spy_leg = _quote_leg(BENCHMARK_SPY, quotes, panel_basis=panel_basis)
+    if spy_leg is not None:
+        spy_returns["1D"] = spy_leg["live_return"]
+        spy_detail = _quote_detail_from_legs((spy_leg,), 1)
+    else:
+        spy_detail = _historical_quote_detail(result, None)
     result["sectors"] = sectors
     result["subsectors"] = subsectors
     result["spy_returns"] = spy_returns
-    result["quote_freshness"] = {
-        "statuses": sorted(statuses) or ["HISTORICAL"],
-        "updated": updated,
-        "active": bool(statuses),
-    }
+    result["spy_quote_1d"] = spy_detail
+    result["quote_freshness"] = _freshness_from_cells(cells, spy_detail)
     return result
 
 
-def subsector_matrix(rows: Sequence[Mapping[str, Any]], spy_returns: Mapping[str, Any] | None, *, mode: str) -> dict[str, Any]:
-    """Apply absolute or relative-to-SPY mode without recomputing constituent returns."""
+def subsector_matrix(
+    rows: Sequence[Mapping[str, Any]],
+    spy_returns: Mapping[str, Any] | None,
+    *,
+    mode: str,
+    spy_eod_returns: Mapping[str, Any] | None = None,
+    spy_quote: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Apply absolute or relative-to-SPY mode without recomputing constituent returns.
+
+    Relative 1D uses the live pair only when the cell and SPY share a session
+    and price basis. Otherwise it uses the stored EQUITY_EOD pair for both.
+    """
     if mode not in {"absolute", "relative"}:
         raise ValueError("mode must be absolute or relative")
     columns = [label for label, _field, _sessions in HORIZONS]
     matrix_rows: list[dict[str, Any]] = []
     for row in rows:
         absolute = list(row.get("values") or [])
+        eod_values = list(row.get("eod_values") or absolute)
         counts = list(row.get("counts") or [])
+        eod_counts = list(row.get("eod_counts") or counts)
         supplied = list(row.get("notes") or [])
         values: list[float | None] = []
         notes: list[str | None] = []
         for index, label in enumerate(columns):
             asset = absolute[index] if index < len(absolute) else None
-            if mode == "relative":
+            eod_asset = eod_values[index] if index < len(eod_values) else asset
+            count = counts[index] if index < len(counts) else None
+            eod_count = eod_counts[index] if index < len(eod_counts) else count
+            supplied_note = supplied[index] if index < len(supplied) else None
+            detail = row.get("quote_1d_detail") if label == "1D" else None
+            shown_detail = detail if isinstance(detail, Mapping) else None
+            shown_count = count
+            if mode == "relative" and label == "1D" and (shown_detail is not None or spy_quote is not None):
+                if quote_periods_match(shown_detail, spy_quote):
+                    shown = return_spread(asset, (spy_returns or {}).get(label))
+                else:
+                    benchmark = spy_eod_returns if spy_eod_returns is not None else spy_returns
+                    shown = return_spread(eod_asset, (benchmark or {}).get(label))
+                    eod_detail = row.get("eod_quote_1d")
+                    shown_detail = eod_detail if isinstance(eod_detail, Mapping) else {"status": "HISTORICAL", "statuses": ["HISTORICAL"]}
+                    shown_count = eod_count
+            elif mode == "relative":
                 shown = return_spread(asset, (spy_returns or {}).get(label))
             else:
                 shown = _finite(asset)
             values.append(shown)
-            supplied_note = supplied[index] if index < len(supplied) else None
-            count = counts[index] if index < len(counts) else None
-            if supplied_note:
+            if shown is None and supplied_note:
                 notes.append(str(supplied_note))
-            elif isinstance(count, int):
-                notes.append("Constituents: {0} · equal-dollar daily rebalance".format(count))
+            elif label == "1D" and shown is not None and shown_detail is not None:
+                notes.append(_cell_source_note(shown_detail, count=shown_count if isinstance(shown_count, int) else None, relative=mode == "relative"))
+            elif supplied_note:
+                notes.append(str(supplied_note))
+            elif isinstance(shown_count, int):
+                notes.append("Constituents: {0} · equal-dollar daily rebalance".format(shown_count))
             else:
                 notes.append(None)
         matrix_rows.append(

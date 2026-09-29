@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Mapping
+from typing import Mapping, Sequence
 
 BASKET_METHOD_VERSION = "equal_dollar_daily_rebalance_v1"
 
@@ -32,9 +32,18 @@ def daily_rebalanced_equal_weight(
     *,
     start: date | None = None,
     end: date | None = None,
+    calendar: Sequence[date] | None = None,
 ) -> list[BasketPoint]:
-    """Equal-dollar (equal-weight return) index. Coverage is members with both t and t-1."""
-    all_dates = sorted({d for series in prices.values() for d in series})
+    """Equal-dollar (equal-weight return) index. Coverage is members with both t and t-1.
+
+    ``calendar`` is the session list that must be walked, including sessions no
+    member printed. A step with no observable member return stops the index.
+    That step is not skipped, and the previous level is not carried through it.
+    """
+    if calendar is not None:
+        all_dates = sorted(set(calendar))
+    else:
+        all_dates = sorted({d for series in prices.values() for d in series})
     if start is not None:
         all_dates = [d for d in all_dates if d >= start]
     if end is not None:
@@ -63,9 +72,7 @@ def daily_rebalanced_equal_weight(
             rets.append(px_t / px_p - 1.0)
             used.append(symbol)
         if not rets:
-            out.append(BasketPoint(day, level, None, (), tuple(missing), 0.0))
-            prev = day
-            continue
+            return out
         ret = sum(rets) / len(rets)
         level *= 1.0 + ret
         coverage = len(used) / len(members) if members else 0.0
@@ -85,16 +92,19 @@ def window_return(series: Mapping[date, float], as_of: date, sessions: int) -> f
     """Return over ``sessions`` stored observations ending at the last date on or before ``as_of``.
 
     This is the canonical session window used by equity snapshots (1, 5, 21, 63, 126, 252).
-    It is not a calendar-day offset. A 1-session gap longer than four calendar days is
-    missing rather than a stitched 1D return. Missing prices are not forward-filled.
+    It is not a calendar-day offset. Any adjacent step longer than four calendar days is
+    missing rather than a stitched return. Missing prices are not forward-filled.
     """
     dates = [d for d in sorted(series) if d <= as_of]
     if len(dates) <= sessions:
         return None
-    end = dates[-1]
-    start = dates[-1 - sessions]
-    if sessions == 1 and (end - start).days > 4:
+    window_dates = dates[-(sessions + 1) :]
+    if len(window_dates) != sessions + 1:
         return None
+    if any((day - prev).days > 4 for prev, day in zip(window_dates, window_dates[1:])):
+        return None
+    start = window_dates[0]
+    end = window_dates[-1]
     left, right = series[start], series[end]
     if left == 0:
         return None

@@ -21,6 +21,7 @@ from market_intelligence.markets_analytics import (
     return_spread,
     running_peak_drawdown,
     session_window_returns,
+    shared_session_bounds,
     snapshot_rejection_reason,
     subsector_matrix,
 )
@@ -151,6 +152,27 @@ def test_rebalanced_basket_is_not_the_mean_of_holding_period_returns():
     assert basket == pytest.approx(0.155)
     assert basket != pytest.approx(holding_period_mean)
     assert MIN_SUBSECTOR_CONSTITUENTS == 2
+    gapped_calendar = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 16)]
+    missing_session = {
+        "AAA": {gapped_calendar[0]: 100.0, gapped_calendar[1]: 110.0, gapped_calendar[3]: 110.0},
+        "BBB": {gapped_calendar[0]: 100.0, gapped_calendar[1]: 100.0, gapped_calendar[3]: 120.0},
+    }
+    assert rebalanced_basket_return(missing_session, gapped_calendar, gapped_calendar[0], gapped_calendar[3]) is None
+    skipped = {
+        "AAA": {gapped_calendar[0]: 100.0, gapped_calendar[3]: 110.0},
+        "BBB": {gapped_calendar[0]: 100.0, gapped_calendar[3]: 120.0},
+    }
+    assert rebalanced_basket_return(skipped, gapped_calendar, gapped_calendar[0], gapped_calendar[3]) is None
+    quiet = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    unobserved = {
+        "AAA": {quiet[0]: 100.0, quiet[2]: 110.0},
+        "BBB": {quiet[0]: 100.0, quiet[2]: 120.0},
+    }
+    assert rebalanced_basket_return(unobserved, quiet, quiet[0], quiet[2]) is None
+    hole = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5), date(2024, 1, 16), date(2024, 1, 17)]
+    assert shared_session_bounds(hole, 1) == (date(2024, 1, 16), date(2024, 1, 17))
+    assert shared_session_bounds(hole, 5) is None
+    assert shared_session_bounds([date(2024, 1, 5), date(2024, 1, 8)], 1) == (date(2024, 1, 5), date(2024, 1, 8))
 
 
 def test_aligned_panel_rejects_stale_missing_and_foreign_basis_series():

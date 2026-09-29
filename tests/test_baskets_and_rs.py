@@ -35,6 +35,20 @@ def test_rs_is_ratio_change_not_excess():
     assert abs(rs - 0.01) > 1e-6
 
 
+def test_unobservable_rebalance_step_is_not_a_zero_return():
+    start = date(2026, 9, 9)
+    hole = date(2026, 9, 10)
+    end = date(2026, 9, 11)
+    prices = {
+        "A": {start: 10.0, end: 11.0},
+        "B": {start: 100.0, end: 100.0},
+    }
+    stopped = daily_rebalanced_equal_weight(prices, calendar=(start, hole, end))
+    assert [point.as_of for point in stopped] == [start]
+    assert all(point.ret_1d is None for point in stopped)
+    assert stopped[-1].level == pytest.approx(1.0)
+
+
 def test_missing_session_is_null_zero_is_valid():
     assert ratio_change_rs(100, None, 100, 100) is None
     asset = {date(2026, 9, 8): 100.0, date(2026, 9, 10): 102.0}
