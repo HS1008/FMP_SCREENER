@@ -83,6 +83,40 @@ function seriesColor(palette, index) {
   return EXTRA_LINE_COLORS[(index - 1) % EXTRA_LINE_COLORS.length];
 }
 
+function escapeHtml(value) {
+  return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+  });
+}
+
+function renderLegend(state, prepared) {
+  var legend = state.root.querySelector("#legend");
+  if (!legend) {
+    return;
+  }
+  var rows = prepared || [];
+  if (rows.length < 2) {
+    legend.hidden = true;
+    legend.innerHTML = "";
+    return;
+  }
+  var palette = paletteFor(state.root);
+  var html = "";
+  var index;
+  for (index = 0; index < rows.length; index++) {
+    var color = seriesColor(palette, index);
+    var label = rows[index].label || "Series " + String(index + 1);
+    html +=
+      '<span class="legend-item"><span class="legend-swatch" style="background:' +
+      color +
+      '"></span>' +
+      escapeHtml(label) +
+      "</span>";
+  }
+  legend.hidden = false;
+  legend.innerHTML = html;
+}
+
 function chartPoint(point) {
   if (!point || point.time == null) {
     return null;
@@ -1009,6 +1043,7 @@ function updateState(state, data) {
   applyReferenceLine(state);
   applyRecessionBands(state);
   applyTheme(state);
+  renderLegend(state, prepared);
 }
 
 export default function (component) {

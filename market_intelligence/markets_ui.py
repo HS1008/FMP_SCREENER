@@ -6,7 +6,7 @@ This module does not call Yahoo, IBKR, FRED, or the database driver.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 import streamlit as st
@@ -14,6 +14,7 @@ import streamlit as st
 from market_intelligence.components.market_chart import lightweight_market_chart
 from market_intelligence.components.tenor_chart import column_scaled_return_heatmap, ranked_bar_chart, return_heatmap
 from market_intelligence.equity_live import attach_live_1d_to_sector_rows, preferred_canonical_sector_rows
+from market_intelligence.live_session import heatmap_freshness_label, market_session_state
 from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, series_toggles
 from market_intelligence.markets_analytics import (
     GLOBAL_METHODOLOGY,
@@ -24,6 +25,7 @@ from market_intelligence.markets_analytics import (
     clip_points,
     heatmap_rows,
     normalize_selected_to_100,
+    overlay_stored_quote_returns,
     normalized_ratio,
     period_change,
     price_ratio_points,
@@ -33,6 +35,7 @@ from market_intelligence.markets_analytics import (
 )
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.taxonomy import (
+    NO_SUBSECTOR_CLASSIFICATION,
     GLOBAL_CORE_ETFS,
     GLOBAL_DEFAULT_SELECTED,
     GLOBAL_LEADERSHIP,
@@ -43,8 +46,9 @@ from market_intelligence.taxonomy import (
     US_INDEX_ETFS,
     US_LEADERSHIP,
     US_PERFORMANCE_ETFS,
+    constituent_label,
 )
-from market_intelligence.ui import load_optional, load_or_stop, page_header
+from market_intelligence.ui import load_optional, load_or_stop, load_quote_optional, page_header
 
 _CHART_HEIGHT = 420
 _HORIZON_LABELS = [label for label, _field, _sessions in HORIZONS]
@@ -70,8 +74,7 @@ def render_us_markets_page() -> None:
         key="us_sector_mode",
         default="Absolute Performance",
     )
-    _us_sector_heatmap(aligned, mode=return_mode)
-    _us_subsector_heatmap(aligned, mode=return_mode)
+    _us_return_heatmaps(aligned, mode=return_mode)
     _drawdown_section(history, US_DRAWDOWN_SYMBOLS, start, end)
     _methodology(US_METHODOLOGY, sectors=True)
 
@@ -322,6 +325,40 @@ def _aligned_source_caption(panel: Mapping[str, Any]) -> None:
     )
 
 
+def _quote_snapshot(panel: Mapping[str, Any]) -> dict[str, Any]:
+    loaded = load_quote_optional("equity_live_context")
+    payload = loaded.get("data") if loaded.get("available") else {}
+    if not isinstance(payload, Mapping):
+        payload = {}
+    overlaid = overlay_stored_quote_returns(panel, payload.get("by_symbol") or {})
+    freshness = overlaid.get("quote_freshness") or {}
+    updated = freshness.get("updated")
+    parsed = None
+    if updated:
+        try:
+            parsed = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+        except ValueError:
+            parsed = None
+    endpoint = as_day(overlaid.get("endpoint"))
+    caption = heatmap_freshness_label(
+        statuses=list(freshness.get("statuses") or []),
+        updated=parsed,
+        market_state=market_session_state(),
+        endpoint=endpoint,
+    )
+    return {"panel": overlaid, "caption": caption}
+
+
+@st.fragment(run_every=15)
+def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
+    """Heatmaps read the shared quote cache. This fragment does not open TWS."""
+    snapshot = _quote_snapshot(panel)
+    priced = snapshot["panel"]
+    st.caption(snapshot["caption"])
+    _us_sector_heatmap(priced, mode=mode)
+    _us_subsector_heatmap(priced, mode=mode)
+
+
 def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
     st.subheader("Sector Performance")
     analytical = "relative" if mode == "Relative vs SPY" else "absolute"
@@ -356,15 +393,15 @@ def _us_subsector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
         st.session_state["us_subsector_sector"] = "Technology"
     sector = st.selectbox("Sector", names, key="us_subsector_sector")
     if not panel.get("available"):
-        st.caption("No curated basket can be priced without the shared SPY endpoint. Coverage is not guessed.")
+        st.caption("No subsector returns can be priced without the shared SPY endpoint. Coverage is not guessed.")
         return
-    st.caption(
-        "Each horizon is the equal-dollar daily-rebalanced basket through the shared endpoint. A horizon keeps only members with prices on both sessions. Fewer than 2 members is N/A."
-    )
     rows = list((panel.get("subsectors") or {}).get(str(sector)) or [])
     if not rows:
-        st.caption("No curated basket is stored for this sector. Coverage is not guessed.")
+        st.caption(NO_SUBSECTOR_CLASSIFICATION)
         return
+    st.caption(
+        "Each horizon is the equal-dollar daily-rebalanced basket through the shared endpoint. A horizon keeps only members with prices on both sessions. Fewer than 2 members is N/A. One missing constituent does not hide the sector."
+    )
     analytical = "relative" if mode == "Relative vs SPY" else "absolute"
     matrix = subsector_matrix(rows, panel.get("spy_returns") or {}, mode=analytical)
     column_scaled_return_heatmap(
@@ -378,29 +415,33 @@ def _us_subsector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
 
 
 def _constituent_detail(rows: Sequence[Mapping[str, Any]]) -> None:
-    blocks: list[str] = []
+    labels: dict[str, str] = {}
+    details: dict[str, Mapping[str, Any]] = {}
+    groups: dict[str, str] = {}
     for row in rows:
-        members = list(row.get("constituents") or [])
-        if not members:
-            continue
-        parts: list[str] = []
-        for member in members:
-            symbol = str(member.get("symbol") or "")
-            returns = member.get("returns") or {}
-            if not returns:
-                parts.append(symbol)
+        for member in row.get("constituents") or []:
+            symbol = str(member.get("symbol") or "").upper()
+            if not symbol or symbol in labels:
                 continue
-            windows = []
-            for label, _field, _sessions in HORIZONS:
-                value = returns.get(label)
-                windows.append("{0} {1}".format(label, "N/A" if not isinstance(value, (int, float)) else _signed_percent(value)))
-            parts.append("{0}: {1}".format(symbol, " · ".join(windows)))
-        blocks.append("**{0}** — {1}".format(row.get("label") or "", "; ".join(parts)))
-    if not blocks:
+            labels[symbol] = constituent_label(symbol, str(member.get("company") or ""))
+            details[symbol] = member
+            groups[symbol] = str(row.get("label") or "")
+    options = sorted(labels, key=lambda symbol: labels[symbol])
+    if not options:
         return
-    with st.expander("Constituents"):
-        for block in blocks:
-            st.markdown(block)
+    chosen = st.selectbox(
+        "Constituent",
+        options,
+        format_func=lambda symbol: labels.get(str(symbol), str(symbol)),
+        key="us_constituent",
+    )
+    member = details.get(str(chosen)) or {}
+    returns = member.get("returns") or {}
+    st.caption("{0} · {1}".format(labels.get(str(chosen), str(chosen)), groups.get(str(chosen), "")))
+    columns = st.columns(len(HORIZONS))
+    for column, (label, _field, _sessions) in zip(columns, HORIZONS):
+        value = returns.get(label)
+        column.metric(label, "N/A" if not isinstance(value, (int, float)) else _signed_percent(value))
 
 
 def _snapshot_row(history: Mapping[str, Any], symbols: Sequence[str], labels: Mapping[str, str]) -> None:

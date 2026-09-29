@@ -24,13 +24,16 @@ CANONICAL_SECTORS: tuple[str, ...] = (
     "Utilities",
 )
 
-# FMP legacy label -> canonical label
+# FMP legacy label -> canonical label. Extra keys are documented provider aliases.
 FMP_LEGACY_TO_CANONICAL: dict[str, str] = {
     "Consumer Cyclical": "Consumer Discretionary",
     "Consumer Defensive": "Consumer Staples",
     "Financial Services": "Financials",
     "Basic Materials": "Materials",
     "Healthcare": "Health Care",
+    "HealthCare": "Health Care",
+    "Communication": "Communication Services",
+    "Communications": "Communication Services",
     "Communication Services": "Communication Services",
     "Energy": "Energy",
     "Industrials": "Industrials",
@@ -78,17 +81,42 @@ def slug_to_label(slug: str) -> str:
     return str(slug).replace("_", " ").replace("-", "/").strip()
 
 
+def _fold_label(label: str) -> str:
+    return " ".join(str(label).strip().split()).casefold()
+
+
+_CANONICAL_BY_FOLD: dict[str, str] = {}
+for _alias, _canonical in FMP_LEGACY_TO_CANONICAL.items():
+    _CANONICAL_BY_FOLD[_fold_label(_alias)] = _canonical
+for _name in CANONICAL_SECTORS:
+    _CANONICAL_BY_FOLD[_fold_label(_name)] = _name
+
+_THEME_BY_FOLD: dict[str, dict[str, str]] = {_fold_label(name): spec for name, spec in THEMES.items()}
+
+
 def resolve_provider_sector(label: str) -> SectorResolution:
-    raw = str(label).strip()
-    canonical = FMP_LEGACY_TO_CANONICAL.get(raw)
+    """Map a provider sector label onto the canonical sector, a theme, or quarantine.
+
+    Matching ignores surrounding whitespace and letter case. Unknown labels stay
+    quarantined. This does not invent an industry for a sector that has none.
+    """
+    raw = " ".join(str(label).strip().split())
+    folded = _fold_label(raw)
+    canonical = _CANONICAL_BY_FOLD.get(folded)
     if canonical is not None:
         return SectorResolution(raw, "SECTOR", canonical, canonical)
-    if raw in CANONICAL_SECTORS:
-        return SectorResolution(raw, "SECTOR", raw, raw)
-    theme = THEMES.get(raw)
+    theme = THEMES.get(raw) or _THEME_BY_FOLD.get(folded)
     if theme is not None:
         return SectorResolution(raw, "THEME", theme["theme_key"], None)
     return SectorResolution(raw, "UNKNOWN", "UNKNOWN:{0}".format(raw or "<blank>"), None)
+
+
+def canonical_sector_name(label: str) -> str | None:
+    """Canonical sector label, or None when the input is a theme or unknown."""
+    resolved = resolve_provider_sector(label)
+    if resolved.entity_kind != "SECTOR":
+        return None
+    return resolved.canonical_sector
 
 
 __all__ = [
@@ -98,6 +126,7 @@ __all__ = [
     "SECTOR_ETF_PROXY",
     "THEMES",
     "SectorResolution",
+    "canonical_sector_name",
     "resolve_provider_sector",
     "slug_to_label",
 ]

@@ -133,7 +133,9 @@ def test_comparison_ranges_collapse_when_unchanged_and_stay_distinct_otherwise()
     assert changed["unchanged"] is False
     assert [band["role"] for band in changed["bands"]] == ["current", "compare"]
     assert changed["bands"][0]["fill"] is True
-    assert changed["bands"][1]["fill"] is False
+    assert changed["bands"][1]["fill"] is True
+    assert changed["bands"][0]["legend_label"] == "Fed Funds Range — Current"
+    assert changed["bands"][1]["legend_label"] == "Fed Funds Range — Comparison"
     assert "2022" in changed["caption"] or "Jun 1, 2022" in changed["caption"]
     missing = fed_funds_overlay({"available": False}, other)
     assert missing["bands"] == []

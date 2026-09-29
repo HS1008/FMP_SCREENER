@@ -14,6 +14,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from market_intelligence.sector_mapping import CANONICAL_SECTORS, canonical_sector_name
+
 TAXONOMY_VERSION = "sector_hierarchy_current_v1"
 KIND_SECTOR_PROXY = "SECTOR_ETF_PROXY"
 KIND_INDUSTRY_PROXY = "INDUSTRY_ETF_PROXY"
@@ -219,6 +221,109 @@ def cross_sector_themes() -> tuple[BasketDef, ...]:
     return tuple(basket for basket in ALL_BASKETS if basket.kind == KIND_THEME)
 
 
+# Display names for the curated monitor universe. Unknown tickers stay ticker-only.
+COMPANY_LABELS: dict[str, str] = {
+    "ADI": "Analog Devices Inc.",
+    "AMAT": "Applied Materials Inc.",
+    "AMD": "Advanced Micro Devices Inc.",
+    "AMZN": "Amazon.com Inc.",
+    "ASML": "ASML Holding",
+    "AVGO": "Broadcom Inc.",
+    "CRM": "Salesforce Inc.",
+    "CRWD": "CrowdStrike Holdings Inc.",
+    "DIA": "Dow Jones Industrial Average",
+    "ETN": "Eaton Corp.",
+    "FTNT": "Fortinet Inc.",
+    "GOOGL": "Alphabet Inc.",
+    "IWM": "Russell 2000",
+    "KLAC": "KLA Corp.",
+    "KRE": "SPDR S&P Regional Banking ETF",
+    "LRCX": "Lam Research Corp.",
+    "META": "Meta Platforms Inc.",
+    "MRVL": "Marvell Technology Inc.",
+    "MSFT": "Microsoft Corp.",
+    "MU": "Micron Technology Inc.",
+    "NOW": "ServiceNow Inc.",
+    "NVDA": "NVIDIA Corp.",
+    "NVT": "nVent Electric plc",
+    "ON": "ON Semiconductor Corp.",
+    "ORCL": "Oracle Corp.",
+    "PANW": "Palo Alto Networks Inc.",
+    "QCOM": "Qualcomm Inc.",
+    "QQQ": "Invesco QQQ",
+    "RSP": "Invesco S&P 500 Equal Weight",
+    "SMH": "VanEck Semiconductor ETF",
+    "SPY": "SPDR S&P 500",
+    "TSM": "Taiwan Semiconductor",
+    "TXN": "Texas Instruments Inc.",
+    "VRT": "Vertiv Holdings",
+    "XBI": "SPDR S&P Biotech ETF",
+    "XLB": "Materials Select Sector SPDR",
+    "XLC": "Communication Services Select Sector SPDR",
+    "XLE": "Energy Select Sector SPDR",
+    "XLF": "Financial Select Sector SPDR",
+    "XLI": "Industrial Select Sector SPDR",
+    "XLK": "Technology Select Sector SPDR",
+    "XLP": "Consumer Staples Select Sector SPDR",
+    "XLRE": "Real Estate Select Sector SPDR",
+    "XLU": "Utilities Select Sector SPDR",
+    "XLV": "Health Care Select Sector SPDR",
+    "XLY": "Consumer Discretionary Select Sector SPDR",
+    "XOP": "SPDR S&P Oil & Gas Exploration & Production ETF",
+    "XRT": "SPDR S&P Retail ETF",
+    "XSD": "SPDR S&P Semiconductor ETF",
+    "ZS": "Zscaler Inc.",
+}
+
+NO_SUBSECTOR_CLASSIFICATION = "No subsector classification available for this sector"
+
+
+def constituent_company_name(symbol: str) -> str:
+    """Readable company name when one is curated. Otherwise the ticker itself."""
+    ticker = str(symbol or "").upper()
+    return COMPANY_LABELS.get(ticker) or ticker
+
+
+def constituent_label(symbol: str, company: str | None = None) -> str:
+    """External selector label. The ticker stays the stable internal value."""
+    ticker = str(symbol or "").upper()
+    supplied = str(company or "").strip()
+    if not supplied or supplied.upper() == ticker:
+        name = constituent_company_name(ticker)
+    else:
+        name = supplied
+    if not name or name.upper() == ticker:
+        return ticker
+    return "{0} — {1}".format(ticker, name)
+
+
+def canonical_basket_sector(parent_sector: str) -> str | None:
+    """Normalize a basket parent onto a canonical sector. Themes stay ungrouped."""
+    return canonical_sector_name(parent_sector)
+
+
+def subsector_coverage() -> dict[str, dict[str, object]]:
+    """One status for every canonical sector. Technology is not a special renderer."""
+    grouped: dict[str, list[BasketDef]] = {name: [] for name in CANONICAL_SECTORS}
+    for basket in stock_subsector_baskets():
+        sector = canonical_basket_sector(basket.parent_sector)
+        if sector is None or sector not in grouped:
+            continue
+        grouped[sector].append(basket)
+    coverage: dict[str, dict[str, object]] = {}
+    for name in CANONICAL_SECTORS:
+        baskets = tuple(grouped[name])
+        if baskets:
+            coverage[name] = {"status": "available", "baskets": baskets, "reason": None}
+        else:
+            coverage[name] = {
+                "status": "unavailable",
+                "baskets": (),
+                "reason": NO_SUBSECTOR_CLASSIFICATION,
+            }
+    return coverage
+
+
 __all__ = [
     "ALL_BASKETS",
     "BENCHMARK_SPY",
@@ -249,7 +354,13 @@ __all__ = [
     "SEMI_BASKETS",
     "TAXONOMY_VERSION",
     "UNIVERSE_SYMBOLS",
+    "COMPANY_LABELS",
+    "NO_SUBSECTOR_CLASSIFICATION",
     "baskets_for_sector",
+    "canonical_basket_sector",
+    "constituent_company_name",
+    "constituent_label",
     "cross_sector_themes",
     "stock_subsector_baskets",
+    "subsector_coverage",
 ]

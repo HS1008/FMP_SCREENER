@@ -46,6 +46,32 @@ def _install_stop_handlers() -> None:
         pass
 
 
+def contract_subscription_key(row: dict[str, Any]) -> str:
+    """One line per contract. Ticker alone is not the identity."""
+    return "|".join(
+        (
+            str(row.get("sec_type") or "STK"),
+            str(row.get("symbol") or ""),
+            str(row.get("exchange") or "SMART"),
+            str(row.get("primary_exchange") or ""),
+            str(row.get("currency") or "USD"),
+            str(row.get("con_id") or ""),
+        )
+    )
+
+
+def subscriptions_to_open(existing: set[str], wanted_keys: list[str]) -> list[str]:
+    """Skip keys already subscribed, including duplicates inside the wanted list."""
+    seen = set(existing)
+    opened: list[str] = []
+    for key in wanted_keys:
+        if key in seen:
+            continue
+        seen.add(key)
+        opened.append(key)
+    return opened
+
+
 def _contract_from_row(row: dict[str, str]):
     from ibapi.contract import Contract
 
@@ -139,7 +165,7 @@ class CollectorRuntime:
         self._last_quote_push = 0.0
 
     def _key(self, row: dict[str, str]) -> str:
-        return "{0}:{1}:{2}".format(row.get("sec_type") or "STK", row["symbol"], row.get("currency") or "USD")
+        return contract_subscription_key(row)
 
     def _set_state(self, state: str) -> None:
         if state != self.state:
@@ -300,9 +326,8 @@ class CollectorRuntime:
                 except Exception:
                     logger.debug("cancel leftover sub %s", key, exc_info=True)
                 self.subs.pop(key, None)
-        for key, row in wanted.items():
-            if key in self.subs:
-                continue
+        for key in subscriptions_to_open(set(self.subs), list(wanted)):
+            row = wanted[key]
             time.sleep(0.25)
             detail_id = self.client.next_req_id()
             self.client.wait_event(detail_id, self.client.contract_details_done)

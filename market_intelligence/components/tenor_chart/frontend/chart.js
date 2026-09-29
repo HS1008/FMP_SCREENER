@@ -143,7 +143,29 @@ function formatHeatmapTooltip(params) {
   );
 }
 
+function detailTooltip(params) {
+  var rows = Array.isArray(params) ? params : [params];
+  var index;
+  for (index = 0; index < rows.length; index++) {
+    var candidate = rows[index] && rows[index].data;
+    if (candidate && Array.isArray(candidate.detail_lines) && candidate.detail_lines.length) {
+      var html = "";
+      var lineIndex;
+      for (lineIndex = 0; lineIndex < candidate.detail_lines.length; lineIndex++) {
+        var weight = lineIndex === 0 ? "font-weight:650" : "font-weight:500";
+        html += '<div style="' + weight + '">' + escapeHtml(candidate.detail_lines[lineIndex]) + "</div>";
+      }
+      return tooltipBox(html);
+    }
+  }
+  return "";
+}
+
 function formatTooltip(params) {
+  var detailed = detailTooltip(params);
+  if (detailed) {
+    return detailed;
+  }
   var row = Array.isArray(params) ? params[0] : params;
   if (!row) {
     return "";

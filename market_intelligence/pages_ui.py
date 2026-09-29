@@ -73,6 +73,7 @@ from market_intelligence.read_models import (
 from market_intelligence.signals import build_what_matters, credit_sector_coverage
 from market_intelligence.surface_status import worst_surface_status
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
+from market_intelligence.taxonomy import NO_SUBSECTOR_CLASSIFICATION, constituent_label
 from market_intelligence.ui import (
     age_text,
     compact_as_of,
@@ -1465,7 +1466,7 @@ def render_sector_rotation_v2() -> None:
     items, unavailable = subgroup_rows_for_parent(industries, parent)
     items = attach_live_1d_to_subgroup_rows(items, live, parent_sector=parent)
     if not items and unavailable:
-        st.info("No curated subgroup is defined for this sector. Coverage is not guessed.")
+        st.info(NO_SUBSECTOR_CLASSIFICATION)
         frame = pd.DataFrame(
             [
                 {
@@ -1488,9 +1489,7 @@ def render_sector_rotation_v2() -> None:
             [
                 {
                     "Group": row["industry_key"],
-                    "Members / ETF": ", ".join((row.get("coverage") or {}).get("membership") or [])
-                    or row.get("instrument_id")
-                    or "—",
+                    "Members / ETF": _membership_label(row),
                     "Live 1D RS": (row["metrics"] or {}).get("live_rs_chg_1d"),
                     "1W RS": (row["metrics"] or {}).get("rs_chg_1w"),
                     "1M RS": (row["metrics"] or {}).get("rs_chg_1m"),
@@ -1508,9 +1507,7 @@ def render_sector_rotation_v2() -> None:
             [
                 {
                     "Group": row["industry_key"],
-                    "Members / ETF": ", ".join((row.get("coverage") or {}).get("membership") or [])
-                    or row.get("instrument_id")
-                    or "—",
+                    "Members / ETF": _membership_label(row),
                     "Live 1D Return": (row["metrics"] or {}).get("live_ret_1d"),
                     "1W Return": (row["metrics"] or {}).get("ret_1w"),
                     "1M Return": (row["metrics"] or {}).get("ret_1m"),
@@ -1550,15 +1547,31 @@ def render_sector_rotation_v2() -> None:
     cov = detail.get("coverage") or {}
     st.caption(
         "Members: {0} · used: {1} · missing: {2} · live used: {3} · live missing: {4} · method: {5}".format(
-            ", ".join(cov.get("membership") or []) or "—",
-            ", ".join(cov.get("members_used") or []) or "—",
-            ", ".join(cov.get("members_missing") or []) or "—",
-            ", ".join(cov.get("live_members_used") or []) or "—",
-            ", ".join(cov.get("live_members_missing") or []) or "—",
+            _symbol_list(cov.get("membership") or []) or "—",
+            _symbol_list(cov.get("members_used") or []) or "—",
+            _symbol_list(cov.get("members_missing") or []) or "—",
+            _symbol_list(cov.get("live_members_used") or []) or "—",
+            _symbol_list(cov.get("live_members_missing") or []) or "—",
             cov.get("weighting") or detail.get("return_basis") or "—",
         )
     )
     heatmap_legend()
+
+
+def _symbol_list(symbols: Any) -> str:
+    if not isinstance(symbols, (list, tuple)):
+        return ""
+    return ", ".join(constituent_label(str(symbol)) for symbol in symbols if symbol)
+
+
+def _membership_label(row: dict[str, Any]) -> str:
+    names = _symbol_list((row.get("coverage") or {}).get("membership") or [])
+    if names:
+        return names
+    instrument = row.get("instrument_id")
+    if instrument:
+        return constituent_label(str(instrument))
+    return "—"
 
 
 # ---- PIT / methodology ------------------------------------------------------------------

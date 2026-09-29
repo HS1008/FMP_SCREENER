@@ -313,6 +313,7 @@ def _category_slots(
     *,
     unit: str | None,
     notes: Sequence[str] | None = None,
+    details: Sequence[Sequence[str]] | None = None,
 ) -> list[dict[str, Any] | None]:
     slots: list[dict[str, Any] | None] = []
     note_lines = [str(line) for line in notes] if notes else []
@@ -322,13 +323,33 @@ def _category_slots(
         if number is None:
             slots.append(None)
             continue
-        point: dict[str, Any] = {"value": number, "name": str(label)}
+        point: dict[str, Any] = {"value": number, "name": str(label), "tenor": str(label)}
         if unit:
             point["unit"] = unit
         if note_lines:
             point["notes"] = note_lines
+        if details and index < len(details) and details[index]:
+            point["detail_lines"] = [str(line) for line in details[index]]
         slots.append(point)
     return slots
+
+
+def _padded_limits(numbers: Sequence[float]) -> tuple[float, float] | None:
+    """Include every plotted level, then pad. A flat series still gets room around it."""
+    finite = [number for number in numbers if isinstance(number, (int, float)) and math.isfinite(number)]
+    if not finite:
+        return None
+    low = min(finite)
+    high = max(finite)
+    span = high - low
+    pad = max(span * 0.08, 0.2)
+    if span == 0:
+        pad = 0.25
+    return low - pad, high + pad
+
+
+_LINE_COLORS = ("#4c78a8", "#e15759", "#59a14f", "#f2c14e", "#b07aa1", "#76b7b2")
+_LEGEND_BAND_COLORS = {"current": "#9ec1ff", "compare": "#f2c14e"}
 
 
 _BAND_STYLE = {
@@ -407,33 +428,80 @@ def build_category_line_option(
     """
     labels = [str(label) for label in categories]
     encoded = []
-    for item in series:
+    levels: list[float] = []
+    for index, item in enumerate(series):
+        values = list(item.get("values") or [])
+        for raw in values:
+            number = _finite_number(raw)
+            if number is not None:
+                levels.append(number)
+        color = str(item.get("color") or _LINE_COLORS[index % len(_LINE_COLORS)])
         encoded.append(
             {
                 "type": "line",
                 "name": str(item.get("name") or ""),
-                "data": _category_slots(labels, list(item.get("values") or []), unit=item.get("unit"), notes=point_notes),
+                "data": _category_slots(
+                    labels,
+                    values,
+                    unit=item.get("unit"),
+                    notes=point_notes if index == 0 else None,
+                    details=item.get("details") if index == 0 else None,
+                ),
                 "connectNulls": bool(connect_nulls),
                 "showSymbol": True,
                 "symbol": "circle",
                 "label": {"show": False},
+                "lineStyle": {"width": 2, "color": color},
+                "itemStyle": {"color": color},
             }
         )
+    legend_names = [str(item.get("name") or "") for item in encoded if item.get("name")]
     if bands and encoded:
         mark_line, mark_area = _policy_mark(bands)
         if mark_line is not None:
             encoded[0]["markLine"] = mark_line
         if mark_area is not None:
             encoded[0]["markArea"] = mark_area
+        for band in bands:
+            lower = _finite_number(band.get("lower"))
+            upper = _finite_number(band.get("upper"))
+            if lower is not None:
+                levels.append(lower)
+            if upper is not None:
+                levels.append(upper)
+            legend = str(band.get("legend_label") or "").strip()
+            if not legend:
+                continue
+            color = _LEGEND_BAND_COLORS.get(str(band.get("role") or "current"), _LEGEND_BAND_COLORS["current"])
+            legend_names.append(legend)
+            encoded.append(
+                {
+                    "name": legend,
+                    "type": "line",
+                    "data": [],
+                    "legendHoverLink": False,
+                    "showSymbol": False,
+                    "silent": True,
+                    "lineStyle": {"width": 8, "color": color},
+                    "itemStyle": {"color": color},
+                    "tooltip": {"show": False},
+                }
+            )
+    limits = _padded_limits(levels)
+    y_axis: dict[str, Any] = {"type": "value", "name": y_title, "scale": limits is None, "splitLine": {"show": True}}
+    if limits is not None:
+        y_axis["min"] = limits[0]
+        y_axis["max"] = limits[1]
+    show_legend = len(legend_names) >= 2
     return {
         "animation": False,
-        "legend": {"show": len(encoded) > 1, "top": 0},
+        "legend": {"show": show_legend, "top": 0, "data": legend_names},
         "toolbox": {"show": False},
         "dataZoom": [],
-        "grid": {"left": 8, "right": 16, "top": 48 if bands else 36, "bottom": 4, "containLabel": True},
+        "grid": {"left": 8, "right": 16, "top": 52 if show_legend else 28, "bottom": 4, "containLabel": True},
         "tooltip": _dark_tooltip(),
         "xAxis": {"type": "category", "data": labels, "boundaryGap": True, "axisLabel": {"interval": 0}},
-        "yAxis": {"type": "value", "name": y_title, "scale": True, "splitLine": {"show": True}},
+        "yAxis": y_axis,
         "series": encoded,
     }
 
@@ -814,6 +882,87 @@ def column_scaled_return_heatmap(
         key=key,
         desktop_height=min(760, max(320, 46 * max(len(row_labels), 1) + 72)),
         mobile_height=min(820, max(340, 52 * max(len(row_labels), 1) + 88)),
+    )
+
+
+def build_signed_change_bar_option(
+    categories: Sequence[Any],
+    values: Sequence[Any],
+    *,
+    y_title: str = "bps",
+) -> dict[str, Any]:
+    """Vertical bars around a zero line. Missing changes stay empty, not zero."""
+    labels = [str(label) for label in categories]
+    data: list[dict[str, Any] | None] = []
+    finite: list[float] = [0.0]
+    for index, label in enumerate(labels):
+        raw = values[index] if index < len(values) else None
+        number = _finite_number(raw)
+        if number is None:
+            data.append(None)
+            continue
+        finite.append(number)
+        color = "#3d8c5a" if number > 0 else "#b34040" if number < 0 else "#9aa0a6"
+        data.append(
+            {
+                "value": number,
+                "name": label,
+                "tenor": label,
+                "unit": "bps",
+                "itemStyle": {"color": color},
+                "detail_lines": [label, "Change: {0:+.1f} bps".format(number)],
+            }
+        )
+    low = min(finite)
+    high = max(finite)
+    span = high - low
+    pad = max(span * 0.08, 1.0)
+    return {
+        "animation": False,
+        "legend": {"show": False},
+        "toolbox": {"show": False},
+        "dataZoom": [],
+        "grid": {"left": 8, "right": 12, "top": 16, "bottom": 4, "containLabel": True},
+        "tooltip": _dark_tooltip(trigger="item"),
+        "xAxis": {"type": "category", "data": labels, "axisLabel": {"interval": 0}},
+        "yAxis": {
+            "type": "value",
+            "name": y_title,
+            "min": low - pad,
+            "max": high + pad,
+            "scale": False,
+            "splitLine": {"show": True},
+        },
+        "series": [
+            {
+                "type": "bar",
+                "name": "Change",
+                "data": data,
+                "label": {"show": False},
+                "markLine": {
+                    "silent": True,
+                    "symbol": "none",
+                    "lineStyle": {"color": "#f4f6f8", "width": 1.5},
+                    "data": [{"yAxis": 0, "label": {"show": False}}],
+                },
+            }
+        ],
+    }
+
+
+def signed_change_bar_chart(
+    categories: Sequence[Any],
+    values: Sequence[Any],
+    *,
+    key: str,
+    y_title: str = "bps",
+) -> None:
+    """Change bars. Sign is the direction from zero; color only reinforces it."""
+    render_echarts(
+        build_signed_change_bar_option(categories, values, y_title=y_title),
+        key=key,
+        desktop_height=320,
+        mobile_height=280,
     )
 
 

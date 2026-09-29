@@ -29,6 +29,8 @@ from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.taxonomy import (
     BENCHMARK_SPY,
     SECTOR_PROXIES,
+    canonical_basket_sector,
+    constituent_company_name,
     cross_sector_themes,
     stock_subsector_baskets,
 )
@@ -86,7 +88,7 @@ US_METHODOLOGY: tuple[str, ...] = (
     "Sector ETFs follow the repository taxonomy: XLK Technology, XLF Financials, XLI Industrials, XLY Consumer Discretionary, XLC Communication Services, XLV Health Care, XLP Consumer Staples, XLE Energy, XLU Utilities, XLRE Real Estate, XLB Materials. The canonical Technology label is the Information Technology sector.",
     "Sector heatmap absolute mode is the sector ETF return between the shared EQUITY_EOD SPY session endpoints for that horizon. Relative vs SPY subtracts the SPY return on those same dates, in percentage points. It is not `rs_chg_*` and it is not a ratio of the two percentage returns. Each horizon column has its own symmetric color scale. A sector ETF that misses either endpoint, or that uses a different adjustment basis than SPY, is N/A. Stored sector snapshots are not a substitute.",
     "Subsector rows are curated current-context baskets, not official GICS industries and not industry ETFs. Cross-sector themes are omitted. The only basket method is equal-dollar daily rebalancing (`equal_dollar_daily_rebalance_v1`): each horizon rebuilds that index from members that have the shared start session and the shared SPY endpoint, then takes the index window return. Fewer than 2 such members is N/A. The count is those endpoint-eligible names. Each daily step includes only members with a price on that session and on the previous session inside the window. This is not the average of each name's holding-period return, and a stored snapshot is not used when constituent prices are missing. A missing price is not zero.",
-    "Live 1D is current last / prior completed session close, and only when the stored quote is fresh. The index snapshot and both heatmaps stay on finalized EOD session returns. Stale live quotes are not mixed into those cells.",
+    "Index snapshot badges stay on finalized EOD session returns. Live 1D on a heatmap is a stored IBKR last divided by the prior regular EQUITY_EOD close when that quote is fresh. Delayed and frozen quotes are labeled and are not called live. A symbol without a stored quote keeps its EQUITY_EOD 1D return. Longer horizons stay EQUITY_EOD. Weighting stays equal-dollar daily rebalance. Streamlit reads the shared quote cache and does not open TWS.",
     "Drawdown from the 52-week high is adjusted_close / max(adjusted_close over the trailing 252 stored sessions, including that session) - 1. Fewer than 252 sessions stays missing. The value is never positive. It is not replaced with zero. The same price/peak formula on a full running peak is the definition inside each window.",
 )
 
@@ -619,6 +621,7 @@ def build_aligned_us_panel(
     records: Mapping[str, Mapping[str, Any]],
     *,
     minimum: int = MIN_SUBSECTOR_CONSTITUENTS,
+    baskets: Sequence[Any] | None = None,
 ) -> dict[str, Any]:
     """Sector, curated-basket, and SPY returns on one EQUITY_EOD session calendar.
 
@@ -668,7 +671,11 @@ def build_aligned_us_panel(
             notes.append(None if number is not None else "Missing session")
         sectors.append({"label": name, "symbol": symbol, "values": values, "notes": notes})
     subsectors: dict[str, list[dict[str, Any]]] = {}
-    for basket in stock_subsector_baskets():
+    selected_baskets = stock_subsector_baskets() if baskets is None else tuple(baskets)
+    for basket in selected_baskets:
+        parent = canonical_basket_sector(str(basket.parent_sector))
+        if parent is None:
+            continue
         member_records = []
         for symbol in basket.members:
             item = prepared.get(symbol) or {"prices": {}, "basis": None}
@@ -706,16 +713,17 @@ def build_aligned_us_panel(
             detail.append(
                 {
                     "symbol": symbol,
-                    "company": symbol,
+                    "company": constituent_company_name(symbol),
                     "returns": member_returns,
                     "included": status is None,
                     "rejection": status,
+                    "quote_1d": "HISTORICAL",
                 }
             )
-        subsectors.setdefault(basket.parent_sector, []).append(
+        subsectors.setdefault(parent, []).append(
             {
                 "industry": basket.label,
-                "sector": basket.parent_sector,
+                "sector": parent,
                 "classification": "curated_basket",
                 "values": values,
                 "counts": counts,
@@ -739,6 +747,102 @@ def build_aligned_us_panel(
         "subsectors": subsectors,
         "themes_omitted": [basket.label for basket in cross_sector_themes()],
     }
+
+
+def _quote_return(symbol: str, by_symbol: Mapping[str, Any]) -> tuple[float | None, str, str | None]:
+    row = by_symbol.get(symbol) or by_symbol.get(str(symbol).upper()) or {}
+    if not isinstance(row, Mapping):
+        return None, "HISTORICAL", None
+    current = row.get("current") or {}
+    status = str((current or {}).get("market_data_status") or "HISTORICAL").upper()
+    updated = (current or {}).get("observation_ts")
+    live = row.get("live_return")
+    if status == "HISTORICAL" or not isinstance(live, (int, float)) or not math.isfinite(float(live)):
+        return None, "HISTORICAL", None
+    return float(live), status, str(updated) if updated else None
+
+
+def overlay_stored_quote_returns(panel: Mapping[str, Any], by_symbol: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Replace 1D cells from the shared quote cache. Longer horizons stay EQUITY_EOD.
+
+    A missing quote keeps that symbol's stored session return. One missing quote
+    does not drop the basket. Weighting stays the equal-dollar 1-session mean.
+    """
+    result = dict(panel)
+    quotes = by_symbol or {}
+    if not result.get("available") or not quotes:
+        result["quote_freshness"] = {"statuses": ["HISTORICAL"], "updated": None, "active": False}
+        return result
+    statuses: set[str] = set()
+    updated: str | None = None
+
+    def _note_update(stamp: str | None) -> None:
+        nonlocal updated
+        if stamp and (updated is None or stamp > updated):
+            updated = stamp
+
+    sectors: list[dict[str, Any]] = []
+    for row in result.get("sectors") or []:
+        item = dict(row)
+        values = list(item.get("values") or [])
+        live, status, stamp = _quote_return(str(item.get("symbol") or ""), quotes)
+        if values and live is not None:
+            values[0] = live
+            statuses.add(status)
+            _note_update(stamp)
+            item["quote_1d"] = status
+        else:
+            item["quote_1d"] = "HISTORICAL"
+        item["values"] = values
+        sectors.append(item)
+    subsectors: dict[str, list[dict[str, Any]]] = {}
+    for sector, rows in (result.get("subsectors") or {}).items():
+        copied: list[dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            members: list[dict[str, Any]] = []
+            ones: list[float] = []
+            used_quote = False
+            for member in item.get("constituents") or []:
+                mem = dict(member)
+                returns = dict(mem.get("returns") or {})
+                live, status, stamp = _quote_return(str(mem.get("symbol") or ""), quotes)
+                if live is not None:
+                    returns["1D"] = live
+                    mem["quote_1d"] = status
+                    statuses.add(status)
+                    _note_update(stamp)
+                    used_quote = True
+                    ones.append(live)
+                else:
+                    mem["quote_1d"] = "HISTORICAL"
+                    eod = returns.get("1D")
+                    if mem.get("included") and isinstance(eod, (int, float)) and math.isfinite(float(eod)):
+                        ones.append(float(eod))
+                mem["returns"] = returns
+                members.append(mem)
+            values = list(item.get("values") or [])
+            if values and used_quote and len(ones) >= MIN_SUBSECTOR_CONSTITUENTS:
+                values[0] = sum(ones) / len(ones)
+            item["values"] = values
+            item["constituents"] = members
+            copied.append(item)
+        subsectors[sector] = copied
+    spy_returns = dict(result.get("spy_returns") or {})
+    spy_live, spy_status, spy_stamp = _quote_return(BENCHMARK_SPY, quotes)
+    if spy_live is not None:
+        spy_returns["1D"] = spy_live
+        statuses.add(spy_status)
+        _note_update(spy_stamp)
+    result["sectors"] = sectors
+    result["subsectors"] = subsectors
+    result["spy_returns"] = spy_returns
+    result["quote_freshness"] = {
+        "statuses": sorted(statuses) or ["HISTORICAL"],
+        "updated": updated,
+        "active": bool(statuses),
+    }
+    return result
 
 
 def subsector_matrix(rows: Sequence[Mapping[str, Any]], spy_returns: Mapping[str, Any] | None, *, mode: str) -> dict[str, Any]:
@@ -765,7 +869,7 @@ def subsector_matrix(rows: Sequence[Mapping[str, Any]], spy_returns: Mapping[str
             if supplied_note:
                 notes.append(str(supplied_note))
             elif isinstance(count, int):
-                notes.append("Constituents: {0}".format(count))
+                notes.append("Constituents: {0} · equal-dollar daily rebalance".format(count))
             else:
                 notes.append(None)
         matrix_rows.append(
@@ -811,6 +915,7 @@ __all__ = [
     "rebalanced_basket_return",
     "live_field_complete",
     "normalize_selected_to_100",
+    "overlay_stored_quote_returns",
     "normalize_to_100",
     "normalized_ratio",
     "period_change",
