@@ -25,6 +25,7 @@ from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
 from market_intelligence.baskets import BASKET_METHOD_VERSION, daily_rebalanced_equal_weight, window_return
+from market_intelligence.calendars import skipped_session
 from market_intelligence.live_session import equal_dollar_live_return
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.taxonomy import (
@@ -528,15 +529,15 @@ def series_basis(record: Mapping[str, Any] | None) -> str | None:
 def shared_session_bounds(calendar: Sequence[date], sessions: int) -> tuple[date, date] | None:
     """Start and end sessions on one explicit calendar. Not each symbol's own last date.
 
-    Every adjacent step in the selected window must be a real session gap.
-    A hole longer than four calendar days rejects the horizon.
+    Every adjacent step in the selected window must be the next NYSE session.
+    A missing ordinary weekday rejects the horizon. A weekend or holiday does not.
     """
     if sessions < 1 or len(calendar) <= sessions:
         return None
     window = list(calendar[-(sessions + 1) :])
     if len(window) != sessions + 1:
         return None
-    if any((day - prev).days > 4 for prev, day in zip(window, window[1:])):
+    if any(skipped_session(prev, day) for prev, day in zip(window, window[1:])):
         return None
     return window[0], window[-1]
 
@@ -586,7 +587,7 @@ def rebalanced_basket_return(
     sessions = sorted(day for day in calendar if start <= day <= end)
     if len(sessions) < 2 or sessions[0] != start or sessions[-1] != end:
         return None
-    if any((day - prev).days > 4 for prev, day in zip(sessions, sessions[1:])):
+    if any(skipped_session(prev, day) for prev, day in zip(sessions, sessions[1:])):
         return None
     allowed = set(sessions)
     restricted = {

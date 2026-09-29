@@ -359,3 +359,88 @@ def test_rates_page_does_not_overlay_policy_on_tips_or_call_providers():
     page = inspect.getsource(render_rates_curve) + inspect.getsource(_render_tips_curve)
     assert "fred_client" not in page
     assert "yahoo" not in page.lower()
+
+
+def test_rates_page_loads_3m2s_and_5s10s30s_inside_the_selected_range(monkeypatch):
+    from streamlit.testing.v1 import AppTest
+
+    from market_intelligence.curve_compare import FED_FUNDS_UNAVAILABLE
+
+    root = Path(__file__).resolve().parents[1]
+    current = "2026-09-23"
+    calls: list[tuple] = []
+    yields = {"DGS2": 4.00, "DGS3MO": 3.50, "DGS5": 3.80, "DGS10": 4.20, "DGS30": 4.40}
+
+    def fake_cached(fn_name, *args, **kwargs):
+        calls.append((fn_name, args, kwargs))
+        if fn_name == "rates_context":
+            return {
+                "curve": [
+                    {"tenor": "2Y", "yield_pct": 4.0, "observation_date": current, "source_id": "TREASURY", "chg_prev_bps": 1},
+                    {"tenor": "10Y", "yield_pct": 4.35, "observation_date": current, "source_id": "TREASURY", "chg_prev_bps": 1},
+                ],
+                "slopes": {"10Y2Y": {"value": 35, "units": "bps"}},
+                "curve_dates_mixed": False,
+                "complete_curve_date": current,
+                "curve_observation_dates": [current],
+                "source_ids": ["TREASURY"],
+                "fallback": False,
+                "partial_newer": [],
+                "real_yields": [],
+                "inflation_compensation": [],
+                "policy": [],
+                "tips_curve": {"found": False, "curve": []},
+                "units_note": "Yields in percent.",
+            }
+        if fn_name == "fed_funds_target_on_or_before":
+            if args and args[0] < "2008-12-16":
+                return {"available": False, "curve_date": args[0], "lower": None, "upper": None, "message": FED_FUNDS_UNAVAILABLE}
+            return {"available": True, "curve_date": args[0], "effective_date": "2026-09-18", "lower": 4.25, "upper": 4.50, "carried": True}
+        if fn_name == "metric_history":
+            return [{"as_of": "1990-01-02", "value": 10}, {"as_of": current, "value": 35}]
+        if fn_name == "observation_history":
+            return [{"observation_date": kwargs["end"], "value": yields[args[0]]}]
+        if fn_name == "tips_curve_on_or_before":
+            return {"found": False, "curve": []}
+        if fn_name == "tips_curve_bounds":
+            return {"earliest_date": "2004-01-02", "latest_date": current}
+        if fn_name == "treasury_complete_curve_bounds":
+            return {"earliest_complete_date": "2000-01-03", "latest_complete_date": current}
+        return {}
+
+    plotted: list[tuple] = []
+
+    def capture_chart(rows, **kwargs):
+        plotted.append((kwargs.get("series_label"), list(rows)))
+
+    monkeypatch.setattr("market_intelligence.ui.cached_read", fake_cached)
+    monkeypatch.setattr("market_intelligence.pages_ui.lightweight_market_chart", capture_chart)
+    at = AppTest.from_file(str(root / "pages" / "12_Rates_Curve.py"), default_timeout=30)
+    at.run()
+    at.multiselect[0].set_value(["3m2s", "5s10s30s"]).run()
+    assert not at.exception, [exc.value for exc in at.exception]
+    assert len(at.date_input) == 2
+    selected_start = at.date_input[0].value
+    selected_end = at.date_input[1].value
+    observations = [item for item in calls if item[0] == "observation_history"]
+    bounded = [item for item in observations if item[2].get("start") is not None]
+    assert {item[1][0] for item in bounded} == {"DGS2", "DGS3MO", "DGS5", "DGS10", "DGS30"}
+    assert all(item[2]["start"] == selected_start and item[2]["end"] == selected_end for item in bounded)
+    assert any(item[1][0] == "DGS10" and item[2].get("start") is None for item in observations)
+    bounded_bare = [
+        item
+        for item in calls
+        if item[0] == "metric_history"
+        and item[1]
+        and str(item[1][0]).startswith("DGS")
+        and not str(item[1][0]).endswith(".level")
+        and (item[2].get("start") is not None or item[2].get("end") is not None)
+    ]
+    assert bounded_bare == []
+    text = "\n".join(str(widget.value) for widget in (*at.markdown, *at.caption))
+    assert "2Y minus 3M" in text
+    assert "2×10Y − 5Y − 30Y" in text
+    by_label = {label: rows for label, rows in plotted}
+    # 2Y 4.00 minus 3M 3.50 is 50 bps. 2×10Y − 5Y − 30Y is (8.40 − 3.80 − 4.40) × 100 = 20 bps.
+    assert by_label["3m2s"][-1]["value"] == pytest.approx(50)
+    assert by_label["5s10s30s"][-1]["value"] == pytest.approx(20)

@@ -949,8 +949,19 @@ def _render_tips_curve(stored: dict[str, Any] | None = None) -> None:
         _render_change_bars(list(TIPS_TENORS), current_values, comparison_values, key="rates-tips-change")
 
 
-def _stored_metric_rows(metric_id: str) -> list[dict[str, Any]]:
-    rows = load_or_stop("metric_history", metric_id, limit=STORED_HISTORY_LIMIT)
+def _stored_metric_rows(
+    metric_id: str,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[dict[str, Any]]:
+    rows = load_or_stop("metric_history", metric_id, start=start, end=end, limit=STORED_HISTORY_LIMIT)
+    return list(rows) if rows else []
+
+
+def _yield_observation_rows(series_id: str, *, start: date, end: date) -> list[dict[str, Any]]:
+    """Yield history for a computed spread. ``series_id.level`` is the same observation."""
+    rows = load_or_stop("observation_history", series_id, start=start, end=end, limit=STORED_HISTORY_LIMIT)
     return list(rows) if rows else []
 
 
@@ -1022,9 +1033,12 @@ def _render_additional_spreads(start: date | None, end: date | None) -> None:
         st.markdown("**{0}**".format(label))
         st.caption(caption)
         if kind == "stored":
-            rows = _stored_metric_rows(_STORED_EXTRA_METRICS[key])
+            rows = _stored_metric_rows(_STORED_EXTRA_METRICS[key], start=start, end=end)
         else:
-            histories = {series_id: _stored_metric_rows(series_id) for series_id in _COMPUTED_EXTRA_LEGS[key]}
+            histories = {
+                series_id: _yield_observation_rows(series_id, start=start, end=end)
+                for series_id in _COMPUTED_EXTRA_LEGS[key]
+            }
             rows = aligned_spread_history(key, histories)
         _render_spread_chart(rows, start=start, end=end, label=label, chart_key="rates-extra-{0}".format(key))
 
@@ -1134,9 +1148,15 @@ def render_rates_curve() -> None:
     }
     history_label = st.selectbox("History", list(history_choices), key="rates_history_series")
     history_metric = history_choices[str(history_label)]
-    history_rows = load_or_stop("metric_history", history_metric)
-    history_units = "bps" if history_metric.startswith("curve.slope_") else "percent"
-    history_chart(history_rows, x="as_of", y="value", title=str(history_label), units=history_units)
+    if str(history_metric).startswith("curve.slope_"):
+        history_rows = load_or_stop("metric_history", history_metric, limit=STORED_HISTORY_LIMIT)
+        history_x = "as_of"
+    else:
+        # Yield series are observations. ``DGS10`` is not the ``DGS10.level`` metric id.
+        history_rows = load_or_stop("observation_history", history_metric, limit=STORED_HISTORY_LIMIT)
+        history_x = "observation_date"
+    history_units = "bps" if str(history_metric).startswith("curve.slope_") else "percent"
+    history_chart(history_rows, x=history_x, y="value", title=str(history_label), units=history_units)
 
     with st.expander("Tenor table and other slopes"):
         st.dataframe(

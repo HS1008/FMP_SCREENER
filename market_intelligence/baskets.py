@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Mapping, Sequence
 
+from market_intelligence.calendars import skipped_session
+
 BASKET_METHOD_VERSION = "equal_dollar_daily_rebalance_v1"
 
 
@@ -59,6 +61,8 @@ def daily_rebalanced_equal_weight(
             out.append(BasketPoint(day, level, None, members, (), 0.0))
             prev = day
             continue
+        if prev is not None and skipped_session(prev, day):
+            return out
         used: list[str] = []
         missing: list[str] = []
         rets: list[float] = []
@@ -92,8 +96,8 @@ def window_return(series: Mapping[date, float], as_of: date, sessions: int) -> f
     """Return over ``sessions`` stored observations ending at the last date on or before ``as_of``.
 
     This is the canonical session window used by equity snapshots (1, 5, 21, 63, 126, 252).
-    It is not a calendar-day offset. Any adjacent step longer than four calendar days is
-    missing rather than a stitched return. Missing prices are not forward-filled.
+    It is not a calendar-day offset. A step that skips an NYSE session is missing.
+    A weekend or exchange holiday is one session step. Missing prices are not forward-filled.
     """
     dates = [d for d in sorted(series) if d <= as_of]
     if len(dates) <= sessions:
@@ -101,7 +105,7 @@ def window_return(series: Mapping[date, float], as_of: date, sessions: int) -> f
     window_dates = dates[-(sessions + 1) :]
     if len(window_dates) != sessions + 1:
         return None
-    if any((day - prev).days > 4 for prev, day in zip(window_dates, window_dates[1:])):
+    if any(skipped_session(prev, day) for prev, day in zip(window_dates, window_dates[1:])):
         return None
     start = window_dates[0]
     end = window_dates[-1]

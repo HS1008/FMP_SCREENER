@@ -43,6 +43,12 @@ def test_nyse_open_on_columbus_day_closed_good_friday():
     assert is_session(date(2024, 10, 14), CAL_NYSE) is True
     assert is_session(date(2024, 10, 14), CAL_US_TREASURY) is False
     assert is_session(date(2024, 3, 29), CAL_NYSE) is False  # Good Friday
+    # Jan 9 2025 was an NYSE mourning-day closure, not a Treasury holiday.
+    assert is_session(date(2025, 1, 9), CAL_NYSE) is False
+    assert is_session(date(2025, 1, 9), CAL_US_TREASURY) is True
+    # MLK Day was not an NYSE holiday before 1998.
+    assert is_session(date(1997, 1, 20), CAL_NYSE) is True
+    assert is_session(date(2024, 1, 15), CAL_NYSE) is False
 
 
 def test_missing_and_awaiting():

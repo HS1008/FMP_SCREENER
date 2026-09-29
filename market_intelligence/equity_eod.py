@@ -444,6 +444,46 @@ def _artifact_sha(payload: Mapping[str, Any]) -> str:
     return sha256(strict_dumps(payload).encode("utf-8")).hexdigest()
 
 
+def basket_snapshot_metrics(
+    member_prices: Mapping[str, Mapping[date, float]],
+    benchmark: Mapping[date, float],
+    as_of: date,
+    *,
+    adjustment_basis: str,
+) -> tuple[dict[str, float | None], dict[str, Any], list[Any]]:
+    """Window metrics for one basket index.
+
+    If the index stops before ``as_of``, the newer snapshot does not inherit
+    the last complete window. Those metrics stay missing.
+    """
+    index = daily_rebalanced_equal_weight(member_prices, end=as_of)
+    last_point = index[-1] if index else None
+    if last_point is None or last_point.as_of != as_of:
+        metrics = {key: None for key in list(RETURN_WINDOWS) + list(RS_WINDOWS) + ["pct_vs_50dma", "pct_vs_200dma"]}
+        coverage = {
+            "as_of": None,
+            "prev_session": None,
+            "aligned_with_benchmark": False,
+            "adjustment_basis": adjustment_basis,
+            "return_kind": (
+                "ibkr_adjusted_last_price_return"
+                if adjustment_basis == "IBKR_ADJUSTED_LAST"
+                else "price_return_not_proven_total_return"
+            ),
+            "incomplete": True,
+            "index_truncated": True,
+            "index_as_of": last_point.as_of.isoformat() if last_point else None,
+            "requested_as_of": as_of.isoformat(),
+        }
+        return metrics, coverage, index
+    idx_series = {point.as_of: point.level for point in index}
+    metrics, coverage = compute_metrics(idx_series, benchmark, as_of, adjustment_basis=adjustment_basis)
+    coverage = dict(coverage)
+    coverage["index_truncated"] = False
+    coverage["requested_as_of"] = as_of.isoformat()
+    return metrics, coverage, index
+
+
 def write_snapshots(
     conn,
     *,
@@ -509,10 +549,13 @@ def write_snapshots(
         xlk = prices.get("XLK") or {}
         for basket in baskets_for_sector(sector):
             member_px = {m: prices.get(m) or {} for m in basket.members}
-            index = daily_rebalanced_equal_weight(member_px, end=as_of)
-            idx_series = {p.as_of: p.level for p in index}
             bench = xlk if sector == "Technology" else (prices.get(SECTOR_PROXIES[sector]) or {})
-            metrics, coverage = compute_metrics(idx_series, bench or spy, as_of, adjustment_basis=adjustment_basis)
+            metrics, coverage, index = basket_snapshot_metrics(
+                member_px,
+                bench or spy,
+                as_of,
+                adjustment_basis=adjustment_basis,
+            )
             last_pt = index[-1] if index else None
             coverage = dict(coverage)
             coverage["membership"] = list(basket.members)

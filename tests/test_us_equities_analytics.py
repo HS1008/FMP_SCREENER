@@ -175,6 +175,22 @@ def test_rebalanced_basket_is_not_the_mean_of_holding_period_returns():
     assert shared_session_bounds([date(2024, 1, 5), date(2024, 1, 8)], 1) == (date(2024, 1, 5), date(2024, 1, 8))
 
 
+def test_nyse_calendar_rejects_a_missing_weekday_and_keeps_a_holiday():
+    """Tuesday to Thursday skips Wednesday. Friday to the Tuesday after Memorial Day does not."""
+    missing = session_window_returns({date(2024, 1, 2): 100.0, date(2024, 1, 4): 110.0}, date(2024, 1, 4))
+    assert missing["1D"] is None
+    assert shared_session_bounds([date(2024, 1, 2), date(2024, 1, 4)], 1) is None
+    holiday = session_window_returns({date(2024, 5, 24): 100.0, date(2024, 5, 28): 110.0}, date(2024, 5, 28))
+    assert holiday["1D"] == pytest.approx(0.10)
+    assert shared_session_bounds([date(2024, 5, 24), date(2024, 5, 28)], 1) == (date(2024, 5, 24), date(2024, 5, 28))
+    mourning = session_window_returns({date(2025, 1, 8): 100.0, date(2025, 1, 10): 110.0}, date(2025, 1, 10))
+    assert mourning["1D"] == pytest.approx(0.10)
+    new_year = session_window_returns({date(2021, 12, 30): 100.0, date(2022, 1, 3): 110.0}, date(2022, 1, 3))
+    assert new_year["1D"] == pytest.approx(0.10)
+    sandy = session_window_returns({date(2012, 10, 26): 100.0, date(2012, 10, 31): 90.0}, date(2012, 10, 31))
+    assert sandy["1D"] == pytest.approx(-0.10)
+
+
 def test_aligned_panel_rejects_stale_missing_and_foreign_basis_series():
     dates = [date(2024, 1, 2) + timedelta(days=offset) for offset in range(6)]
     endpoint = dates[-1]
