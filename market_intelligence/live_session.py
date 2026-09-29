@@ -133,6 +133,80 @@ def canonical_last_price(quote: Mapping[str, Any] | None) -> float | None:
     return _finite(quote.get("last_price"))
 
 
+def quote_data_status(quote: Mapping[str, Any] | None) -> str:
+    """LIVE, DELAYED, FROZEN, or HISTORICAL. Delayed data is never called live."""
+    if not quote:
+        return "HISTORICAL"
+    raw = str(quote.get("market_data_type") or quote.get("delay_status") or "").upper().replace(" ", "_")
+    if raw in {"LIVE", "IBKR_LIVE", "1"}:
+        return "LIVE"
+    if "FROZEN" in raw or raw in {"2", "4"}:
+        return "FROZEN"
+    if "DELAYED" in raw or raw in {"3", "IBKR_DELAYED"}:
+        return "DELAYED"
+    source = str(quote.get("source_id") or "")
+    if source == SOURCE_IBKR:
+        return "DELAYED"
+    if source == SOURCE_YAHOO_LIVE:
+        return "PROVIDER"
+    return "HISTORICAL"
+
+
+def market_session_state(now: datetime | None = None) -> str:
+    """PRE, OPEN, AFTER HOURS, or CLOSED. A closed market is not described as the open session."""
+    now_et = (now or datetime.now(timezone.utc)).astimezone(ET)
+    if not is_session(now_et.date(), CAL_NYSE):
+        return "CLOSED"
+    clock = now_et.timetz().replace(tzinfo=None)
+    if clock < time(9, 30):
+        return "PRE"
+    if clock < time(16, 0):
+        return "OPEN"
+    if clock < time(20, 0):
+        return "AFTER HOURS"
+    return "CLOSED"
+
+
+def heatmap_freshness_label(
+    *,
+    statuses: Sequence[str] | None,
+    updated: datetime | None,
+    market_state: str,
+    endpoint: date | None = None,
+) -> str:
+    """Compact source line. One label for a shared heatmap snapshot."""
+    present = {str(item).upper() for item in (statuses or []) if item}
+    stamp = ""
+    if updated is not None:
+        local = updated.astimezone(ET)
+        stamp = local.strftime("%H:%M:%S")
+    quoted = present - {"HISTORICAL"}
+    if quoted and "HISTORICAL" in present:
+        prefix = "Mixed 1D sources"
+    elif len(quoted) > 1:
+        prefix = "Mixed IBKR"
+    elif "LIVE" in present:
+        prefix = "IBKR Live" if market_state == "OPEN" else "IBKR Live source · market {0}".format(market_state)
+    elif "DELAYED" in present:
+        prefix = "IBKR Delayed"
+    elif "FROZEN" in present:
+        prefix = "IBKR Frozen"
+    elif "PROVIDER" in present:
+        prefix = "Yahoo"
+    else:
+        if endpoint is not None:
+            return "EQUITY_EOD · {0}".format(endpoint.isoformat())
+        return "EQUITY_EOD"
+    if prefix in {"Mixed 1D sources", "Mixed IBKR"}:
+        parts = [prefix, "cell notes name the source", "market {0}".format(market_state)]
+        if stamp:
+            parts.insert(2, "updated {0} ET".format(stamp))
+        return " · ".join(parts)
+    if stamp:
+        return "{0} · updated {1} ET".format(prefix, stamp)
+    return prefix
+
+
 @dataclass(frozen=True)
 class PriceObservation:
     symbol: str
@@ -142,6 +216,8 @@ class PriceObservation:
     observation_ts: datetime | None
     session_date: date | None
     quality: str
+    market_data_status: str = ""
+    adjustment_basis: str = ""
 
     def as_dict(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -318,6 +394,7 @@ def resolve_current_price(
     usable.sort(
         key=lambda row: (
             _source_rank(str(row.get("source_id") or "")),
+            {"LIVE": 0, "DELAYED": 1, "FROZEN": 2, "PROVIDER": 3}.get(quote_data_status(row), 4),
             -(observation_timestamp(row) or datetime.min.replace(tzinfo=timezone.utc)).timestamp(),
         )
     )
@@ -335,6 +412,7 @@ def resolve_current_price(
         observation_ts=ts,
         session_date=quote_session_date(ts, now=now),
         quality="FRESH",
+        market_data_status=quote_data_status(chosen),
     )
 
 
@@ -373,6 +451,8 @@ def resolve_prior_close(
         observation_ts=None,
         session_date=session,
         quality="EOD",
+        market_data_status="HISTORICAL",
+        adjustment_basis=str(chosen.get("adjustment_basis") or ""),
     )
 
 
@@ -460,6 +540,9 @@ __all__ = [
     "canonical_last_price",
     "equal_dollar_live_return",
     "format_live_quotes_as_of",
+    "heatmap_freshness_label",
+    "market_session_state",
+    "quote_data_status",
     "in_regular_trading_hours",
     "is_usable_current_quote",
     "latest_completed_nyse_session",

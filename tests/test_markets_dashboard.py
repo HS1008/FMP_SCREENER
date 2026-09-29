@@ -403,6 +403,12 @@ def _fake_read(fn_name, *args, **kwargs):
     raise AssertionError(fn_name)
 
 
+def _fake_quote_read(fn_name, *args, **kwargs):
+    if fn_name == "equity_live_context":
+        return {"quotes_available": False, "by_symbol": {}, "quotes_as_of_label": "Live quotes unavailable"}
+    raise AssertionError(fn_name)
+
+
 def _texts(at: AppTest) -> str:
     chunks = []
     for widget in (*at.title, *at.subheader, *at.caption, *at.markdown, *at.info, *at.expander):
@@ -412,6 +418,7 @@ def _texts(at: AppTest) -> str:
 
 def test_us_controls_keep_their_state_across_reruns(monkeypatch):
     monkeypatch.setattr("market_intelligence.ui.cached_read", _fake_read)
+    monkeypatch.setattr("market_intelligence.ui.cached_quote_read", _fake_quote_read)
     us = AppTest.from_file(str(ROOT / "pages" / "22_US_Markets.py"), default_timeout=40)
     us.run()
     assert not us.exception, [item.value for item in us.exception]
@@ -428,6 +435,9 @@ def test_us_controls_keep_their_state_across_reruns(monkeypatch):
     assert display.value == "Indexed to 100"
     assert performance.value == "Absolute Performance"
     assert sector.value == "Technology"
+    constituent = next(widget for widget in us.selectbox if widget.label == "Constituent")
+    assert constituent.value == "AMD"
+    assert "AMD — Advanced Micro Devices Inc." in text
     performance.set_value("Relative vs SPY").run()
     assert not us.exception, [item.value for item in us.exception]
     sector = next(widget for widget in us.selectbox if widget.label == "Sector")
@@ -436,7 +446,7 @@ def test_us_controls_keep_their_state_across_reruns(monkeypatch):
     assert display.value == "Indexed to 100"
     sector.set_value("Utilities").run()
     assert not us.exception, [item.value for item in us.exception]
-    assert "No curated basket is stored for this sector" in _texts(us)
+    assert "No subsector classification available for this sector" in _texts(us)
     assert next(widget for widget in us.pills if widget.label == "Sector performance").value == "Relative vs SPY"
     next(widget for widget in us.pills if widget.label == "Display").set_value("Absolute").run()
     assert not us.exception, [item.value for item in us.exception]
@@ -444,8 +454,26 @@ def test_us_controls_keep_their_state_across_reruns(monkeypatch):
     assert next(widget for widget in us.pills if widget.label == "Sector performance").value == "Relative vs SPY"
 
 
+def test_every_sector_heatmap_renders_or_explains(monkeypatch):
+    monkeypatch.setattr("market_intelligence.ui.cached_read", _fake_read)
+    monkeypatch.setattr("market_intelligence.ui.cached_quote_read", _fake_quote_read)
+    us = AppTest.from_file(str(ROOT / "pages" / "22_US_Markets.py"), default_timeout=40)
+    us.run()
+    assert not us.exception, [item.value for item in us.exception]
+    for name in SECTOR_PROXIES:
+        next(widget for widget in us.selectbox if widget.label == "Sector").set_value(name).run()
+        assert not us.exception, [item.value for item in us.exception]
+        text = _texts(us)
+        if name == "Technology":
+            assert "AI Compute / GPUs" in text or "equal-dollar" in text
+            assert "No subsector classification available for this sector" not in text
+        else:
+            assert "No subsector classification available for this sector" in text
+
+
 def test_us_and_global_pages_render_required_sections(monkeypatch):
     monkeypatch.setattr("market_intelligence.ui.cached_read", _fake_read)
+    monkeypatch.setattr("market_intelligence.ui.cached_quote_read", _fake_quote_read)
     us = AppTest.from_file(str(ROOT / "pages" / "22_US_Markets.py"), default_timeout=40)
     us.run()
     assert not us.exception, [item.value for item in us.exception]

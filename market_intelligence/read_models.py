@@ -700,34 +700,37 @@ def _nominal_series_tenor_sql() -> tuple[str, list[str], int]:
     return ", ".join(values), series_ids, len(mapping)
 
 
-def _complete_curve_dates(conn, *, ceiling: date | None) -> list[date]:
+def _complete_curve_aggregate(conn, sql_tail: str, *, ceiling: date | None) -> list[dict[str, Any]]:
+    """Complete-curve dates stay in SQL. Callers ask for bounds or one latest day."""
     values_sql, _series_ids, required = _nominal_series_tenor_sql()
-    rows = _rows(
+    return _rows(
         conn,
         """
         WITH series_tenor(series_id, tenor) AS (
             VALUES {values}
         ),
-        obs AS (
-            SELECT o.observation_date, st.tenor
+        complete_days AS (
+            SELECT o.observation_date
             FROM mi_v_macro_observations_current o
             INNER JOIN series_tenor st ON st.series_id = o.series_id
             WHERE o.value IS NOT NULL
               AND (CAST(:ceiling AS date) IS NULL OR o.observation_date <= CAST(:ceiling AS date))
-            GROUP BY o.observation_date, st.tenor
+            GROUP BY o.observation_date
+            HAVING COUNT(DISTINCT st.tenor) = :required
         )
-        SELECT observation_date
-        FROM obs
-        GROUP BY observation_date
-        HAVING COUNT(*) = :required
-        ORDER BY observation_date
-        """.format(values=values_sql),
+        {tail}
+        """.format(values=values_sql, tail=sql_tail),
         {"ceiling": ceiling, "required": required},
     )
+
+
+def _as_dates(rows: Sequence[Mapping[str, Any]], key: str = "observation_date") -> list[date]:
     dates: list[date] = []
     for row in rows:
-        parsed = row.get("observation_date")
-        if isinstance(parsed, date):
+        parsed = row.get(key)
+        if isinstance(parsed, datetime):
+            dates.append(parsed.date())
+        elif isinstance(parsed, date):
             dates.append(parsed)
         elif parsed:
             dates.append(date.fromisoformat(str(parsed)[:10]))
@@ -739,10 +742,17 @@ def treasury_complete_curve_bounds(conn, not_after: str | None = None) -> dict[s
     from market_intelligence.curve_compare import parse_curve_date
 
     ceiling = parse_curve_date(not_after)
-    dates = _complete_curve_dates(conn, ceiling=ceiling)
+    rows = _complete_curve_aggregate(
+        conn,
+        "SELECT MIN(observation_date) AS earliest_complete_date, MAX(observation_date) AS latest_complete_date FROM complete_days",
+        ceiling=ceiling,
+    )
+    row = rows[0] if rows else {}
+    earliest = _as_dates([{"observation_date": row.get("earliest_complete_date")}]) if row.get("earliest_complete_date") else []
+    latest = _as_dates([{"observation_date": row.get("latest_complete_date")}]) if row.get("latest_complete_date") else []
     return {
-        "earliest_complete_date": dates[0].isoformat() if dates else None,
-        "latest_complete_date": dates[-1].isoformat() if dates else None,
+        "earliest_complete_date": earliest[0].isoformat() if earliest else None,
+        "latest_complete_date": latest[0].isoformat() if latest else None,
     }
 
 
@@ -766,10 +776,20 @@ def complete_treasury_curve_on_or_before(conn, target_date: str, not_after: str 
     ceiling = parse_curve_date(not_after)
     if target is None:
         return empty_curve_lookup(reason="invalid_target_date")
-    dates = _complete_curve_dates(conn, ceiling=ceiling)
-    earliest = dates[0] if dates else None
-    latest = dates[-1] if dates else None
-    resolved = resolve_complete_date(dates, target, not_after=ceiling)
+    bounds = treasury_complete_curve_bounds(conn, ceiling.isoformat() if ceiling else None)
+    earliest = parse_curve_date(bounds.get("earliest_complete_date"))
+    latest = parse_curve_date(bounds.get("latest_complete_date"))
+    search_ceiling = target if ceiling is None else min(target, ceiling)
+    if ceiling is not None and target > ceiling:
+        picked: list[date] = []
+    else:
+        latest_rows = _complete_curve_aggregate(
+            conn,
+            "SELECT observation_date FROM complete_days ORDER BY observation_date DESC LIMIT 1",
+            ceiling=search_ceiling,
+        )
+        picked = _as_dates(latest_rows)
+    resolved = resolve_complete_date(picked, target, not_after=ceiling)
     if not resolved["found"]:
         return empty_curve_lookup(
             requested=target,
@@ -852,43 +872,43 @@ def _tips_series_tenor_sql() -> tuple[str, list[str]]:
     return ", ".join(values), series_ids
 
 
-def _tips_observation_dates(conn, *, ceiling: date | None) -> list[date]:
-    """Dates with any non-null TIPS tenor. A partial curve is still a valid date."""
+def _tips_date_aggregate(conn, sql_tail: str, *, ceiling: date | None) -> list[dict[str, Any]]:
     values_sql, _series_ids = _tips_series_tenor_sql()
-    rows = _rows(
+    return _rows(
         conn,
         """
         WITH series_tenor(series_id, tenor) AS (
             VALUES {values}
+        ),
+        tips_days AS (
+            SELECT o.observation_date
+            FROM mi_v_macro_observations_current o
+            INNER JOIN series_tenor st ON st.series_id = o.series_id
+            WHERE o.value IS NOT NULL
+              AND (CAST(:ceiling AS date) IS NULL OR o.observation_date <= CAST(:ceiling AS date))
+            GROUP BY o.observation_date
         )
-        SELECT o.observation_date
-        FROM mi_v_macro_observations_current o
-        INNER JOIN series_tenor st ON st.series_id = o.series_id
-        WHERE o.value IS NOT NULL
-          AND (CAST(:ceiling AS date) IS NULL OR o.observation_date <= CAST(:ceiling AS date))
-        GROUP BY o.observation_date
-        ORDER BY o.observation_date
-        """.format(values=values_sql),
+        {tail}
+        """.format(values=values_sql, tail=sql_tail),
         {"ceiling": ceiling},
     )
-    dates: list[date] = []
-    for row in rows:
-        parsed = row.get("observation_date")
-        if isinstance(parsed, date):
-            dates.append(parsed)
-        elif parsed:
-            dates.append(date.fromisoformat(str(parsed)[:10]))
-    return dates
 
 
 def tips_curve_bounds(conn, not_after: str | None = None) -> dict[str, Any]:
     """Earliest and latest dates that have at least one TIPS tenor."""
     from market_intelligence.curve_compare import parse_curve_date
 
-    dates = _tips_observation_dates(conn, ceiling=parse_curve_date(not_after))
+    rows = _tips_date_aggregate(
+        conn,
+        "SELECT MIN(observation_date) AS earliest_date, MAX(observation_date) AS latest_date FROM tips_days",
+        ceiling=parse_curve_date(not_after),
+    )
+    row = rows[0] if rows else {}
+    earliest = _as_dates([{"observation_date": row.get("earliest_date")}]) if row.get("earliest_date") else []
+    latest = _as_dates([{"observation_date": row.get("latest_date")}]) if row.get("latest_date") else []
     return {
-        "earliest_date": dates[0].isoformat() if dates else None,
-        "latest_date": dates[-1].isoformat() if dates else None,
+        "earliest_date": earliest[0].isoformat() if earliest else None,
+        "latest_date": latest[0].isoformat() if latest else None,
     }
 
 
@@ -914,10 +934,20 @@ def tips_curve_on_or_before(conn, target_date: str, not_after: str | None = None
             "curve": [],
             "source_ids": [],
         }
-    dates = _tips_observation_dates(conn, ceiling=ceiling)
-    earliest = dates[0] if dates else None
-    latest = dates[-1] if dates else None
-    resolved = resolve_complete_date(dates, target, not_after=ceiling)
+    bounds = tips_curve_bounds(conn, ceiling.isoformat() if ceiling else None)
+    earliest = parse_curve_date(bounds.get("earliest_date"))
+    latest = parse_curve_date(bounds.get("latest_date"))
+    if ceiling is not None and target > ceiling:
+        picked_tips: list[date] = []
+    else:
+        search_ceiling = target if ceiling is None else min(target, ceiling)
+        latest_rows = _tips_date_aggregate(
+            conn,
+            "SELECT observation_date FROM tips_days ORDER BY observation_date DESC LIMIT 1",
+            ceiling=search_ceiling,
+        )
+        picked_tips = _as_dates(latest_rows)
+    resolved = resolve_complete_date(picked_tips, target, not_after=ceiling)
     empty = {
         "requested_date": target.isoformat(),
         "effective_date": None,
@@ -1037,25 +1067,28 @@ def fed_funds_target_on_or_before(conn, curve_date: str) -> dict[str, Any]:
     rows = _rows(
         conn,
         """
-        SELECT series_id, observation_date, value
-        FROM mi_v_macro_observations_current
-        WHERE series_id = ANY(:series_ids)
-          AND observation_date <= :ceiling
-          AND value IS NOT NULL
+        SELECT l.observation_date, l.value AS lower, u.value AS upper
+        FROM mi_v_macro_observations_current l
+        INNER JOIN mi_v_macro_observations_current u
+          ON u.series_id = :upper_id
+         AND u.observation_date = l.observation_date
+         AND u.value IS NOT NULL
+        WHERE l.series_id = :lower_id
+          AND l.observation_date <= :ceiling
+          AND l.value IS NOT NULL
+          AND l.value <= u.value
+        ORDER BY l.observation_date DESC
+        LIMIT 1
         """,
-        {"series_ids": [FED_FUNDS_TARGET_LOWER, FED_FUNDS_TARGET_UPPER], "ceiling": day},
+        {"lower_id": FED_FUNDS_TARGET_LOWER, "upper_id": FED_FUNDS_TARGET_UPPER, "ceiling": day},
     )
     lower: dict[date, Any] = {}
     upper: dict[date, Any] = {}
-    for row in rows:
-        obs = _normalize_obs_date(row.get("observation_date"))
-        if obs is None or obs > day or row.get("value") is None:
-            continue
-        series_id = str(row.get("series_id") or "")
-        if series_id == FED_FUNDS_TARGET_LOWER:
-            lower[obs] = row.get("value")
-        elif series_id == FED_FUNDS_TARGET_UPPER:
-            upper[obs] = row.get("value")
+    if rows:
+        obs = _normalize_obs_date(rows[0].get("observation_date"))
+        if obs is not None and obs <= day:
+            lower[obs] = rows[0].get("lower")
+            upper[obs] = rows[0].get("upper")
     resolved = resolve_fed_funds_target(lower, upper, day)
     if resolved is None:
         return {

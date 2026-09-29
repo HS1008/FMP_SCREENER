@@ -11,7 +11,14 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
+import exchange_calendars as exchange_calendars
+
 NY_TZ = ZoneInfo("America/New_York")
+# XNYS covers exceptional closures (mourning days, September 11, Sandy).
+# Its default window is only about twenty years, so the equity history is built explicitly.
+_NYSE_CALENDAR_START = date(1970, 1, 1)
+_NYSE_CALENDAR_END = date(2045, 12, 31)
+_xnys_calendar = None
 
 CAL_US_FEDERAL = "US_FEDERAL"
 CAL_NYSE = "NYSE"
@@ -128,16 +135,55 @@ def holiday_set(calendar: str, year: int) -> set[date]:
     return {d for d in out if d.year == year}
 
 
+def _rule_is_session(d: date, calendar: str) -> bool:
+    if d.weekday() >= 5:
+        return False
+    holidays = holiday_set(calendar, d.year) | holiday_set(calendar, d.year - 1) | holiday_set(calendar, d.year + 1)
+    return d not in holidays
+
+
+def _saturday_new_year_observance(d: date) -> bool:
+    """Friday before a Saturday January 1.
+
+    The XNYS holiday rule observes New Year only when January 1 is a Sunday.
+    The NYSE closes the preceding Friday when January 1 is a Saturday.
+    """
+    if d.month != 12 or d.day != 31 or d.weekday() != 4:
+        return False
+    return date(d.year + 1, 1, 1).weekday() == 5
+
+
+def _nyse_sessions():
+    global _xnys_calendar
+    if _xnys_calendar is None:
+        _xnys_calendar = exchange_calendars.get_calendar(
+            "XNYS",
+            start=_NYSE_CALENDAR_START,
+            end=_NYSE_CALENDAR_END,
+        )
+    return _xnys_calendar
+
+
+def _nyse_is_session(d: date) -> bool:
+    if d.weekday() >= 5 or _saturday_new_year_observance(d):
+        return False
+    calendar = _nyse_sessions()
+    first = calendar.first_session.date()
+    last = calendar.last_session.date()
+    if d < first or d > last:
+        return _rule_is_session(d, CAL_NYSE)
+    return bool(calendar.is_session(d))
+
+
 def is_session(d: date, calendar: str = CAL_NYSE) -> bool:
     cal = (calendar or CAL_NYSE).upper()
     if cal == CAL_EVERY_DAY:
         return True
     if cal == CAL_WEEKDAY:
         return d.weekday() < 5
-    if d.weekday() >= 5:
-        return False
-    holidays = holiday_set(calendar, d.year) | holiday_set(calendar, d.year - 1) | holiday_set(calendar, d.year + 1)
-    return d not in holidays
+    if cal == CAL_NYSE:
+        return _nyse_is_session(d)
+    return _rule_is_session(d, cal)
 
 
 def previous_session(d: date, calendar: str = CAL_NYSE) -> date:
@@ -165,6 +211,17 @@ def last_completed_session(now: datetime, calendar: str = CAL_NYSE, *, session_c
     if is_session(candidate, calendar) and local.timetz().replace(tzinfo=None) >= session_close:
         return candidate
     return previous_session(candidate, calendar)
+
+
+def skipped_session(prev: date, day: date, calendar: str = CAL_NYSE) -> bool:
+    """True when an exchange session falls strictly between two observations.
+
+    A weekend or an exchange holiday is not a skipped session. A missing
+    ordinary weekday is.
+    """
+    if day <= prev:
+        return True
+    return sessions_between(prev, day - timedelta(days=1), calendar) > 0
 
 
 def sessions_between(start: date, end: date, calendar: str = CAL_NYSE) -> int:
@@ -196,4 +253,5 @@ __all__ = [
     "observed_weekday",
     "previous_session",
     "sessions_between",
+    "skipped_session",
 ]

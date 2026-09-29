@@ -8,7 +8,7 @@ fabricating numbers. Missing values render as "—".
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import Any, Sequence
 
 import pandas as pd
 import streamlit as st
@@ -41,6 +41,7 @@ from market_intelligence.components.tenor_chart import (
     category_bar_chart,
     category_line_chart,
     ranked_bar_chart,
+    signed_change_bar_chart,
     tenor_curve_chart,
 )
 from market_intelligence.curve_compare import (
@@ -50,7 +51,10 @@ from market_intelligence.curve_compare import (
     COMPARE_OPTIONS,
     NO_CURVE_MESSAGE,
     REASON_AFTER_CURRENT,
+    aligned_curve_changes,
+    aligned_spread_history,
     comparison_target,
+    curve_tooltip_lines,
     fed_funds_overlay,
     format_curve_date,
     parse_curve_date,
@@ -73,6 +77,7 @@ from market_intelligence.read_models import (
 from market_intelligence.signals import build_what_matters, credit_sector_coverage
 from market_intelligence.surface_status import worst_surface_status
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
+from market_intelligence.taxonomy import NO_SUBSECTOR_CLASSIFICATION, constituent_label
 from market_intelligence.ui import (
     age_text,
     compact_as_of,
@@ -768,7 +773,7 @@ def _render_current_curve_banner(rates: dict[str, Any], *, current_date: date | 
     if rates.get("fallback") and "FRED" not in source:
         source = "{0}, FRED".format(source) if source != "—" else "FRED"
     complete = "Yes" if current_date is not None and not mixed else "No"
-    st.markdown("**Current Treasury Curve**")
+    st.markdown("**Current Treasury Curve — {0}**".format(format_curve_date(current_date)))
     st.markdown("## {0}".format(format_curve_date(current_date)))
     st.caption("Source: {0}".format(source))
     st.caption("Complete curve: {0}".format(complete))
@@ -854,9 +859,46 @@ def _load_tips_comparison(mode: str, current_date: date | None, custom_date: dat
     return loaded if isinstance(loaded, dict) else None
 
 
-def _tips_line(rows: list[dict[str, Any]], name: str) -> dict[str, Any]:
+def _yield_series(tenors: Sequence[str], rows: list[dict[str, Any]]) -> list[Any]:
     by_tenor = {str(row.get("tenor")): row.get("yield_pct") for row in rows}
-    return {"name": name, "values": [by_tenor.get(tenor) for tenor in TIPS_TENORS]}
+    return [by_tenor.get(tenor) for tenor in tenors]
+
+
+def _annotated_curve_series(
+    tenors: Sequence[str],
+    current_values: Sequence[Any],
+    comparison_values: Sequence[Any] | None,
+    *,
+    current_name: str,
+    comparison_name: str | None,
+) -> list[dict[str, Any]]:
+    comparing = comparison_values is not None and comparison_name is not None
+    details = [
+        curve_tooltip_lines(
+            tenor,
+            current_values[index] if index < len(current_values) else None,
+            comparison_values[index] if comparing and comparison_values is not None and index < len(comparison_values) else None,
+            comparing=comparing,
+            current_label=current_name,
+            comparison_label=comparison_name or "Comparison",
+        )
+        for index, tenor in enumerate(tenors)
+    ]
+    series = [{"name": current_name, "values": list(current_values), "details": details, "unit": "percent"}]
+    if comparing and comparison_values is not None and comparison_name is not None:
+        series.append({"name": comparison_name, "values": list(comparison_values), "unit": "percent"})
+    return series
+
+
+def _render_change_bars(tenors: Sequence[str], current_values: Sequence[Any], comparison_values: Sequence[Any], *, key: str) -> None:
+    st.markdown("**Change vs Comparison (bps)**")
+    st.caption("Current yield minus comparison yield, in basis points. Positive means the current yield is higher.")
+    signed_change_bar_chart(
+        list(tenors),
+        aligned_curve_changes(tenors, current_values, comparison_values),
+        key=key,
+        y_title="bps",
+    )
 
 
 def _render_tips_curve(stored: dict[str, Any] | None = None) -> None:
@@ -877,26 +919,49 @@ def _render_tips_curve(stored: dict[str, Any] | None = None) -> None:
     compare = st.radio("Compare TIPS with", list(COMPARE_OPTIONS), horizontal=True, key="rates_tips_compare")
     custom_date = _tips_custom_date(current_date) if compare == COMPARE_CUSTOM else None
     comparison = _load_tips_comparison(compare, current_date, custom_date)
-    series = [_tips_line(tips.get("curve") or [], "{0} — Current".format(format_curve_date(current_date)))]
+    current_name = "{0} — Current".format(format_curve_date(current_date))
+    current_values = _yield_series(list(TIPS_TENORS), tips.get("curve") or [])
+    comparison_values = None
+    comparison_name = None
     if comparison and comparison.get("found"):
         st.caption("{0} — Current · {1} — Comparison".format(format_curve_date(current_date), format_curve_date(comparison.get("effective_date"))))
         if comparison.get("fallback"):
             st.caption("Requested date: {0}".format(format_curve_date(comparison.get("requested_date"))))
             st.caption("Using nearest prior TIPS curve: {0}".format(format_curve_date(comparison.get("effective_date"))))
-        series.append(_tips_line(comparison.get("curve") or [], "{0} — Comparison".format(format_curve_date(comparison.get("effective_date")))))
+        comparison_name = "{0} — Comparison".format(format_curve_date(comparison.get("effective_date")))
+        comparison_values = _yield_series(list(TIPS_TENORS), comparison.get("curve") or [])
     elif comparison and not comparison.get("found"):
         st.info("No TIPS real-yield observations are available on or before the selected date.")
     category_line_chart(
         list(TIPS_TENORS),
-        series,
+        _annotated_curve_series(
+            list(TIPS_TENORS),
+            current_values,
+            comparison_values,
+            current_name=current_name,
+            comparison_name=comparison_name,
+        ),
         key="rates-tips-curve",
         y_title="Real yield (%)",
         connect_nulls=False,
     )
+    if comparison_values is not None:
+        _render_change_bars(list(TIPS_TENORS), current_values, comparison_values, key="rates-tips-change")
 
 
-def _stored_metric_rows(metric_id: str) -> list[dict[str, Any]]:
-    rows = load_or_stop("metric_history", metric_id, limit=STORED_HISTORY_LIMIT)
+def _stored_metric_rows(
+    metric_id: str,
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> list[dict[str, Any]]:
+    rows = load_or_stop("metric_history", metric_id, start=start, end=end, limit=STORED_HISTORY_LIMIT)
+    return list(rows) if rows else []
+
+
+def _yield_observation_rows(series_id: str, *, start: date, end: date) -> list[dict[str, Any]]:
+    """Yield history for a computed spread. ``series_id.level`` is the same observation."""
+    rows = load_or_stop("observation_history", series_id, start=start, end=end, limit=STORED_HISTORY_LIMIT)
     return list(rows) if rows else []
 
 
@@ -924,13 +989,58 @@ def _render_curve_spread_history() -> None:
     earliest, latest = union_history_bounds([slope_rows, fly_rows])
     start, end = historical_date_range(key="rates_spread_history", earliest=earliest, latest=latest)
     st.markdown("**2s10s Treasury Spread**")
-    st.caption("10Y minus 2Y on the same observation date, in basis points. Positive means the 10Y yield is above the 2Y.")
+    st.caption("Most widely watched Treasury curve slope. 10Y minus 2Y on the same observation date, in basis points. Positive means the 10Y yield is above the 2Y.")
     if start is not None and end is not None and start <= end:
         _render_spread_chart(slope_rows, start=start, end=end, label="2s10s", chart_key="rates-2s10s")
     st.markdown("**2s5s10s Treasury Butterfly**")
     st.caption("2s5s10s = 2×5Y − 2Y − 10Y. Positive = 5Y yield above the average of the 2Y/10Y wings. Negative = 5Y yield below the wings.")
     if start is not None and end is not None and start <= end:
         _render_spread_chart(fly_rows, start=start, end=end, label="2s5s10s", chart_key="rates-2s5s10s")
+    _render_additional_spreads(start, end)
+
+
+_ADDITIONAL_SPREADS: tuple[tuple[str, str, str, str], ...] = (
+    ("5s30s", "5s30s", "stored", "30Y minus 5Y, in basis points. Long-end Treasury slope."),
+    ("3m2s", "3m2s", "computed", "2Y minus 3M, in basis points. Front-end Treasury slope."),
+    ("3m10s", "3m10s", "stored", "10Y minus 3M, in basis points. A commonly watched recession indicator, not a forecast."),
+    (
+        "5s10s30s",
+        "5s10s30s",
+        "computed",
+        "5s10s30s = 2×10Y − 5Y − 30Y. Positive means the 10Y yield is above the average of the 5Y and 30Y wings.",
+    ),
+)
+_STORED_EXTRA_METRICS = {
+    "5s30s": "curve.slope_30Y5Y_bps",
+    "3m10s": "curve.slope_10Y3M_bps",
+}
+_COMPUTED_EXTRA_LEGS = {
+    "3m2s": ("DGS2", "DGS3MO"),
+    "5s10s30s": ("DGS10", "DGS5", "DGS30"),
+}
+
+
+def _render_additional_spreads(start: date | None, end: date | None) -> None:
+    st.subheader("Additional Curve Spreads")
+    st.caption("Optional. Each chart uses the date range above. A missing yield on a date is left out of that spread.")
+    labels = [label for label, _key, _kind, _caption in _ADDITIONAL_SPREADS]
+    selected = st.multiselect("Additional Curve Spreads", labels, key="rates_additional_spreads")
+    if not selected or start is None or end is None or start > end:
+        return
+    by_label = {label: (key, kind, caption) for label, key, kind, caption in _ADDITIONAL_SPREADS}
+    for label in selected:
+        key, kind, caption = by_label[str(label)]
+        st.markdown("**{0}**".format(label))
+        st.caption(caption)
+        if kind == "stored":
+            rows = _stored_metric_rows(_STORED_EXTRA_METRICS[key], start=start, end=end)
+        else:
+            histories = {
+                series_id: _yield_observation_rows(series_id, start=start, end=end)
+                for series_id in _COMPUTED_EXTRA_LEGS[key]
+            }
+            rows = aligned_spread_history(key, histories)
+        _render_spread_chart(rows, start=start, end=end, label=label, chart_key="rates-extra-{0}".format(key))
 
 
 def _comparison_frame(rows: list[dict[str, Any]]) -> pd.DataFrame | None:
@@ -969,17 +1079,23 @@ def render_rates_curve() -> None:
     comparison = _load_comparison_curve(compare, current_date, custom_date) if compare != COMPARE_NONE and not mixed else None
     _render_comparison_note(comparison, current_date=current_date)
     current_name = "{0} — Current".format(format_curve_date(current_date)) if current_date and not mixed else ("Latest per tenor" if mixed else "Current")
-    curve_series = [{"name": current_name, "values": frame["yield_pct"].tolist()}]
+    tenors = [str(tenor) for tenor in frame["tenor"].tolist()]
+    current_values = frame["yield_pct"].tolist()
+    comparison_values = None
+    comparison_name = None
     if comparison and comparison.get("found") and not mixed:
         comp_frame = _comparison_frame(comparison.get("curve") or [])
         if comp_frame is not None and not comp_frame.empty:
             aligned = {str(tenor): value for tenor, value in zip(comp_frame["tenor"], comp_frame["yield_pct"])}
-            curve_series.append(
-                {
-                    "name": "{0} — Comparison".format(format_curve_date(comparison.get("effective_date"))),
-                    "values": [aligned.get(str(tenor)) for tenor in frame["tenor"].tolist()],
-                }
-            )
+            comparison_name = "{0} — Comparison".format(format_curve_date(comparison.get("effective_date")))
+            comparison_values = [aligned.get(tenor) for tenor in tenors]
+    curve_series = _annotated_curve_series(
+        tenors,
+        current_values,
+        comparison_values,
+        current_name=current_name,
+        comparison_name=comparison_name,
+    )
     overlay = {"bands": [], "notes": [], "caption": None}
     if current_date and not mixed:
         current_ff = load_or_stop("fed_funds_target_on_or_before", current_date.isoformat()) or {}
@@ -1006,6 +1122,8 @@ def render_rates_curve() -> None:
         )
         if overlay.get("caption"):
             st.caption(str(overlay["caption"]))
+        if comparison_values is not None:
+            _render_change_bars(tenors, current_values, comparison_values, key="rates-treasury-change")
     headline = [row for row in present if row["tenor"] in {"2Y", "10Y", "30Y"}]
     cols = st.columns(max(1, len(headline)))
     for i, row in enumerate(headline):
@@ -1030,9 +1148,15 @@ def render_rates_curve() -> None:
     }
     history_label = st.selectbox("History", list(history_choices), key="rates_history_series")
     history_metric = history_choices[str(history_label)]
-    history_rows = load_or_stop("metric_history", history_metric)
-    history_units = "bps" if history_metric.startswith("curve.slope_") else "percent"
-    history_chart(history_rows, x="as_of", y="value", title=str(history_label), units=history_units)
+    if str(history_metric).startswith("curve.slope_"):
+        history_rows = load_or_stop("metric_history", history_metric, limit=STORED_HISTORY_LIMIT)
+        history_x = "as_of"
+    else:
+        # Yield series are observations. ``DGS10`` is not the ``DGS10.level`` metric id.
+        history_rows = load_or_stop("observation_history", history_metric, limit=STORED_HISTORY_LIMIT)
+        history_x = "observation_date"
+    history_units = "bps" if str(history_metric).startswith("curve.slope_") else "percent"
+    history_chart(history_rows, x=history_x, y="value", title=str(history_label), units=history_units)
 
     with st.expander("Tenor table and other slopes"):
         st.dataframe(
@@ -1465,7 +1589,7 @@ def render_sector_rotation_v2() -> None:
     items, unavailable = subgroup_rows_for_parent(industries, parent)
     items = attach_live_1d_to_subgroup_rows(items, live, parent_sector=parent)
     if not items and unavailable:
-        st.info("No curated subgroup is defined for this sector. Coverage is not guessed.")
+        st.info(NO_SUBSECTOR_CLASSIFICATION)
         frame = pd.DataFrame(
             [
                 {
@@ -1488,9 +1612,7 @@ def render_sector_rotation_v2() -> None:
             [
                 {
                     "Group": row["industry_key"],
-                    "Members / ETF": ", ".join((row.get("coverage") or {}).get("membership") or [])
-                    or row.get("instrument_id")
-                    or "—",
+                    "Members / ETF": _membership_label(row),
                     "Live 1D RS": (row["metrics"] or {}).get("live_rs_chg_1d"),
                     "1W RS": (row["metrics"] or {}).get("rs_chg_1w"),
                     "1M RS": (row["metrics"] or {}).get("rs_chg_1m"),
@@ -1508,9 +1630,7 @@ def render_sector_rotation_v2() -> None:
             [
                 {
                     "Group": row["industry_key"],
-                    "Members / ETF": ", ".join((row.get("coverage") or {}).get("membership") or [])
-                    or row.get("instrument_id")
-                    or "—",
+                    "Members / ETF": _membership_label(row),
                     "Live 1D Return": (row["metrics"] or {}).get("live_ret_1d"),
                     "1W Return": (row["metrics"] or {}).get("ret_1w"),
                     "1M Return": (row["metrics"] or {}).get("ret_1m"),
@@ -1550,15 +1670,31 @@ def render_sector_rotation_v2() -> None:
     cov = detail.get("coverage") or {}
     st.caption(
         "Members: {0} · used: {1} · missing: {2} · live used: {3} · live missing: {4} · method: {5}".format(
-            ", ".join(cov.get("membership") or []) or "—",
-            ", ".join(cov.get("members_used") or []) or "—",
-            ", ".join(cov.get("members_missing") or []) or "—",
-            ", ".join(cov.get("live_members_used") or []) or "—",
-            ", ".join(cov.get("live_members_missing") or []) or "—",
+            _symbol_list(cov.get("membership") or []) or "—",
+            _symbol_list(cov.get("members_used") or []) or "—",
+            _symbol_list(cov.get("members_missing") or []) or "—",
+            _symbol_list(cov.get("live_members_used") or []) or "—",
+            _symbol_list(cov.get("live_members_missing") or []) or "—",
             cov.get("weighting") or detail.get("return_basis") or "—",
         )
     )
     heatmap_legend()
+
+
+def _symbol_list(symbols: Any) -> str:
+    if not isinstance(symbols, (list, tuple)):
+        return ""
+    return ", ".join(constituent_label(str(symbol)) for symbol in symbols if symbol)
+
+
+def _membership_label(row: dict[str, Any]) -> str:
+    names = _symbol_list((row.get("coverage") or {}).get("membership") or [])
+    if names:
+        return names
+    instrument = row.get("instrument_id")
+    if instrument:
+        return constituent_label(str(instrument))
+    return "—"
 
 
 # ---- PIT / methodology ------------------------------------------------------------------

@@ -19,6 +19,7 @@ from market_intelligence.components.market_chart import lightweight_market_chart
 from market_intelligence.readonly_db import ReadOnlyUnavailable, readonly_connection
 
 CACHE_TTL_SECONDS = 300
+QUOTE_CACHE_TTL_SECONDS = 15
 NEG_COLOR = "#c0392b"
 POS_COLOR = "#1e8449"
 LOW_POS_COLOR = "#d4ac0d"
@@ -41,6 +42,28 @@ def cached_read(fn_name: str, *args: Any, **kwargs: Any) -> Any:
 
 def clear_read_cache() -> None:
     cached_read.clear()
+    cached_quote_read.clear()
+
+
+@st.cache_data(ttl=QUOTE_CACHE_TTL_SECONDS, show_spinner=False)
+def cached_quote_read(fn_name: str, *args: Any, **kwargs: Any) -> Any:
+    """Short cache for stored live quotes. Does not call IBKR or TWS."""
+    from market_intelligence import read_models
+
+    fn = getattr(read_models, fn_name)
+    return _run_readonly(fn, *args, **kwargs)
+
+
+def load_quote_optional(fn_name: str, *args: Any, default: Any = None, **kwargs: Any) -> dict[str, Any]:
+    """Quote-cache read. A database miss leaves the page on stored EOD."""
+    empty = {} if default is None else default
+    try:
+        return {"data": cached_quote_read(fn_name, *args, **kwargs), "available": True, "error": None}
+    except ReadOnlyUnavailable as exc:
+        unavailable(exc)
+        return {"data": empty, "available": False, "error": "CONFIGURATION_REQUIRED"}
+    except Exception as exc:  # noqa: BLE001 - quote freshness must not take down the page
+        return {"data": empty, "available": False, "error": exc.__class__.__name__}
 
 
 def _safe_page_config(title: str) -> None:
