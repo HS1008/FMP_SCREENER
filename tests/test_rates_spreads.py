@@ -171,6 +171,27 @@ def test_tips_curve_keeps_one_date_and_leaves_missing_tenors_missing():
     assert future["found"] is False
 
 
+def test_additional_spreads_keep_sign_and_skip_missing_legs():
+    from market_intelligence.curve_compare import aligned_spread_history, curve_tooltip_lines
+
+    day = "2026-09-25"
+    histories = {
+        "DGS2": [{"as_of": day, "value": 4.00}, {"as_of": "2026-09-24", "value": 4.10}],
+        "DGS3MO": [{"as_of": day, "value": 3.50}],
+        "DGS5": [{"as_of": day, "value": 3.80}],
+        "DGS10": [{"as_of": day, "value": 4.20}],
+        "DGS30": [{"as_of": day, "value": 4.40}],
+    }
+    front = aligned_spread_history("3m2s", histories)
+    assert front == [{"as_of": day, "value": pytest.approx(50.0)}]
+    fly = aligned_spread_history("5s10s30s", histories)
+    assert fly[0]["as_of"] == day
+    assert fly[0]["value"] == pytest.approx((2 * 4.20 - 3.80 - 4.40) * 100)
+    assert curve_tooltip_lines("10Y", 4.25, comparing=False) == ["10Y", "Current: 4.25%"]
+    compared = curve_tooltip_lines("10Y", 4.25, 4.00, comparing=True)
+    assert compared[-1] == "Change: +25 bps"
+
+
 def test_2s10s_and_butterfly_use_same_date_percent_points():
     day = date(2026, 9, 25)
     two = {day: 4.00}

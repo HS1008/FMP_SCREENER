@@ -137,6 +137,7 @@ def test_prior_session_requests_complete_curve_lookup(monkeypatch):
     at = _run(monkeypatch, compare="Prior session")
     text = _text(at)
     assert "Sep 23, 2026 — Current · Sep 18, 2026 — Comparison" in text
+    assert "Change vs Comparison (bps)" in text
     lookup_calls = [call for call in at.session_state["_calls"] if call[0] == "complete_treasury_curve_on_or_before"]
     assert lookup_calls
     assert lookup_calls[-1][1][1] == CURRENT

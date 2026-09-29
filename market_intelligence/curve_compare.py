@@ -305,6 +305,46 @@ SPREAD_FORMULAS: dict[str, str] = {
 }
 
 
+_SPREAD_LEGS: dict[str, tuple[str, ...]] = {
+    "2s10s": ("DGS10", "DGS2"),
+    "2s5s10s": ("DGS5", "DGS2", "DGS10"),
+    "5s30s": ("DGS30", "DGS5"),
+    "3m2s": ("DGS2", "DGS3MO"),
+    "3m10s": ("DGS10", "DGS3MO"),
+    "5s10s30s": ("DGS10", "DGS5", "DGS30"),
+}
+
+
+def aligned_spread_history(name: str, histories: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[dict[str, Any]]:
+    """Same-date spread points from yield histories. A missing leg is omitted, not zero."""
+    formula = SPREAD_FORMULAS.get(name)
+    legs = _SPREAD_LEGS.get(name)
+    if formula is None or legs is None:
+        raise ValueError("unknown spread formula: {0}".format(name))
+    by_series: dict[str, dict[str, Any]] = {}
+    dates: set[str] = set()
+    for series_id in legs:
+        points: dict[str, Any] = {}
+        for row in histories.get(series_id) or []:
+            raw_day = row.get("as_of") or row.get("observation_date")
+            if raw_day is None or row.get("value") is None:
+                continue
+            day = str(raw_day)[:10]
+            points[day] = row.get("value")
+            dates.add(day)
+        by_series[series_id] = points
+    rows: list[dict[str, Any]] = []
+    for day in sorted(dates):
+        levels = {series_id: by_series[series_id].get(day) for series_id in legs}
+        if any(value is None for value in levels.values()):
+            continue
+        value = spread_bps(formula, levels)
+        if value is None:
+            continue
+        rows.append({"as_of": day, "value": value})
+    return rows
+
+
 def spread_bps(formula: str, levels: Mapping[str, Any]) -> float | None:
     """Evaluate one stored spread formula. Yields are percentage points. A missing leg is missing."""
     if formula == SPREAD_FORMULAS["2s10s"]:
@@ -452,6 +492,7 @@ __all__ = [
     "fed_funds_overlay",
     "SPREAD_FORMULAS",
     "aligned_curve_changes",
+    "aligned_spread_history",
     "curve_tooltip_lines",
     "format_change_bps",
     "format_curve_date",
