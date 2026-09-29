@@ -11,14 +11,29 @@ from __future__ import annotations
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
-import exchange_calendars as exchange_calendars
-
 NY_TZ = ZoneInfo("America/New_York")
-# XNYS covers exceptional closures (mourning days, September 11, Sandy).
-# Its default window is only about twenty years, so the equity history is built explicitly.
-_NYSE_CALENDAR_START = date(1970, 1, 1)
-_NYSE_CALENDAR_END = date(2045, 12, 31)
-_xnys_calendar = None
+# Full-day NYSE closures that are not on the regular holiday schedule.
+# Sourced from the XNYS adhoc list (mourning days, September 11, Sandy, and the
+# earlier unscheduled closes inside the equity history). Early closes stay sessions.
+_NYSE_EXCEPTIONAL_CLOSURES = frozenset(
+    {
+        date(1972, 12, 28),
+        date(1973, 1, 25),
+        date(1977, 7, 14),
+        date(1985, 9, 27),
+        date(1994, 4, 27),
+        date(2001, 9, 11),
+        date(2001, 9, 12),
+        date(2001, 9, 13),
+        date(2001, 9, 14),
+        date(2004, 6, 11),
+        date(2007, 1, 2),
+        date(2012, 10, 29),
+        date(2012, 10, 30),
+        date(2018, 12, 5),
+        date(2025, 1, 9),
+    }
+)
 
 CAL_US_FEDERAL = "US_FEDERAL"
 CAL_NYSE = "NYSE"
@@ -101,7 +116,6 @@ def holiday_set(calendar: str, year: int) -> set[date]:
         if cal == CAL_NYSE:
             keep = {
                 "new_year",
-                "mlk",
                 "presidents",
                 "memorial",
                 "independence",
@@ -109,6 +123,8 @@ def holiday_set(calendar: str, year: int) -> set[date]:
                 "thanksgiving",
                 "christmas",
             }
+            if y >= 1998:
+                keep.add("mlk")
             if y >= 2022:
                 keep.add("juneteenth")
             out.update(named[k] for k in keep if k in named)
@@ -153,26 +169,12 @@ def _saturday_new_year_observance(d: date) -> bool:
     return date(d.year + 1, 1, 1).weekday() == 5
 
 
-def _nyse_sessions():
-    global _xnys_calendar
-    if _xnys_calendar is None:
-        _xnys_calendar = exchange_calendars.get_calendar(
-            "XNYS",
-            start=_NYSE_CALENDAR_START,
-            end=_NYSE_CALENDAR_END,
-        )
-    return _xnys_calendar
-
-
 def _nyse_is_session(d: date) -> bool:
     if d.weekday() >= 5 or _saturday_new_year_observance(d):
         return False
-    calendar = _nyse_sessions()
-    first = calendar.first_session.date()
-    last = calendar.last_session.date()
-    if d < first or d > last:
-        return _rule_is_session(d, CAL_NYSE)
-    return bool(calendar.is_session(d))
+    if d in _NYSE_EXCEPTIONAL_CLOSURES:
+        return False
+    return _rule_is_session(d, CAL_NYSE)
 
 
 def is_session(d: date, calendar: str = CAL_NYSE) -> bool:
