@@ -1,7 +1,8 @@
 """US Markets (Market Intelligence, DB-only).
 
-Reads stored EQUITY_EOD bars and sector snapshots. No Yahoo, IBKR, FRED, or
-PostgreSQL calls from the browser.
+Index charts, badges, ratios, and drawdowns read stored MARKET_MONITOR_EOD bars.
+Sector and subsector heatmaps read stored EQUITY_EOD bars on one shared SPY
+session endpoint. No Yahoo, IBKR, FRED, or PostgreSQL calls from the browser.
 """
 
 from db.dashboard_engine import load_streamlit_env

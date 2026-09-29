@@ -262,6 +262,9 @@ def test_methodology_documents_the_required_rules():
     assert "deferred" in global_text.lower()
     assert "USD" in global_text
     assert "VEA" in global_text
+    assert "MARKET_MONITOR_EOD" in global_text
+    assert "EQUITY_EOD" in global_text
+    assert "not EQUITY_EOD" in global_text
 
 
 def _bars(symbol: str, sessions: int = 40) -> list[dict[str, float | str]]:
