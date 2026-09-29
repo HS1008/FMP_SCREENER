@@ -133,9 +133,13 @@ function formatHeatmapTooltip(params) {
   }
   var headline = escapeHtml(point.row || "") + " · " + escapeHtml(point.column || "");
   var shown = point.display ? escapeHtml(point.display) : "unavailable";
+  var note = point.note
+    ? '<div style="color:#f4f6f8;opacity:0.86;font-size:12px;margin-top:3px">' + escapeHtml(point.note) + "</div>"
+    : "";
   return tooltipBox(
     '<div style="font-weight:500">' + headline + "</div>" +
-    '<div style="color:#f4f6f8;font-size:18px;font-weight:650;margin:2px 0 1px">' + shown + "</div>"
+    '<div style="color:#f4f6f8;font-size:18px;font-weight:650;margin:2px 0 1px">' + shown + "</div>" +
+    note
   );
 }
 
@@ -259,6 +263,17 @@ function applyTheme(option, palette, compact) {
       series.showSymbol = false;
     }
     if (series.type === "heatmap") {
+      if (series.label && series.label.show) {
+        series.label.color = "#f4f6f8";
+        series.label.fontSize = compact ? 10 : 11;
+        series.label.formatter = function (params) {
+          var point = params && params.data;
+          if (point && point.display) {
+            return point.display;
+          }
+          return "";
+        };
+      }
       continue;
     }
     var color = (series.itemStyle && series.itemStyle.color) || paletteColors[seriesIndex % paletteColors.length];

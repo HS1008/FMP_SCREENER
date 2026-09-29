@@ -19,6 +19,8 @@ from typing import Any, Mapping, Sequence
 
 import streamlit.components.v2 as components
 
+from market_intelligence.markets_analytics import column_color_scales, heatmap_cell_color
+
 _FRONTEND = Path(__file__).resolve().parent / "frontend"
 _HTML = (_FRONTEND / "chart.html").read_text(encoding="utf-8")
 _CSS = (_FRONTEND / "chart.css").read_text(encoding="utf-8")
@@ -720,6 +722,98 @@ def return_heatmap(
         key=key,
         desktop_height=min(640, max(320, 36 * max(len(row_labels), 1) + 96)),
         mobile_height=min(680, max(340, 40 * max(len(row_labels), 1) + 108)),
+    )
+
+
+def build_column_scaled_heatmap_option(
+    row_labels: Sequence[str],
+    column_labels: Sequence[str],
+    values: Sequence[Sequence[Any]],
+    *,
+    notes: Sequence[Sequence[Any]] | None = None,
+) -> dict[str, Any]:
+    """Heatmap whose color scale is computed independently for each column.
+
+    Cell values are fractional returns. Missing cells display N/A and do not
+    enter that column's scale. The printed value is the percentage.
+    """
+    scales = column_color_scales(values)
+    cells: list[dict[str, Any]] = []
+    for row_index, row_label in enumerate(row_labels):
+        row = values[row_index] if row_index < len(values) else ()
+        row_notes = notes[row_index] if notes is not None and row_index < len(notes) else ()
+        for col_index, column in enumerate(column_labels):
+            raw = row[col_index] if col_index < len(row) else None
+            number = _finite_number(raw)
+            scale = scales[col_index]["max_abs"] if col_index < len(scales) else 0.0
+            note = row_notes[col_index] if col_index < len(row_notes) else None
+            if number is None:
+                display = "N/A"
+                color = heatmap_cell_color(None, scale)
+                plot = 0.0
+            else:
+                display = "{0:+.2f}%".format(number * 100.0)
+                color = heatmap_cell_color(number, scale)
+                plot = number * 100.0
+            cell: dict[str, Any] = {
+                "value": [col_index, row_index, plot],
+                "row": str(row_label),
+                "column": str(column),
+                "display": display,
+                "itemStyle": {"color": color},
+            }
+            if note:
+                cell["note"] = str(note)
+            cells.append(cell)
+    return {
+        "chartKind": "heatmap",
+        "animation": False,
+        "legend": {"show": False},
+        "toolbox": {"show": False},
+        "dataZoom": [],
+        "grid": {"left": 8, "right": 12, "top": 8, "bottom": 8, "containLabel": True},
+        "tooltip": _dark_tooltip(trigger="item"),
+        "xAxis": {
+            "type": "category",
+            "data": [str(label) for label in column_labels],
+            "axisLabel": {"interval": 0},
+            "splitArea": {"show": False},
+        },
+        "yAxis": {
+            "type": "category",
+            "data": [str(label) for label in row_labels],
+            "inverse": True,
+            "axisLabel": {"interval": 0},
+            "splitArea": {"show": False},
+        },
+        "series": [
+            {
+                "type": "heatmap",
+                "data": cells,
+                "label": {"show": True, "fontSize": 11, "color": "#f4f6f8"},
+                "emphasis": {"disabled": True},
+                "itemStyle": {"borderColor": "rgba(255,255,255,0.08)", "borderWidth": 1},
+            }
+        ],
+    }
+
+
+def column_scaled_return_heatmap(
+    row_labels: Sequence[str],
+    column_labels: Sequence[str],
+    values: Sequence[Sequence[Any]],
+    *,
+    key: str,
+    notes: Sequence[Sequence[Any]] | None = None,
+) -> None:
+    """Per-column symmetric heatmap. Nulls render as N/A, not as 0.00%."""
+    if not row_labels:
+        return
+    render_echarts(
+        build_column_scaled_heatmap_option(row_labels, column_labels, values, notes=notes),
+        key=key,
+        desktop_height=min(760, max(320, 46 * max(len(row_labels), 1) + 72)),
+        mobile_height=min(820, max(340, 52 * max(len(row_labels), 1) + 88)),
     )
 
 

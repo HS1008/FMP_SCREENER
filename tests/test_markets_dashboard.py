@@ -262,6 +262,9 @@ def test_methodology_documents_the_required_rules():
     assert "deferred" in global_text.lower()
     assert "USD" in global_text
     assert "VEA" in global_text
+    assert "MARKET_MONITOR_EOD" in global_text
+    assert "EQUITY_EOD" in global_text
+    assert "not EQUITY_EOD" in global_text
 
 
 def _bars(symbol: str, sessions: int = 40) -> list[dict[str, float | str]]:
@@ -284,7 +287,7 @@ def _history(symbols: list[str]) -> dict:
                 "provider": "YAHOO",
                 "adjustment_basis": "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND",
                 "adjustment_bases": ["SPLIT_ADJUSTED_UNKNOWN_DIVIDEND"],
-                "source_id": "EQUITY_EOD",
+                "source_id": "MARKET_MONITOR_EOD",
                 "rows": len(bars[symbol]),
                 "earliest": bars[symbol][0]["date"],
                 "latest": bars[symbol][-1]["date"],
@@ -335,6 +338,68 @@ def _fake_read(fn_name, *args, **kwargs):
         return {"datasets": {"ETF_RS_VS_SPY": rows}}
     if fn_name == "equity_live_context":
         return {"by_symbol": {}, "quotes_available": False, "quotes_as_of_label": "Live quotes unavailable", "spy": None}
+    if fn_name == "industries_context":
+        return {
+            "datasets": {
+                "THEME_RS": {
+                    "Technology": [
+                        {
+                            "industry_key": "AI Compute / GPUs",
+                            "instrument_id": "AI_COMPUTE_GPUS",
+                            "as_of": "2024-02-10",
+                            "metrics": {"ret_1d": 0.01, "ret_1w": 0.02, "ret_1m": 0.03, "ret_3m": 0.04, "ret_6m": 0.05, "ret_12m": 0.06},
+                            "coverage": {"kind": "CUSTOM_EQUAL_DOLLAR_BASKET", "membership": ["NVDA", "AMD"]},
+                        }
+                    ],
+                    "Financials": [
+                        {
+                            "industry_key": "KRE (regional banks ETF comparison)",
+                            "instrument_id": "KRE",
+                            "as_of": "2024-02-10",
+                            "metrics": {"ret_1d": 0.02},
+                            "coverage": {"kind": "ETF_COMPARISON", "membership": ["KRE"]},
+                        }
+                    ],
+                }
+            }
+        }
+    if fn_name == "aligned_us_equity_returns":
+        sectors = []
+        for name, etf in SECTOR_PROXIES.items():
+            sectors.append(
+                {
+                    "label": name,
+                    "symbol": etf,
+                    "values": [0.01, 0.02, 0.03, None, None, None],
+                    "notes": [None, None, None, "Missing session", "Missing session", "Missing session"],
+                }
+            )
+        return {
+            "available": True,
+            "reason": None,
+            "method": "equal_dollar_daily_rebalance_v1",
+            "source_id": "EQUITY_EOD",
+            "endpoint": "2024-02-10",
+            "adjustment_basis": "IBKR_ADJUSTED_LAST",
+            "provider": "IBKR",
+            "spy_returns": {"1D": 0.01, "1W": 0.02, "1M": 0.03, "3M": None, "6M": None, "1Y": None},
+            "sectors": sectors,
+            "subsectors": {
+                "Technology": [
+                    {
+                        "industry": "AI Compute / GPUs",
+                        "classification": "curated_basket",
+                        "values": [0.02, 0.03, 0.04, None, None, None],
+                        "counts": [2, 2, 2, 0, 0, 0],
+                        "constituents": [
+                            {"symbol": "NVDA", "company": "NVDA", "returns": {"1D": 0.03, "1W": 0.04, "1M": 0.05, "3M": None, "6M": None, "1Y": None}},
+                            {"symbol": "AMD", "company": "AMD", "returns": {"1D": 0.01, "1W": 0.02, "1M": 0.03, "3M": None, "6M": None, "1Y": None}},
+                        ],
+                    }
+                ]
+            },
+            "themes_omitted": ["Cloud / Data Infrastructure", "Data Center Power & Cooling", "Internet Platforms"],
+        }
     raise AssertionError(fn_name)
 
 
@@ -345,6 +410,40 @@ def _texts(at: AppTest) -> str:
     return "\n".join(chunks)
 
 
+def test_us_controls_keep_their_state_across_reruns(monkeypatch):
+    monkeypatch.setattr("market_intelligence.ui.cached_read", _fake_read)
+    us = AppTest.from_file(str(ROOT / "pages" / "22_US_Markets.py"), default_timeout=40)
+    us.run()
+    assert not us.exception, [item.value for item in us.exception]
+    text = _texts(us)
+    assert "curated current-context baskets" in text
+    assert "Cross-sector themes are omitted" in text
+    assert "Cloud / Data Infrastructure" in text
+    assert "MARKET_MONITOR_EOD" in text
+    assert "EQUITY_EOD" in text
+    assert "equal_dollar_daily_rebalance_v1" in text
+    display = next(widget for widget in us.pills if widget.label == "Display")
+    performance = next(widget for widget in us.pills if widget.label == "Sector performance")
+    sector = next(widget for widget in us.selectbox if widget.label == "Sector")
+    assert display.value == "Indexed to 100"
+    assert performance.value == "Absolute Performance"
+    assert sector.value == "Technology"
+    performance.set_value("Relative vs SPY").run()
+    assert not us.exception, [item.value for item in us.exception]
+    sector = next(widget for widget in us.selectbox if widget.label == "Sector")
+    display = next(widget for widget in us.pills if widget.label == "Display")
+    assert sector.value == "Technology"
+    assert display.value == "Indexed to 100"
+    sector.set_value("Utilities").run()
+    assert not us.exception, [item.value for item in us.exception]
+    assert "No curated basket is stored for this sector" in _texts(us)
+    assert next(widget for widget in us.pills if widget.label == "Sector performance").value == "Relative vs SPY"
+    next(widget for widget in us.pills if widget.label == "Display").set_value("Absolute").run()
+    assert not us.exception, [item.value for item in us.exception]
+    assert next(widget for widget in us.selectbox if widget.label == "Sector").value == "Utilities"
+    assert next(widget for widget in us.pills if widget.label == "Sector performance").value == "Relative vs SPY"
+
+
 def test_us_and_global_pages_render_required_sections(monkeypatch):
     monkeypatch.setattr("market_intelligence.ui.cached_read", _fake_read)
     us = AppTest.from_file(str(ROOT / "pages" / "22_US_Markets.py"), default_timeout=40)
@@ -352,17 +451,21 @@ def test_us_and_global_pages_render_required_sections(monkeypatch):
     assert not us.exception, [item.value for item in us.exception]
     us_text = _texts(us)
     for heading in (
-        "U.S. Equity Performance",
-        "QQQ / SPY",
-        "IWM / SPY",
+        "Index Snapshot",
+        "Index Performance",
+        "Relative Performance",
         "RSP / SPY",
+        "IWM / SPY",
+        "QQQ / SPY",
+        "DIA / SPY",
         "Sector Performance",
-        "Sector Relative Strength vs SPY",
-        "U.S. Market Return Heatmap",
-        "Drawdown From 52-Week High",
+        "Subsector Performance",
+        "Drawdowns",
         "Methodology & sources",
     ):
         assert heading in us_text
+    assert "Equal-Weight S&P 500" in us_text
+    assert "1D" in us_text and "1W" in us_text and "1M" in us_text
     assert len(us.dataframe) == 0
     global_page = AppTest.from_file(str(ROOT / "pages" / "23_Global_Markets.py"), default_timeout=40)
     global_page.run()
