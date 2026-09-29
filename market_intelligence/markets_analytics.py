@@ -24,17 +24,20 @@ import math
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
-from market_intelligence.baskets import window_return
+from market_intelligence.baskets import BASKET_METHOD_VERSION, daily_rebalanced_equal_weight, window_return
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
-from market_intelligence.taxonomy import KIND_ETF_COMPARISON, SECTOR_PROXIES, stock_subsector_baskets
+from market_intelligence.taxonomy import (
+    BENCHMARK_SPY,
+    SECTOR_PROXIES,
+    cross_sector_themes,
+    stock_subsector_baskets,
+)
 
 DRAWDOWN_SESSIONS = 252
 MIN_SUBSECTOR_CONSTITUENTS = 2
 _HEAT_RED = (179, 64, 64)
 _HEAT_NEUTRAL = (44, 48, 54)
 _HEAT_GREEN = (61, 140, 90)
-_COMPARISON_ETFS = frozenset({"SMH", "XSD", "KRE", "XBI", "XOP", "XRT", "KBE", "BOTZ"})
-_ETF_PROXIES = frozenset(SECTOR_PROXIES.values()) | _COMPARISON_ETFS
 
 # Labels, snapshot field, stored-session count. Counts must match RETURN_WINDOWS.
 HORIZONS: tuple[tuple[str, str, int], ...] = (
@@ -76,13 +79,13 @@ EOD_RS_STATE = (
 
 US_METHODOLOGY: tuple[str, ...] = (
     "ETF proxies: SPY (S&P 500), QQQ (Nasdaq-100), IWM (Russell 2000), DIA (Dow Jones Industrial Average), RSP (S&P 500 equal weight). These are current investable proxies, not a point-in-time or survivorship-free universe.",
-    "Historical comparisons use stored adjusted closes (`adj_close_price`) from EQUITY_EOD. Raw closes are not mixed into the same return. Each symbol keeps a single stored provider for its whole history; providers are not spliced. The stored `adjustment_basis` is shown with the coverage metadata. Yahoo history uses auto-adjusted closes labeled SPLIT_ADJUSTED_UNKNOWN_DIVIDEND when that is the stored basis. IBKR rows keep their own basis.",
+    "Index charts, ratios, snapshot badges, and drawdowns use Yahoo MARKET_MONITOR_EOD adjusted closes from mi_v_market_monitor_closes. Sector and subsector heatmaps use EQUITY_EOD adjusted closes. Those sources are not spliced. A heatmap cell does not subtract a market-monitor SPY return from an EQUITY_EOD sector return. Raw closes are not mixed into either return. Each symbol keeps one stored provider. Yahoo rows keep SPLIT_ADJUSTED_UNKNOWN_DIVIDEND when that is the stored basis. IBKR rows keep their own basis.",
     "Normalized performance rebases every selected series to 100 on the first date inside From/To where all selected series have a valid adjusted close. Changing the selection recomputes that date. Later missing sessions stay missing. Nothing is forward-filled.",
     "Relative leadership is the point-in-time price ratio (asset / SPY). Indexed mode rebases that ratio to 100 at the start of the selected interval. Absolute mode shows the raw price ratio. The ratio of two already-indexed price series is not used. Rising means the numerator outperformed SPY. It is not the windowed `rs_chg_*` ratio change.",
     "Return windows are stored trading sessions: 1D = 1, 1W = 5, 1M = 21, 3M = 63, 6M = 126, 1Y = 252. They are not calendar-day offsets. Header badges, the sector heatmap, and subsector returns share these windows.",
     "Sector ETFs follow the repository taxonomy: XLK Technology, XLF Financials, XLI Industrials, XLY Consumer Discretionary, XLC Communication Services, XLV Health Care, XLP Consumer Staples, XLE Energy, XLU Utilities, XLRE Real Estate, XLB Materials. The canonical Technology label is the Information Technology sector.",
-    "Sector heatmap absolute mode is the sector ETF session return. Relative vs SPY is that return minus the SPY return over the same window, in percentage points. It is not `rs_chg_*` and it is not a ratio of the two percentage returns. Each horizon column has its own symmetric color scale.",
-    "Subsectors use the canonical current-context industry baskets (not a guessed GICS list and not industry ETFs). When constituent adjusted closes are stored, each horizon is the equal-weighted mean of valid constituent returns, with at least 2 names. Otherwise the stored equal-dollar basket return is shown. A missing constituent does not become zero.",
+    "Sector heatmap absolute mode is the sector ETF return between the shared EQUITY_EOD SPY session endpoints for that horizon. Relative vs SPY subtracts the SPY return on those same dates, in percentage points. It is not `rs_chg_*` and it is not a ratio of the two percentage returns. Each horizon column has its own symmetric color scale. A sector ETF that misses either endpoint, or that uses a different adjustment basis than SPY, is N/A. Stored sector snapshots are not a substitute.",
+    "Subsector rows are curated current-context baskets, not official GICS industries and not industry ETFs. Cross-sector themes are omitted. The only basket method is equal-dollar daily rebalancing (`equal_dollar_daily_rebalance_v1`): each horizon rebuilds that index from members that have the shared start session and the shared SPY endpoint, then takes the index window return. Fewer than 2 such members is N/A. This is not the average of each name's holding-period return, and a stored snapshot is not used when constituent prices are missing. A missing price is not zero.",
     "Live 1D is current last / prior completed session close, and only when the stored quote is fresh. The index snapshot and both heatmaps stay on finalized EOD session returns. Stale live quotes are not mixed into those cells.",
     "Drawdown from the 52-week high is adjusted_close / max(adjusted_close over the trailing 252 stored sessions, including that session) - 1. Fewer than 252 sessions stays missing. The value is never positive. It is not replaced with zero. The same price/peak formula on a full running peak is the definition inside each window.",
 )
@@ -486,176 +489,256 @@ def sector_heatmap_matrix(
     }
 
 
-def equal_weight_return(values: Sequence[Any], *, minimum: int = MIN_SUBSECTOR_CONSTITUENTS) -> tuple[float | None, int]:
-    """Mean of finite returns. Missing values are dropped, never treated as zero."""
-    valid = [number for number in (_finite(value) for value in values) if number is not None]
-    if len(valid) < minimum:
-        return None, len(valid)
-    return sum(valid) / float(len(valid)), len(valid)
+def series_prices(record: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None) -> dict[date, float]:
+    """Adjusted closes keyed by session. A zero price cannot be a return base."""
+    if record is None:
+        return {}
+    if isinstance(record, Mapping) and "prices" in record:
+        mapped: dict[date, float] = {}
+        for key, value in (record.get("prices") or {}).items():
+            day = as_day(key)
+            number = _finite(value)
+            if day is None or number is None or number == 0:
+                continue
+            mapped[day] = number
+        return mapped
+    if isinstance(record, Mapping) and ("bars" in record or "date" in record or "value" in record):
+        bars = record.get("bars")
+        if bars is None and ("date" in record or "as_of" in record):
+            return bars_to_series((record,))
+        return bars_to_series(bars or ())
+    if isinstance(record, Sequence) and not isinstance(record, (str, bytes)):
+        return bars_to_series(record)
+    return {}
 
 
-def aggregate_subsectors(
-    constituents: Sequence[Mapping[str, Any]],
+def series_basis(record: Mapping[str, Any] | None) -> str | None:
+    if not isinstance(record, Mapping):
+        return None
+    basis = record.get("adjustment_basis")
+    if basis is None:
+        return None
+    text = str(basis).strip()
+    return text or None
+
+
+def shared_session_bounds(calendar: Sequence[date], sessions: int) -> tuple[date, date] | None:
+    """Start and end sessions on one explicit calendar. Not each symbol's own last date."""
+    if sessions < 1 or len(calendar) <= sessions:
+        return None
+    end = calendar[-1]
+    start = calendar[-1 - sessions]
+    if sessions == 1 and (end - start).days > 4:
+        return None
+    return start, end
+
+
+def endpoint_session_return(prices: Mapping[date, float], start: date, end: date) -> float | None:
+    """Price at the shared end divided by price at the shared start, minus one."""
+    left = prices.get(start)
+    right = prices.get(end)
+    if left is None or right is None or left == 0:
+        return None
+    return right / left - 1.0
+
+
+def snapshot_rejection_reason(row: Mapping[str, Any], *, endpoint: date, adjustment_basis: str) -> str:
+    """Why a stored snapshot cannot fill a heatmap cell.
+
+    A matching date and basis still does not make the snapshot canonical.
+    The heatmap uses prices on the shared sessions, not ``ret_*`` fields.
+    """
+    as_of = as_day(row.get("as_of"))
+    if as_of is None:
+        return "missing_endpoint"
+    if as_of != endpoint:
+        return "stale_endpoint"
+    coverage = row.get("coverage") or {}
+    basis = row.get("adjustment_basis") or coverage.get("adjustment_basis")
+    if not basis or str(basis) != adjustment_basis:
+        return "incompatible_adjustment_basis"
+    return "snapshot_not_canonical"
+
+
+def rebalanced_basket_return(
+    member_prices: Mapping[str, Mapping[date, float]],
+    calendar: Sequence[date],
+    start: date,
+    end: date,
     *,
     minimum: int = MIN_SUBSECTOR_CONSTITUENTS,
-) -> dict[str, list[dict[str, Any]]]:
-    """Equal-weight each industry inside a sector. Horizons stay independent.
+) -> float | None:
+    """Equal-dollar daily-rebalanced index return between two shared sessions.
 
-    Rows are alphabetical and are not reordered per column.
+    Members must already be limited to names with prices on both sessions.
+    This is not the mean of each name's start-to-end return.
     """
-    grouped: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
-    for item in constituents:
-        sector = str(item.get("sector") or "")
-        industry = str(item.get("industry") or "")
-        if not sector or not industry:
+    if len(member_prices) < minimum:
+        return None
+    allowed = {day for day in calendar if start <= day <= end}
+    restricted = {
+        symbol: {day: price for day, price in prices.items() if day in allowed}
+        for symbol, prices in member_prices.items()
+    }
+    index = daily_rebalanced_equal_weight(restricted, start=start, end=end)
+    levels = {point.as_of: point.level for point in index}
+    base = levels.get(start)
+    last = levels.get(end)
+    if base is None or last is None or base == 0:
+        return None
+    return last / base - 1.0
+
+
+def _empty_aligned_panel(reason: str) -> dict[str, Any]:
+    columns = [label for label, _field, _sessions in HORIZONS]
+    return {
+        "available": False,
+        "reason": reason,
+        "method": BASKET_METHOD_VERSION,
+        "source_id": "EQUITY_EOD",
+        "endpoint": None,
+        "adjustment_basis": None,
+        "provider": None,
+        "windows": {label: None for label in columns},
+        "spy_returns": {label: None for label in columns},
+        "sectors": [],
+        "subsectors": {},
+        "themes_omitted": [basket.label for basket in cross_sector_themes()],
+    }
+
+
+def _symbol_status(prices: Mapping[date, float], basis: str | None, *, endpoint: date, benchmark_basis: str) -> str | None:
+    if endpoint not in prices:
+        return "stale_or_missing_endpoint"
+    if not basis or basis != benchmark_basis:
+        return "incompatible_adjustment_basis"
+    return None
+
+
+def build_aligned_us_panel(
+    records: Mapping[str, Mapping[str, Any]],
+    *,
+    minimum: int = MIN_SUBSECTOR_CONSTITUENTS,
+) -> dict[str, Any]:
+    """Sector, curated-basket, and SPY returns on one EQUITY_EOD session calendar.
+
+    The endpoint is SPY's latest stored session. Every horizon uses that date
+    and the SPY session ``N`` observations earlier. A symbol that does not
+    print the endpoint, or whose adjustment basis differs from SPY, is rejected.
+    Stored snapshots are not consulted.
+    """
+    spy_record = records.get(BENCHMARK_SPY) or {}
+    spy_prices = series_prices(spy_record)
+    spy_basis = series_basis(spy_record)
+    if not spy_prices or not spy_basis:
+        return _empty_aligned_panel("missing_spy_endpoint")
+    calendar = sorted(spy_prices)
+    endpoint = calendar[-1]
+    columns = [label for label, _field, _sessions in HORIZONS]
+    windows: dict[str, dict[str, date] | None] = {}
+    spy_returns: dict[str, float | None] = {}
+    for label, _field, sessions in HORIZONS:
+        bounds = shared_session_bounds(calendar, sessions)
+        if bounds is None:
+            windows[label] = None
+            spy_returns[label] = None
             continue
-        grouped.setdefault((sector, industry), []).append(item)
-    by_sector: dict[str, list[dict[str, Any]]] = {}
-    for (sector, industry), members in grouped.items():
+        start, end = bounds
+        windows[label] = {"start": start, "end": end}
+        spy_returns[label] = endpoint_session_return(spy_prices, start, end)
+    prepared = {
+        symbol: {"prices": series_prices(record), "basis": series_basis(record)}
+        for symbol, record in records.items()
+    }
+    sectors: list[dict[str, Any]] = []
+    for name in CANONICAL_SECTORS:
+        symbol = SECTOR_PROXIES[name]
+        item = prepared.get(symbol) or {"prices": {}, "basis": None}
+        status = _symbol_status(item["prices"], item["basis"], endpoint=endpoint, benchmark_basis=spy_basis)
         values: list[float | None] = []
-        counts: list[int] = []
-        for label, _field, _sessions in HORIZONS:
-            number, count = equal_weight_return(
-                [(member.get("returns") or {}).get(label) for member in members],
-                minimum=minimum,
-            )
+        notes: list[str | None] = []
+        for label in columns:
+            bounds = windows[label]
+            if status is not None or bounds is None:
+                values.append(None)
+                notes.append("Stale or missing endpoint" if status == "stale_or_missing_endpoint" else "Incompatible adjustment basis" if status == "incompatible_adjustment_basis" else "Missing session")
+                continue
+            number = endpoint_session_return(item["prices"], bounds["start"], bounds["end"])
             values.append(number)
-            counts.append(count)
+            notes.append(None if number is not None else "Missing session")
+        sectors.append({"label": name, "symbol": symbol, "values": values, "notes": notes})
+    subsectors: dict[str, list[dict[str, Any]]] = {}
+    for basket in stock_subsector_baskets():
+        member_records = []
+        for symbol in basket.members:
+            item = prepared.get(symbol) or {"prices": {}, "basis": None}
+            member_records.append((symbol, item["prices"], item["basis"]))
+        values = []
+        counts = []
+        for label, _field, _sessions in HORIZONS:
+            bounds = windows[label]
+            if bounds is None:
+                values.append(None)
+                counts.append(0)
+                continue
+            start, end = bounds["start"], bounds["end"]
+            eligible = {
+                symbol: prices
+                for symbol, prices, basis in member_records
+                if _symbol_status(prices, basis, endpoint=endpoint, benchmark_basis=spy_basis) is None
+                and start in prices
+                and end in prices
+            }
+            counts.append(len(eligible))
+            values.append(
+                rebalanced_basket_return(eligible, calendar, start, end, minimum=minimum)
+            )
         detail = []
-        for member in sorted(members, key=lambda row: str(row.get("symbol") or "")):
+        for symbol, prices, basis in sorted(member_records, key=lambda item: item[0]):
+            status = _symbol_status(prices, basis, endpoint=endpoint, benchmark_basis=spy_basis)
+            member_returns: dict[str, float | None] = {}
+            for label in columns:
+                bounds = windows[label]
+                if status is not None or bounds is None:
+                    member_returns[label] = None
+                else:
+                    member_returns[label] = endpoint_session_return(prices, bounds["start"], bounds["end"])
             detail.append(
                 {
-                    "symbol": str(member.get("symbol") or ""),
-                    "company": str(member.get("company") or member.get("symbol") or ""),
-                    "returns": {label: _finite((member.get("returns") or {}).get(label)) for label, _field, _sessions in HORIZONS},
+                    "symbol": symbol,
+                    "company": symbol,
+                    "returns": member_returns,
+                    "included": status is None,
+                    "rejection": status,
                 }
             )
-        by_sector.setdefault(sector, []).append(
+        subsectors.setdefault(basket.parent_sector, []).append(
             {
-                "industry": industry,
-                "sector": sector,
+                "industry": basket.label,
+                "sector": basket.parent_sector,
+                "classification": "curated_basket",
                 "values": values,
                 "counts": counts,
                 "constituents": detail,
             }
         )
-    for sector, rows in by_sector.items():
-        rows.sort(key=lambda row: row["industry"])
-        by_sector[sector] = rows
-    return by_sector
-
-
-def constituent_horizon_rows(bars_by_symbol: Mapping[str, Sequence[Mapping[str, Any]]]) -> list[dict[str, Any]]:
-    """One horizon-return record per canonical stock-basket member.
-
-    A name can sit in more than one basket. Each copy shares that symbol's returns.
-    A short history leaves the long horizons missing without affecting shorter ones.
-    """
-    cached: dict[str, dict[str, float | None]] = {}
-    rows: list[dict[str, Any]] = []
-    for basket in stock_subsector_baskets():
-        for symbol in basket.members:
-            if symbol not in cached:
-                series = bars_to_series(bars_by_symbol.get(symbol) or ())
-                if not series:
-                    cached[symbol] = {label: None for label in HORIZON_SESSIONS}
-                else:
-                    cached[symbol] = session_window_returns(series, max(series))
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "company": symbol,
-                    "sector": basket.parent_sector,
-                    "industry": basket.label,
-                    "returns": cached[symbol],
-                }
-            )
-    return rows
-
-
-def _member_symbols(row: Mapping[str, Any]) -> list[str]:
-    coverage = row.get("coverage") or {}
-    membership = [str(symbol) for symbol in (coverage.get("membership") or []) if symbol]
-    if membership:
-        return membership
-    instrument = str(row.get("instrument_id") or "")
-    if "," in instrument:
-        return [part.strip() for part in instrument.split(",") if part.strip()]
-    return []
-
-
-def is_constituent_subsector(row: Mapping[str, Any]) -> bool:
-    """Drop ETF comparisons and the explicit unavailable placeholder."""
-    industry = str(row.get("industry_key") or "")
-    if not industry or industry == "NO_CURATED_SUBGROUP":
-        return False
-    coverage = row.get("coverage") or {}
-    if str(coverage.get("kind") or "") == KIND_ETF_COMPARISON:
-        return False
-    symbols = _member_symbols(row)
-    instrument = str(row.get("instrument_id") or "").strip()
-    if not symbols and instrument and "," not in instrument and " " not in instrument:
-        symbols = [instrument]
-    if symbols and all(symbol in _ETF_PROXIES for symbol in symbols):
-        return False
-    return True
-
-
-def snapshot_subsector_table(rows_by_sector: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, list[dict[str, Any]]]:
-    """Stored basket returns. Membership below the minimum becomes N/A."""
-    table: dict[str, list[dict[str, Any]]] = {}
-    for sector, rows in rows_by_sector.items():
-        built: list[dict[str, Any]] = []
-        for row in rows:
-            if not is_constituent_subsector(row):
-                continue
-            metrics = row.get("metrics") or {}
-            symbols = _member_symbols(row)
-            known_count = len(symbols) if symbols else None
-            values: list[float | None] = []
-            counts: list[int | None] = []
-            for label, field, _sessions in HORIZONS:
-                number = _finite(metrics.get(field))
-                if known_count is not None and known_count < MIN_SUBSECTOR_CONSTITUENTS:
-                    number = None
-                values.append(number)
-                counts.append(known_count)
-            built.append(
-                {
-                    "industry": str(row.get("industry_key") or ""),
-                    "sector": sector,
-                    "values": values,
-                    "counts": counts,
-                    "constituents": [{"symbol": symbol, "company": symbol, "returns": {}} for symbol in symbols],
-                }
-            )
-        built.sort(key=lambda item: item["industry"])
-        if built:
-            table[str(sector)] = built
-    return table
-
-
-def compose_subsector_view(
-    computed: Mapping[str, Sequence[Mapping[str, Any]]] | None,
-    snapshot: Mapping[str, Sequence[Mapping[str, Any]]] | None,
-) -> dict[str, dict[str, Any]]:
-    """Prefer equal-weight constituent math when any horizon is finite.
-
-    A sector with no constituent prices keeps the stored basket series.
-    """
-    view: dict[str, dict[str, Any]] = {}
-    for sector in CANONICAL_SECTORS:
-        computed_rows = list((computed or {}).get(sector) or [])
-        finite = any(_finite(value) is not None for row in computed_rows for value in row.get("values") or [])
-        if finite:
-            view[sector] = {"rows": computed_rows, "method": "equal_weight"}
-            continue
-        stored = list((snapshot or {}).get(sector) or [])
-        if stored:
-            view[sector] = {"rows": stored, "method": "stored_basket"}
-        else:
-            view[sector] = {"rows": [], "method": "unavailable"}
-    return view
+    for sector, rows in list(subsectors.items()):
+        rows.sort(key=lambda row: str(row["industry"]))
+        subsectors[sector] = rows
+    return {
+        "available": True,
+        "reason": None,
+        "method": BASKET_METHOD_VERSION,
+        "source_id": "EQUITY_EOD",
+        "endpoint": endpoint,
+        "adjustment_basis": spy_basis,
+        "provider": str((spy_record.get("provider") or "") or "") or None,
+        "windows": windows,
+        "spy_returns": spy_returns,
+        "sectors": sectors,
+        "subsectors": subsectors,
+        "themes_omitted": [basket.label for basket in cross_sector_themes()],
+    }
 
 
 def subsector_matrix(rows: Sequence[Mapping[str, Any]], spy_returns: Mapping[str, Any] | None, *, mode: str) -> dict[str, Any]:
@@ -667,6 +750,7 @@ def subsector_matrix(rows: Sequence[Mapping[str, Any]], spy_returns: Mapping[str
     for row in rows:
         absolute = list(row.get("values") or [])
         counts = list(row.get("counts") or [])
+        supplied = list(row.get("notes") or [])
         values: list[float | None] = []
         notes: list[str | None] = []
         for index, label in enumerate(columns):
@@ -676,14 +760,17 @@ def subsector_matrix(rows: Sequence[Mapping[str, Any]], spy_returns: Mapping[str
             else:
                 shown = _finite(asset)
             values.append(shown)
+            supplied_note = supplied[index] if index < len(supplied) else None
             count = counts[index] if index < len(counts) else None
-            if isinstance(count, int):
+            if supplied_note:
+                notes.append(str(supplied_note))
+            elif isinstance(count, int):
                 notes.append("Constituents: {0}".format(count))
             else:
                 notes.append(None)
         matrix_rows.append(
             {
-                "label": str(row.get("industry") or ""),
+                "label": str(row.get("industry") or row.get("label") or ""),
                 "values": values,
                 "notes": notes,
                 "constituents": list(row.get("constituents") or []),
@@ -711,19 +798,17 @@ __all__ = [
     "MIN_SUBSECTOR_CONSTITUENTS",
     "RS_HORIZONS",
     "US_METHODOLOGY",
-    "aggregate_subsectors",
     "as_day",
     "bars_to_series",
+    "build_aligned_us_panel",
     "classify_return",
     "clip_points",
     "column_color_scale",
     "column_color_scales",
-    "compose_subsector_view",
-    "constituent_horizon_rows",
-    "equal_weight_return",
+    "endpoint_session_return",
     "heatmap_cell_color",
     "heatmap_rows",
-    "is_constituent_subsector",
+    "rebalanced_basket_return",
     "live_field_complete",
     "normalize_selected_to_100",
     "normalize_to_100",
@@ -734,8 +819,10 @@ __all__ = [
     "running_peak_drawdown",
     "sector_bar_pairs",
     "sector_heatmap_matrix",
+    "series_prices",
     "session_window_returns",
-    "snapshot_subsector_table",
+    "shared_session_bounds",
+    "snapshot_rejection_reason",
     "subsector_matrix",
     "trailing_drawdown",
 ]

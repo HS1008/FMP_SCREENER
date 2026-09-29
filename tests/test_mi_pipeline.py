@@ -832,7 +832,9 @@ def test_pages_render_populated_state_db_only(consumer, page):
         assert "Fed Policy Rates" in text_out
         assert len(at.dataframe) == 0
     elif page.stem == "22_US_Markets":
-        assert "U.S. Equity Performance" in text_out
+        assert "US Equities" in text_out
+        assert "Sector Performance" in text_out
+        assert "Subsector Performance" in text_out
         assert len(at.dataframe) == 0
     elif page.stem == "23_Global_Markets":
         assert "Global Equity Performance" in text_out

@@ -30,7 +30,7 @@ from market_intelligence.catalog import (
     TIPS_TENORS,
 )
 from market_intelligence.cross_asset_read import commodities_context, crypto_context, forex_context, positioning_context
-from market_intelligence.markets_read import global_markets_history, subsector_constituent_returns, us_markets_history
+from market_intelligence.markets_read import aligned_us_equity_returns, global_markets_history, us_markets_history
 from market_intelligence.freshness import (
     FRESHNESS_POLICY_VERSION,
     HEALTHY_PUBLICATION_LAG,
@@ -1755,7 +1755,7 @@ __all__ = [
     "data_health_context",
     "eia_context",
     "global_markets_history",
-    "subsector_constituent_returns",
+    "aligned_us_equity_returns",
     "us_markets_history",
     "order_flow_context",
     "snapshot_age",

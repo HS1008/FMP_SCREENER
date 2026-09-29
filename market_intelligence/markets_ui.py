@@ -13,11 +13,7 @@ import streamlit as st
 
 from market_intelligence.components.market_chart import lightweight_market_chart
 from market_intelligence.components.tenor_chart import column_scaled_return_heatmap, ranked_bar_chart, return_heatmap
-from market_intelligence.equity_live import (
-    attach_live_1d_to_sector_rows,
-    preferred_canonical_sector_rows,
-    subgroup_rows_for_parent,
-)
+from market_intelligence.equity_live import attach_live_1d_to_sector_rows, preferred_canonical_sector_rows
 from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, series_toggles
 from market_intelligence.markets_analytics import (
     GLOBAL_METHODOLOGY,
@@ -26,15 +22,12 @@ from market_intelligence.markets_analytics import (
     as_day,
     classify_return,
     clip_points,
-    compose_subsector_view,
     heatmap_rows,
     normalize_selected_to_100,
     normalized_ratio,
     period_change,
     price_ratio_points,
     sector_bar_pairs,
-    sector_heatmap_matrix,
-    snapshot_subsector_table,
     subsector_matrix,
     trailing_drawdown,
 )
@@ -65,9 +58,7 @@ def render_us_markets_page() -> None:
         fred=False,
     )
     history = load_or_stop("us_markets_history")
-    sectors = load_or_stop("sectors_context")
-    industries = load_optional("industries_context")
-    constituents = load_optional("subsector_constituent_returns")
+    aligned = _aligned_panel(load_optional("aligned_us_equity_returns"))
     _index_snapshot(history)
     start, end = _range_selector(history, key="markets_us")
     price_mode = _single_choice("Display", ["Indexed to 100", "Absolute"], key="us_price_mode", default="Indexed to 100")
@@ -79,8 +70,8 @@ def render_us_markets_page() -> None:
         key="us_sector_mode",
         default="Absolute Performance",
     )
-    _us_sector_heatmap(sectors, history, mode=return_mode)
-    _us_subsector_heatmap(industries, constituents, history, mode=return_mode)
+    _us_sector_heatmap(aligned, mode=return_mode)
+    _us_subsector_heatmap(aligned, mode=return_mode)
     _drawdown_section(history, US_DRAWDOWN_SYMBOLS, start, end)
     _methodology(US_METHODOLOGY, sectors=True)
 
@@ -297,67 +288,85 @@ def _us_ratio_chart(
     _provider_caption(history, [asset, benchmark])
 
 
-def _us_sector_heatmap(sectors: Mapping[str, Any], history: Mapping[str, Any], *, mode: str) -> None:
+def _aligned_panel(result: Mapping[str, Any]) -> dict[str, Any]:
+    if not result.get("available"):
+        return {
+            "available": False,
+            "reason": result.get("error") or "read_failed",
+            "spy_returns": {},
+            "sectors": [],
+            "subsectors": {},
+            "themes_omitted": [],
+            "method": "",
+            "endpoint": None,
+            "adjustment_basis": None,
+            "source_id": "EQUITY_EOD",
+        }
+    data = result.get("data") or {}
+    if not isinstance(data, Mapping):
+        return {"available": False, "reason": "read_failed", "spy_returns": {}, "sectors": [], "subsectors": {}, "themes_omitted": []}
+    return dict(data)
+
+
+def _aligned_source_caption(panel: Mapping[str, Any]) -> None:
+    if not panel.get("available"):
+        st.caption("Sector and subsector returns need an EQUITY_EOD SPY session with one adjustment basis. That endpoint is missing, so older snapshots are not used.")
+        return
+    endpoint = panel.get("endpoint") or "unavailable"
+    basis = panel.get("adjustment_basis") or "unspecified"
+    method = panel.get("method") or "equal_dollar_daily_rebalance_v1"
+    st.caption(
+        "Shared EQUITY_EOD session endpoint {0}. Adjustment basis {1}. Sector ETFs, curated baskets, and SPY use these sessions. A missing endpoint or a different adjustment basis is N/A. Basket method {2}.".format(
+            endpoint, basis, method
+        )
+    )
+
+
+def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
     st.subheader("Sector Performance")
     analytical = "relative" if mode == "Relative vs SPY" else "absolute"
-    raw = (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []
-    rows = preferred_canonical_sector_rows(raw)
-    spy = (history.get("returns") or {}).get("SPY") or {}
-    matrix = sector_heatmap_matrix(rows, spy, mode=analytical)
     if analytical == "relative":
-        st.caption("Relative vs SPY is the sector return minus the SPY return over the same trading-session window, in percentage points. +2.30% means the sector outperformed SPY by 2.30 percentage points.")
+        st.caption("Relative vs SPY is the sector return minus the SPY return between the same trading sessions, in percentage points. +2.30% means the sector outperformed SPY by 2.30 percentage points.")
     else:
-        st.caption("Absolute percentage return of each sector ETF over stored trading sessions.")
+        st.caption("Absolute percentage return of each sector ETF between the shared trading sessions.")
     st.caption("Each horizon has its own color scale. Technology is the Information Technology sector (XLK). Missing cells are N/A.")
     _mapped_caption()
+    _aligned_source_caption(panel)
+    rows = list(panel.get("sectors") or [])
+    if not rows:
+        return
+    matrix = subsector_matrix(rows, panel.get("spy_returns") or {}, mode=analytical)
     column_scaled_return_heatmap(
         [row["label"] for row in matrix["rows"]],
         matrix["columns"],
         [row["values"] for row in matrix["rows"]],
+        notes=[row["notes"] for row in matrix["rows"]],
         key="us_sector_heatmap_{0}".format(analytical),
     )
 
 
-def _us_subsector_heatmap(
-    industries_result: Mapping[str, Any],
-    constituent_result: Mapping[str, Any],
-    history: Mapping[str, Any],
-    *,
-    mode: str,
-) -> None:
+def _us_subsector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
     st.subheader("Subsector Performance")
-    st.caption("Subsectors shown using the dataset's Industry classification. The heatmap follows the Absolute / Relative vs SPY control above.")
+    st.caption("Rows are curated current-context baskets, not the dataset's official industry list. The heatmap uses the Absolute / Relative vs SPY control above.")
+    themes = [str(label) for label in (panel.get("themes_omitted") or []) if label]
+    if themes:
+        st.caption("Cross-sector themes are omitted: {0}.".format(", ".join(themes)))
     names = list(CANONICAL_SECTORS)
     if "us_subsector_sector" not in st.session_state:
         st.session_state["us_subsector_sector"] = "Technology"
     sector = st.selectbox("Sector", names, key="us_subsector_sector")
-    computed = None
-    if constituent_result.get("available"):
-        computed = (constituent_result.get("data") or {}).get("by_sector") or {}
-    snapshot: dict[str, list[dict[str, Any]]] = {}
-    if industries_result.get("available"):
-        grouped = {}
-        industries = industries_result.get("data") or {}
-        for name in names:
-            rows, _unavailable = subgroup_rows_for_parent(industries, name)
-            grouped[name] = rows
-        snapshot = snapshot_subsector_table(grouped)
-    view = compose_subsector_view(computed, snapshot)
-    selected = view.get(str(sector)) or {"rows": [], "method": "unavailable"}
-    method = str(selected.get("method") or "unavailable")
-    if method == "equal_weight":
-        st.caption("Subsector returns are equal-weighted across available constituent equities. Each horizon keeps only names with a valid return. Fewer than 2 names is N/A.")
-    elif method == "stored_basket":
-        st.caption("Stored equal-dollar industry baskets. Counts are basket membership. Industry ETFs are not treated as subsectors.")
-    else:
-        st.caption("No constituent industry group is stored for this sector. Coverage is not guessed.")
+    if not panel.get("available"):
+        st.caption("No curated basket can be priced without the shared SPY endpoint. Coverage is not guessed.")
         return
-    rows = list(selected.get("rows") or [])
+    st.caption(
+        "Each horizon is the equal-dollar daily-rebalanced basket through the shared endpoint. A horizon keeps only members with prices on both sessions. Fewer than 2 members is N/A."
+    )
+    rows = list((panel.get("subsectors") or {}).get(str(sector)) or [])
     if not rows:
-        st.caption("No industries to chart for this sector.")
+        st.caption("No curated basket is stored for this sector. Coverage is not guessed.")
         return
     analytical = "relative" if mode == "Relative vs SPY" else "absolute"
-    matrix = subsector_matrix(rows, (history.get("returns") or {}).get("SPY") or {}, mode=analytical)
+    matrix = subsector_matrix(rows, panel.get("spy_returns") or {}, mode=analytical)
     column_scaled_return_heatmap(
         [row["label"] for row in matrix["rows"]],
         matrix["columns"],
@@ -694,12 +703,13 @@ def _provider_caption(history: Mapping[str, Any], symbols: Sequence[str]) -> Non
         item = meta.get(symbol) or {}
         provider = item.get("provider") or "unavailable"
         basis = item.get("adjustment_basis") or ", ".join(item.get("adjustment_bases") or []) or "unspecified"
+        source = item.get("source_id") or "unspecified source"
         providers.add(str(provider))
-        bits.append("{0} {1} ({2})".format(symbol, provider, basis))
+        bits.append("{0} {1} {2} ({3})".format(symbol, source, provider, basis))
     if len(providers) > 1:
         st.caption("Each series uses one stored provider and is not spliced. {0}.".format("; ".join(bits)))
     elif bits:
-        st.caption("Stored adjusted close · {0}.".format("; ".join(bits)))
+        st.caption("Market-monitor adjusted close · {0}.".format("; ".join(bits)))
 
 
 def _price(value: Any) -> str:

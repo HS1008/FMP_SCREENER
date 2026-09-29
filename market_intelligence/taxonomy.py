@@ -206,8 +206,17 @@ def baskets_for_sector(sector: str) -> tuple[BasketDef, ...]:
 
 
 def stock_subsector_baskets() -> tuple[BasketDef, ...]:
-    """Current-context stock baskets. ETF comparisons are not subsectors."""
-    return tuple(basket for basket in ALL_BASKETS if basket.kind != KIND_ETF_COMPARISON)
+    """Curated single-sector stock baskets.
+
+    ETF comparisons and cross-sector themes are not subsectors. Themes stay
+    available from ``cross_sector_themes`` so the page can name what it omits.
+    """
+    return tuple(basket for basket in ALL_BASKETS if basket.kind == KIND_CUSTOM_BASKET)
+
+
+def cross_sector_themes() -> tuple[BasketDef, ...]:
+    """Named themes that cross the parent-sector line. Not industry coverage."""
+    return tuple(basket for basket in ALL_BASKETS if basket.kind == KIND_THEME)
 
 
 __all__ = [
@@ -241,5 +250,6 @@ __all__ = [
     "TAXONOMY_VERSION",
     "UNIVERSE_SYMBOLS",
     "baskets_for_sector",
+    "cross_sector_themes",
     "stock_subsector_baskets",
 ]

@@ -9,28 +9,23 @@ import pytest
 
 from market_intelligence.components.tenor_chart import build_column_scaled_heatmap_option
 from market_intelligence.markets_analytics import (
-    HORIZON_SESSIONS,
     MIN_SUBSECTOR_CONSTITUENTS,
-    aggregate_subsectors,
+    build_aligned_us_panel,
     classify_return,
     column_color_scale,
     column_color_scales,
-    compose_subsector_view,
-    constituent_horizon_rows,
-    equal_weight_return,
     heatmap_cell_color,
-    is_constituent_subsector,
     normalize_to_100,
     price_ratio_points,
+    rebalanced_basket_return,
     return_spread,
     running_peak_drawdown,
-    sector_heatmap_matrix,
     session_window_returns,
-    snapshot_subsector_table,
+    snapshot_rejection_reason,
     subsector_matrix,
 )
 from market_intelligence.markets_read import load_equity_eod_closes
-from market_intelligence.taxonomy import KIND_ETF_COMPARISON, stock_subsector_baskets
+from market_intelligence.taxonomy import KIND_CUSTOM_BASKET, KIND_THEME, cross_sector_themes, stock_subsector_baskets
 
 
 def test_indexed_to_100_uses_the_first_price_as_the_base():
@@ -141,61 +136,120 @@ def test_session_gaps_do_not_fabricate_returns():
     assert week["1Y"] is None
 
 
-def test_equal_weight_drops_missing_returns():
-    value, count = equal_weight_return([0.10, 0.04, -0.02])
-    assert value == pytest.approx(0.04)
-    assert count == 3
-    skipped, skipped_count = equal_weight_return([0.10, None, 0.02])
-    assert skipped == pytest.approx(0.06)
-    assert skipped_count == 2
-    missing, missing_count = equal_weight_return([0.10, None])
-    assert missing is None
-    assert missing_count == 1
+def _record(prices: dict[date, float], basis: str = "IBKR_ADJUSTED_LAST") -> dict:
+    return {"prices": prices, "adjustment_basis": basis, "provider": "IBKR"}
+
+
+def test_rebalanced_basket_is_not_the_mean_of_holding_period_returns():
+    calendar = [date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4)]
+    members = {
+        "AAA": {calendar[0]: 100.0, calendar[1]: 110.0, calendar[2]: 110.0},
+        "BBB": {calendar[0]: 100.0, calendar[1]: 100.0, calendar[2]: 120.0},
+    }
+    basket = rebalanced_basket_return(members, calendar, calendar[0], calendar[2])
+    holding_period_mean = ((110.0 / 100.0 - 1.0) + (120.0 / 100.0 - 1.0)) / 2.0
+    assert basket == pytest.approx(0.155)
+    assert basket != pytest.approx(holding_period_mean)
     assert MIN_SUBSECTOR_CONSTITUENTS == 2
 
 
-def test_subsector_filter_and_relative_spread():
-    rows = aggregate_subsectors(
-        [
-            {"symbol": "JPM", "sector": "Financials", "industry": "Banks", "returns": {"1M": 0.10, "1Y": None}},
-            {"symbol": "BAC", "sector": "Financials", "industry": "Banks", "returns": {"1M": 0.04, "1Y": 0.20}},
-            {"symbol": "C", "sector": "Financials", "industry": "Banks", "returns": {"1M": -0.02, "1Y": 0.10}},
-            {"symbol": "NVDA", "sector": "Technology", "industry": "Software", "returns": {"1M": 0.08, "1Y": 0.40}},
-            {"symbol": "MSFT", "sector": "Technology", "industry": "Software", "returns": {"1M": 0.02, "1Y": None}},
-        ]
-    )
-    financials = {row["industry"] for row in rows["Financials"]}
-    technology = {row["industry"] for row in rows["Technology"]}
-    assert financials == {"Banks"}
-    assert "Software" not in financials
-    assert technology == {"Software"}
-    banks = rows["Financials"][0]
-    assert banks["values"][list(HORIZON_SESSIONS).index("1M")] == pytest.approx(0.04)
-    assert banks["values"][list(HORIZON_SESSIONS).index("1Y")] == pytest.approx(0.15)
-    assert banks["counts"][list(HORIZON_SESSIONS).index("1Y")] == 2
-    matrix = subsector_matrix(rows["Financials"], {"1M": 0.05, "1Y": 0.05}, mode="relative")
-    month = matrix["rows"][0]["values"][list(HORIZON_SESSIONS).index("1M")]
-    assert month == pytest.approx(0.04 - 0.05)
-    assert matrix["rows"][0]["label"] == "Banks"
-
-
-def test_horizon_isolation_for_a_short_history():
-    start = date(2024, 1, 2)
-    bars = {
-        "NVDA": [{"date": (start + timedelta(days=i)).isoformat(), "value": 100.0 + i} for i in range(10)],
-        "AMD": [{"date": (start + timedelta(days=i)).isoformat(), "value": 50.0} for i in range(10)],
+def test_aligned_panel_rejects_stale_missing_and_foreign_basis_series():
+    dates = [date(2024, 1, 2) + timedelta(days=offset) for offset in range(6)]
+    endpoint = dates[-1]
+    spy = {day: 100.0 for day in dates}
+    spy[endpoint] = 101.0
+    nvda = {day: 100.0 for day in dates}
+    nvda[endpoint] = 110.0
+    amd = {day: 100.0 for day in dates[1:]}
+    amd[dates[-2]] = 100.0
+    amd[endpoint] = 90.0
+    xlk = {day: 200.0 for day in dates}
+    xlk[dates[-2]] = 202.0
+    xlk[endpoint] = 206.0
+    xlb = {dates[0]: 50.0, endpoint: 55.0}
+    records = {
+        "SPY": _record(spy),
+        "XLK": _record(xlk),
+        "XLE": _record({day: 40.0 for day in dates[:-1]}),
+        "XLB": _record(xlb),
+        "XLU": _record({day: 30.0 for day in dates}, basis="SPLIT_ADJUSTED_UNKNOWN_DIVIDEND"),
+        "NVDA": _record(nvda),
+        "AMD": _record(amd),
     }
-    rows = [row for row in constituent_horizon_rows(bars) if row["industry"] == "AI Compute / GPUs"]
-    assert {row["symbol"] for row in rows} == {"NVDA", "AMD"}
-    assert rows[0]["returns"]["1D"] is not None
-    assert rows[0]["returns"]["1Y"] is None
-    grouped = aggregate_subsectors(rows)
-    ai = grouped["Technology"][0]
-    assert ai["values"][list(HORIZON_SESSIONS).index("1D")] is not None
-    assert ai["values"][list(HORIZON_SESSIONS).index("1Y")] is None
+    panel = build_aligned_us_panel(records)
+    assert panel["available"] is True
+    assert panel["endpoint"] == endpoint
+    assert panel["windows"]["1D"] == {"start": dates[-2], "end": endpoint}
+    assert panel["windows"]["1W"] == {"start": dates[0], "end": endpoint}
+    assert panel["windows"]["1Y"] is None
+    assert panel["spy_returns"]["1D"] == pytest.approx(101.0 / 100.0 - 1.0)
+    assert panel["spy_returns"]["1W"] == pytest.approx(0.01)
+    tech = next(row for row in panel["sectors"] if row["label"] == "Technology")
+    energy = next(row for row in panel["sectors"] if row["label"] == "Energy")
+    materials = next(row for row in panel["sectors"] if row["label"] == "Materials")
+    utilities = next(row for row in panel["sectors"] if row["label"] == "Utilities")
+    assert tech["values"][0] == pytest.approx(206.0 / 202.0 - 1.0)
+    assert tech["values"][1] == pytest.approx(206.0 / 200.0 - 1.0)
+    assert energy["values"][0] is None
+    assert "Stale or missing endpoint" in energy["notes"][0]
+    assert materials["values"][0] is None
+    assert materials["values"][1] == pytest.approx(55.0 / 50.0 - 1.0)
+    assert utilities["values"][0] is None
+    assert utilities["notes"][0] == "Incompatible adjustment basis"
+    matrix = subsector_matrix(panel["sectors"], panel["spy_returns"], mode="relative")
+    relative_tech = next(row for row in matrix["rows"] if row["label"] == "Technology")
+    assert relative_tech["values"][0] == pytest.approx(tech["values"][0] - panel["spy_returns"]["1D"])
+    assert matrix["scales"][0]["max_abs"] != matrix["scales"][5]["max_abs"] or matrix["scales"][5]["max_abs"] == 0
+    ai = next(row for row in panel["subsectors"]["Technology"] if row["industry"] == "AI Compute / GPUs")
+    assert ai["classification"] == "curated_basket"
+    assert ai["values"][0] == pytest.approx(0.0)
+    assert ai["counts"][0] == 2
+    assert ai["values"][1] is None
+    assert ai["counts"][1] == 1
+    assert ai["values"][5] is None
+    assert "Financials" not in panel["subsectors"]
+    labels = {row["industry"] for rows in panel["subsectors"].values() for row in rows}
+    assert "Cloud / Data Infrastructure" not in labels
+    assert "Cloud / Data Infrastructure" in panel["themes_omitted"]
+    stale = snapshot_rejection_reason(
+        {"as_of": dates[0].isoformat(), "adjustment_basis": "IBKR_ADJUSTED_LAST", "metrics": {"ret_1d": 0.99}},
+        endpoint=endpoint,
+        adjustment_basis="IBKR_ADJUSTED_LAST",
+    )
+    assert stale == "stale_endpoint"
+    assert tech["values"][0] != pytest.approx(0.99)
+    foreign = snapshot_rejection_reason(
+        {"as_of": endpoint, "adjustment_basis": "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND", "metrics": {"ret_1d": 0.99}},
+        endpoint=endpoint,
+        adjustment_basis="IBKR_ADJUSTED_LAST",
+    )
+    assert foreign == "incompatible_adjustment_basis"
+    aligned_snapshot = snapshot_rejection_reason(
+        {"as_of": endpoint, "adjustment_basis": "IBKR_ADJUSTED_LAST", "metrics": {"ret_1d": 0.99}},
+        endpoint=endpoint,
+        adjustment_basis="IBKR_ADJUSTED_LAST",
+    )
+    assert aligned_snapshot == "snapshot_not_canonical"
 
 
-def test_taxonomy_maps_a_stock_to_its_canonical_industry():
+def test_stale_constituent_does_not_set_the_basket_endpoint():
+    dates = [date(2024, 1, 2) + timedelta(days=offset) for offset in range(6)]
+    endpoint = dates[-1]
+    spy = {day: 100.0 for day in dates}
+    nvda = {day: 100.0 for day in dates}
+    nvda[endpoint] = 110.0
+    amd = {day: 100.0 for day in dates[:-1]}
+    panel = build_aligned_us_panel(
+        {"SPY": _record(spy), "NVDA": _record(nvda), "AMD": _record(amd)}
+    )
+    ai = next(row for row in panel["subsectors"]["Technology"] if row["industry"] == "AI Compute / GPUs")
+    assert ai["values"][0] is None
+    assert ai["counts"][0] == 1
+    amd_row = next(member for member in ai["constituents"] if member["symbol"] == "AMD")
+    assert amd_row["rejection"] == "stale_or_missing_endpoint"
+
+
+def test_taxonomy_keeps_curated_baskets_and_names_themes():
     located = [
         (basket.parent_sector, basket.label)
         for basket in stock_subsector_baskets()
@@ -204,79 +258,17 @@ def test_taxonomy_maps_a_stock_to_its_canonical_industry():
     ]
     assert ("Technology", "AI Compute / GPUs") in located
     assert all(sector != "Financials" for sector, _label in located)
-    assert all(basket.kind != KIND_ETF_COMPARISON for basket in stock_subsector_baskets())
-    assert is_constituent_subsector(
-        {"industry_key": "AI Compute / GPUs", "coverage": {"kind": "CUSTOM_EQUAL_DOLLAR_BASKET", "membership": ["NVDA", "AMD"]}}
-    )
-    assert not is_constituent_subsector(
-        {"industry_key": "KRE (regional banks ETF comparison)", "instrument_id": "KRE", "coverage": {"kind": "ETF_COMPARISON", "membership": ["KRE"]}}
-    )
-
-
-def test_snapshot_fallback_skips_etf_comparisons_and_thin_baskets():
-    table = snapshot_subsector_table(
-        {
-            "Technology": [
-                {
-                    "industry_key": "Memory",
-                    "metrics": {"ret_1d": 0.02, "ret_1m": 0.05},
-                    "coverage": {"membership": ["MU"], "kind": "CUSTOM_EQUAL_DOLLAR_BASKET"},
-                },
-                {
-                    "industry_key": "AI Compute / GPUs",
-                    "metrics": {"ret_1d": 0.01, "ret_1m": 0.04},
-                    "coverage": {"membership": ["NVDA", "AMD"], "kind": "CUSTOM_EQUAL_DOLLAR_BASKET"},
-                },
-            ],
-            "Financials": [
-                {
-                    "industry_key": "KRE (regional banks ETF comparison)",
-                    "instrument_id": "KRE",
-                    "metrics": {"ret_1d": 0.03},
-                    "coverage": {"kind": "ETF_COMPARISON", "membership": ["KRE"]},
-                }
-            ],
-        }
-    )
-    assert [row["industry"] for row in table["Technology"]] == ["AI Compute / GPUs", "Memory"]
-    memory = next(row for row in table["Technology"] if row["industry"] == "Memory")
-    assert memory["values"][0] is None
-    assert "Financials" not in table
-    view = compose_subsector_view({}, table)
-    assert view["Technology"]["method"] == "stored_basket"
-    assert view["Financials"]["method"] == "unavailable"
-    computed = aggregate_subsectors(
-        [
-            {"symbol": "NVDA", "sector": "Technology", "industry": "AI Compute / GPUs", "returns": {"1D": 0.02, "1W": 0.04}},
-            {"symbol": "AMD", "sector": "Technology", "industry": "AI Compute / GPUs", "returns": {"1D": 0.00, "1W": 0.02}},
-        ]
-    )
-    preferred = compose_subsector_view(computed, table)
-    assert preferred["Technology"]["method"] == "equal_weight"
-
-
-def test_sector_heatmap_relative_mode_uses_spy_from_the_same_horizon():
-    rows = [
-        {"canonical_sector": "Technology", "instrument_id": "XLK", "metrics": {"ret_1d": 0.02, "ret_1m": 0.07, "ret_12m": 0.30}},
-        {"canonical_sector": "Energy", "instrument_id": "XLE", "metrics": {"ret_1d": -0.01, "ret_1m": None}},
-    ]
-    matrix = sector_heatmap_matrix(rows, {"1D": 0.01, "1M": 0.04, "1Y": 0.0}, mode="relative")
-    labels = [row["label"] for row in matrix["rows"]]
-    assert labels[0] == "Communication Services"
-    tech = next(row for row in matrix["rows"] if row["label"] == "Technology")
-    energy = next(row for row in matrix["rows"] if row["label"] == "Energy")
-    assert tech["values"][0] == pytest.approx(0.01)
-    assert tech["values"][2] == pytest.approx(0.03)
-    assert energy["values"][2] is None
-    assert tech["values"][5] == pytest.approx(0.30)
-    assert matrix["scales"][0]["max_abs"] == pytest.approx(0.02)
-    assert matrix["scales"][5]["max_abs"] == pytest.approx(0.30)
+    assert all(basket.kind == KIND_CUSTOM_BASKET for basket in stock_subsector_baskets())
+    assert all(basket.kind == KIND_THEME for basket in cross_sector_themes())
+    assert "Cloud / Data Infrastructure" in {basket.label for basket in cross_sector_themes()}
+    assert "Cloud / Data Infrastructure" not in {basket.label for basket in stock_subsector_baskets()}
 
 
 def test_constituent_close_query_is_read_only_and_equity_eod_only():
     source = inspect.getsource(load_equity_eod_closes)
     assert "mi_v_equity_daily_closes" in source
     assert "source_id = 'EQUITY_EOD'" in source
+    assert "adjustment_basis" in source
     assert "mi_market_bars" not in source
     assert "INSERT" not in source.upper()
     assert "UPDATE" not in source.upper()
