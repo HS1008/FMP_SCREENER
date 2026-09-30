@@ -59,10 +59,7 @@ def load_quote_optional(fn_name: str, *args: Any, default: Any = None, **kwargs:
     empty = {} if default is None else default
     try:
         return {"data": cached_quote_read(fn_name, *args, **kwargs), "available": True, "error": None}
-    except ReadOnlyUnavailable as exc:
-        unavailable(exc)
-        return {"data": empty, "available": False, "error": "CONFIGURATION_REQUIRED"}
-    except Exception as exc:  # noqa: BLE001 - quote freshness must not take down the page
+    except Exception as exc:  # noqa: BLE001 - a missing quote must not stop the rest of the page
         return {"data": empty, "available": False, "error": exc.__class__.__name__}
 
 
