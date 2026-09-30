@@ -66,7 +66,9 @@ INFORMATIONAL_ERROR_CODES = frozenset(
         300,  # cancelMktData for a ticker that never subscribed
     }
 )
-ENTITLEMENT_ERROR_CODES = frozenset({354, 10089, 10091, 10167, 10168, 10197, 10225, 2186})
+# 2186 and 10167 mean IBKR is already sending delayed data. They are not a blank quote.
+DELAYED_AVAILABLE_CODES = frozenset({2186, 10167})
+ENTITLEMENT_ERROR_CODES = frozenset({354, 10089, 10091, 10168, 10197, 10225})
 CONNECTIVITY_ERROR_CODES = frozenset({502, 504, 1100, 1300, 2110, 326, 507, 1101, 1102})
 PACING_ERROR_CODES = frozenset({420})
 LINE_LIMIT_ERROR_CODES = frozenset({101})
@@ -147,6 +149,8 @@ def market_data_type_label(code: int | None) -> str:
 def classify_error(code: int) -> str:
     if code in INFORMATIONAL_ERROR_CODES:
         return "info"
+    if code in DELAYED_AVAILABLE_CODES:
+        return "delayed_fallback"
     if code in ENTITLEMENT_ERROR_CODES:
         return "entitlement"
     if code in CONNECTIVITY_ERROR_CODES:

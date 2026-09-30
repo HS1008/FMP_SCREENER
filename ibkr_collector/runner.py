@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from typing import Any
 
 from ibkr_collector.config import CollectorConfig, load_config, write_example_config
+from ibkr_collector.historical import parse_historical_bar
+from ibkr_collector.session_open import choose_latest_open, needs_open_refresh
 from ibkr_collector.delivery import DeliveryError, IngestClient
 from ibkr_collector.diagnostic import probe_socket
 from ibkr_collector.lock import InstanceLock
@@ -20,7 +22,18 @@ from ibkr_collector.logging_setup import setup_logging
 from ibkr_collector.queue import OutboundQueue
 from ibkr_collector.readonly_client import ReadOnlyTwsClient
 from ibkr_collector.secrets_win import read_ingest_token
-from ibkr_collector.values import market_data_type_label, utcnow
+from ibkr_collector.values import (
+    DELAYED_AVAILABLE_CODES,
+    LINE_LIMIT_ERROR_CODES,
+    market_data_type_label,
+    utcnow,
+)
+from market_intelligence.ibkr_live_universe import (
+    EXPECTED_IBKR_LIVE_COUNT,
+    approved_contracts,
+    assert_subscription_allowed,
+)
+from market_intelligence.live_session import ibkr_mark_price, latest_opened_rth_session, open_to_current_return
 
 logger = logging.getLogger("ibkr_collector.runner")
 
@@ -130,6 +143,9 @@ def quote_value_fingerprint(payload: dict[str, Any]) -> tuple[Any, ...]:
             "market_data_type",
             "quote_status",
         )
+    ) + tuple(
+        (payload.get("provenance") or {}).get(key)
+        for key in ("current_price", "current_price_field", "session_open", "session_date", "open_to_current")
     )
 
 
@@ -163,6 +179,14 @@ class CollectorRuntime:
         self.backoff = cfg.backoff_initial_sec
         self._last_heartbeat = 0.0
         self._last_quote_push = 0.0
+        self._md_type = 1
+        self._delayed_fallback_done = False
+        self._line_limit_hit = False
+        self._last_heal = 0.0
+        self._last_open_request = 0.0
+        self._last_coverage_log = 0.0
+        self._sample_logged: set[str] = set()
+        self.session_opens = self._load_session_opens()
 
     def _key(self, row: dict[str, str]) -> str:
         return contract_subscription_key(row)
@@ -183,7 +207,7 @@ class CollectorRuntime:
             "last_callback_at": self.last_callback_at,
             "market_data_type": self.market_data_type,
             "client_id": self.cfg.client_id,
-            "watchlist": [row["symbol"] for row in self.cfg.watchlist],
+            "watchlist": [row["symbol"] for row in approved_contracts()],
             "details": {
                 "queue_depth": self.queue.size(),
                 "queue_overflow_count": getattr(self.queue, "overflow_count", 0),
@@ -202,6 +226,7 @@ class CollectorRuntime:
             self.last_delivery_error = None
         except DeliveryError as exc:
             self.last_delivery_error = str(exc)[:200]
+            logger.warning("heartbeat delivery failed: %s", self.last_delivery_error)
             if self.state in {"CONNECTED", "API_AUTHENTICATED", "ENTITLEMENT_ERROR"}:
                 self._set_state("DELIVERY_FAILURE")
 
@@ -213,11 +238,20 @@ class CollectorRuntime:
             return
         try:
             response = self.delivery.send_quotes(self.cfg.collector_id, batch)
+            results = response.get("results") if isinstance(response, dict) else None
+            outcomes: dict[str, int] = {}
+            if isinstance(results, list):
+                for item in results:
+                    if isinstance(item, dict):
+                        name = str(item.get("outcome") or "missing")
+                        outcomes[name] = outcomes.get(name, 0) + 1
+            logger.info("quote batch sent n=%s outcomes=%s", len(batch), outcomes or "unparsed")
             self._ack_quote_response(batch, response)
             self.last_delivery_error = None
         except DeliveryError as exc:
             self.queue.fail([row["record_id"] for row in batch], str(exc))
             self.last_delivery_error = str(exc)[:200]
+            logger.warning("quote delivery failed: %s", self.last_delivery_error)
             self._set_state("DELIVERY_FAILURE")
 
     def _ack_quote_response(self, batch: list[dict[str, Any]], response: dict[str, Any]) -> None:
@@ -246,10 +280,19 @@ class CollectorRuntime:
             return
         now = utcnow()
         types = []
+        priced = 0
+        delayed_n = 0
+        unpriced: list[str] = []
         for key, sub in self.subs.items():
             req_id = sub["req_id"]
             ticks = dict(self.client.ticks.get(req_id) or {})
             entitlement = bool(ticks.get("entitlement_error"))
+            if entitlement and self.client is not None:
+                for err in reversed(self.client.errors):
+                    if err.get("req_id") == req_id and err.get("kind") == "entitlement":
+                        ticks["entitlement_code"] = err.get("error_code")
+                        ticks["entitlement_message"] = err.get("error_string")
+                        break
             md_code = self.client.market_data_types.get(req_id, ticks.get("market_data_type"))
             if md_code is None and ticks.get("delayed_ticks"):
                 md_label = "DELAYED"
@@ -258,7 +301,27 @@ class CollectorRuntime:
             else:
                 md_label = market_data_type_label(int(md_code))
             types.append(md_label)
+            if ticks.get("delayed_ticks"):
+                delayed_n += 1
+            if any(ticks.get(k) is not None for k in ("bid", "ask", "last", "close")):
+                priced += 1
+            else:
+                unpriced.append(str(sub["row"]["symbol"]))
             row = sub["row"]
+            mark, mark_field = ibkr_mark_price(ticks.get("last"), ticks.get("bid"), ticks.get("ask"))
+            cached_open = self.session_opens.get(str(row["symbol"]).upper()) or {}
+            session_open = cached_open.get("open")
+            change = open_to_current_return(mark, session_open)
+            error_text = None
+            if entitlement:
+                error_text = "IBKR {0}: {1}".format(
+                    ticks.get("entitlement_code") or "entitlement",
+                    ticks.get("entitlement_message") or "market data entitlement",
+                )
+            elif cached_open.get("error"):
+                error_text = str(cached_open.get("error"))
+            elif sub.get("silent_exhausted"):
+                error_text = "IBKR sent no bid, ask, or last on this line"
             payload = {
                 "symbol": row["symbol"],
                 "sec_type": row.get("sec_type") or "STK",
@@ -287,6 +350,13 @@ class CollectorRuntime:
                     "client_id": self.cfg.client_id,
                     "tws_host": "127.0.0.1",
                     "code_version": "ibkr_collector_v1",
+                    "symbol": row["symbol"],
+                    "current_price": mark,
+                    "current_price_field": mark_field,
+                    "session_open": session_open,
+                    "session_date": cached_open.get("session_date"),
+                    "open_to_current": change,
+                    "quote_error": error_text,
                 },
             }
             payload["instrument_id"] = (
@@ -299,6 +369,27 @@ class CollectorRuntime:
                     self.last_callback_at = callback_at
                 # last_quote_at tracks a genuine TWS callback, never snapshot assembly time.
                 self.last_quote_at = callback_at
+            if row["symbol"] in {"SPY", "QQQ", "SMH", "KRE", "XBI", "NVDA", "WULF", "CRWV", "COHR", "PLTR", "CEG", "BE", "VIX"}:
+                if row["symbol"] not in self._sample_logged and (
+                    mark is not None or error_text or ticks.get("last") is not None or ticks.get("close") is not None
+                ):
+                    self._sample_logged.add(row["symbol"])
+                    logger.info(
+                        "sample %s status=%s md=%s field=%s px=%s last=%s bid=%s ask=%s close=%s open=%s session=%s chg=%s err=%s",
+                        row["symbol"],
+                        payload["quote_status"],
+                        md_label,
+                        mark_field,
+                        mark,
+                        payload["last_price"],
+                        payload["bid"],
+                        payload["ask"],
+                        payload["close_price"],
+                        session_open,
+                        cached_open.get("session_date"),
+                        change,
+                        error_text,
+                    )
             if any(payload.get(k) is not None for k in ("bid", "ask", "last_price", "close_price")):
                 fingerprint = quote_value_fingerprint(payload)
                 if self._last_quote_fp.get(key) != fingerprint:
@@ -309,6 +400,16 @@ class CollectorRuntime:
         if types:
             preferred = [t for t in ("LIVE", "DELAYED", "FROZEN", "DELAYED_FROZEN", "UNAVAILABLE") if t in types]
             self.market_data_type = preferred[0] if preferred else "UNAVAILABLE"
+        if self.subs and time.monotonic() - self._last_coverage_log >= 60.0:
+            self._last_coverage_log = time.monotonic()
+            logger.info(
+                "quote coverage priced=%s/%s delayed_ticks=%s market_data_type=%s unpriced=%s",
+                priced,
+                len(self.subs),
+                delayed_n,
+                self.market_data_type,
+                ",".join(unpriced) if unpriced else "-",
+            )
         any_entitlement = any(bool((self.client.ticks.get(sub["req_id"]) or {}).get("entitlement_error")) for sub in self.subs.values())
         if any_entitlement and self.state == "CONNECTED":
             self._set_state("ENTITLEMENT_ERROR")
@@ -317,32 +418,252 @@ class CollectorRuntime:
 
     def _qualify_and_subscribe(self) -> None:
         assert self.client is not None
-        self.client.reqMarketDataType(3)
-        wanted = {self._key(row): row for row in self.cfg.watchlist}
-        for key in list(self.subs):
-            if key not in wanted:
-                try:
-                    self.client.cancelMktData(self.subs[key]["req_id"])
-                except Exception:
-                    logger.debug("cancel leftover sub %s", key, exc_info=True)
-                self.subs.pop(key, None)
-        for key in subscriptions_to_open(set(self.subs), list(wanted)):
-            row = wanted[key]
+        rows = [dict(row) for row in approved_contracts()]
+        for row in rows:
+            assert_subscription_allowed(row["symbol"], row.get("sec_type") or "STK")
+        if len(rows) != EXPECTED_IBKR_LIVE_COUNT:
+            raise RuntimeError("refusing to subscribe {0} instruments; expected {1}".format(len(rows), EXPECTED_IBKR_LIVE_COUNT))
+        symbols = [row["symbol"] for row in rows]
+        logger.info("IBKR live subscription count=%s symbols=%s", len(symbols), ",".join(symbols))
+        qualified: list[tuple[dict[str, str], int | None, list[dict[str, Any]]]] = []
+        for row in rows:
             time.sleep(0.25)
-            detail_id = self.client.next_req_id()
-            self.client.wait_event(detail_id, self.client.contract_details_done)
-            self.client.reqContractDetails(detail_id, _contract_from_row(row))
-            self.client.contract_details_done[detail_id].wait(8.0)
-            details = self.client.contract_details.get(detail_id) or []
-            contract = _contract_from_row(row)
-            con_id = None
-            if details and details[0].get("con_id"):
-                con_id = int(details[0]["con_id"])
-                contract.conId = con_id
+            qualified.append((row, *self._qualify_row(row)))
+        keep_probe = self._probe_market_data_type(qualified[0])
+        if self._line_limit_hit:
+            logger.error("IBKR line limit already hit; leaving the book at %s lines", len(self.subs))
+            return
+        self.client.reqMarketDataType(self._md_type)
+        probe_key = self._key(qualified[0][0])
+        for row, con_id, details in qualified:
+            if keep_probe and self._key(row) == probe_key:
+                continue
+            if not self._subscribe_row(row, con_id, details):
+                break
+        logger.info("IBKR market data lines open=%s type=%s", len(self.subs), self._md_type)
+
+    def _qualify_row(self, row: dict[str, str]) -> tuple[int | None, list[dict[str, Any]]]:
+        assert self.client is not None
+        detail_id = self.client.next_req_id()
+        self.client.wait_event(detail_id, self.client.contract_details_done)
+        self.client.reqContractDetails(detail_id, _contract_from_row(row))
+        self.client.contract_details_done[detail_id].wait(8.0)
+        details = list(self.client.contract_details.get(detail_id) or [])
+        con_id = None
+        if details and details[0].get("con_id"):
+            con_id = int(details[0]["con_id"])
+        if len(details) != 1:
+            logger.warning("contract detail count=%s for %s; using conId=%s", len(details), row["symbol"], con_id)
+        return con_id, details
+
+    def _subscribe_row(self, row: dict[str, str], con_id: int | None, details: list[dict[str, Any]]) -> bool:
+        """Open one streaming line. False means stop; the line limit was hit."""
+        assert self.client is not None
+        if self._line_limit_hit or any(err.get("error_code") in LINE_LIMIT_ERROR_CODES for err in self.client.errors):
+            self._line_limit_hit = True
+            logger.error("IBKR market data line limit; not opening %s", row["symbol"])
+            return False
+        if len(self.subs) >= EXPECTED_IBKR_LIVE_COUNT:
+            logger.error("refusing a market data line beyond %s", EXPECTED_IBKR_LIVE_COUNT)
+            return False
+        key = self._key(row)
+        if key in self.subs:
+            return True
+        contract = _contract_from_row(row)
+        if con_id:
+            contract.conId = con_id
+        req_id = self.client.next_req_id()
+        self.client.reqMktData(req_id, contract, "", False, False, [])
+        time.sleep(0.08)
+        self.subs[key] = {"req_id": req_id, "row": row, "con_id": con_id, "opened_at": time.monotonic()}
+        chosen = details[0] if details else {}
+        logger.info(
+            "subscribed %s conId=%s req=%s name=%s primary=%s",
+            row["symbol"],
+            con_id,
+            req_id,
+            chosen.get("long_name"),
+            chosen.get("primary_exchange"),
+        )
+        return True
+
+    def _probe_market_data_type(self, probe: tuple[dict[str, str], int | None, list[dict[str, Any]]]) -> bool:
+        """Try one live line. On 2186, cancel it and use delayed for the single full pass.
+
+        Returns True when the probe line is kept. A second pass over the book is never opened.
+        """
+        assert self.client is not None
+        row, con_id, details = probe
+        self._md_type = 1
+        self.client.reqMarketDataType(1)
+        self._subscribe_row(row, con_id, details)
+        req_id = self.subs[self._key(row)]["req_id"]
+        deadline = time.monotonic() + 2.5
+        code = None
+        while time.monotonic() < deadline:
+            for err in list(self.client.errors):
+                if err.get("req_id") != req_id:
+                    continue
+                if err.get("error_code") in DELAYED_AVAILABLE_CODES or err.get("error_code") in LINE_LIMIT_ERROR_CODES:
+                    code = err.get("error_code")
+                    break
+            if code is not None:
+                break
+            time.sleep(0.05)
+        if code is None:
+            logger.info("probe %s accepted live market data", row["symbol"])
+            return True
+        if code in LINE_LIMIT_ERROR_CODES:
+            self._line_limit_hit = True
+            logger.error("IBKR line limit on probe %s (code %s); not opening more lines", row["symbol"], code)
+            return True
+        logger.warning(
+            "probe %s returned %s; cancelling that line and opening each symbol once as DELAYED",
+            row["symbol"],
+            code,
+        )
+        try:
+            self.client.cancelMktData(req_id)
+        except Exception:
+            logger.debug("cancel probe %s", row["symbol"], exc_info=True)
+        self.subs.pop(self._key(row), None)
+        time.sleep(0.5)
+        self._md_type = 3
+        self._delayed_fallback_done = True
+        return False
+
+    def _session_open_path(self):
+        return self.cfg.data_dir / "session_opens.json"
+
+    def _load_session_opens(self) -> dict[str, Any]:
+        path = self._session_open_path()
+        if not path.is_file():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _save_session_opens(self) -> None:
+        path = self._session_open_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(self.session_opens, default=str) + "\n", encoding="utf-8")
+
+    def _heal_one_silent_quote(self) -> None:
+        """Reopen one line that never received a price. Cancel first so the line count does not rise."""
+        if self.client is None or self._line_limit_hit:
+            return
+        now = time.monotonic()
+        if now - self._last_heal < 3.0:
+            return
+        for key, sub in list(self.subs.items()):
+            ticks = self.client.ticks.get(sub["req_id"]) or {}
+            if any(ticks.get(name) is not None for name in ("bid", "ask", "last", "close")):
+                continue
+            if ticks.get("entitlement_error"):
+                continue
+            if now - float(sub.get("opened_at") or now) < 20.0:
+                continue
+            symbol = str(sub["row"]["symbol"])
+            retries = int(sub.get("silent_retries") or 0)
+            if retries >= 2:
+                if not sub.get("silent_exhausted"):
+                    sub["silent_exhausted"] = True
+                    logger.warning("no IBKR ticks for %s after retries", symbol)
+                continue
+            self._last_heal = now
+            sub["silent_retries"] = retries + 1
+            logger.warning("no ticks for %s; reopening that one line (%s/2)", symbol, retries + 1)
+            try:
+                self.client.cancelMktData(sub["req_id"])
+            except Exception:
+                logger.debug("cancel silent %s", key, exc_info=True)
+            time.sleep(0.3)
+            if any(err.get("error_code") in LINE_LIMIT_ERROR_CODES for err in self.client.errors):
+                self._line_limit_hit = True
+                logger.error("IBKR line limit while reopening %s; stopped", symbol)
+                return
+            contract = _contract_from_row(sub["row"])
+            if sub.get("con_id"):
+                contract.conId = int(sub["con_id"])
             req_id = self.client.next_req_id()
             self.client.reqMktData(req_id, contract, "", False, False, [])
-            self.subs[key] = {"req_id": req_id, "row": row, "con_id": con_id}
-            logger.info("subscribed %s conId=%s req=%s", row["symbol"], con_id, req_id)
+            sub["req_id"] = req_id
+            sub["opened_at"] = time.monotonic()
+            return
+
+    def _maybe_downgrade_market_data(self) -> None:
+        """2186 is recorded on the existing line. Never open a second line for the same symbol."""
+        if self._delayed_fallback_done or self.client is None:
+            return
+        hits = [err for err in self.client.errors if err.get("error_code") in DELAYED_AVAILABLE_CODES]
+        if not hits:
+            return
+        self._delayed_fallback_done = True
+        logger.warning(
+            "IBKR code %s on an open line; leaving that subscription in place",
+            hits[-1].get("error_code"),
+        )
+
+    def _refresh_one_open(self) -> None:
+        if self.client is None or not self.subs:
+            return
+        if time.monotonic() - self._last_open_request < 2.5:
+            return
+        expected = latest_opened_rth_session()
+        now = utcnow()
+        for sub in self.subs.values():
+            symbol = str(sub["row"]["symbol"]).upper()
+            if not needs_open_refresh(self.session_opens.get(symbol), expected, now):
+                continue
+            self._last_open_request = time.monotonic()
+            self._fetch_open(symbol, sub)
+            return
+
+    def _fetch_open(self, symbol: str, sub: dict[str, Any]) -> None:
+        assert self.client is not None
+        row = sub["row"]
+        contract = _contract_from_row(row)
+        if sub.get("con_id"):
+            contract.conId = int(sub["con_id"])
+        req_id = self.client.next_req_id()
+        self.client.mark_historical(req_id)
+        try:
+            self.client.reqHistoricalData(req_id, contract, "", "2 W", "1 day", "TRADES", 1, 1, False, [])
+            self.client.historical_done[req_id].wait(12.0)
+        except Exception:
+            logger.exception("session open request failed for %s", symbol)
+            self.session_opens[symbol] = {
+                "session_date": (self.session_opens.get(symbol) or {}).get("session_date"),
+                "open": (self.session_opens.get(symbol) or {}).get("open"),
+                "fetched_at": utcnow().isoformat(),
+                "error": "historical request failed",
+            }
+            self._save_session_opens()
+            return
+        raw_bars = list(self.client.historical_bars.get(req_id) or [])
+        parsed = []
+        for item in raw_bars:
+            bar = parse_historical_bar(item, what_to_show="TRADES")
+            if bar is not None and bar.open is not None:
+                parsed.append((bar.bar_date, float(bar.open)))
+        chosen = choose_latest_open(parsed)
+        errors = [err for err in self.client.errors if err.get("req_id") == req_id and err.get("kind") != "info"]
+        record: dict[str, Any] = {"fetched_at": utcnow().isoformat(), "error": None}
+        if chosen is None:
+            record["session_date"] = (self.session_opens.get(symbol) or {}).get("session_date")
+            record["open"] = (self.session_opens.get(symbol) or {}).get("open")
+            if errors:
+                record["error"] = "IBKR {0}: {1}".format(errors[-1].get("error_code"), str(errors[-1].get("error_string") or "")[:180])
+            else:
+                record["error"] = "no regular-session open"
+        else:
+            record["session_date"] = chosen[0].isoformat()
+            record["open"] = chosen[1]
+        self.session_opens[symbol] = record
+        self._save_session_opens()
+        logger.info("session open %s date=%s open=%s", symbol, record.get("session_date"), record.get("open"))
 
     def _disconnect(self) -> None:
         client = self.client
@@ -401,6 +722,9 @@ class CollectorRuntime:
             self._disconnect()
             self._set_state("DISCONNECTED")
             return
+        self._maybe_downgrade_market_data()
+        self._heal_one_silent_quote()
+        self._refresh_one_open()
         now = time.monotonic()
         if now - self._last_quote_push >= self.cfg.quote_interval_sec:
             self._snapshot_quotes()

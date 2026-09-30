@@ -45,7 +45,12 @@ class IngestClient:
                 raw = response.read()
         except urllib.error.HTTPError as exc:
             retryable = exc.code >= 500 or exc.code in {401, 503}
-            raise DeliveryError("HTTP {0}".format(exc.code), retryable=retryable) from None
+            detail = ""
+            try:
+                detail = exc.read().decode("utf-8", errors="replace")[:180]
+            except Exception:
+                detail = ""
+            raise DeliveryError("HTTP {0} {1}".format(exc.code, detail).strip(), retryable=retryable) from None
         except urllib.error.URLError as exc:
             raise DeliveryError("unreachable:{0}".format(exc.reason.__class__.__name__), retryable=True) from None
         if not raw:

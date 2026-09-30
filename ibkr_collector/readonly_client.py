@@ -129,6 +129,8 @@ class _ReadOnlyCallbacks:
                 self.wait_event(reqId, self.historical_done).set()
         if kind == "info":
             logger.info("tws info code=%s req=%s", errorCode, reqId)
+        elif kind == "delayed_fallback":
+            logger.warning("tws delayed fallback code=%s req=%s msg=%s", errorCode, reqId, rec["error_string"][:180])
         elif kind == "entitlement":
             logger.warning("tws entitlement code=%s req=%s msg=%s", errorCode, reqId, rec["error_string"][:180])
         elif kind == "connectivity":
