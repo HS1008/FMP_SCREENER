@@ -13,7 +13,10 @@ Production auto-deploy stages `/opt/fmp/releases/<sha>` first, validates with th
 /var/log/fmp/...               # logs
 ```
 
-Normal upgrades do not `git reset --hard` the live checkout.
+Normal upgrades do not `git reset --hard` the live checkout. Everyday
+auto-deploy prunes unused SHA trees under `/opt/fmp/releases` before creating
+a new venv. It keeps `current`, `previous`, `last_verified.sha`, and the
+requested SHA. It does not lower identity or coverage gates to reclaim disk.
 
 ## Host state (`/var/lib/fmp`)
 

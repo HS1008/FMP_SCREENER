@@ -36,8 +36,10 @@ Do not merge platform-MI into this line. Do not launch QuantConnect.
    (workflow concurrency `fmp-deploy-main`, `cancel-in-progress: false`).
 4. Host script takes `/var/lock/fmp-deploy.lock` and runs
    prepare → validate → activate:
-   - **Prepare:** stage `/opt/fmp/releases/<sha>` and its venv. Does **not**
-     pull `main`, flip `current`/`previous`, or provision.
+   - **Prepare:** prune unused `/opt/fmp/releases/<sha>` trees (keeps
+     `current` / `previous` / `last_verified.sha` / the requested SHA), then
+     stage `/opt/fmp/releases/<sha>` and its venv. Does **not** pull `main`,
+     flip `current`/`previous`, or provision.
    - **Validate:** migrate once from the staged interpreter/code root,
      provision/verify read-only identity, query-back official research rows,
      persist sanitized deploy identity, dry-run cutover readiness.

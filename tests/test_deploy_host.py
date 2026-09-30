@@ -84,6 +84,10 @@ def test_deploy_host_migrates_once_from_staged_sha():
     assert "/etc/fmp/secrets/dashboard_readonly.pw" in host
     assert "dashboard_readonly_pw=migrated_to_etc_fmp_secrets" in host
     assert "refusing to mutate the shared checkout venv first" in host
+    assert host.index("prune_unused_releases") < host.index("Creating release venv")
+    assert host.index("remove_incomplete_release_venv") < host.index("Creating release venv")
+    assert "FAIL: pip install into" in host
+    assert "removing incomplete venv" in host
 
 
 def test_first_deploy_absent_current_is_not_a_pointer_move():
