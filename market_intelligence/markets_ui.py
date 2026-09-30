@@ -14,7 +14,13 @@ import streamlit as st
 from market_intelligence.components.market_chart import lightweight_market_chart
 from market_intelligence.components.tenor_chart import column_scaled_return_heatmap, ranked_bar_chart, return_heatmap
 from market_intelligence.equity_live import attach_live_1d_to_sector_rows, preferred_canonical_sector_rows
-from market_intelligence.ibkr_live_universe import stock_heatmap_rows
+from market_intelligence.ibkr_live_universe import (
+    STOCK_RETURN_HORIZONS,
+    display_quote_rows,
+    quote_symbol,
+    stock_heatmap_rows,
+    stock_horizon_values,
+)
 from market_intelligence.live_session import heatmap_freshness_label, market_session_state
 from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, series_toggles
 from market_intelligence.markets_analytics import (
@@ -48,6 +54,7 @@ from market_intelligence.taxonomy import (
     US_LEADERSHIP,
     US_PERFORMANCE_ETFS,
     constituent_label,
+    index_etf_label,
 )
 from market_intelligence.ui import load_optional, load_or_stop, load_quote_optional, page_header
 
@@ -154,19 +161,52 @@ def _return_badge(label: str, value: Any) -> str:
     ).format(background, foreground, _html_text(label), shown)
 
 
+def _ibkr_quote_price(row: Mapping[str, Any] | None) -> float | None:
+    if not row:
+        return None
+    provenance = row.get("provenance") or {}
+    if not isinstance(provenance, Mapping):
+        provenance = {}
+    price = provenance.get("current_price")
+    if not isinstance(price, (int, float)):
+        price = row.get("last_price")
+    if not isinstance(price, (int, float)):
+        return None
+    return float(price)
+
+
+def _index_quote_prices() -> dict[str, float]:
+    loaded = load_quote_optional("ibkr_quotes_latest", default=[])
+    if not loaded.get("available"):
+        return {}
+    prices: dict[str, float] = {}
+    for row in display_quote_rows(loaded.get("data") or []):
+        symbol = quote_symbol(row)
+        price = _ibkr_quote_price(row)
+        if symbol and price is not None:
+            prices[symbol] = price
+    return prices
+
+
 def _index_snapshot(history: Mapping[str, Any]) -> None:
     """Five index cards. Each horizon badge is colored on its own sign."""
     st.subheader("Index Snapshot")
     returns = history.get("returns") or {}
+    stored_prices = history.get("latest_price") or {}
+    live_prices = _index_quote_prices()
     cards: list[str] = []
     for symbol, name in US_INDEX_ETFS:
         window = returns.get(symbol) or {}
+        price = live_prices.get(symbol)
+        if price is None:
+            price = stored_prices.get(symbol)
         badges = "".join(_return_badge(label, window.get(label)) for label in ("1D", "1W", "1M"))
         cards.append(
             '<div style="flex:1 1 210px;min-width:190px;padding:10px 12px;border:1px solid rgba(128,128,128,0.35);border-radius:10px;">'
             '<div style="font-weight:700;font-size:15px;">{0}</div>'
-            '<div style="font-size:12px;opacity:0.82;margin-bottom:6px;">{1}</div>'
-            "<div>{2}</div></div>".format(_html_text(symbol), _html_text(name), badges)
+            '<div style="font-size:12px;opacity:0.82;">{1}</div>'
+            '<div style="font-size:22px;font-weight:700;margin:4px 0 6px 0;">{2}</div>'
+            "<div>{3}</div></div>".format(_html_text(symbol), _html_text(name), _html_text(_price(price)), badges)
         )
     st.markdown(
         '<div style="display:flex;flex-wrap:wrap;gap:10px;">{0}</div>'.format("".join(cards)),
@@ -174,8 +214,9 @@ def _index_snapshot(history: Mapping[str, Any]) -> None:
     )
     latest = (history.get("bounds") or {}).get("latest")
     st.caption(
+        "The price on each card is the stored IBKR last. When that quote has no price, the card shows the last stored adjusted close. "
         "1D, 1W, and 1M are stored trading sessions (1, 5, and 21), not calendar days. "
-        "Each badge is colored independently. Missing data is N/A. Through {0}.".format(latest or "—")
+        "Each badge is colored independently. Missing data is N/A. Session returns through {0}.".format(latest or "—")
     )
 
 
@@ -197,11 +238,12 @@ def _us_index_performance(history: Mapping[str, Any], start: date | None, end: d
         st.caption("Indexed to 100 on the first session in the range where every selected series has an adjusted close. This display also applies to the ratios below.")
     else:
         st.caption("Absolute adjusted close. Series are not rebased. The ratios below use the raw price ratio.")
-    selected = series_toggles(US_PERFORMANCE_ETFS, key="us_performance", group_label="Index Performance")
+    labeled = tuple((symbol, index_etf_label(symbol, name)) for symbol, name in US_PERFORMANCE_ETFS)
+    selected = series_toggles(labeled, key="us_performance", group_label="Index Performance")
     if not selected:
         st.caption("Select at least one series.")
         return
-    names = {symbol: label for symbol, label in US_PERFORMANCE_ETFS}
+    names = {symbol: label for symbol, label in labeled}
     options = [(symbol, names.get(symbol, symbol)) for symbol in selected]
     if indexed:
         _rebasing_chart(history, options, start, end, key="us_performance")
@@ -370,7 +412,7 @@ def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
     st.caption(snapshot["caption"])
     _us_sector_heatmap(priced, mode=mode)
     _us_subsector_heatmap(priced, mode=mode)
-    _individual_stock_heatmap()
+    _individual_stock_heatmap(priced)
 
 
 def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
@@ -428,18 +470,33 @@ def _us_subsector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
     _constituent_detail(matrix["rows"])
 
 
-def _individual_stock_heatmap() -> None:
+def _stored_stock_returns(panel: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    """EOD horizon returns already priced for basket members. 1D on the stock card stays IBKR."""
+    found: dict[str, Mapping[str, Any]] = {}
+    for rows in (panel.get("subsectors") or {}).values():
+        for row in rows:
+            for member in row.get("constituents") or []:
+                symbol = str(member.get("symbol") or "").upper()
+                if symbol and symbol not in found:
+                    found[symbol] = member.get("returns") or {}
+    return found
+
+
+def _individual_stock_heatmap(panel: Mapping[str, Any] | None = None) -> None:
     """Approved stocks only. Quotes come from PostgreSQL; this does not open TWS."""
     st.subheader("Individual Stocks")
+    endpoint = as_day((panel or {}).get("endpoint")) if panel else None
     st.caption(
         "1D is the latest IBKR price divided by the latest regular-session open. "
+        "1W, 1M, 3M, 6M, and 1Y are stored session windows (5, 21, 63, 126, and 252) through {0}. "
         "A ticker listed in more than one group uses the same stored quote. "
-        "A missing open or price is N/A. Previous close is not this 1D."
+        "A missing open, price, or stored close is N/A.".format(endpoint.isoformat() if endpoint else "the equity endpoint")
     )
     loaded = load_quote_optional("ibkr_quotes_latest", default=[])
     if not loaded.get("available"):
         st.caption("Stored IBKR quotes are unavailable ({0}).".format(loaded.get("error") or "unread"))
         return
+    stored = _stored_stock_returns(panel or {})
     rows = stock_heatmap_rows(loaded.get("data") or [])
     groups: list[str] = []
     for row in rows:
@@ -451,14 +508,26 @@ def _individual_stock_heatmap() -> None:
     for group in groups:
         members = [row for row in rows if row["group"] == group]
         st.caption(group)
+        values = [stock_horizon_values(row["open_to_current"], stored.get(row["symbol"])) for row in members]
+        notes = []
+        for row, horizon_values in zip(members, values):
+            row_notes = []
+            for label, value in zip(STOCK_RETURN_HORIZONS, horizon_values):
+                if label == "1D":
+                    row_notes.append(row["note"])
+                elif value is None:
+                    row_notes.append("No stored close")
+                else:
+                    row_notes.append("EQUITY_EOD")
+            notes.append(row_notes)
         column_scaled_return_heatmap(
             [
                 "{0} · {1}".format(row["symbol"], _price(row["price"]))
                 for row in members
             ],
-            ["1D"],
-            [[row["open_to_current"]] for row in members],
-            notes=[[row["note"]] for row in members],
+            list(STOCK_RETURN_HORIZONS),
+            values,
+            notes=notes,
             key="us_stock_heatmap_{0}".format(group),
         )
 

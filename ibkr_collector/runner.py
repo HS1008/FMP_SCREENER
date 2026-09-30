@@ -176,6 +176,7 @@ class CollectorRuntime:
         self.reader = None
         self.subs: dict[str, dict[str, Any]] = {}
         self._last_quote_fp: dict[str, tuple[Any, ...]] = {}
+        self._last_quote_queued: dict[str, float] = {}
         self.backoff = cfg.backoff_initial_sec
         self._last_heartbeat = 0.0
         self._last_quote_push = 0.0
@@ -369,7 +370,7 @@ class CollectorRuntime:
                     self.last_callback_at = callback_at
                 # last_quote_at tracks a genuine TWS callback, never snapshot assembly time.
                 self.last_quote_at = callback_at
-            if row["symbol"] in {"SPY", "QQQ", "SMH", "KRE", "XBI", "NVDA", "WULF", "CRWV", "COHR", "PLTR", "CEG", "BE", "VIX"}:
+            if row["symbol"] in {"SPY", "QQQ", "SMH", "KRE", "XBI", "NVDA", "WULF", "CRWV", "COHR", "PLTR", "VIX"}:
                 if row["symbol"] not in self._sample_logged and (
                     mark is not None or error_text or ticks.get("last") is not None or ticks.get("close") is not None
                 ):
@@ -392,9 +393,12 @@ class CollectorRuntime:
                     )
             if error_text or any(payload.get(k) is not None for k in ("bid", "ask", "last_price", "close_price")):
                 fingerprint = quote_value_fingerprint(payload)
-                if self._last_quote_fp.get(key) != fingerprint:
+                queued_at = self._last_quote_queued.get(key, 0.0)
+                refresh = time.monotonic() - queued_at >= 120.0
+                if self._last_quote_fp.get(key) != fingerprint or refresh:
                     put_status = self.queue.put(payload)
                     self._last_quote_fp[key] = fingerprint
+                    self._last_quote_queued[key] = time.monotonic()
                     if put_status == "overflow_dropped":
                         logger.warning("outbound queue overflow; oldest pending quote dropped")
         if types:

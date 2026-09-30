@@ -1,8 +1,7 @@
 """Canonical IBKR live-quote allowlist.
 
-The operator list headings say 50 stocks and 95 equity/ETF names. The symbols
-actually written resolve to 47 unique stocks because the Power section names 8
-tickers under a heading of 11. This module does not invent the missing three.
+The live book omits the eight Power names (CEG, VST, TLN, GEV, ETN, PWR, CCJ, BE)
+so the subscription stays inside the 100-line TWS cap.
 
 Display groups may repeat a ticker (NVDA, TSLA, SPCX). Subscriptions are one
 contract per symbol. VIX is the only extra index.
@@ -83,10 +82,6 @@ STOCK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Quantum", ("IONQ",)),
     ("EV", ("RIVN", "TSLA")),
     ("Fintech", ("AFRM", "SOFI")),
-    ("Power — IPP", ("CEG", "VST", "TLN")),
-    ("Power — Grid Infrastructure", ("GEV", "ETN", "PWR")),
-    ("Power — Nuclear", ("CCJ",)),
-    ("Power — Distributed / On-Site Power", ("BE",)),
 )
 
 _ARCA = frozenset(
@@ -222,6 +217,64 @@ def unique_stock_symbols() -> tuple[str, ...]:
     return tuple(ordered)
 
 
+def _retrieved_stamp(row: Mapping[str, Any]) -> str:
+    return str(row.get("retrieved_at") or row.get("quote_ts") or "")
+
+
+def _row_has_price(row: Mapping[str, Any]) -> bool:
+    provenance = row.get("provenance") or {}
+    if not isinstance(provenance, Mapping):
+        provenance = {}
+    return _num(provenance.get("current_price")) is not None or _num(row.get("last_price")) is not None
+
+
+def _prefer_quote(candidate: Mapping[str, Any], current: Mapping[str, Any]) -> bool:
+    """A priced row wins. Two priced rows, or two empty rows, keep the newer stamp."""
+    candidate_priced = _row_has_price(candidate)
+    current_priced = _row_has_price(current)
+    if candidate_priced != current_priced:
+        return candidate_priced
+    return _retrieved_stamp(candidate) >= _retrieved_stamp(current)
+
+
+def quotes_by_symbol(quotes: list[Mapping[str, Any]] | None) -> dict[str, Mapping[str, Any]]:
+    """One stored row per ticker. Repeated instrument ids collapse here."""
+    chosen: dict[str, Mapping[str, Any]] = {}
+    for row in quotes or []:
+        symbol = quote_symbol(row)
+        if not symbol:
+            continue
+        current = chosen.get(symbol)
+        if current is None or _prefer_quote(row, current):
+            chosen[symbol] = row
+    return chosen
+
+
+def display_quote_rows(quotes: list[Mapping[str, Any]] | None) -> list[Mapping[str, Any]]:
+    """Approved symbols only, in allowlist order. TLT and other old rows are omitted."""
+    chosen = quotes_by_symbol(quotes)
+    order = list(APPROVED_EQUITY_ETF_SYMBOLS) + sorted(APPROVED_EXTRA_INDEXES)
+    return [chosen[symbol] for symbol in order if symbol in chosen]
+
+
+STOCK_RETURN_HORIZONS: tuple[str, ...] = ("1D", "1W", "1M", "3M", "6M", "1Y")
+
+
+def stock_horizon_values(
+    open_to_current: float | None,
+    stored_returns: Mapping[str, Any] | None,
+) -> list[float | None]:
+    """1D is the IBKR open-to-current fraction. Longer windows are stored session returns."""
+    stored = stored_returns or {}
+    values: list[float | None] = []
+    for label in STOCK_RETURN_HORIZONS:
+        if label == "1D":
+            values.append(open_to_current)
+        else:
+            values.append(_num(stored.get(label)))
+    return values
+
+
 def quote_symbol(row: Mapping[str, Any]) -> str:
     provenance = row.get("provenance") or {}
     if isinstance(provenance, str):
@@ -240,11 +293,7 @@ def quote_symbol(row: Mapping[str, Any]) -> str:
 
 def stock_heatmap_rows(quotes: list[Mapping[str, Any]] | None) -> list[dict[str, Any]]:
     """One display row per group membership. Repeated tickers share one quote record."""
-    by_symbol: dict[str, Mapping[str, Any]] = {}
-    for row in quotes or []:
-        symbol = quote_symbol(row)
-        if symbol and symbol not in by_symbol:
-            by_symbol[symbol] = row
+    by_symbol = quotes_by_symbol(quotes)
     display: list[dict[str, Any]] = []
     for group, members in STOCK_GROUPS:
         for symbol in members:

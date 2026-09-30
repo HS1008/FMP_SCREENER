@@ -52,6 +52,13 @@ US_INDEX_ETFS: tuple[tuple[str, str], ...] = (
     ("DIA", "Dow Jones Industrial Average"),
 )
 US_PERFORMANCE_ETFS: tuple[tuple[str, str], ...] = US_INDEX_ETFS
+
+
+def index_etf_label(symbol: str, name: str) -> str:
+    """Performance pill and chart label: ticker beside the full index name."""
+    return "{0} · {1}".format(symbol, name)
+
+
 US_HEATMAP_SYMBOLS: tuple[str, ...] = ("SPY", "QQQ", "IWM", "DIA", "RSP")
 US_DRAWDOWN_SYMBOLS: tuple[str, ...] = ("SPY", "QQQ", "IWM", "RSP", "DIA")
 US_SNAPSHOT_SYMBOLS: tuple[str, ...] = tuple(symbol for symbol, _label in US_INDEX_ETFS)
@@ -359,6 +366,7 @@ __all__ = [
     "baskets_for_sector",
     "canonical_basket_sector",
     "constituent_company_name",
+    "index_etf_label",
     "constituent_label",
     "cross_sector_themes",
     "stock_subsector_baskets",
