@@ -66,7 +66,8 @@ from market_intelligence.macro_ui import render_macro_dashboard
 from market_intelligence.markets_ui import render_global_markets_page, render_us_markets_page
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
-from market_intelligence.quote_status import derive_quote_status, exception_note, overview_caption
+from market_intelligence.live_session import quote_observation_status
+from market_intelligence.quote_status import exception_note
 from market_intelligence.read_models import (
     BACK_TENOR,
     FRONT_TENOR,
@@ -441,20 +442,20 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
 
 
 def _render_ibkr_vix() -> None:
-    """Current VIX from the stored IBKR quote. Historical charts stay on their existing source."""
-    st.subheader("VIX (IBKR)")
-    loaded = load_quote_optional("ibkr_quotes_latest", default=[])
+    """Current VIX from the stored Yahoo dashboard quote. Historical charts stay on Yahoo history."""
+    st.subheader("VIX")
+    loaded = load_quote_optional("dashboard_quotes_latest", default=[])
     rows = loaded.get("data") if loaded.get("available") else []
     quote = None
     for row in rows or []:
-        name = str(row.get("display_name") or "").upper()
+        name = str(row.get("display_name") or row.get("symbol") or "").upper()
         provenance = row.get("provenance") or {}
         symbol = str(provenance.get("symbol") or "").upper() if isinstance(provenance, dict) else ""
-        if name == "VIX" or symbol == "VIX":
+        if name in {"VIX", "^VIX"} or symbol == "VIX":
             quote = row
             break
     if quote is None:
-        st.caption("IBKR VIX is unavailable. Yahoo history below is not a live IBKR quote.")
+        st.caption("Yahoo VIX is unavailable. The history below is not a substitute current quote.")
         return
     provenance = quote.get("provenance") or {}
     if not isinstance(provenance, dict):
@@ -463,19 +464,19 @@ def _render_ibkr_vix() -> None:
     if price is None:
         price = quote.get("last_price")
     change = provenance.get("open_to_current")
-    status = str(quote.get("market_data_type") or quote.get("quote_status") or "UNAVAILABLE")
-    field = str(provenance.get("current_price_field") or "")
-    session = str(provenance.get("session_date") or "")
+    session_name = str(provenance.get("session") or "unknown")
+    observed = quote.get("quote_ts") or "—"
     error = str(provenance.get("quote_error") or "")
+    basis = str(provenance.get("open_basis") or "")
     change_text = "N/A" if not isinstance(change, (int, float)) else "{0:+.2f}%".format(float(change) * 100.0)
     price_text = "N/A" if not isinstance(price, (int, float)) else "{0:.2f}".format(float(price))
-    st.metric("VIX", price_text, change_text if change_text != "N/A" else None)
+    st.metric("VIX", price_text, change_text if change_text != "N/A" else None, help="Since open uses the most recent regular-session open when Yahoo supplies one. VIX does not use equity extended hours.")
     st.caption(
-        "IBKR {0}. 1D uses the latest regular-session open ({1}). Price field: {2}. {3}".format(
-            status,
-            session or "open unavailable",
-            field or "none",
-            error or "No IBKR error stored.",
+        "Yahoo ^VIX. Price observed {0}. Session {1}. Since open {2}. {3}".format(
+            observed,
+            session_name,
+            basis or "reference unavailable",
+            error or "No collection error stored.",
         )
     )
 
@@ -483,7 +484,7 @@ def _render_ibkr_vix() -> None:
 def render_options_volatility() -> None:
     page_header(
         "Options & Volatility",
-        "Current VIX is the stored IBKR quote when one exists. Yahoo history, the Cboe SKEW Index, and the VIX index term structure stay on their stored sources. Spot VIX is distinct from a VIX futures curve.",
+        "Current VIX is the stored Yahoo ^VIX quote. Yahoo history, the Cboe SKEW Index, and the VIX index term structure stay on their stored sources. Spot VIX is distinct from a VIX futures curve.",
         fred=False,
     )
     _render_ibkr_vix()
@@ -754,10 +755,7 @@ def render_market_pulse() -> None:
         freshness=freshness,
         warning=_material_warning(health, displayed_dates=displayed),
     )
-    collectors = _optional_data(load_optional("ibkr_collector_status", default=[])) or []
-    quotes = _optional_data(load_optional("ibkr_quotes_latest", default=[])) or []
-    quote_state = derive_quote_status(collectors=collectors, quotes=quotes)
-    st.caption(overview_caption(quote_state))
+    st.caption("Dashboard prices are stored Yahoo quotes. A closed session is not a collection failure.")
 
     horizon = st.radio("Market-move horizon", ("1D", "1W", "1M"), index=0, horizontal=True, key="overview_horizon")
     st.caption("Horizon applies to daily equity session moves only. Macro releases and weekly positioning keep their own cadence.")
@@ -1912,46 +1910,30 @@ def render_data_health() -> None:
                 hide_index=True,
             )
 
-    collectors = load_or_stop("ibkr_collector_status")
-    quotes = load_or_stop("ibkr_quotes_latest")
-    quote_state = derive_quote_status(collectors=collectors, quotes=quotes)
-    st.subheader("Windows collector (IBKR)")
-    st.caption(overview_caption(quote_state))
-    if not collectors:
-        st.info("No collector heartbeat has been received. FRED and FINRA do not depend on this laptop.")
-    else:
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {
-                        "Collector": row.get("collector_id"),
-                        "Observed": row.get("observed_state"),
-                        "Heartbeat age (s)": display_cell(row.get("heartbeat_age_seconds")),
-                        "Last quote": age_text(row.get("last_quote_at")),
-                        "Last ingest": age_text(row.get("last_ingest_ok_at")),
-                        "Delivery error": (row.get("last_delivery_error_redacted") or "")[:80] or "—",
-                    }
-                    for row in collectors
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-        st.caption("If the Windows laptop sleeps, TWS stops sending heartbeats and the server marks the collector offline. That is not a FINRA or FRED backend failure.")
-    shown_quotes = display_quote_rows(quotes)
+    quote_loaded = load_quote_optional("dashboard_quotes_latest", default=[])
+    quotes = quote_loaded.get("data") if quote_loaded.get("available") else []
+    st.subheader("Yahoo quotes")
+    st.caption(
+        "Dashboard prices are collected on the server from Yahoo. "
+        "Price observed is the source timestamp. Last fetched is when the server stored the row. "
+        "A closed market is not a collection error."
+    )
+    shown_quotes = display_quote_rows(quotes or [])
     if shown_quotes:
-        with st.expander("Latest stored IBKR quotes"):
-            st.caption("One row per approved symbol. Older instrument ids and names outside the live book are omitted.")
+        with st.expander("Latest stored Yahoo quotes"):
+            st.caption("One row per approved symbol. Names outside the dashboard book are omitted.")
             st.dataframe(
                 pd.DataFrame(
                     [
                         {
                             "Instrument": quote_symbol(row) or row.get("display_name") or row.get("instrument_id"),
-                            "Bid": row.get("bid"),
-                            "Ask": row.get("ask"),
+                            "Yahoo": ((row.get("provenance") or {}).get("yahoo_symbol") if isinstance(row.get("provenance"), dict) else None) or "—",
                             "Last": row.get("last_price") if row.get("last_price") is not None else ((row.get("provenance") or {}).get("current_price") if isinstance(row.get("provenance"), dict) else None),
-                            "Status": ((row.get("provenance") or {}).get("quote_error") if isinstance(row.get("provenance"), dict) else None) or row.get("quote_status") or "—",
-                            "Received": age_text(row.get("retrieved_at")),
+                            "Since open %": ((row.get("provenance") or {}).get("since_open_pct") if isinstance(row.get("provenance"), dict) else None),
+                            "Session": ((row.get("provenance") or {}).get("session") if isinstance(row.get("provenance"), dict) else None) or "—",
+                            "Price observed": age_text(row.get("quote_ts")),
+                            "Last fetched": age_text(row.get("retrieved_at")),
+                            "Status": ((row.get("provenance") or {}).get("quote_error") if isinstance(row.get("provenance"), dict) else None) or quote_observation_status(row.get("quote_ts")).lower(),
                         }
                         for row in shown_quotes
                     ]
@@ -1959,8 +1941,8 @@ def render_data_health() -> None:
                 use_container_width=True,
                 hide_index=True,
             )
-    elif collectors:
-        st.caption("Collector registered, but no quotes have been persisted yet.")
+    else:
+        st.caption("No Yahoo dashboard quotes are stored yet.")
 
     with st.expander("IBKR options and storage rights"):
         st.caption("OPRA L1 in Client Portal is not treated as TWS API entitlement. Frozen Type 2 on 2026-09-14 still returned 354 / no NBBO.")

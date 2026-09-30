@@ -29,16 +29,14 @@ ET = ZoneInfo("America/New_York")
 
 
 def test_named_catalog_is_not_padded_to_the_heading_counts():
-    """The eight Power names are off the live book so the line count stays under 100."""
+    """93 names: the equity/ETF book plus VIX. The eight Power names are included."""
     stocks = unique_stock_symbols()
-    assert len(stocks) == 39
-    assert APPROVED_EQUITY_ETF_COUNT == 84
+    assert len(stocks) == 47
+    assert APPROVED_EQUITY_ETF_COUNT == 92
     assert APPROVED_EXTRA_INDEXES == frozenset({"VIX"})
-    assert EXPECTED_IBKR_LIVE_COUNT == 85
-    subscribed = {row["symbol"] for row in approved_contracts()}
-    for symbol in ("CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"):
-        assert symbol not in subscribed
-        assert symbol not in stocks
+    assert EXPECTED_IBKR_LIVE_COUNT == 93
+    power = [symbol for name, members in STOCK_GROUPS if name.startswith("Power") for symbol in members]
+    assert power == ["CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"]
 
 
 def test_display_duplicates_subscribe_once_and_unapproved_symbols_are_rejected():
