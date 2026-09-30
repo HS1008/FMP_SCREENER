@@ -29,8 +29,8 @@ logger = logging.getLogger("market_intelligence.yahoo_dashboard")
 
 ET = ZoneInfo("America/New_York")
 SOURCE_YAHOO_DASHBOARD = "YAHOO_DASHBOARD"
-POLL_SECONDS = 60
-CLOSED_POLL_SECONDS = 15 * 60
+POLL_SECONDS = 15 * 60
+CLOSED_POLL_SECONDS = 12 * 60
 ACTIVE_START = clock_time(4, 0)
 ACTIVE_END = clock_time(20, 0)
 REGULAR_OPEN = clock_time(9, 30)

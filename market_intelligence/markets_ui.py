@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
+from zoneinfo import ZoneInfo
 
 import streamlit as st
 
@@ -18,9 +19,12 @@ from market_intelligence.ibkr_live_universe import (
     STOCK_RETURN_HORIZONS,
     display_quote_rows,
     quote_symbol,
+    quotes_by_symbol,
     stock_heatmap_rows,
     stock_horizon_values,
+    subsector_groups,
 )
+from market_intelligence.price_returns import PRICE_RETURN_CAPTION, parse_timestamp, price_horizons, quote_anchor_date
 from market_intelligence.live_session import heatmap_freshness_label, market_session_state, quote_observation_status
 from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, series_toggles
 from market_intelligence.markets_analytics import (
@@ -40,9 +44,7 @@ from market_intelligence.markets_analytics import (
     subsector_matrix,
     trailing_drawdown,
 )
-from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.taxonomy import (
-    NO_SUBSECTOR_CLASSIFICATION,
     GLOBAL_CORE_ETFS,
     GLOBAL_DEFAULT_SELECTED,
     GLOBAL_LEADERSHIP,
@@ -53,12 +55,12 @@ from market_intelligence.taxonomy import (
     US_INDEX_ETFS,
     US_LEADERSHIP,
     US_PERFORMANCE_ETFS,
-    constituent_label,
     index_etf_label,
 )
 from market_intelligence.ui import load_optional, load_or_stop, load_quote_optional, page_header
 
 _CHART_HEIGHT = 420
+_ET = ZoneInfo("America/New_York")
 _HORIZON_LABELS = [label for label, _field, _sessions in HORIZONS]
 
 
@@ -499,65 +501,147 @@ def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
     )
 
 
-def _us_subsector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
+def _observed(value: Any) -> str:
+    ts = parse_timestamp(value)
+    if ts is None:
+        return ""
+    return ts.astimezone(_ET).strftime("%Y-%m-%d %H:%M ET")
+
+
+def _price_bars_by_symbol() -> dict[str, list[dict[str, Any]]]:
+    loaded = load_optional("dashboard_price_bars", default=[])
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    if not loaded.get("available"):
+        return grouped
+    for row in loaded.get("data") or []:
+        symbol = str(row.get("symbol") or "").upper()
+        if not symbol:
+            continue
+        grouped.setdefault(symbol, []).append(
+            {
+                "bar_date": row.get("bar_date"),
+                "close": row.get("close_price"),
+                "basis": row.get("adjustment_basis"),
+                "quality": row.get("bar_quality"),
+            }
+        )
+    return grouped
+
+
+def _horizon_cells(
+    *,
+    open_to_current: float | None,
+    price: Any,
+    quote_ts: Any,
+    bars: Sequence[Mapping[str, Any]],
+    note: str,
+) -> tuple[list[float | None], list[str]]:
+    ts = parse_timestamp(quote_ts)
+    anchor = quote_anchor_date(ts) if ts is not None else None
+    legs = price_horizons(bars, price, anchor)
+    stored = {label: legs[label]["value"] for label in legs}
+    values = stock_horizon_values(open_to_current, stored)
+    stale = quote_observation_status(quote_ts) == "STALE"
+    observed = _observed(quote_ts)
+    notes: list[str] = []
+    for label in STOCK_RETURN_HORIZONS:
+        if label == "1D":
+            parts = [part for part in (note, observed, "stale" if stale else "") if part]
+            notes.append(" · ".join(parts))
+        else:
+            parts = [part for part in (str(legs[label]["reason"]), observed, "stale" if stale else "") if part]
+            notes.append(" · ".join(parts))
+    return values, notes
+
+
+def _minus_spy(values: Sequence[float | None], spy: Sequence[float | None] | None) -> list[float | None]:
+    if not spy:
+        return [None for _value in values]
+    compared: list[float | None] = []
+    for value, base in zip(values, spy):
+        if value is None or base is None:
+            compared.append(None)
+        else:
+            compared.append(value - base)
+    return compared
+
+
+def _us_subsector_heatmap(_panel: Mapping[str, Any], *, mode: str) -> None:
     st.subheader("Subsector Performance")
-    st.caption("Rows are curated current-context baskets, not the dataset's official industry list. The heatmap uses the Absolute / Relative vs SPY control above.")
-    themes = [str(label) for label in (panel.get("themes_omitted") or []) if label]
-    if themes:
-        st.caption("Cross-sector themes are omitted: {0}.".format(", ".join(themes)))
-    names = list(CANONICAL_SECTORS)
+    groups = subsector_groups()
+    names = [name for name, _members in groups]
     if "us_subsector_sector" not in st.session_state:
-        st.session_state["us_subsector_sector"] = "Technology"
+        st.session_state["us_subsector_sector"] = names[0]
     sector = st.selectbox("Sector", names, key="us_subsector_sector")
-    if not panel.get("available"):
-        st.caption("No subsector returns can be priced without the shared SPY endpoint. Coverage is not guessed.")
-        return
-    rows = list((panel.get("subsectors") or {}).get(str(sector)) or [])
-    if not rows:
-        st.caption(NO_SUBSECTOR_CLASSIFICATION)
-        return
+    members = dict(groups)[str(sector)]
+    st.caption(", ".join("{0} · {1}".format(symbol, label) for symbol, label in members))
     st.caption(
-        "Each horizon is the equal-dollar daily-rebalanced basket through the shared endpoint. A horizon keeps only members with prices on both sessions. Fewer than 2 members is N/A. One missing constituent does not hide the sector. A session with no observable member return is N/A."
+        "Rows are the listed subsector ETFs in list order. Since open is the newest stored Yahoo price divided by the most recent regular-session open. "
+        + PRICE_RETURN_CAPTION
     )
-    analytical = "relative" if mode == "Relative vs SPY" else "absolute"
-    matrix = _return_matrix(panel, rows, mode=analytical)
+    if mode == "Relative vs SPY":
+        st.caption("Relative vs SPY subtracts SPY's return on the same price basis, in percentage points.")
+    loaded = load_quote_optional("dashboard_quotes_latest", default=[])
+    if not loaded.get("available"):
+        st.caption("Stored Yahoo quotes are unavailable ({0}).".format(loaded.get("error") or "unread"))
+        return
+    by_symbol = quotes_by_symbol(loaded.get("data") or [])
+    bars = _price_bars_by_symbol()
+    spy = by_symbol.get("SPY") or {}
+    spy_provenance = spy.get("provenance") or {}
+    if not isinstance(spy_provenance, Mapping):
+        spy_provenance = {}
+    spy_values, _spy_notes = _horizon_cells(
+        open_to_current=spy_provenance.get("open_to_current"),
+        price=spy_provenance.get("current_price", spy.get("last_price")),
+        quote_ts=spy.get("quote_ts"),
+        bars=bars.get("SPY") or [],
+        note="",
+    )
+    relative = mode == "Relative vs SPY"
+    labels: list[str] = []
+    values: list[list[float | None]] = []
+    notes: list[list[str]] = []
+    for symbol, label in members:
+        quote = by_symbol.get(symbol) or {}
+        provenance = quote.get("provenance") or {}
+        if not isinstance(provenance, Mapping):
+            provenance = {}
+        price = provenance.get("current_price", quote.get("last_price"))
+        row_values, row_notes = _horizon_cells(
+            open_to_current=provenance.get("open_to_current"),
+            price=price,
+            quote_ts=quote.get("quote_ts"),
+            bars=bars.get(symbol) or [],
+            note=str(provenance.get("session") or ""),
+        )
+        if relative:
+            row_values = _minus_spy(row_values, spy_values)
+        labels.append("{0} · {1}".format(symbol, label))
+        values.append(row_values)
+        notes.append(row_notes)
     column_scaled_return_heatmap(
-        [row["label"] for row in matrix["rows"]],
-        _since_open_columns(matrix["columns"]),
-        [row["values"] for row in matrix["rows"]],
-        notes=[row["notes"] for row in matrix["rows"]],
-        key="us_subsector_heatmap_{0}_{1}".format(sector, analytical),
+        labels,
+        _since_open_columns(STOCK_RETURN_HORIZONS),
+        values,
+        notes=notes,
+        key="us_subsector_heatmap_{0}_{1}".format(sector, "relative" if relative else "absolute"),
     )
-    _constituent_detail(matrix["rows"])
 
 
-def _stored_stock_returns(panel: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
-    """EOD horizon returns already priced for basket members. 1D on the stock card stays IBKR."""
-    found: dict[str, Mapping[str, Any]] = {}
-    for rows in (panel.get("subsectors") or {}).values():
-        for row in rows:
-            for member in row.get("constituents") or []:
-                symbol = str(member.get("symbol") or "").upper()
-                if symbol and symbol not in found:
-                    found[symbol] = member.get("returns") or {}
-    return found
-
-
-def _individual_stock_heatmap(panel: Mapping[str, Any] | None = None) -> None:
-    """Approved stocks only. Quotes come from PostgreSQL; this does not open TWS."""
+def _individual_stock_heatmap(_panel: Mapping[str, Any] | None = None) -> None:
+    """Approved stocks only. Quotes and daily closes come from PostgreSQL."""
     st.subheader("Individual Stocks")
-    endpoint = as_day((panel or {}).get("endpoint")) if panel else None
     st.caption(
         "Since open is the newest stored Yahoo price divided by the most recent regular-session open, including extended hours when Yahoo supplies them. "
-        "1W, 1M, 3M, 6M, and 1Y are stored session windows (5, 21, 63, 126, and 252) through {0}. "
-        "A ticker listed in more than one group uses the same stored quote. "
-        "A missing open, price, or stored close is N/A.".format(endpoint.isoformat() if endpoint else "the equity endpoint")
+        + PRICE_RETURN_CAPTION
+        + " A ticker listed in more than one group uses the same stored quote."
     )
     loaded = load_quote_optional("dashboard_quotes_latest", default=[])
     if not loaded.get("available"):
         st.caption("Stored Yahoo quotes are unavailable ({0}).".format(loaded.get("error") or "unread"))
         return
-    stored = _stored_stock_returns(panel or {})
+    bars = _price_bars_by_symbol()
     rows = stock_heatmap_rows(loaded.get("data") or [])
     groups: list[str] = []
     for row in rows:
@@ -569,68 +653,25 @@ def _individual_stock_heatmap(panel: Mapping[str, Any] | None = None) -> None:
     for group in groups:
         members = [row for row in rows if row["group"] == group]
         st.caption(group)
-        values = [stock_horizon_values(row["open_to_current"], stored.get(row["symbol"])) for row in members]
+        values = []
         notes = []
-        for row, horizon_values in zip(members, values):
-            row_notes = []
-            for label, value in zip(STOCK_RETURN_HORIZONS, horizon_values):
-                if label == "1D":
-                    note = row["note"]
-                    if quote_observation_status(row.get("quote_ts")) == "STALE":
-                        note = "{0} · stale".format(note).strip(" ·")
-                    row_notes.append(note)
-                elif value is None:
-                    row_notes.append("No stored close")
-                else:
-                    row_notes.append("EQUITY_EOD")
+        for row in members:
+            row_values, row_notes = _horizon_cells(
+                open_to_current=row["open_to_current"],
+                price=row["price"],
+                quote_ts=row.get("quote_ts"),
+                bars=bars.get(row["symbol"]) or [],
+                note=row["note"],
+            )
+            values.append(row_values)
             notes.append(row_notes)
         column_scaled_return_heatmap(
-            [
-                "{0} · {1}".format(row["symbol"], _price(row["price"]))
-                for row in members
-            ],
+            ["{0} · {1}".format(row["symbol"], _price(row["price"])) for row in members],
             _since_open_columns(STOCK_RETURN_HORIZONS),
             values,
             notes=notes,
             key="us_stock_heatmap_{0}".format(group),
         )
-
-
-def _constituent_detail(rows: Sequence[Mapping[str, Any]]) -> None:
-    labels: dict[str, str] = {}
-    details: dict[str, Mapping[str, Any]] = {}
-    groups: dict[str, str] = {}
-    for row in rows:
-        for member in row.get("constituents") or []:
-            symbol = str(member.get("symbol") or "").upper()
-            if not symbol or symbol in labels:
-                continue
-            labels[symbol] = constituent_label(symbol, str(member.get("company") or ""))
-            details[symbol] = member
-            groups[symbol] = str(row.get("label") or "")
-    options = sorted(labels, key=lambda symbol: labels[symbol])
-    if not options:
-        return
-    chosen = st.selectbox(
-        "Constituent",
-        options,
-        format_func=lambda symbol: labels.get(str(symbol), str(symbol)),
-        key="us_constituent",
-    )
-    member = details.get(str(chosen)) or {}
-    returns = member.get("returns") or {}
-    st.caption("{0} · {1}".format(labels.get(str(chosen), str(chosen)), groups.get(str(chosen), "")))
-    columns = st.columns(len(HORIZONS))
-    for column, (label, _field, _sessions) in zip(columns, HORIZONS):
-        value = returns.get(label)
-        column.metric(label, "N/A" if not isinstance(value, (int, float)) else _signed_percent(value))
-    source = str(member.get("quote_1d") or "HISTORICAL")
-    if member.get("quote_unused"):
-        st.caption("1D is EQUITY_EOD. A stored quote was not applied because it does not share the basket session and price basis.")
-    elif source == "HISTORICAL":
-        st.caption("1D is EQUITY_EOD, the same session as this basket cell.")
-    else:
-        st.caption("1D is {0}, the same session as this basket cell.".format(source))
 
 
 def _snapshot_row(history: Mapping[str, Any], symbols: Sequence[str], labels: Mapping[str, str]) -> None:

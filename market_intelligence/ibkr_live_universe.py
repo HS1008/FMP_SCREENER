@@ -33,10 +33,11 @@ SECTOR_ETFS: tuple[tuple[str, str], ...] = (
     ("XLU", "Utilities"),
 )
 
+# Screenshot order and labels. The third field is the display group, not a GICS rename.
 SUBSECTOR_ETFS: tuple[tuple[str, str, str], ...] = (
-    ("SMH", "Semiconductors", "Technology"),
-    ("IGV", "Software", "Technology"),
-    ("CIBR", "Cybersecurity", "Technology"),
+    ("SMH", "Semiconductors", "Tech"),
+    ("IGV", "Software", "Tech"),
+    ("CIBR", "Cybersecurity", "Tech"),
     ("KRE", "Regional banks", "Financials"),
     ("KIE", "Insurance", "Financials"),
     ("KCE", "Capital Markets", "Financials"),
@@ -45,24 +46,24 @@ SUBSECTOR_ETFS: tuple[tuple[str, str, str], ...] = (
     ("IHI", "Medical Devices", "Health Care"),
     ("XHS", "Health Care Services/Providers", "Health Care"),
     ("XRT", "Retail", "Consumer Discretionary"),
-    ("XHB", "Homebuilders", "Consumer Discretionary"),
+    ("XHB", "Homebuilders / housing ecosystem", "Consumer Discretionary"),
     ("XTL", "Telecom", "Communication Services"),
-    ("SOCL", "Social Media", "Communication Services"),
+    ("SOCL", "Social Media / internet platforms", "Communication Services"),
     ("ITA", "Aerospace & Defense", "Industrials"),
     ("IYT", "Transportation", "Industrials"),
-    ("PAVE", "Infrastructure", "Industrials"),
+    ("PAVE", "Infrastructure/engineering", "Industrials"),
     ("PBJ", "Food & Beverage", "Consumer Staples"),
     ("XOP", "Exploration & Production", "Energy"),
     ("OIH", "Oil Services", "Energy"),
-    ("AMLP", "Midstream", "Energy"),
+    ("AMLP", "Midstream / pipelines", "Energy"),
     ("FCG", "Natural Gas producers", "Energy"),
     ("XME", "Metals & Mining", "Materials"),
     ("COPX", "Copper Miners", "Materials"),
     ("GDX", "Gold Miners", "Materials"),
     ("REZ", "Residential REITs", "Real Estate"),
-    ("SRVR", "Digital infrastructure", "Real Estate"),
+    ("SRVR", "Digital infrastructure/data centers", "Real Estate"),
     ("REM", "Mortgage REITs", "Real Estate"),
-    ("GRID", "Grid infrastructure", "Utilities"),
+    ("GRID", "grid/transmission infrastructure", "Utilities"),
 )
 
 # Group name, member tickers. Repeats across groups are display-only.
@@ -88,6 +89,20 @@ STOCK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
 
 
 YAHOO_SYMBOL_OVERRIDES: dict[str, str] = {"VIX": "^VIX"}
+
+
+def subsector_groups() -> tuple[tuple[str, tuple[tuple[str, str], ...]], ...]:
+    """Screenshot groups in list order. A ticker is collected once even if displayed twice."""
+    grouped: list[tuple[str, list[tuple[str, str]]]] = []
+    by_name: dict[str, list[tuple[str, str]]] = {}
+    for symbol, label, group in SUBSECTOR_ETFS:
+        rows = by_name.get(group)
+        if rows is None:
+            rows = []
+            by_name[group] = rows
+            grouped.append((group, rows))
+        rows.append((symbol, label))
+    return tuple((group, tuple(rows)) for group, rows in grouped)
 
 
 def yahoo_symbol(symbol: str) -> str:
@@ -280,7 +295,7 @@ def stock_horizon_values(
     open_to_current: float | None,
     stored_returns: Mapping[str, Any] | None,
 ) -> list[float | None]:
-    """1D is the IBKR open-to-current fraction. Longer windows are stored session returns."""
+    """1D is the since-open fraction. Longer windows are the shared price-return map."""
     stored = stored_returns or {}
     values: list[float | None] = []
     for label in STOCK_RETURN_HORIZONS:

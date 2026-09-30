@@ -126,6 +126,11 @@ SELECT EXISTS (SELECT 1 FROM information_schema.views WHERE table_name = 'mi_v_m
 GRANT SELECT ON mi_v_market_monitor_closes TO mi_readonly;
 \endif
 
+SELECT EXISTS (SELECT 1 FROM information_schema.views WHERE table_name = 'mi_v_yahoo_price_daily') AS has_yahoo_price_daily \gset
+\if :has_yahoo_price_daily
+GRANT SELECT ON mi_v_yahoo_price_daily TO mi_readonly;
+\endif
+
 -- Read-only AI gateway research views (migration 027, holdout fail-closed). Skip cleanly
 -- when the migration has not been applied yet; re-run this file after it lands.
 SELECT EXISTS (SELECT 1 FROM information_schema.views WHERE table_name = 'mi_v_strategy_artifact_status') AS has_ai_strategy_views \gset
