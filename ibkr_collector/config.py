@@ -3,34 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from ibkr_collector import DEFAULT_CLIENT_ID, DEFAULT_TWS_HOST, DEFAULT_TWS_PORT
+from market_intelligence.ibkr_live_universe import approved_contracts, rejected_watchlist_symbols
 
-# Live quote subscriptions for Equities & Sectors (IBKR preferred). Operator
-# config.json watchlists still override this default when present.
-DEFAULT_WATCHLIST: tuple[dict[str, str], ...] = (
-    {"symbol": "SPY", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "RSP", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "QQQ", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "NASDAQ"},
-    {"symbol": "IWM", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "TLT", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "NASDAQ"},
-    {"symbol": "HYG", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLC", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLY", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLP", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLE", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLF", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLV", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLI", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLB", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLRE", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLK", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-    {"symbol": "XLU", "sec_type": "STK", "exchange": "SMART", "currency": "USD", "primary_exchange": "ARCA"},
-)
+# Operator config.json cannot add symbols. The canonical allowlist is the only set.
+DEFAULT_WATCHLIST: tuple[dict[str, str], ...] = approved_contracts()
 
 
 def default_data_dir() -> Path:
@@ -122,7 +105,14 @@ def _apply(cfg: CollectorConfig, raw: dict[str, Any]) -> None:
         if raw.get(key) is not None:
             setattr(cfg, key, float(raw[key]))
     if isinstance(raw.get("watchlist"), list) and raw["watchlist"]:
-        cfg.watchlist = [dict(row) for row in raw["watchlist"]]
+        rejected = rejected_watchlist_symbols(raw["watchlist"])
+        if rejected:
+            logging.getLogger("ibkr_collector.config").warning(
+                "ignoring %s unapproved watchlist symbol(s): %s",
+                len(rejected),
+                ", ".join(rejected),
+            )
+    cfg.watchlist = [dict(row) for row in DEFAULT_WATCHLIST]
 
 
 def write_example_config(path: Path | None = None) -> Path:

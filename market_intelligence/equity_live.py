@@ -14,6 +14,7 @@ from sqlalchemy import text
 from market_intelligence.live_session import (
     DEFAULT_QUOTE_MAX_AGE_SECONDS,
     REQUIRED_SECTOR_LIVE_SYMBOLS,
+    SOURCE_IBKR,
     PriceObservation,
     equal_dollar_live_return,
     format_live_quotes_as_of,
@@ -21,6 +22,7 @@ from market_intelligence.live_session import (
     live_return,
     live_session_pair,
     normalize_pair_to_100,
+    open_to_current_return,
     resolve_current_price,
     resolve_prior_close,
     sessions_aligned,
@@ -120,6 +122,32 @@ def load_adjusted_history(
     )
 
 
+def _finite_open(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in {float("inf"), float("-inf")}:
+        return None
+    return number
+
+
+def _ibkr_provenance(candidates: Sequence[Mapping[str, Any]], symbol: str) -> dict[str, Any]:
+    ticker = symbol.upper()
+    for row in candidates:
+        row_symbol = str(row.get("symbol") or row.get("display_name") or "").upper()
+        if row_symbol != ticker:
+            continue
+        if str(row.get("source_id") or "") not in {"", SOURCE_IBKR}:
+            continue
+        provenance = row.get("provenance") or {}
+        if isinstance(provenance, Mapping):
+            return dict(provenance)
+    return {}
+
+
 def resolve_symbol_live(
     *,
     symbol: str,
@@ -138,12 +166,27 @@ def resolve_symbol_live(
         max_age_seconds=max_age_seconds,
     )
     prior = resolve_prior_close(prior_bars, symbol=symbol, session=baseline_session)
+    provenance = _ibkr_provenance(quote_candidates, symbol)
+    session_open = _finite_open(provenance.get("session_open"))
+    session_open_date = str(provenance.get("session_date") or "") or None
     ret = None
+    return_basis = None
+    if current is not None and current.source_id == SOURCE_IBKR:
+        stored = _finite_open(provenance.get("open_to_current"))
+        ret = stored if stored is not None else open_to_current_return(current.price, session_open)
+        if ret is not None:
+            return_basis = "RTH_OPEN"
+    vs_prior_close = None
     if current is not None and prior is not None:
-        ret = live_return(current.price, prior.price)
+        vs_prior_close = live_return(current.price, prior.price)
     return {
         "symbol": symbol.upper(),
         "live_return": ret,
+        "return_basis": return_basis,
+        "session_open": session_open,
+        "session_open_date": session_open_date,
+        "current_price_field": provenance.get("current_price_field"),
+        "vs_prior_close": vs_prior_close,
         "current": current.as_dict() if current else None,
         "prior_close": prior.as_dict() if prior else None,
         "current_session": current_session.isoformat(),
@@ -159,6 +202,15 @@ def live_rs_pair(
 ) -> float | None:
     if not asset or not benchmark:
         return None
+    if asset.get("return_basis") == "RTH_OPEN" or benchmark.get("return_basis") == "RTH_OPEN":
+        asset_open = asset.get("session_open_date")
+        bench_open = benchmark.get("session_open_date")
+        if not sessions_aligned(
+            date.fromisoformat(asset_open) if asset_open else None,
+            date.fromisoformat(bench_open) if bench_open else None,
+        ):
+            return None
+        return live_relative_strength(asset.get("live_return"), benchmark.get("live_return"))
     asset_prior = (asset.get("prior_close") or {}).get("session_date")
     bench_prior = (benchmark.get("prior_close") or {}).get("session_date")
     if not sessions_aligned(
@@ -271,8 +323,8 @@ def equity_live_context(conn, *, now: datetime | None = None) -> dict[str, Any]:
         "by_symbol": by_symbol,
         "spy": spy,
         "note": (
-            "Live 1D = current last / previous-session close. After 16:00 ET on session D, "
-            "baseline remains D-1 (never today's close). Longer windows remain finalized EOD. "
+            "Live 1D = current IBKR price / latest regular-session open - 1. "
+            "A missing open leaves Live 1D blank. vs Prior Close is stored separately and is not labeled 1D. "
             "Yahoo live/EOD are unofficial fallbacks (MI_YAHOO_LIVE_FALLBACK / MI_YAHOO_EOD_FALLBACK); "
             "never labeled as IBKR. INTERNAL_ONLY."
         ),

@@ -349,5 +349,7 @@ def test_dashboard_quote_path_does_not_submit_orders():
         assert "placeOrder" not in source
         assert "reqMktData" not in source
     assert "placeOrder" in BLOCKED_ECLIENT_METHODS
-    subscribe = inspect.getsource(__import__("ibkr_collector.runner", fromlist=["CollectorRuntime"]).CollectorRuntime._qualify_and_subscribe)
-    assert "False, False, []" in subscribe
+    runtime = __import__("ibkr_collector.runner", fromlist=["CollectorRuntime"]).CollectorRuntime
+    streaming = inspect.getsource(runtime._subscribe_row) + inspect.getsource(runtime._heal_one_silent_quote)
+    assert "placeOrder" not in inspect.getsource(runtime._qualify_and_subscribe)
+    assert streaming.count('reqMktData(req_id, contract, "", False, False, [])') == 2

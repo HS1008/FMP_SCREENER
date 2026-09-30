@@ -77,8 +77,50 @@ def _finite(value: Any) -> float | None:
 
 
 def live_return(current: Any, prior_close: Any) -> float | None:
-    """current / baseline_session_close - 1."""
+    """current / baseline_session_close - 1. This is vs prior close, not the live 1D."""
     return aligned_session_return(_finite(current), _finite(prior_close))
+
+
+def ibkr_mark_price(last: Any, bid: Any, ask: Any) -> tuple[float | None, str | None]:
+    """Freshest IBKR price. Last trade, otherwise an explicit bid/ask midpoint.
+
+    Previous close is never a current price.
+    """
+    last_px = _finite(last)
+    if last_px is not None and last_px > 0:
+        return last_px, "last"
+    bid_px = _finite(bid)
+    ask_px = _finite(ask)
+    if bid_px is not None and ask_px is not None and bid_px > 0 and ask_px > 0:
+        return (bid_px + ask_px) / 2.0, "midpoint"
+    return None, None
+
+
+def open_to_current_return(current: Any, session_open: Any) -> float | None:
+    """(current / latest regular-session open) - 1. Missing or zero open is unavailable."""
+    current_px = _finite(current)
+    open_px = _finite(session_open)
+    if current_px is None or open_px is None or open_px == 0:
+        return None
+    return current_px / open_px - 1.0
+
+
+def latest_opened_rth_session(now: datetime | None = None) -> date:
+    """Latest NYSE regular session whose 09:30 ET open has already occurred.
+
+    Before that open, and on weekends or holidays, the previous actual session
+    remains the denominator. Midnight and the premarket open do not reset it.
+    """
+    now_aware = now or datetime.now(timezone.utc)
+    if now_aware.tzinfo is None:
+        now_aware = now_aware.replace(tzinfo=timezone.utc)
+    local = now_aware.astimezone(ET)
+    clock = local.timetz().replace(tzinfo=None)
+    if is_session(local.date(), CAL_NYSE) and clock >= time(9, 30):
+        return local.date()
+    if is_session(local.date(), CAL_NYSE):
+        return previous_session(local.date(), CAL_NYSE)
+    return last_completed_session(now_aware, CAL_NYSE)
 
 
 def live_relative_strength(asset_live_return: Any, benchmark_live_return: Any) -> float | None:
@@ -541,7 +583,10 @@ __all__ = [
     "equal_dollar_live_return",
     "format_live_quotes_as_of",
     "heatmap_freshness_label",
+    "ibkr_mark_price",
+    "latest_opened_rth_session",
     "market_session_state",
+    "open_to_current_return",
     "quote_data_status",
     "in_regular_trading_hours",
     "is_usable_current_quote",

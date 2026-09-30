@@ -65,7 +65,7 @@ HORIZON_RETURN_FIELD: dict[str, str] = {label: field for label, field, _sessions
 HORIZON_RS_FIELD: dict[str, str] = {label: field for label, field in RS_HORIZONS}
 
 LIVE_RETURN_STATE = (
-    "Live 1D from stored quotes: current last divided by the prior completed session close. "
+    "Live 1D from stored IBKR quotes: current price divided by the latest regular-session open. A missing open stays blank. vs Prior Close is not labeled 1D. "
     "A Yahoo fallback is labeled as stored live quotes, not as IBKR."
 )
 EOD_RETURN_STATE = (
@@ -90,7 +90,7 @@ US_METHODOLOGY: tuple[str, ...] = (
     "Sector ETFs follow the repository taxonomy: XLK Technology, XLF Financials, XLI Industrials, XLY Consumer Discretionary, XLC Communication Services, XLV Health Care, XLP Consumer Staples, XLE Energy, XLU Utilities, XLRE Real Estate, XLB Materials. The canonical Technology label is the Information Technology sector.",
     "Sector heatmap absolute mode is the sector ETF return between the shared EQUITY_EOD SPY session endpoints for that horizon. Relative vs SPY subtracts the SPY return on those same dates, in percentage points. It is not `rs_chg_*` and it is not a ratio of the two percentage returns. Each horizon column has its own symmetric color scale. A sector ETF that misses either endpoint, or that uses a different adjustment basis than SPY, is N/A. Stored sector snapshots are not a substitute.",
     "Subsector rows are curated current-context baskets, not official GICS industries and not industry ETFs. Cross-sector themes are omitted. The only basket method is equal-dollar daily rebalancing (`equal_dollar_daily_rebalance_v1`): each horizon rebuilds that index from members that have the shared start session and the shared SPY endpoint, then takes the index window return. Fewer than 2 such members is N/A. The count is those endpoint-eligible names. Each daily step includes only members with a price on that session and on the previous session inside the window. A calendar session with no observable member return makes the horizon N/A. The index does not skip that session or carry it as a zero return. This is not the average of each name's holding-period return, and a stored snapshot is not used when constituent prices are missing. A missing price is not zero.",
-    "Index snapshot badges stay on finalized EOD session returns. Live 1D on a heatmap replaces a cell only when every contributor shares one session pair and the panel adjustment basis. A relative cell also requires SPY on that same pair. A partial quote, a different session, or a different basis keeps the coherent EQUITY_EOD 1D pair instead of averaging live returns with prior-day returns. Delayed and frozen quotes are labeled and are not called live. Longer horizons stay EQUITY_EOD. Weighting stays equal-dollar daily rebalance. Streamlit reads the shared quote cache and does not open TWS.",
+    "Index snapshot badges stay on finalized EOD session returns. Live 1D from an IBKR quote is current price divided by the latest regular-session open, and it replaces a heatmap cell only when every contributor shares that open session. A relative cell also requires SPY on that same open. A missing open keeps the EQUITY_EOD 1D pair. Delayed and frozen quotes are labeled and are not called live. Longer horizons stay EQUITY_EOD. Weighting stays equal-dollar daily rebalance. Streamlit reads the shared quote cache and does not open TWS.",
     "Drawdown from the 52-week high is adjusted_close / max(adjusted_close over the trailing 252 stored sessions, including that session) - 1. Fewer than 252 sessions stays missing. The value is never positive. It is not replaced with zero. The same price/peak formula on a full running peak is the definition inside each window.",
 )
 
@@ -798,6 +798,19 @@ def _quote_leg(symbol: str, by_symbol: Mapping[str, Any], *, panel_basis: str | 
     live = _finite(row.get("live_return"))
     if status == "HISTORICAL" or live is None:
         return None
+    if row.get("return_basis") == "RTH_OPEN":
+        session = as_day(row.get("session_open_date"))
+        if session is None:
+            return None
+        updated = current.get("observation_ts")
+        return {
+            "live_return": live,
+            "status": status,
+            "current_session": session,
+            "baseline_session": session,
+            "basis": "RTH_OPEN",
+            "updated": str(updated) if updated else None,
+        }
     current_session = as_day(row.get("current_session") or current.get("session_date"))
     baseline_session = as_day(row.get("baseline_session") or row.get("prior_session") or prior.get("session_date"))
     basis = _quote_text(row.get("basis") or row.get("adjustment_basis") or prior.get("adjustment_basis"))

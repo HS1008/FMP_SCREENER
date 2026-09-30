@@ -14,6 +14,7 @@ import streamlit as st
 from market_intelligence.components.market_chart import lightweight_market_chart
 from market_intelligence.components.tenor_chart import column_scaled_return_heatmap, ranked_bar_chart, return_heatmap
 from market_intelligence.equity_live import attach_live_1d_to_sector_rows, preferred_canonical_sector_rows
+from market_intelligence.ibkr_live_universe import stock_heatmap_rows
 from market_intelligence.live_session import heatmap_freshness_label, market_session_state
 from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, series_toggles
 from market_intelligence.markets_analytics import (
@@ -369,6 +370,7 @@ def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
     st.caption(snapshot["caption"])
     _us_sector_heatmap(priced, mode=mode)
     _us_subsector_heatmap(priced, mode=mode)
+    _individual_stock_heatmap()
 
 
 def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
@@ -424,6 +426,41 @@ def _us_subsector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
         key="us_subsector_heatmap_{0}_{1}".format(sector, analytical),
     )
     _constituent_detail(matrix["rows"])
+
+
+def _individual_stock_heatmap() -> None:
+    """Approved stocks only. Quotes come from PostgreSQL; this does not open TWS."""
+    st.subheader("Individual Stocks")
+    st.caption(
+        "1D is the latest IBKR price divided by the latest regular-session open. "
+        "A ticker listed in more than one group uses the same stored quote. "
+        "A missing open or price is N/A. Previous close is not this 1D."
+    )
+    loaded = load_quote_optional("ibkr_quotes_latest", default=[])
+    if not loaded.get("available"):
+        st.caption("Stored IBKR quotes are unavailable ({0}).".format(loaded.get("error") or "unread"))
+        return
+    rows = stock_heatmap_rows(loaded.get("data") or [])
+    groups: list[str] = []
+    for row in rows:
+        if row["group"] not in groups:
+            groups.append(row["group"])
+    if not groups:
+        st.caption("No approved individual stocks are configured.")
+        return
+    for group in groups:
+        members = [row for row in rows if row["group"] == group]
+        st.caption(group)
+        column_scaled_return_heatmap(
+            [
+                "{0} · {1}".format(row["symbol"], _price(row["price"]))
+                for row in members
+            ],
+            ["1D"],
+            [[row["open_to_current"]] for row in members],
+            notes=[[row["note"]] for row in members],
+            key="us_stock_heatmap_{0}".format(group),
+        )
 
 
 def _constituent_detail(rows: Sequence[Mapping[str, Any]]) -> None:

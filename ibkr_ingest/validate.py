@@ -72,7 +72,7 @@ ALLOWED_STATES = frozenset(
 )
 MAX_BATCH = 100
 MAX_BAR_BATCH = 400
-MAX_WATCHLIST = 32
+MAX_WATCHLIST = 100
 ALLOWED_EQUITY_BAR_KEYS = frozenset(
     {
         "symbol",

@@ -88,6 +88,7 @@ from market_intelligence.ui import (
     history_chart,
     load_optional,
     load_or_stop,
+    load_quote_optional,
     page_header,
     styled_heatmap,
     transport_chip,
@@ -438,12 +439,53 @@ def _render_volatility_panel(ctx: dict[str, Any] | None) -> None:
     _render_yahoo_vol_core(yahoo)
 
 
+def _render_ibkr_vix() -> None:
+    """Current VIX from the stored IBKR quote. Historical charts stay on their existing source."""
+    st.subheader("VIX (IBKR)")
+    loaded = load_quote_optional("ibkr_quotes_latest", default=[])
+    rows = loaded.get("data") if loaded.get("available") else []
+    quote = None
+    for row in rows or []:
+        name = str(row.get("display_name") or "").upper()
+        provenance = row.get("provenance") or {}
+        symbol = str(provenance.get("symbol") or "").upper() if isinstance(provenance, dict) else ""
+        if name == "VIX" or symbol == "VIX":
+            quote = row
+            break
+    if quote is None:
+        st.caption("IBKR VIX is unavailable. Yahoo history below is not a live IBKR quote.")
+        return
+    provenance = quote.get("provenance") or {}
+    if not isinstance(provenance, dict):
+        provenance = {}
+    price = provenance.get("current_price")
+    if price is None:
+        price = quote.get("last_price")
+    change = provenance.get("open_to_current")
+    status = str(quote.get("market_data_type") or quote.get("quote_status") or "UNAVAILABLE")
+    field = str(provenance.get("current_price_field") or "")
+    session = str(provenance.get("session_date") or "")
+    error = str(provenance.get("quote_error") or "")
+    change_text = "N/A" if not isinstance(change, (int, float)) else "{0:+.2f}%".format(float(change) * 100.0)
+    price_text = "N/A" if not isinstance(price, (int, float)) else "{0:.2f}".format(float(price))
+    st.metric("VIX", price_text, change_text if change_text != "N/A" else None)
+    st.caption(
+        "IBKR {0}. 1D uses the latest regular-session open ({1}). Price field: {2}. {3}".format(
+            status,
+            session or "open unavailable",
+            field or "none",
+            error or "No IBKR error stored.",
+        )
+    )
+
+
 def render_options_volatility() -> None:
     page_header(
         "Options & Volatility",
-        "Yahoo VIX, the Cboe SKEW Index, implied minus realized volatility, and the VIX index term structure. Spot VIX is distinct from a VIX futures curve.",
+        "Current VIX is the stored IBKR quote when one exists. Yahoo history, the Cboe SKEW Index, and the VIX index term structure stay on their stored sources. Spot VIX is distinct from a VIX futures curve.",
         fred=False,
     )
+    _render_ibkr_vix()
     result = load_optional("options_volatility_context", default={})
     ctx = result.get("data") or {}
     if not result.get("available"):
@@ -1392,7 +1434,7 @@ def render_sector_rotation_v2() -> None:
     rs_rows = attach_live_1d_to_sector_rows(preferred_canonical_sector_rows(raw_rs), live)
     page_header(
         "Equities & Sectors",
-        "Sector comparison from stored snapshots. Live 1D uses current last vs prior completed session; longer windows stay finalized EOD.",
+        "Sector comparison from stored snapshots. Live 1D is the IBKR price versus the latest regular-session open; longer windows stay finalized EOD.",
         fred=False,
         as_of=compact_as_of([row.get("as_of") for row in rs_rows])[0],
         live_quotes_label=live.get("quotes_as_of_label") or "Live quotes unavailable",
@@ -1481,7 +1523,7 @@ def render_sector_rotation_v2() -> None:
                 for name in ("Live 1D Return", "1W Return", "1M Return", "3M Return", "6M Return", "12M Return")
                 if name in frame.columns
             ]
-            st.caption("Live 1D Return = current last / prior completed-session close − 1. Longer windows stay finalized EOD.")
+            st.caption("Live 1D Return = current IBKR price / latest regular-session open − 1. Longer windows stay finalized EOD. vs Prior Close is not labeled 1D.")
         order = {name: i for i, name in enumerate(CANONICAL_SECTORS)}
         frame["_o"] = frame["Sector"].map(lambda name: order.get(name, 99))
         frame = frame.sort_values(["_o", "Sector"]).drop(columns="_o")

@@ -26,8 +26,8 @@ def test_market_data_types_are_labelled():
     assert market_data_type_label(None) == "UNAVAILABLE"
 
 
-def test_error_2186_is_entitlement_not_connectivity():
-    assert classify_error(2186) == "entitlement"
+def test_error_2186_is_delayed_data_not_connectivity():
+    assert classify_error(2186) == "delayed_fallback"
     assert classify_error(2104) == "info"
     assert classify_error(502) == "connectivity"
 
