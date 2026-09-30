@@ -27,7 +27,7 @@ pytestmark = pytest.mark.usefixtures("pg_engine")
 
 def test_new_migrations_are_additive_and_numbered_after_007():
     names = sorted(p.name for p in MIGRATIONS.glob("*.sql"))
-    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025", "026", "027", "028", "029", "030", "031", "032", "033", "034", "035", "036", "037", "038", "039", "040", "041", "042", "043"))]
+    new = [n for n in names if n.startswith(("008", "009", "010", "011", "012", "013", "014", "015", "016", "017", "018", "019", "020", "021", "022", "023", "024", "025", "026", "027", "028", "029", "030", "031", "032", "033", "034", "035", "036", "037", "038", "039", "040", "041", "042", "043", "044"))]
     assert new == [
         "008_market_intelligence_core.sql",
         "009_market_intelligence_analytics.sql",
@@ -65,6 +65,7 @@ def test_new_migrations_are_additive_and_numbered_after_007():
         "041_retire_cboe_openbb_sources.sql",
         "042_cross_asset_and_cftc_positions.sql",
         "043_yahoo_dashboard_quotes.sql",
+        "044_yahoo_price_daily.sql",
     ]
     for name in new:
         sql = (MIGRATIONS / name).read_text(encoding="utf-8").upper()

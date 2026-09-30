@@ -24,7 +24,7 @@ LOCK="${LOCK_ROOT}/outputs/yahoo_dashboard_quotes.flock"
 CHECKOUT_ENV="${LOCK_ROOT}/.env"
 WRITER_ENV="/etc/fmp/fmp-writer.env"
 MARKER="jobs.yahoo_dashboard_quotes"
-LINE="* * * * * flock -n ${LOCK} -c 'set -a; [ -f ${CHECKOUT_ENV} ] && . ${CHECKOUT_ENV}; [ -f ${WRITER_ENV} ] && . ${WRITER_ENV}; set +a; unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK; cd ${CODE_ROOT} && ${PYTHON} -m jobs.yahoo_dashboard_quotes >> ${LOG} 2>&1'"
+LINE="*/15 * * * * flock -n ${LOCK} -c 'set -a; [ -f ${CHECKOUT_ENV} ] && . ${CHECKOUT_ENV}; [ -f ${WRITER_ENV} ] && . ${WRITER_ENV}; set +a; unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK; cd ${CODE_ROOT} && ${PYTHON} -m jobs.yahoo_dashboard_quotes >> ${LOG} 2>&1'"
 
 mkdir -p "$(dirname "$LOG")"
 mkdir -p "$(dirname "$LOCK")"

@@ -1,9 +1,10 @@
-"""Server-side Yahoo quote collection. Streamlit does not run this module.
+"""Server-side Yahoo quotes and incremental daily history. Streamlit does not run this module.
 
     python -m jobs.yahoo_dashboard_quotes
 
-One process at a time (file lock). Active sessions poll on the cron cadence.
-Closed sessions skip until the last success is 15 minutes old.
+One process at a time (file lock plus the cron flock). The cron is every 15 minutes.
+Closed sessions still run on that schedule and skip a history download when the
+stored sessions are already complete.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from pathlib import Path
 
 from market_intelligence.writer_db import WriterConfigurationError, writer_engine
 from market_intelligence.yahoo_dashboard import POLL_SECONDS, backoff_seconds, collect_once, should_poll
+from market_intelligence.yahoo_price_history import ingest_price_history
 
 logger = logging.getLogger("jobs.yahoo_dashboard_quotes")
 LOCK_NAME = "yahoo_dashboard_quotes.lock"
@@ -130,6 +132,25 @@ def run() -> int:
         state["missing"] = result.get("missing") or []
         state["opens"] = result.get("opens") or state.get("opens") or {}
         state["poll_seconds"] = POLL_SECONDS
+        state["history_last_attempt_at"] = now.isoformat()
+        try:
+            with engine.begin() as conn:
+                history = ingest_price_history(conn, now=now, progress=state.get("instruments") or {})
+        except Exception:
+            logger.exception("yahoo price history failed")
+            state["history_error"] = "history_failed"
+            state_path.write_text(json.dumps(state), encoding="utf-8")
+        else:
+            state["history_error"] = None
+            state["history_last_success_at"] = now.isoformat()
+            state["history_written"] = history.get("written")
+            state["instruments"] = history.get("instruments") or {}
+            logger.info(
+                "yahoo history written=%s skipped=%s errors=%s",
+                history.get("written"),
+                len(history.get("skipped") or []),
+                len(history.get("errors") or {}),
+            )
         state_path.write_text(json.dumps(state), encoding="utf-8")
         logger.info(
             "yahoo quotes priced=%s/%s inserted=%s missing=%s",

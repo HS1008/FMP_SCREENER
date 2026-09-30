@@ -1301,6 +1301,21 @@ def dashboard_quotes_latest(conn) -> list[dict[str, Any]]:
     )
 
 
+def dashboard_price_bars(conn) -> list[dict[str, Any]]:
+    """Split-adjusted daily closes for price returns. Does not call Yahoo."""
+    if not _view_exists(conn, "mi_v_yahoo_price_daily"):
+        return []
+    return _rows(
+        conn,
+        """
+        SELECT symbol, bar_date, close_price, adjustment_basis, bar_quality, bar_ts
+        FROM mi_v_yahoo_price_daily
+        WHERE bar_date >= CURRENT_DATE - INTERVAL '450 days'
+        ORDER BY symbol, bar_date
+        """,
+    )
+
+
 def order_flow_context(conn, *, today: date | None = None, history_limit: int = 120, include_history: bool = True) -> dict[str, Any]:
     """Corporate bond trading activity from FINRA Query API aggregates stored in PostgreSQL."""
     from market_intelligence.finra_catalog import (

@@ -423,9 +423,9 @@ def test_us_controls_keep_their_state_across_reruns(monkeypatch):
     us.run()
     assert not us.exception, [item.value for item in us.exception]
     text = _texts(us)
-    assert "curated current-context baskets" in text
-    assert "Cross-sector themes are omitted" in text
-    assert "Cloud / Data Infrastructure" in text
+    assert "listed subsector ETFs" in text
+    assert "Individual Stocks" in text
+    assert "Cash dividends are excluded" in text
     assert "MARKET_MONITOR_EOD" in text
     assert "EQUITY_EOD" in text
     assert "equal_dollar_daily_rebalance_v1" in text
@@ -434,19 +434,18 @@ def test_us_controls_keep_their_state_across_reruns(monkeypatch):
     sector = next(widget for widget in us.selectbox if widget.label == "Sector")
     assert display.value == "Indexed to 100"
     assert performance.value == "Absolute Performance"
-    assert sector.value == "Technology"
-    constituent = next(widget for widget in us.selectbox if widget.label == "Constituent")
-    assert constituent.value == "AMD"
-    assert "AMD — Advanced Micro Devices Inc." in text
+    assert sector.value == "Tech"
+    assert all(widget.label != "Constituent" for widget in us.selectbox)
     performance.set_value("Relative vs SPY").run()
     assert not us.exception, [item.value for item in us.exception]
     sector = next(widget for widget in us.selectbox if widget.label == "Sector")
     display = next(widget for widget in us.pills if widget.label == "Display")
-    assert sector.value == "Technology"
+    assert sector.value == "Tech"
     assert display.value == "Indexed to 100"
     sector.set_value("Utilities").run()
     assert not us.exception, [item.value for item in us.exception]
-    assert "No subsector classification available for this sector" in _texts(us)
+    assert "GRID · grid/transmission infrastructure" in _texts(us)
+    assert "No subsector classification available for this sector" not in _texts(us)
     assert next(widget for widget in us.pills if widget.label == "Sector performance").value == "Relative vs SPY"
     next(widget for widget in us.pills if widget.label == "Display").set_value("Absolute").run()
     assert not us.exception, [item.value for item in us.exception]
@@ -460,15 +459,15 @@ def test_every_sector_heatmap_renders_or_explains(monkeypatch):
     us = AppTest.from_file(str(ROOT / "pages" / "22_US_Markets.py"), default_timeout=40)
     us.run()
     assert not us.exception, [item.value for item in us.exception]
-    for name in SECTOR_PROXIES:
+    from market_intelligence.ibkr_live_universe import subsector_groups
+
+    for name, members in subsector_groups():
         next(widget for widget in us.selectbox if widget.label == "Sector").set_value(name).run()
         assert not us.exception, [item.value for item in us.exception]
         text = _texts(us)
-        if name == "Technology":
-            assert "AI Compute / GPUs" in text or "equal-dollar" in text
-            assert "No subsector classification available for this sector" not in text
-        else:
-            assert "No subsector classification available for this sector" in text
+        symbol, label = members[0]
+        assert "{0} · {1}".format(symbol, label) in text
+        assert all(widget.label != "Constituent" for widget in us.selectbox)
 
 
 def test_us_and_global_pages_render_required_sections(monkeypatch):
