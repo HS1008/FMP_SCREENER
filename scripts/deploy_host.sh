@@ -127,12 +127,39 @@ if [ ! -f "$DASHBOARD_ENV" ]; then
   exit 1
 fi
 
+prune_old_releases() {
+  local keep_current dir base
+  keep_current="$(resolved_existing_path "$CURRENT_LINK")"
+  echo "disk_before $(df -h "$RELEASE_ROOT" | awk 'NR==2 {print $4 " free of " $2}')"
+  if [ -d /root/.cache/pip ]; then
+    rm -rf /root/.cache/pip
+    echo "pip_cache_cleared=1"
+  fi
+  for dir in "$RELEASE_ROOT"/*; do
+    [ -d "$dir" ] || continue
+    base="$(basename "$dir")"
+    case "$base" in
+      "$SHA") continue ;;
+    esac
+    if [ "$dir" = "$keep_current" ]; then
+      echo "release_kept=$base"
+      continue
+    fi
+    if printf '%s' "$base" | grep -Eq '^[0-9a-f]{40}$'; then
+      rm -rf -- "$dir"
+      echo "pruned_release=$base"
+    fi
+  done
+  echo "disk_after $(df -h "$RELEASE_ROOT" | awk 'NR==2 {print $4 " free of " $2}')"
+}
+
 echo "Staging immutable release (no migrate, no restart, no activate, no provision)..."
 STAGED="$RELEASE_ROOT/$SHA"
 REPO_URL="${FMP_REPO_URL:-https://github.com/hs1008/fmp_screener.git}"
 CURRENT_BEFORE="$(resolved_existing_path "$CURRENT_LINK")"
 IMMUTABLE_RC=0
 install -d -m 0755 "$RELEASE_ROOT"
+prune_old_releases
 if [ ! -d "$STAGED/.git" ]; then
   if git clone --depth 1 "$REPO_URL" "$STAGED"; then
     :
@@ -147,14 +174,16 @@ if [ "$actual" != "$SHA" ]; then
   echo "FAIL: staged HEAD ${actual} does not match requested ${SHA}"
   exit 3
 fi
-if [ ! -x "$STAGED/venv/bin/python" ]; then
+if [ ! -x "$STAGED/venv/bin/streamlit" ]; then
   if [ ! -f "$STAGED/requirements.txt" ]; then
     echo "FAIL: staged tree is missing requirements.txt"
     exit 3
   fi
-  echo "Creating release venv at $STAGED/venv"
-  python3 -m venv "$STAGED/venv"
-  "$STAGED/venv/bin/pip" install -r "$STAGED/requirements.txt"
+  if [ ! -x "$STAGED/venv/bin/python" ]; then
+    echo "Creating release venv at $STAGED/venv"
+    python3 -m venv "$STAGED/venv"
+  fi
+  "$STAGED/venv/bin/pip" install --no-cache-dir -r "$STAGED/requirements.txt"
 fi
 if [ "${MI_OPENBB_INSTALL_EXTRA:-0}" = "1" ]; then
   if [ ! -f "$STAGED/requirements-openbb.txt" ]; then
