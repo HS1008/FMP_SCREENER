@@ -27,6 +27,7 @@ from market_intelligence.catalog import (
     SLOPE_10Y2Y_METRIC,
     TIPS_TENORS,
 )
+from market_intelligence.ibkr_live_universe import display_quote_rows, quote_symbol
 from market_intelligence.history_range import (
     STORED_HISTORY_LIMIT,
     chart_series_from_histories,
@@ -1937,9 +1938,27 @@ def render_data_health() -> None:
             hide_index=True,
         )
         st.caption("If the Windows laptop sleeps, TWS stops sending heartbeats and the server marks the collector offline. That is not a FINRA or FRED backend failure.")
-    if quotes:
+    shown_quotes = display_quote_rows(quotes)
+    if shown_quotes:
         with st.expander("Latest stored IBKR quotes"):
-            st.dataframe(pd.DataFrame([{"Instrument": row.get("display_name") or row.get("instrument_id"), "Bid": row.get("bid"), "Ask": row.get("ask"), "Last": row.get("last_price"), "Status": row.get("quote_status") or "—", "Received": age_text(row.get("retrieved_at"))} for row in quotes]), use_container_width=True, hide_index=True)
+            st.caption("One row per approved symbol. Older instrument ids and names outside the live book are omitted.")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Instrument": quote_symbol(row) or row.get("display_name") or row.get("instrument_id"),
+                            "Bid": row.get("bid"),
+                            "Ask": row.get("ask"),
+                            "Last": row.get("last_price") if row.get("last_price") is not None else ((row.get("provenance") or {}).get("current_price") if isinstance(row.get("provenance"), dict) else None),
+                            "Status": ((row.get("provenance") or {}).get("quote_error") if isinstance(row.get("provenance"), dict) else None) or row.get("quote_status") or "—",
+                            "Received": age_text(row.get("retrieved_at")),
+                        }
+                        for row in shown_quotes
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
     elif collectors:
         st.caption("Collector registered, but no quotes have been persisted yet.")
 

@@ -17,29 +17,34 @@ from market_intelligence.ibkr_live_universe import (
     UnapprovedSubscription,
     approved_contracts,
     assert_subscription_allowed,
+    display_quote_rows,
     stock_heatmap_rows,
+    stock_horizon_values,
     unique_stock_symbols,
 )
+from market_intelligence.taxonomy import index_etf_label
 from market_intelligence.live_session import ibkr_mark_price, latest_opened_rth_session, open_to_current_return
 
 ET = ZoneInfo("America/New_York")
 
 
 def test_named_catalog_is_not_padded_to_the_heading_counts():
-    """Power's heading says 11, but only eight tickers are named. Do not invent the rest."""
+    """The eight Power names are off the live book so the line count stays under 100."""
     stocks = unique_stock_symbols()
-    assert len(stocks) == 47
-    assert APPROVED_EQUITY_ETF_COUNT == 92
+    assert len(stocks) == 39
+    assert APPROVED_EQUITY_ETF_COUNT == 84
     assert APPROVED_EXTRA_INDEXES == frozenset({"VIX"})
-    assert EXPECTED_IBKR_LIVE_COUNT == 93
-    power = [symbol for name, members in STOCK_GROUPS if name.startswith("Power") for symbol in members]
-    assert power == ["CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"]
+    assert EXPECTED_IBKR_LIVE_COUNT == 85
+    subscribed = {row["symbol"] for row in approved_contracts()}
+    for symbol in ("CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"):
+        assert symbol not in subscribed
+        assert symbol not in stocks
 
 
 def test_display_duplicates_subscribe_once_and_unapproved_symbols_are_rejected():
     rows = approved_contracts()
     symbols = [row["symbol"] for row in rows]
-    assert len(symbols) == len(set(symbols)) == 93
+    assert len(symbols) == len(set(symbols)) == EXPECTED_IBKR_LIVE_COUNT
     assert symbols.count("NVDA") == 1
     assert symbols.count("TSLA") == 1
     assert symbols.count("SPCX") == 1
@@ -123,6 +128,32 @@ def test_stock_heatmap_reuses_one_quote_and_uses_the_open_return():
     assert rows[0]["price"] == rows[1]["price"]
     missing = stock_heatmap_rows([])
     assert all(row["open_to_current"] is None for row in missing)
+
+
+def test_quote_table_keeps_one_priced_row_and_omits_unapproved_names():
+    rows = display_quote_rows(
+        [
+            {"display_name": "TLT", "last_price": 90.0, "retrieved_at": "2026-09-30T14:00:00+00:00"},
+            {"display_name": "CIBR", "instrument_id": "IBKR:1", "last_price": None, "retrieved_at": "2026-09-30T12:00:00+00:00"},
+            {"display_name": "CIBR", "instrument_id": "IBKR:2", "last_price": 70.1, "retrieved_at": "2026-09-30T13:00:00+00:00"},
+            {"display_name": "CIBR", "instrument_id": "IBKR:3", "last_price": None, "retrieved_at": "2026-09-30T15:00:00+00:00"},
+        ]
+    )
+    symbols = [row["display_name"] for row in rows]
+    assert symbols == ["CIBR"]
+    assert rows[0]["last_price"] == 70.1
+    assert index_etf_label("RSP", "Equal-Weight S&P 500") == "RSP · Equal-Weight S&P 500"
+
+
+def test_stock_horizons_use_the_open_for_1d_and_stored_windows_after_that():
+    values = stock_horizon_values(0.01, {"1D": 0.5, "1W": 0.02, "1M": None, "3M": -0.1, "6M": 0.2, "1Y": 0.3})
+    assert values[0] == pytest.approx(0.01)
+    assert values[1] == pytest.approx(0.02)
+    assert values[2] is None
+    assert values[3] == pytest.approx(-0.1)
+    assert values[4] == pytest.approx(0.2)
+    assert values[5] == pytest.approx(0.3)
+    assert len(values) == 6
 
 
 def test_config_watchlist_cannot_add_an_unapproved_symbol(tmp_path):
