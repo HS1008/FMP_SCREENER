@@ -4,9 +4,12 @@
 set -euo pipefail
 
 ARG_ROOT="${1:-/root/FMP_SCREENER}"
+STAGED_ROOT="${2:-}"
 LOCK_ROOT="$ARG_ROOT"
 CODE_ROOT="$ARG_ROOT"
-if [ "$ARG_ROOT" = "/root/FMP_SCREENER" ] && [ -d /opt/fmp/current ] && [ -f /opt/fmp/current/jobs/yahoo_dashboard_quotes.py ]; then
+if [ -n "$STAGED_ROOT" ] && [ -f "$STAGED_ROOT/jobs/yahoo_dashboard_quotes.py" ] && [ -x "$STAGED_ROOT/venv/bin/python" ]; then
+  CODE_ROOT="$STAGED_ROOT"
+elif [ "$ARG_ROOT" = "/root/FMP_SCREENER" ] && [ -d /opt/fmp/current ] && [ -f /opt/fmp/current/jobs/yahoo_dashboard_quotes.py ]; then
   CODE_ROOT="/opt/fmp/current"
 fi
 if [ -x "${CODE_ROOT}/venv/bin/python" ]; then
