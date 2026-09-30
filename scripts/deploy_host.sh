@@ -280,7 +280,20 @@ echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
 bash "$CODE_ROOT/scripts/install_backtest_sync_cron.sh" "$ROOT"
 
 echo "Installing Yahoo dashboard quote cron (idempotent, flock-protected)..."
-bash "$CODE_ROOT/scripts/install_yahoo_quote_cron.sh" "$ROOT"
+bash "$CODE_ROOT/scripts/install_yahoo_quote_cron.sh" "$ROOT" "$CODE_ROOT"
+
+echo "Collecting the first Yahoo dashboard quote batch..."
+(
+  set -a
+  # shellcheck disable=SC1091
+  [ -f "$ROOT/.env" ] && . "$ROOT/.env"
+  # shellcheck disable=SC1091
+  [ -f "$WRITER_ENV" ] && . "$WRITER_ENV"
+  set +a
+  unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+  cd "$CODE_ROOT"
+  "$PYTHON_BIN" -m jobs.yahoo_dashboard_quotes
+) || echo "yahoo_quote_first_run_failed=$?"
 
 echo "Recording deploy identity (no secrets)..."
 (
