@@ -390,7 +390,7 @@ class CollectorRuntime:
                         change,
                         error_text,
                     )
-            if any(payload.get(k) is not None for k in ("bid", "ask", "last_price", "close_price")):
+            if error_text or any(payload.get(k) is not None for k in ("bid", "ask", "last_price", "close_price")):
                 fingerprint = quote_value_fingerprint(payload)
                 if self._last_quote_fp.get(key) != fingerprint:
                     put_status = self.queue.put(payload)
