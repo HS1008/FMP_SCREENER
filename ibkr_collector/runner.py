@@ -504,6 +504,7 @@ class CollectorRuntime:
         req_id = self.subs[self._key(row)]["req_id"]
         deadline = time.monotonic() + 2.5
         code = None
+        priced = False
         while time.monotonic() < deadline:
             for err in list(self.client.errors):
                 if err.get("req_id") != req_id:
@@ -511,21 +512,31 @@ class CollectorRuntime:
                 if err.get("error_code") in DELAYED_AVAILABLE_CODES or err.get("error_code") in LINE_LIMIT_ERROR_CODES:
                     code = err.get("error_code")
                     break
+            ticks = self.client.ticks.get(req_id) or {}
+            if any(ticks.get(name) is not None for name in ("bid", "ask", "last", "close")):
+                priced = True
+                break
             if code is not None:
                 break
             time.sleep(0.05)
-        if code is None:
+        if priced:
             logger.info("probe %s accepted live market data", row["symbol"])
             return True
         if code in LINE_LIMIT_ERROR_CODES:
             self._line_limit_hit = True
             logger.error("IBKR line limit on probe %s (code %s); not opening more lines", row["symbol"], code)
             return True
-        logger.warning(
-            "probe %s returned %s; cancelling that line and opening each symbol once as DELAYED",
-            row["symbol"],
-            code,
-        )
+        if code is None:
+            logger.warning(
+                "probe %s sent no price; cancelling that line and opening each symbol once as DELAYED",
+                row["symbol"],
+            )
+        else:
+            logger.warning(
+                "probe %s returned %s; cancelling that line and opening each symbol once as DELAYED",
+                row["symbol"],
+                code,
+            )
         try:
             self.client.cancelMktData(req_id)
         except Exception:
