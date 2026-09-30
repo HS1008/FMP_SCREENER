@@ -32,12 +32,13 @@ ET = ZoneInfo("America/New_York")
 
 SOURCE_IBKR = "IBKR_MARKET_DATA"
 SOURCE_YAHOO_LIVE = "YAHOO_LIVE"
+SOURCE_YAHOO_DASHBOARD = "YAHOO_DASHBOARD"
 SOURCE_EQUITY_EOD = "EQUITY_EOD"
 SOURCE_YAHOO_EOD = "YAHOO_EOD"
 PROVIDER_IBKR = "IBKR"
 PROVIDER_YAHOO = "YAHOO"
 
-CURRENT_SOURCE_RANK = (SOURCE_IBKR, SOURCE_YAHOO_LIVE)
+CURRENT_SOURCE_RANK = (SOURCE_YAHOO_DASHBOARD, SOURCE_IBKR, SOURCE_YAHOO_LIVE)
 # Prefer IBKR EOD source, then Yahoo EOD fallback source, then provider ranks within EQUITY_EOD.
 PRIOR_SOURCE_RANK = (SOURCE_EQUITY_EOD, SOURCE_YAHOO_EOD)
 PRIOR_PROVIDER_RANK = (PROVIDER_IBKR, "FIXTURE", PROVIDER_YAHOO)
@@ -184,14 +185,30 @@ def quote_data_status(quote: Mapping[str, Any] | None) -> str:
         return "LIVE"
     if "FROZEN" in raw or raw in {"2", "4"}:
         return "FROZEN"
+    if "YAHOO" in raw:
+        return "PROVIDER"
     if "DELAYED" in raw or raw in {"3", "IBKR_DELAYED"}:
         return "DELAYED"
     source = str(quote.get("source_id") or "")
     if source == SOURCE_IBKR:
         return "DELAYED"
-    if source == SOURCE_YAHOO_LIVE:
+    if source in {SOURCE_YAHOO_LIVE, SOURCE_YAHOO_DASHBOARD}:
         return "PROVIDER"
     return "HISTORICAL"
+
+
+def quote_observation_status(quote_ts: Any, now: datetime | None = None) -> str:
+    """PROVIDER while the print is recent or the session is closed. STALE when it is old during a session."""
+    observed = _as_datetime(quote_ts)
+    if observed is None:
+        return "UNAVAILABLE"
+    moment = now or datetime.now(timezone.utc)
+    if market_session_state(moment) == "CLOSED":
+        return "PROVIDER"
+    age = (moment.astimezone(timezone.utc) - observed.astimezone(timezone.utc)).total_seconds()
+    if age > DEFAULT_QUOTE_MAX_AGE_SECONDS:
+        return "STALE"
+    return "PROVIDER"
 
 
 def market_session_state(now: datetime | None = None) -> str:
@@ -223,8 +240,11 @@ def heatmap_freshness_label(
         local = updated.astimezone(ET)
         stamp = local.strftime("%H:%M:%S")
     quoted = present - {"HISTORICAL"}
+    yahoo_states = {"PROVIDER", "STALE"}
     if quoted and "HISTORICAL" in present:
         prefix = "Mixed 1D sources"
+    elif quoted and quoted <= yahoo_states:
+        prefix = "Yahoo stale" if "STALE" in quoted else "Yahoo"
     elif len(quoted) > 1:
         prefix = "Mixed IBKR"
     elif "LIVE" in present:
@@ -245,7 +265,8 @@ def heatmap_freshness_label(
             parts.insert(2, "updated {0} ET".format(stamp))
         return " · ".join(parts)
     if stamp:
-        return "{0} · updated {1} ET".format(prefix, stamp)
+        verb = "price observed" if prefix.startswith("Yahoo") else "updated"
+        return "{0} · {1} {2} ET".format(prefix, verb, stamp)
     return prefix
 
 
@@ -450,7 +471,7 @@ def resolve_current_price(
         symbol=symbol.upper(),
         price=price,
         source_id=source_id,
-        provider=PROVIDER_IBKR if source_id == SOURCE_IBKR else PROVIDER_YAHOO,
+        provider=PROVIDER_YAHOO if source_id in {SOURCE_YAHOO_LIVE, SOURCE_YAHOO_DASHBOARD} else PROVIDER_IBKR,
         observation_ts=ts,
         session_date=quote_session_date(ts, now=now),
         quality="FRESH",
@@ -576,6 +597,7 @@ __all__ = [
     "SOURCE_EQUITY_EOD",
     "SOURCE_IBKR",
     "SOURCE_YAHOO_EOD",
+    "SOURCE_YAHOO_DASHBOARD",
     "SOURCE_YAHOO_LIVE",
     "YAHOO_EOD_FALLBACK_ENV",
     "YAHOO_LIVE_FALLBACK_ENV",

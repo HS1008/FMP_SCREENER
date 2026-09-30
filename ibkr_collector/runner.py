@@ -17,7 +17,6 @@ from ibkr_collector.historical import parse_historical_bar
 from ibkr_collector.session_open import choose_latest_open, needs_open_refresh
 from ibkr_collector.delivery import DeliveryError, IngestClient
 from ibkr_collector.diagnostic import probe_socket
-from ibkr_collector.lock import InstanceLock
 from ibkr_collector.logging_setup import setup_logging
 from ibkr_collector.queue import OutboundQueue
 from ibkr_collector.readonly_client import ReadOnlyTwsClient
@@ -774,13 +773,7 @@ def run_forever() -> int:
     cfg = load_config()
     write_example_config(cfg.config_path)
     setup_logging(cfg.log_dir)
-    lock = InstanceLock(cfg.lock_path)
-    if not lock.acquire():
-        logger.error("another collector instance holds the lock; exiting")
-        return 4
-    _install_stop_handlers()
-    try:
-        CollectorRuntime(cfg).run()
-    finally:
-        lock.release()
+    logger.warning(
+        "Dashboard quotes are collected from Yahoo on the server. This process does not open TWS market-data lines."
+    )
     return 0

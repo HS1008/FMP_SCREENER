@@ -891,6 +891,7 @@ def _cell_source_note(detail: Mapping[str, Any] | None, *, count: int | None, re
         "DELAYED": "IBKR Delayed",
         "FROZEN": "IBKR Frozen",
         "PROVIDER": "Yahoo",
+        "STALE": "Yahoo stale",
         "HISTORICAL": "EQUITY_EOD",
     }
     if status == "MIXED":

@@ -250,6 +250,9 @@ export FMP_DASHBOARD_ENV="$DASHBOARD_ENV"
 echo "Installing 1-minute backtest sync cron (idempotent, flock-protected)..."
 bash "$CODE_ROOT/scripts/install_backtest_sync_cron.sh" "$ROOT"
 
+echo "Installing Yahoo dashboard quote cron (idempotent, flock-protected)..."
+bash "$CODE_ROOT/scripts/install_yahoo_quote_cron.sh" "$ROOT"
+
 echo "Recording deploy identity (no secrets)..."
 (
   set -a

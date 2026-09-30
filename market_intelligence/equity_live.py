@@ -13,6 +13,7 @@ from sqlalchemy import text
 
 from market_intelligence.live_session import (
     DEFAULT_QUOTE_MAX_AGE_SECONDS,
+    SOURCE_YAHOO_DASHBOARD,
     REQUIRED_SECTOR_LIVE_SYMBOLS,
     SOURCE_IBKR,
     PriceObservation,
@@ -136,12 +137,16 @@ def _finite_open(value: Any) -> float | None:
 
 def _ibkr_provenance(candidates: Sequence[Mapping[str, Any]], symbol: str) -> dict[str, Any]:
     ticker = symbol.upper()
+    matches: list[Mapping[str, Any]] = []
     for row in candidates:
         row_symbol = str(row.get("symbol") or row.get("display_name") or "").upper()
         if row_symbol != ticker:
             continue
-        if str(row.get("source_id") or "") not in {"", SOURCE_IBKR}:
+        if str(row.get("source_id") or "") not in {"", SOURCE_IBKR, SOURCE_YAHOO_DASHBOARD}:
             continue
+        matches.append(row)
+    matches.sort(key=lambda row: 0 if str(row.get("source_id") or "") == SOURCE_YAHOO_DASHBOARD else 1)
+    for row in matches:
         provenance = row.get("provenance") or {}
         if isinstance(provenance, Mapping):
             return dict(provenance)
@@ -171,7 +176,7 @@ def resolve_symbol_live(
     session_open_date = str(provenance.get("session_date") or "") or None
     ret = None
     return_basis = None
-    if current is not None and current.source_id == SOURCE_IBKR:
+    if current is not None and current.source_id in {SOURCE_IBKR, SOURCE_YAHOO_DASHBOARD}:
         stored = _finite_open(provenance.get("open_to_current"))
         ret = stored if stored is not None else open_to_current_return(current.price, session_open)
         if ret is not None:

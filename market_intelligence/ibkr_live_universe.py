@@ -1,10 +1,8 @@
-"""Canonical IBKR live-quote allowlist.
+"""Canonical dashboard quote universe.
 
-The live book omits the eight Power names (CEG, VST, TLN, GEV, ETN, PWR, CCJ, BE)
-so the subscription stays inside the 100-line TWS cap.
-
-Display groups may repeat a ticker (NVDA, TSLA, SPCX). Subscriptions are one
-contract per symbol. VIX is the only extra index.
+Display groups may repeat a ticker (NVDA, TSLA, SPCX). One contract per symbol.
+VIX is included. Yahoo quotes use ``yahoo_symbol``; VIX is ``^VIX``.
+The eight Power names are part of this universe.
 """
 
 from __future__ import annotations
@@ -82,7 +80,25 @@ STOCK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Quantum", ("IONQ",)),
     ("EV", ("RIVN", "TSLA")),
     ("Fintech", ("AFRM", "SOFI")),
+    ("Power — IPP", ("CEG", "VST", "TLN")),
+    ("Power — Grid Infrastructure", ("GEV", "ETN", "PWR")),
+    ("Power — Nuclear", ("CCJ",)),
+    ("Power — Distributed / On-Site Power", ("BE",)),
 )
+
+
+YAHOO_SYMBOL_OVERRIDES: dict[str, str] = {"VIX": "^VIX"}
+
+
+def yahoo_symbol(symbol: str) -> str:
+    """Yahoo ticker for a display symbol. Share classes use a hyphen (BRK.B -> BRK-B)."""
+    ticker = str(symbol or "").upper().strip()
+    if ticker in YAHOO_SYMBOL_OVERRIDES:
+        return YAHOO_SYMBOL_OVERRIDES[ticker]
+    if "." in ticker:
+        return ticker.replace(".", "-")
+    return ticker
+
 
 _ARCA = frozenset(
     {
@@ -316,6 +332,7 @@ def stock_heatmap_rows(quotes: list[Mapping[str, Any]] | None) -> list[dict[str,
                     "symbol": symbol,
                     "price": price,
                     "open_to_current": change,
+                    "quote_ts": quote.get("quote_ts"),
                     "note": " · ".join(note_parts),
                 }
             )

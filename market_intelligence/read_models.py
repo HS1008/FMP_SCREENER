@@ -1291,6 +1291,16 @@ def ibkr_quotes_latest(conn) -> list[dict[str, Any]]:
     return _rows(conn, "SELECT * FROM mi_v_ibkr_quotes_latest ORDER BY instrument_id")
 
 
+def dashboard_quotes_latest(conn) -> list[dict[str, Any]]:
+    """Stored Yahoo dashboard quotes. Streamlit does not call Yahoo."""
+    if not _view_exists(conn, "mi_v_live_quotes_by_source"):
+        return []
+    return _rows(
+        conn,
+        "SELECT * FROM mi_v_live_quotes_by_source WHERE source_id = 'YAHOO_DASHBOARD' ORDER BY symbol",
+    )
+
+
 def order_flow_context(conn, *, today: date | None = None, history_limit: int = 120, include_history: bool = True) -> dict[str, Any]:
     """Corporate bond trading activity from FINRA Query API aggregates stored in PostgreSQL."""
     from market_intelligence.finra_catalog import (
@@ -1794,6 +1804,7 @@ __all__ = [
     "snapshot_age",
     "ibkr_collector_status",
     "ibkr_quotes_latest",
+    "dashboard_quotes_latest",
     "equity_live_context",
     "spy_rsp_chart_context",
     "industries_context",
