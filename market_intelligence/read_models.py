@@ -16,6 +16,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import text
 
 from market_intelligence.calendars import NY_TZ
+from market_intelligence.schema_cache import view_exists
 from market_intelligence.catalog import (
     CATALOG,
     CATALOG_BY_ID,
@@ -1776,7 +1777,7 @@ def data_health_context(conn, *, today: date | None = None) -> dict[str, Any]:
 
 
 def _view_exists(conn, name: str) -> bool:
-    return bool(conn.execute(text("SELECT 1 FROM information_schema.views WHERE table_name = :n"), {"n": name}).first())
+    return view_exists(conn, name)
 
 
 def strategies_context(conn) -> dict[str, Any]:

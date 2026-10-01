@@ -17,9 +17,9 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import streamlit.components.v2 as components
-
+from market_intelligence.components.chart_component import chart_component
 from market_intelligence.markets_analytics import column_color_scales, heatmap_cell_color
+from market_intelligence.perf import span
 
 _FRONTEND = Path(__file__).resolve().parent / "frontend"
 _HTML = (_FRONTEND / "chart.html").read_text(encoding="utf-8")
@@ -252,14 +252,13 @@ def echarts_option(payload: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def _component():
-    # Register on each script run. AppTest replaces the component registry between
-    # runs, so a process-wide cache would mount an unregistered name.
-    return components.component(
+    return chart_component(
         "tenor_chart",
         html=_HTML,
         css=_CSS,
-        js=_JS,
-        isolate_styles=True,
+        library_js=_FRONTEND / "echarts.common.min.js",
+        chart_js=_FRONTEND / "chart.js",
+        inline_js=_JS,
     )
 
 
@@ -276,7 +275,12 @@ def render_echarts(
     desktop_height: int = DESKTOP_HEIGHT,
     mobile_height: int = MOBILE_HEIGHT,
 ) -> None:
-    """Mount one prepared ECharts option. The browser does not fetch data."""
+    """Mount one prepared ECharts option. The browser does not fetch market data."""
+    with span("tenor_chart.mount"):
+        _mount_echarts(option, key=key, desktop_height=desktop_height, mobile_height=mobile_height)
+
+
+def _mount_echarts(option, key, desktop_height, mobile_height) -> None:
     _component()(
         data={
             "option": option,
