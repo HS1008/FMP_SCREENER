@@ -8,7 +8,7 @@ fabricating numbers. Missing values render as "—".
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 import pandas as pd
 import streamlit as st
@@ -19,7 +19,6 @@ from market_intelligence.bond_tax import ASSET_CORPORATE, ASSET_MUNI, ASSET_TREA
 from market_intelligence.bonds import interpolate_par_yield
 from market_intelligence.catalog import (
     CATALOG_BY_ID,
-    CREDIT_BROAD_BUCKETS,
     CREDIT_BROAD_TILES,
     CREDIT_RATING_TILES,
     CURVE_TENORS,
@@ -76,7 +75,7 @@ from market_intelligence.read_models import (
     curve_levels_on_date,
     resolve_curve_date,
 )
-from market_intelligence.signals import build_what_matters, credit_sector_coverage
+from market_intelligence.signals import build_what_matters
 from market_intelligence.surface_status import worst_surface_status
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.taxonomy import NO_SUBSECTOR_CLASSIFICATION, constituent_label
@@ -1275,122 +1274,128 @@ def _render_oas_history_chart(
     )
 
 
+def spread_percent_change(level_bps: Any, change_bps: Any) -> float | None:
+    """Percent change of an OAS level. ``change_bps`` is the stored level difference.
+
+    Prior spread is the current level minus that difference. A missing level, a
+    missing change, or a zero prior spread is None.
+    """
+    if level_bps is None or change_bps is None or isinstance(level_bps, bool) or isinstance(change_bps, bool):
+        return None
+    try:
+        level = float(level_bps)
+        change = float(change_bps)
+    except (TypeError, ValueError):
+        return None
+    if level != level or change != change:
+        return None
+    prior = level - change
+    if prior == 0 or prior != prior:
+        return None
+    return change / prior * 100.0
+
+
+_OAS_CHANGE_FIELDS: tuple[tuple[str, str], ...] = (
+    ("1D", "change_1d_bps"),
+    ("1W", "change_1w_bps"),
+    ("1M", "change_1m_bps"),
+)
+
+
+def _oas_change_table(rows: Sequence[Mapping[str, Any]], *, percent: bool) -> Any:
+    suffix = "%" if percent else "bps"
+    records = []
+    for row in rows:
+        record: dict[str, Any] = {
+            "Series": row.get("label"),
+            "As of": row.get("as_of"),
+            "OAS (bps)": row.get("oas_bps"),
+        }
+        for label, field in _OAS_CHANGE_FIELDS:
+            raw = row.get(field)
+            record["{0} ({1})".format(label, suffix)] = spread_percent_change(row.get("oas_bps"), raw) if percent else raw
+        records.append(record)
+    frame = pd.DataFrame(records)
+    formats = {"OAS (bps)": lambda value: "—" if value is None else "{0:.0f}".format(value)}
+    for label, _field in _OAS_CHANGE_FIELDS:
+        column = "{0} ({1})".format(label, suffix)
+        if percent:
+            formats[column] = lambda value: "—" if value is None else "{0:+.2f}%".format(value)
+        else:
+            formats[column] = lambda value: "—" if value is None else "{0:+.0f}".format(value)
+    return frame.style.format(formats, na_rep="—")
+
+
+def _credit_rows(buckets: Sequence[Mapping[str, Any]], tiles: Sequence[tuple[str, str]], labels: Mapping[str, str]) -> list[dict[str, Any]]:
+    by_id = {str(row.get("series_id") or ""): row for row in buckets}
+    ordered: list[dict[str, Any]] = []
+    for series_id, _short in tiles:
+        row = by_id.get(series_id)
+        if row is None:
+            continue
+        shown = dict(row)
+        shown["label"] = labels.get(series_id, row.get("label"))
+        ordered.append(shown)
+    return ordered
+
+
 def render_credit_overview() -> None:
     credit = load_or_stop("credit_context")
     buckets = credit.get("buckets") or []
-    coverage = credit_sector_coverage(credit)
     page_header(
         "Credit",
-        "ICE BofA option-adjusted spreads for US investment grade, US high yield, emerging markets, and rating buckets. Sector OAS only where stored coverage supports it.",
+        "ICE BofA option-adjusted spreads. Broad market is IG, HY, and EM. Ratings are AAA through CCC & lower.",
         as_of=compact_as_of([row.get("as_of") for row in buckets])[0],
     )
     if not buckets:
         st.info("No credit index snapshots stored.")
         return
 
-    view = st.radio("Credit view", ("Broad market", "Ratings", "Sectors & subsectors"), horizontal=True, key="credit_view")
-    broad = [row for row in buckets if row["bucket"] in CREDIT_BROAD_BUCKETS]
-    rating = [row for row in buckets if row["bucket"] not in CREDIT_BROAD_BUCKETS]
+    broad_labels = {series_id: "{0} OAS".format(label) for series_id, label in CREDIT_BROAD_TILES}
+    rating_labels = {series_id: label for series_id, label in CREDIT_RATING_TILES}
+    broad = _credit_rows(buckets, CREDIT_BROAD_TILES, broad_labels)
+    rating = _credit_rows(buckets, CREDIT_RATING_TILES, rating_labels)
+    st.caption(credit.get("attribution") or "")
 
-    if view == "Broad market":
-        st.subheader("Key takeaways")
-        cols = st.columns(max(1, len(broad)))
-        for i, row in enumerate(broad):
-            change = row.get("change_1d_bps")
-            delta = None
-            if change is not None:
-                widen = "widening" if change > 0 else ("tightening" if change < 0 else "unchanged")
-                delta = "{0} ({1})".format(fmt_signed(change, "bps"), widen)
-            cols[i].metric(row["label"], "{0:.0f} bps".format(row["oas_bps"]) if row.get("oas_bps") is not None else "—", delta)
-        st.caption(credit.get("attribution") or "")
-        if broad:
-            category_bar_chart(
-                [row["label"] for row in broad],
-                [row.get("oas_bps") for row in broad],
-                key="credit-broad-oas",
-                y_title="OAS bps",
-                unit="bps",
-            )
-        st.subheader("Broad market history")
-        selected = series_toggles(CREDIT_BROAD_TILES, key="credit_broad", group_label="Broad series")
-        _render_oas_history_chart(
-            CREDIT_BROAD_TILES,
-            selected,
-            _load_oas_histories(selected) if selected else {},
-            range_key="credit_broad_history",
-            chart_key="credit-broad-history",
-            empty_message="Select at least one series.",
-        )
-
-    elif view == "Ratings":
-        st.subheader("Rating buckets")
-        if rating:
-            table = pd.DataFrame(
-                [
-                    {
-                        "Bucket": row["label"],
-                        "As of": row["as_of"],
-                        "OAS (bps)": row["oas_bps"],
-                        "1D": row["change_1d_bps"],
-                        "1W": row["change_1w_bps"],
-                        "1M": row["change_1m_bps"],
-                    }
-                    for row in rating
-                ]
-            )
-            st.dataframe(
-                table.style.format(
-                    {
-                        "OAS (bps)": lambda v: "—" if v is None else "{0:.0f}".format(v),
-                        "1D": lambda v: "—" if v is None else "{0:+.0f}".format(v),
-                        "1W": lambda v: "—" if v is None else "{0:+.0f}".format(v),
-                        "1M": lambda v: "—" if v is None else "{0:+.0f}".format(v),
-                    },
-                    na_rep="—",
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-            category_bar_chart(
-                table["Bucket"].tolist(),
-                table["OAS (bps)"].tolist(),
-                key="credit-rating-oas",
-                y_title="OAS bps",
-                unit="bps",
-            )
-        else:
-            st.info("No rating-bucket OAS rows are stored.")
-        st.subheader("Rating history")
-        selected = series_toggles(CREDIT_RATING_TILES, key="credit_rating", group_label="Rating spreads")
-        _render_oas_history_chart(
-            CREDIT_RATING_TILES,
-            selected,
-            _load_oas_histories(selected) if selected else {},
-            range_key="credit_rating_history",
-            chart_key="credit-rating-history",
-            empty_message="Select at least one rating.",
-        )
-
+    st.subheader("Broad market")
+    broad_unit = st.radio("Broad market units", ("bps", "% change"), horizontal=True, key="credit_broad_units")
+    st.caption("1D, 1W, and 1M are the change in OAS. % change divides that change by the prior OAS. The level stays in bps. As of is the stored observation date.")
+    if broad:
+        st.dataframe(_oas_change_table(broad, percent=broad_unit == "% change"), width="stretch", hide_index=True)
     else:
-        st.subheader("Sectors & subsectors")
-        st.info(coverage.get("note") or "Sector OAS is unavailable.")
-        st.caption("Status: {0}".format(coverage.get("status")))
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {"Available dimension": "Broad market / rating buckets", "Series count": len(coverage.get("available_series") or [])},
-                    {"Available dimension": "Sector OAS", "Series count": 0},
-                    {"Available dimension": "Subsector OAS", "Series count": 0},
-                ]
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-        with st.expander("Missing inputs"):
-            for item in coverage.get("missing_inputs") or []:
-                st.markdown("- {0}".format(item))
-            st.caption("FINRA activity aggregates are not a substitute sector-spread chart.")
-            open_registered_page("order_flow", "Open Bond Trading Activity")
+        st.info("No broad-market OAS rows are stored.")
+
+    st.subheader("Ratings")
+    rating_unit = st.radio("Ratings units", ("bps", "% change"), horizontal=True, key="credit_rating_units")
+    st.caption("Same change convention as the broad market table. As of is the stored observation date.")
+    if rating:
+        st.dataframe(_oas_change_table(rating, percent=rating_unit == "% change"), width="stretch", hide_index=True)
+    else:
+        st.info("No rating-bucket OAS rows are stored.")
+
+    st.subheader("Broad market chart")
+    st.caption("IG, HY, and EM on one chart. OAS is in bps. The color legend is above the chart.")
+    selected = series_toggles(CREDIT_BROAD_TILES, key="credit_broad", group_label="Broad series")
+    _render_oas_history_chart(
+        CREDIT_BROAD_TILES,
+        selected,
+        _load_oas_histories(selected) if selected else {},
+        range_key="credit_broad_history",
+        chart_key="credit-broad-history",
+        empty_message="Select at least one series.",
+    )
+
+    st.subheader("Ratings chart")
+    st.caption("Rating spreads on one chart. OAS is in bps. The color legend is above the chart.")
+    selected_ratings = series_toggles(CREDIT_RATING_TILES, key="credit_rating", group_label="Rating spreads")
+    _render_oas_history_chart(
+        CREDIT_RATING_TILES,
+        selected_ratings,
+        _load_oas_histories(selected_ratings) if selected_ratings else {},
+        range_key="credit_rating_history",
+        chart_key="credit-rating-history",
+        empty_message="Select at least one rating.",
+    )
 
     with st.expander("Percentiles, z-scores, and history windows"):
         st.dataframe(

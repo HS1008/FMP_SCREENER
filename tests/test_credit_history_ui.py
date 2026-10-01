@@ -6,6 +6,7 @@ import inspect
 from datetime import date
 from pathlib import Path
 
+import pytest
 from streamlit.testing.v1 import AppTest
 
 from market_intelligence.catalog import (
@@ -282,53 +283,81 @@ def _click(app, label):
     app.run()
 
 
+def _click_nth(app, label, index):
+    matches = [item for item in app.button if item.label == label]
+    matches[index].click()
+    app.run()
+
+
+def test_spread_percent_change_uses_the_prior_oas():
+    from market_intelligence.pages_ui import spread_percent_change
+
+    assert spread_percent_change(110, 10) == pytest.approx(10.0)
+    assert spread_percent_change(90, -10) == pytest.approx(-10.0)
+    assert spread_percent_change(89, -1) == pytest.approx(-1 / 90 * 100)
+    assert spread_percent_change(10, 10) is None
+    assert spread_percent_change(None, 1) is None
+    assert spread_percent_change(100, None) is None
+
+
 def test_credit_page_broad_market_includes_em_and_full_history(monkeypatch):
     app, calls = _run_credit(monkeypatch)
     assert not app.exception, [exc.value for exc in app.exception]
     text = _text(app)
-    labels = [metric.label for metric in app.metric]
-    assert "EM Corporate OAS" in labels
-    assert "Broad market history" in text
+    headings = [item.value for item in app.subheader]
+    assert headings[:4] == ["Broad market", "Ratings", "Broad market chart", "Ratings chart"]
+    assert "Credit view" not in text
+    assert "Sectors & subsectors" not in text
     assert "Select at least one series." not in text
-    assert "US Corporate IG OAS" in labels
-    assert "US High Yield OAS" in labels
     assert [item for item in app.pills[0].value] == [sid for sid, _label in CREDIT_BROAD_TILES]
+    assert [item for item in app.pills[1].value] == [sid for sid, _label in CREDIT_RATING_TILES]
     assert app.date_input[0].value == date(2019, 1, 2)
     assert app.date_input[1].value == date(2024, 6, 3)
+    broad = app.dataframe[0].value
+    assert list(broad["Series"]) == ["IG OAS", "HY OAS", "EM OAS"]
+    assert list(broad.columns) == ["Series", "As of", "OAS (bps)", "1D (bps)", "1W (bps)", "1M (bps)"]
+    assert broad.loc[0, "As of"] == "2024-06-03"
+    assert broad.loc[0, "1D (bps)"] == -1
     requested = [metric_id for metric_id, _limit in calls]
-    assert requested == ["BAMLC0A0CM.oas_bps", "BAMLH0A0HYM2.oas_bps", "BAMLEMCBPIOAS.oas_bps"]
+    app.radio[0].set_value("% change").run()
+    changed = app.dataframe[0].value
+    assert "1D (%)" in list(changed.columns)
+    assert changed.loc[0, "1D (%)"] == pytest.approx(-1 / 90 * 100)
+    assert changed.loc[0, "OAS (bps)"] == 89
+    assert requested == ["{0}.oas_bps".format(sid) for sid, _label in (*CREDIT_BROAD_TILES, *CREDIT_RATING_TILES)]
     assert all(limit == 20000 for _metric_id, limit in calls)
     page = (ROOT / "market_intelligence" / "pages_ui.py").read_text(encoding="utf-8")
     assert "fred_client" not in page
     assert "yfinance" not in page
+    assert "import yfinance" not in page
 
 
 def test_rating_tiles_select_all_clear_all_and_survive_rerun(monkeypatch):
     app, calls = _run_credit(monkeypatch)
-    app.radio[0].set_value("Ratings").run()
     assert not app.exception, [exc.value for exc in app.exception]
-    assert [item for item in app.pills[0].value] == [sid for sid, _label in CREDIT_RATING_TILES]
-    _click(app, "Clear all")
-    assert list(app.pills[0].value) == []
+    assert [item for item in app.pills[1].value] == [sid for sid, _label in CREDIT_RATING_TILES]
+    _click_nth(app, "Clear all", 1)
+    assert list(app.pills[1].value) == []
+    assert list(app.pills[0].value) == [sid for sid, _label in CREDIT_BROAD_TILES]
     assert "Select at least one rating." in _text(app)
     app.run()
-    assert list(app.pills[0].value) == []
+    assert list(app.pills[1].value) == []
     assert "Select at least one rating." in _text(app)
     calls.clear()
-    _click(app, "Select all")
-    assert [item for item in app.pills[0].value] == [sid for sid, _label in CREDIT_RATING_TILES]
+    _click_nth(app, "Select all", 1)
+    assert [item for item in app.pills[1].value] == [sid for sid, _label in CREDIT_RATING_TILES]
     assert "Select at least one rating." not in _text(app)
     requested = [metric_id for metric_id, _limit in calls]
-    assert requested == ["{0}.oas_bps".format(sid) for sid, _label in CREDIT_RATING_TILES]
-    app.pills[0].set_value(["BAMLC0A1CAAA", "BAMLC0A4CBBB"]).run()
+    assert requested == ["{0}.oas_bps".format(sid) for sid, _label in (*CREDIT_BROAD_TILES, *CREDIT_RATING_TILES)]
+    app.pills[1].set_value(["BAMLC0A1CAAA", "BAMLC0A4CBBB"]).run()
     assert ordered_selection(
         [sid for sid, _label in CREDIT_RATING_TILES],
-        list(app.pills[0].value),
+        list(app.pills[1].value),
     ) == ["BAMLC0A1CAAA", "BAMLC0A4CBBB"]
     app.run()
     assert ordered_selection(
         [sid for sid, _label in CREDIT_RATING_TILES],
-        list(app.pills[0].value),
+        list(app.pills[1].value),
     ) == ["BAMLC0A1CAAA", "BAMLC0A4CBBB"]
 
 

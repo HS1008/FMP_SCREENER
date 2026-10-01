@@ -42,7 +42,6 @@ from market_intelligence.markets_analytics import (
     price_ratio_points,
     sector_bar_pairs,
     subsector_matrix,
-    trailing_drawdown,
 )
 from market_intelligence.taxonomy import (
     GLOBAL_CORE_ETFS,
@@ -51,7 +50,6 @@ from market_intelligence.taxonomy import (
     GLOBAL_MARKET_ETFS,
     GLOBAL_SNAPSHOT_SYMBOLS,
     SECTOR_PROXIES,
-    US_DRAWDOWN_SYMBOLS,
     US_INDEX_ETFS,
     US_LEADERSHIP,
     US_PERFORMANCE_ETFS,
@@ -65,10 +63,10 @@ _HORIZON_LABELS = [label for label, _field, _sessions in HORIZONS]
 
 
 def render_us_markets_page() -> None:
-    """US equity indexes, relative performance, sectors, subsectors, and drawdowns."""
+    """US equity indexes, relative performance, sectors, and subsectors."""
     page_header(
         "US Equities",
-        "Index snapshot, relative performance, sector returns, and drawdowns from stored adjusted closes.",
+        "Index snapshot, relative performance, and sector returns from stored adjusted closes.",
         fred=False,
     )
     history = load_or_stop("us_markets_history")
@@ -85,7 +83,6 @@ def render_us_markets_page() -> None:
         default="Absolute Performance",
     )
     _us_return_heatmaps(aligned, mode=return_mode)
-    _drawdown_section(history, US_DRAWDOWN_SYMBOLS, start, end)
     _methodology(US_METHODOLOGY, sectors=True)
 
 
@@ -890,31 +887,6 @@ def _heatmap_section(
         matrix["columns"],
         [row["values"] for row in matrix["rows"]],
         key=key,
-    )
-
-
-def _drawdown_section(history: Mapping[str, Any], symbols: Sequence[str], start: date | None, end: date | None) -> None:
-    st.subheader("Drawdowns")
-    st.caption("Percent below the trailing 252-session adjusted-close high. A new high is 0%. History shorter than 252 sessions stays missing.")
-    if start is None or end is None or start > end:
-        st.caption("No stored history in this range.")
-        return
-    series = []
-    for symbol in symbols:
-        path = trailing_drawdown((history.get("bars") or {}).get(symbol) or [])
-        visible = clip_points(path, start=start, end=end)
-        if visible:
-            series.append(_line(symbol, visible, scale=100.0))
-    if not series:
-        st.caption("Fewer than 252 stored sessions, so the 52-week drawdown is missing.")
-        return
-    lightweight_market_chart(
-        series=series,
-        value_format="percent",
-        ranges=True,
-        height=_CHART_HEIGHT,
-        key="us_drawdown",
-        align_union=True,
     )
 
 

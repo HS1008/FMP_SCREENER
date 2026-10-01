@@ -487,7 +487,6 @@ def test_us_and_global_pages_render_required_sections(monkeypatch):
         "DIA / SPY",
         "Sector Performance",
         "Subsector Performance",
-        "Drawdowns",
         "Methodology & sources",
     ):
         assert heading in us_text
