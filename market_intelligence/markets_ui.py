@@ -55,7 +55,13 @@ from market_intelligence.taxonomy import (
     US_PERFORMANCE_ETFS,
     index_etf_label,
 )
+from market_intelligence.perf import span
 from market_intelligence.ui import load_optional, load_or_stop, load_quote_optional, page_header
+
+# jobs.yahoo_dashboard_quotes is installed on a */15 cron. Heatmaps read those
+# stored quotes, so the fragment follows that cadence instead of polling every
+# 15 seconds.
+YAHOO_HEATMAP_REFRESH_SECONDS = 15 * 60
 
 _CHART_HEIGHT = 420
 _ET = ZoneInfo("America/New_York")
@@ -69,8 +75,9 @@ def render_us_markets_page() -> None:
         "Index snapshot, relative performance, and sector returns from stored adjusted closes.",
         fred=False,
     )
-    history = load_or_stop("us_markets_history")
-    aligned = _aligned_panel(load_optional("aligned_us_equity_returns"))
+    with span("us_equities.history"):
+        history = load_or_stop("us_markets_history")
+        aligned = _aligned_panel(load_optional("aligned_us_equity_returns"))
     _index_snapshot(history)
     start, end = _range_selector(history, key="markets_us")
     price_mode = _single_choice("Display", ["Indexed to 100", "Absolute"], key="us_price_mode", default="Indexed to 100")
@@ -187,23 +194,18 @@ def _provenance(row: Mapping[str, Any]) -> Mapping[str, Any]:
     return provenance if isinstance(provenance, Mapping) else {}
 
 
-def _index_quote_prices() -> dict[str, float]:
+def _index_quote_state(rows: Sequence[Mapping[str, Any]]) -> tuple[dict[str, float], dict[str, float | None]]:
+    """One pass over the prepared quote rows. Prices and since-open stay paired."""
     prices: dict[str, float] = {}
-    for row in _dashboard_loaded_rows():
+    since_open: dict[str, float | None] = {}
+    for row in rows:
         symbol = quote_symbol(row)
         price = _ibkr_quote_price(row)
         if symbol and price is not None:
             prices[symbol] = price
-    return prices
-
-
-def _since_open_by_symbol() -> dict[str, float | None]:
-    found: dict[str, float | None] = {}
-    for row in _dashboard_loaded_rows():
-        symbol = quote_symbol(row)
         value = _provenance(row).get("open_to_current")
-        found[symbol] = float(value) if isinstance(value, (int, float)) else None
-    return found
+        since_open[symbol] = float(value) if isinstance(value, (int, float)) else None
+    return prices, since_open
 
 
 def _dashboard_quote_legs(quotes: Sequence[Mapping[str, Any]] | None) -> dict[str, dict[str, Any]]:
@@ -242,8 +244,7 @@ def _index_snapshot(history: Mapping[str, Any]) -> None:
     st.subheader("Index Snapshot")
     returns = history.get("returns") or {}
     stored_prices = history.get("latest_price") or {}
-    live_prices = _index_quote_prices()
-    since_open = _since_open_by_symbol()
+    live_prices, since_open = _index_quote_state(_dashboard_loaded_rows())
     cards: list[str] = []
     for symbol, name in US_INDEX_ETFS:
         window = returns.get(symbol) or {}
@@ -426,9 +427,7 @@ def _aligned_source_caption(panel: Mapping[str, Any]) -> None:
     )
 
 
-def _quote_snapshot(panel: Mapping[str, Any], *, mode: str) -> dict[str, Any]:
-    loaded = load_quote_optional("dashboard_quotes_latest", default=[])
-    quotes = loaded.get("data") if loaded.get("available") else []
+def _quote_snapshot(panel: Mapping[str, Any], quotes: Sequence[Mapping[str, Any]], *, mode: str) -> dict[str, Any]:
     overlaid = overlay_stored_quote_returns(panel, _dashboard_quote_legs(quotes))
     freshness = overlaid.get("quote_freshness") or {}
     relative = mode == "Relative vs SPY"
@@ -460,15 +459,20 @@ def _return_matrix(panel: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], 
     )
 
 
-@st.fragment(run_every=15)
+@st.fragment(run_every=YAHOO_HEATMAP_REFRESH_SECONDS)
 def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
-    """Heatmaps read the shared quote cache. This fragment does not open TWS."""
-    snapshot = _quote_snapshot(panel, mode=mode)
-    priced = snapshot["panel"]
-    st.caption(snapshot["caption"])
-    _us_sector_heatmap(priced, mode=mode)
-    _us_subsector_heatmap(priced, mode=mode)
-    _individual_stock_heatmap(priced)
+    """Heatmaps read one stored quote snapshot. This fragment does not open TWS."""
+    with span("us_equities.heatmaps"):
+        loaded = load_quote_optional("dashboard_quotes_latest", default=[])
+        quotes = list(loaded.get("data") or []) if loaded.get("available") else []
+        snapshot = _quote_snapshot(panel, quotes, mode=mode)
+        priced = snapshot["panel"]
+        st.caption(snapshot["caption"])
+        _us_sector_heatmap(priced, mode=mode)
+        bars = _price_bars_by_symbol()
+        legs: dict[str, dict[str, Any]] = {}
+        _us_subsector_heatmap(priced, mode=mode, loaded=loaded, quotes=quotes, bars=bars, legs=legs)
+        _individual_stock_heatmap(loaded=loaded, quotes=quotes, bars=bars, legs=legs)
 
 
 def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
@@ -525,6 +529,25 @@ def _price_bars_by_symbol() -> dict[str, list[dict[str, Any]]]:
     return grouped
 
 
+def _remember_legs(
+    cache: dict[str, dict[str, Any]],
+    symbol: str,
+    bars: Sequence[Mapping[str, Any]],
+    price: Any,
+    quote_ts: Any,
+) -> dict[str, Any]:
+    """Historical horizons are stable for one quote snapshot. Compute each ticker once."""
+    found = cache.get(symbol)
+    if found is not None:
+        return found
+    ts = parse_timestamp(quote_ts)
+    anchor = quote_anchor_date(ts) if ts is not None else None
+    found = price_horizons(bars, price, anchor)
+    if symbol:
+        cache[symbol] = found
+    return found
+
+
 def _horizon_cells(
     *,
     open_to_current: float | None,
@@ -532,10 +555,15 @@ def _horizon_cells(
     quote_ts: Any,
     bars: Sequence[Mapping[str, Any]],
     note: str,
+    symbol: str = "",
+    legs_cache: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[float | None], list[str]]:
-    ts = parse_timestamp(quote_ts)
-    anchor = quote_anchor_date(ts) if ts is not None else None
-    legs = price_horizons(bars, price, anchor)
+    if legs_cache is not None:
+        legs = _remember_legs(legs_cache, symbol, bars, price, quote_ts)
+    else:
+        ts = parse_timestamp(quote_ts)
+        anchor = quote_anchor_date(ts) if ts is not None else None
+        legs = price_horizons(bars, price, anchor)
     stored = {label: legs[label]["value"] for label in legs}
     values = stock_horizon_values(open_to_current, stored)
     stale = quote_observation_status(quote_ts) == "STALE"
@@ -563,7 +591,15 @@ def _minus_spy(values: Sequence[float | None], spy: Sequence[float | None] | Non
     return compared
 
 
-def _us_subsector_heatmap(_panel: Mapping[str, Any], *, mode: str) -> None:
+def _us_subsector_heatmap(
+    _panel: Mapping[str, Any],
+    *,
+    mode: str,
+    loaded: Mapping[str, Any] | None = None,
+    quotes: Sequence[Mapping[str, Any]] | None = None,
+    bars: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    legs: dict[str, dict[str, Any]] | None = None,
+) -> None:
     st.subheader("Subsector Performance")
     groups = subsector_groups()
     names = [name for name, _members in groups]
@@ -578,12 +614,17 @@ def _us_subsector_heatmap(_panel: Mapping[str, Any], *, mode: str) -> None:
     )
     if mode == "Relative vs SPY":
         st.caption("Relative vs SPY subtracts SPY's return on the same price basis, in percentage points.")
-    loaded = load_quote_optional("dashboard_quotes_latest", default=[])
+    if loaded is None:
+        loaded = load_quote_optional("dashboard_quotes_latest", default=[])
+        quotes = list(loaded.get("data") or []) if loaded.get("available") else []
     if not loaded.get("available"):
         st.caption("Stored Yahoo quotes are unavailable ({0}).".format(loaded.get("error") or "unread"))
         return
-    by_symbol = quotes_by_symbol(loaded.get("data") or [])
-    bars = _price_bars_by_symbol()
+    by_symbol = quotes_by_symbol(list(quotes or []))
+    if bars is None:
+        bars = _price_bars_by_symbol()
+    if legs is None:
+        legs = {}
     spy = by_symbol.get("SPY") or {}
     spy_provenance = spy.get("provenance") or {}
     if not isinstance(spy_provenance, Mapping):
@@ -594,6 +635,8 @@ def _us_subsector_heatmap(_panel: Mapping[str, Any], *, mode: str) -> None:
         quote_ts=spy.get("quote_ts"),
         bars=bars.get("SPY") or [],
         note="",
+        symbol="SPY",
+        legs_cache=legs,
     )
     relative = mode == "Relative vs SPY"
     labels: list[str] = []
@@ -611,6 +654,8 @@ def _us_subsector_heatmap(_panel: Mapping[str, Any], *, mode: str) -> None:
             quote_ts=quote.get("quote_ts"),
             bars=bars.get(symbol) or [],
             note=str(provenance.get("session") or ""),
+            symbol=symbol,
+            legs_cache=legs,
         )
         if relative:
             row_values = _minus_spy(row_values, spy_values)
@@ -626,7 +671,14 @@ def _us_subsector_heatmap(_panel: Mapping[str, Any], *, mode: str) -> None:
     )
 
 
-def _individual_stock_heatmap(_panel: Mapping[str, Any] | None = None) -> None:
+def _individual_stock_heatmap(
+    _panel: Mapping[str, Any] | None = None,
+    *,
+    loaded: Mapping[str, Any] | None = None,
+    quotes: Sequence[Mapping[str, Any]] | None = None,
+    bars: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    legs: dict[str, dict[str, Any]] | None = None,
+) -> None:
     """Approved stocks only. Quotes and daily closes come from PostgreSQL."""
     st.subheader("Individual Stocks")
     st.caption(
@@ -634,12 +686,17 @@ def _individual_stock_heatmap(_panel: Mapping[str, Any] | None = None) -> None:
         + PRICE_RETURN_CAPTION
         + " A ticker listed in more than one group uses the same stored quote."
     )
-    loaded = load_quote_optional("dashboard_quotes_latest", default=[])
+    if loaded is None:
+        loaded = load_quote_optional("dashboard_quotes_latest", default=[])
+        quotes = list(loaded.get("data") or []) if loaded.get("available") else []
     if not loaded.get("available"):
         st.caption("Stored Yahoo quotes are unavailable ({0}).".format(loaded.get("error") or "unread"))
         return
-    bars = _price_bars_by_symbol()
-    rows = stock_heatmap_rows(loaded.get("data") or [])
+    if bars is None:
+        bars = _price_bars_by_symbol()
+    if legs is None:
+        legs = {}
+    rows = stock_heatmap_rows(list(quotes or []))
     groups: list[str] = []
     for row in rows:
         if row["group"] not in groups:
@@ -659,6 +716,8 @@ def _individual_stock_heatmap(_panel: Mapping[str, Any] | None = None) -> None:
                 quote_ts=row.get("quote_ts"),
                 bars=bars.get(row["symbol"]) or [],
                 note=row["note"],
+                symbol=row["symbol"],
+                legs_cache=legs,
             )
             values.append(row_values)
             notes.append(row_notes)

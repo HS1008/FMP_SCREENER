@@ -15,7 +15,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-import streamlit.components.v2 as components
+from market_intelligence.components.chart_component import chart_component
+from market_intelligence.perf import span
 
 _FRONTEND = Path(__file__).resolve().parent / "frontend"
 _HTML = (_FRONTEND / "chart.html").read_text(encoding="utf-8")
@@ -194,14 +195,13 @@ def build_market_chart_payload(
 
 
 def _component():
-    # Register on each script run. AppTest replaces the component registry between
-    # runs, so a process-wide cache would mount an unregistered name.
-    return components.component(
+    return chart_component(
         "market_chart",
         html=_HTML,
         css=_CSS,
-        js=_JS,
-        isolate_styles=True,
+        library_js=_FRONTEND / "lightweight-charts.standalone.production.js",
+        chart_js=_FRONTEND / "chart.js",
+        inline_js=_JS,
     )
 
 
@@ -246,9 +246,10 @@ def lightweight_market_chart(
     if series is None and payload["series"]:
         data["points"] = payload["series"][0]["points"]
         data["series_label"] = payload["series"][0]["label"]
-    _component()(
-        data=data,
-        key=key,
-        width="stretch",
-        height=resolved_height,
-    )
+    with span("market_chart.mount"):
+        _component()(
+            data=data,
+            key=key,
+            width="stretch",
+            height=resolved_height,
+        )

@@ -28,17 +28,14 @@ from market_intelligence.live_session import (
     resolve_prior_close,
     sessions_aligned,
 )
+from market_intelligence.schema_cache import view_exists
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.source_resolve import prefer_rows_by_group, TIE_PREFERENCE
 from market_intelligence.taxonomy import ALL_BASKETS, BENCHMARK_SPY, SECTOR_PROXIES, UNIVERSE_SYMBOLS
 
 
 def _view_exists(conn, name: str) -> bool:
-    row = conn.execute(
-        text("SELECT 1 FROM information_schema.views WHERE table_name = :n"),
-        {"n": name},
-    ).first()
-    return row is not None
+    return view_exists(conn, name)
 
 
 def _rows(conn, sql: str, params: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
