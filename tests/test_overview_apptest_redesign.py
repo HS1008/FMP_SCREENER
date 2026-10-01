@@ -109,7 +109,7 @@ def test_optional_options_failure_does_not_stop_overview(monkeypatch):
     assert "What matters" in [h.value for h in at.subheader]
 
 
-def test_credit_sector_view_explains_absence(monkeypatch):
+def test_credit_page_keeps_broad_and_ratings_on_one_page(monkeypatch):
     seed = _seed_contexts()
 
     def fake_cached(fn_name, *args, **kwargs):
@@ -123,13 +123,11 @@ def test_credit_sector_view_explains_absence(monkeypatch):
     at = AppTest.from_file(str(ROOT / "pages" / "13_Credit_Overview.py"), default_timeout=30)
     at.run()
     assert not at.exception, [e.value for e in at.exception]
-    # Select sectors view
-    radios = [w for w in at.radio if "Credit view" in str(getattr(w, "label", ""))]
-    assert radios
-    radios[0].set_value("Sectors & subsectors")
-    at.run()
-    text = " ".join(i.value for i in at.info)
-    assert "sector" in text.lower() or "unavailable" in text.lower()
+    headings = [item.value for item in at.subheader]
+    assert headings[:4] == ["Broad market", "Ratings", "Broad market chart", "Ratings chart"]
+    assert not [widget for widget in at.radio if "Credit view" in str(getattr(widget, "label", ""))]
+    text = " ".join(str(item.value) for item in (*at.subheader, *at.caption, *at.markdown))
+    assert "Sectors & subsectors" not in text
 
 
 def test_options_page_empty_state(monkeypatch):
