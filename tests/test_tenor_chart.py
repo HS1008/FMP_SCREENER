@@ -52,13 +52,13 @@ def test_payload_keeps_explicit_tenor_order_and_tickers():
     assert by_tenor["3M"]["name"] == "VIX3M"
     assert by_tenor["3M"]["ticker"] == "^VIX3M"
     assert by_tenor["3M"]["value"] == 17.89
-    assert by_tenor["3M"]["curve_date_label"] == "Sep 25, 2026"
+    assert by_tenor["3M"]["curve_date_label"] == "09/25/2026"
     assert "1D" not in payload["axis"]
     assert "9D" not in payload["axis"]
     assert all(math.isfinite(point["value"]) for point in payload["points"])
     assert payload["missing_tenors"] == []
     assert payload["curve_date"] == "2026-09-25"
-    assert payload["curve_date_label"] == "Sep 25, 2026"
+    assert payload["curve_date_label"] == "09/25/2026"
     assert "2M" not in payload["axis"]
     encoded = json.dumps(payload, allow_nan=False)
     assert "NaN" not in encoded
@@ -142,7 +142,11 @@ def test_echarts_option_is_a_categorical_curve_without_zoom():
     assert three_month["name"] == "VIX3M"
     assert three_month["ticker"] == "^VIX3M"
     assert three_month["value"] == 17.89
-    assert three_month["curve_date_label"] == "Sep 25, 2026"
+    assert three_month["curve_date_label"] == "09/25/2026"
+    tooltip = option["tooltip"]
+    assert tooltip["appendToBody"] is False
+    assert tooltip["enterable"] is False
+    assert "pointer-events:none" in tooltip["extraCssText"]
     tooltip = option["tooltip"]
     assert tooltip["backgroundColor"] == "rgba(22, 24, 28, 0.96)"
     assert tooltip["borderColor"] == "rgba(255, 255, 255, 0.14)"
@@ -166,6 +170,8 @@ def test_frontend_bundles_echarts_and_does_not_fetch():
     assert "new ResizeObserver" in script
     assert "dataZoom = []" in script
     assert "formatTooltip" in script
+    assert "appendToBody = false" in script
+    assert "formatMDY" in script
     assert "toFixed(2)" in script
     assert "rgba(22, 24, 28, 0.96)" in script
     assert "borderWidth" in script

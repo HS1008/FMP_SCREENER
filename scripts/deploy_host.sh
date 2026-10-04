@@ -769,6 +769,46 @@ if [ -f "$YAHOO_ENV" ]; then
 else
   echo "macro_coverage_report=skipped_no_writer_env"
 fi
+# H.4.1 Wednesday levels for the Fed balance sheet. The macro max-backfill
+# marker above is left in place: a host that already recorded it would
+# otherwise never fetch series added later. This one-shot ingests only the
+# 11 level series from the provider's observation_start. Older rows stay.
+H41_BACKFILL_MARKER="/var/lib/fmp/fred_h41_wednesday_level_backfill.done"
+if [ -f "$H41_BACKFILL_MARKER" ]; then
+  echo "fred_h41_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "fred_h41_backfill=skipped_no_writer_env"
+else
+  echo "fred_h41_backfill=start"
+  H41_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    (
+      while sleep 20; do
+        echo "fred_h41_backfill=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      done
+    ) &
+    hb_pid=$!
+    set +e
+    staged_python -u -m jobs.market_intelligence_refresh --fred-h41-backfill --wait-lock
+    rc=$?
+    set -e
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+    exit "$rc"
+  ) || H41_RC=$?
+  if [ "$H41_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$H41_BACKFILL_MARKER"
+    echo "fred_h41_backfill=complete"
+  else
+    echo "fred_h41_backfill=failed rc=${H41_RC}"
+  fi
+fi
 # One-shot max Yahoo history into MARKET_MONITOR_EOD. The previous
 # equity_markets_max_backfill.done marker is left in place and is not reused:
 # that run skipped IBKR symbols and wrote into EQUITY_EOD. This marker runs

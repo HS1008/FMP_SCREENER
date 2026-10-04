@@ -36,7 +36,7 @@ function formatDay(iso) {
   if (!year || month < 1 || month > 12 || !day) {
     return iso || "—";
   }
-  return MONTHS[month - 1] + " " + day + ", " + year;
+  return String(month).padStart(2, "0") + "/" + String(day).padStart(2, "0") + "/" + String(year);
 }
 
 function cssVar(node, name) {

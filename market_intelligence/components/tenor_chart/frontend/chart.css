@@ -18,6 +18,20 @@
   -webkit-user-select: none;
 }
 
+#chart {
+  position: relative;
+  overflow: hidden;
+}
+
+.mi-echart-tooltip {
+  pointer-events: none !important;
+  background: rgba(22, 24, 28, 0.96) !important;
+  color: #f4f6f8 !important;
+  border: 1px solid rgba(255, 255, 255, 0.14) !important;
+  border-radius: 8px !important;
+  box-shadow: none !important;
+}
+
 #chart div {
   color: #f4f6f8;
 }

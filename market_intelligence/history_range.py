@@ -14,6 +14,7 @@ from typing import Any, Mapping, Sequence
 import streamlit as st
 
 from market_intelligence.components.market_chart import observation_day
+from market_intelligence.display_dates import DATE_INPUT_FORMAT
 from market_intelligence.read_models import FULL_HISTORY_LIMIT
 
 STORED_HISTORY_LIMIT = FULL_HISTORY_LIMIT
@@ -68,16 +69,32 @@ def align_range_selection(
     previous_span: tuple[date, date] | None,
     current_from: date | None,
     current_to: date | None,
+    default_start: date | None = None,
+    previous_default: date | None = None,
 ) -> tuple[date, date]:
-    """Default to the full stored span. Keep a custom window when it still fits.
+    """Default to the full stored span, or to ``default_start`` when one is set.
 
     A selection that still matches the previous full span follows a newly
-    expanded or shrunk stored span. Dates outside the stored span are pulled
-    back to that span. From and To are not swapped here.
+    expanded or shrunk stored span. A selection that still matches the previous
+    default start follows that default. Any other From date is kept, including
+    a date earlier than ``default_start``. Dates outside the stored span are
+    pulled back to that span. From and To are not swapped here.
     """
+    preferred = earliest
+    if default_start is not None and earliest <= default_start <= latest:
+        preferred = default_start
     start = current_from
     end = current_to
-    if start is None or (previous_span is not None and start == previous_span[0]):
+    tracking_default = previous_default is not None and start == previous_default
+    tracking_full = (
+        previous_span is not None
+        and start == previous_span[0]
+        and not tracking_default
+        and default_start is None
+    )
+    if start is None or tracking_default:
+        start = preferred
+    elif tracking_full:
         start = earliest
     if end is None or (previous_span is not None and end == previous_span[1]):
         end = latest
@@ -135,12 +152,14 @@ def historical_date_range(
     key: str,
     earliest: date | None,
     latest: date | None,
+    default_start: date | None = None,
 ) -> tuple[date | None, date | None]:
     """From / To selectors defaulting to the full stored span.
 
-    Returns ``(None, None)`` when nothing is stored. When From is after To,
-    the invalid dates are returned and a short caption is shown. Values are
-    not swapped.
+    ``default_start`` is the initial From date when it falls inside the stored
+    span. Earlier history stays selectable. Returns ``(None, None)`` when
+    nothing is stored. When From is after To, the invalid dates are returned
+    and a short caption is shown. Values are not swapped.
     """
     if earliest is None or latest is None or earliest > latest:
         st.caption("No stored history for this chart.")
@@ -148,32 +167,41 @@ def historical_date_range(
     start_key = "{0}_from".format(key)
     end_key = "{0}_to".format(key)
     span_key = "{0}_span".format(key)
+    default_key = "{0}_default".format(key)
     previous = st.session_state.get(span_key)
     previous_span = previous if isinstance(previous, tuple) and len(previous) == 2 else None
+    preferred = earliest
+    if default_start is not None and earliest <= default_start <= latest:
+        preferred = default_start
     start_default, end_default = align_range_selection(
         earliest=earliest,
         latest=latest,
         previous_span=previous_span,
         current_from=_as_date(st.session_state.get(start_key)),
         current_to=_as_date(st.session_state.get(end_key)),
+        default_start=default_start,
+        previous_default=_as_date(st.session_state.get(default_key)),
     )
     if _as_date(st.session_state.get(start_key)) != start_default:
         st.session_state[start_key] = start_default
     if _as_date(st.session_state.get(end_key)) != end_default:
         st.session_state[end_key] = end_default
     st.session_state[span_key] = (earliest, latest)
+    st.session_state[default_key] = preferred
     left, right = st.columns(2)
     start_value = left.date_input(
         "From",
         min_value=earliest,
         max_value=latest,
         key=start_key,
+        format=DATE_INPUT_FORMAT,
     )
     end_value = right.date_input(
         "To",
         min_value=earliest,
         max_value=latest,
         key=end_key,
+        format=DATE_INPUT_FORMAT,
     )
     start = _as_date(start_value) or start_default
     end = _as_date(end_value) or end_default

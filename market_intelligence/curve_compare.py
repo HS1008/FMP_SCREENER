@@ -12,6 +12,7 @@ from datetime import date, timedelta
 from typing import Any, Mapping, Sequence
 
 from market_intelligence.catalog import CURVE_TENORS, TIPS_TENORS
+from market_intelligence.display_dates import format_calendar_date
 from market_intelligence.source_resolve import EQUIVALENTS
 from market_intelligence.transforms import shift_months
 from market_intelligence.treasury_xml import COMPLETE_NOMINAL_TENORS
@@ -52,10 +53,7 @@ def parse_curve_date(value: Any) -> date | None:
 
 
 def format_curve_date(value: date | str | None) -> str:
-    parsed = parse_curve_date(value)
-    if parsed is None:
-        return "—"
-    return "{0} {1}, {2}".format(parsed.strftime("%b"), parsed.day, parsed.year)
+    return format_calendar_date(value)
 
 
 def source_display(source_ids: Sequence[str] | None) -> str:

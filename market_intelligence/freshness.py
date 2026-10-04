@@ -194,6 +194,9 @@ SERIES_POLICIES: dict[str, FreshnessPolicy] = {
     "ICSA": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(8, 30), overdue_sessions=8, stale_sessions=21, week_ending="SAT", notes="Week-ending Saturday; typically published the following Thursday 8:30 ET."),
     "CCSA": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(8, 30), overdue_sessions=8, stale_sessions=21, week_ending="SAT", notes="Week-ending Saturday; typically published the following Thursday 8:30 ET."),
     "WALCL": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(16, 30), overdue_sessions=8, stale_sessions=21, week_ending="WED", notes="H.4.1 Wednesday level; typically published Thursday."),
+    **{sid: FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(16, 30), overdue_sessions=8, stale_sessions=21, week_ending="WED", notes="H.4.1 Wednesday level; typically published Thursday.") for sid in (
+        "TREAST", "WSHOMCB", "WSHOFADSL", "WLCFLPCL", "WRBWFRBL", "WCICL", "WDTGAL", "WLRRAL", "WCPIL", "WCSL",
+    )},
     "WTREGEN": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(16, 30), overdue_sessions=8, stale_sessions=21, week_ending="WED", notes="H.4.1 week average ending Wednesday."),
     "WRESBAL": FreshnessPolicy(calendar=CAL_US_FEDERAL, cadence="W", typical_release=time(16, 30), overdue_sessions=8, stale_sessions=21, week_ending="WED", notes="H.4.1 week average ending Wednesday."),
     "M2SL": _fred_macro_monthly(lag_days=32),

@@ -105,7 +105,7 @@ def test_current_curve_date_is_prominent_without_comparison(monkeypatch):
     at = _run(monkeypatch)
     text = _text(at)
     assert "Current Treasury Curve" in text
-    assert "Sep 23, 2026" in text
+    assert "09/23/2026" in text
     assert "Source: U.S. Treasury" in text
     assert "Complete curve: Yes" in text
     assert at.radio[0].value == "None"
@@ -116,7 +116,7 @@ def test_current_curve_date_is_prominent_without_comparison(monkeypatch):
 def test_custom_date_option_uses_exact_trading_date(monkeypatch):
     at = _run(monkeypatch, compare="Custom date", custom=date(2026, 6, 15))
     text = _text(at)
-    assert "Sep 23, 2026 — Current · Jun 15, 2026 — Comparison" in text
+    assert "09/23/2026 — Current · 06/15/2026 — Comparison" in text
     assert "Using nearest prior complete curve" not in text
     assert at.date_input[0].value == date(2026, 6, 15)
     lookup_calls = [call for call in at.session_state["_calls"] if call[0] == "complete_treasury_curve_on_or_before"]
@@ -126,8 +126,8 @@ def test_custom_date_option_uses_exact_trading_date(monkeypatch):
 def test_custom_weekend_shows_requested_and_effective_dates(monkeypatch):
     at = _run(monkeypatch, compare="Custom date", custom=date(2026, 9, 20))
     text = _text(at)
-    assert "Requested date: Sep 20, 2026" in text
-    assert "Using nearest prior complete curve: Sep 18, 2026" in text
+    assert "Requested date: 09/20/2026" in text
+    assert "Using nearest prior complete curve: 09/18/2026" in text
     assert WEEKEND_REQUEST
     lookup_calls = [call for call in at.session_state["_calls"] if call[0] == "complete_treasury_curve_on_or_before"]
     assert any(call[1][0] == WEEKEND_REQUEST for call in lookup_calls)
@@ -136,7 +136,7 @@ def test_custom_weekend_shows_requested_and_effective_dates(monkeypatch):
 def test_prior_session_requests_complete_curve_lookup(monkeypatch):
     at = _run(monkeypatch, compare="Prior session")
     text = _text(at)
-    assert "Sep 23, 2026 — Current · Sep 18, 2026 — Comparison" in text
+    assert "09/23/2026 — Current · 09/18/2026 — Comparison" in text
     assert "Change vs Comparison (bps)" in text
     lookup_calls = [call for call in at.session_state["_calls"] if call[0] == "complete_treasury_curve_on_or_before"]
     assert lookup_calls

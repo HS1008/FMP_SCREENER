@@ -208,18 +208,35 @@ function formatTooltip(params) {
   return tooltipBox(body);
 }
 
-function formatPolicyDay(value) {
+function formatMDY(value) {
   var text = String(value == null ? "" : value);
+  var iso = "";
   if (text.length >= 10 && text.charAt(4) === "-" && text.charAt(7) === "-") {
-    return text.slice(0, 10);
+    iso = text.slice(0, 10);
+  } else if (value && typeof value === "object" && value.year && value.month && value.day) {
+    iso =
+      String(value.year) +
+      "-" +
+      String(value.month).padStart(2, "0") +
+      "-" +
+      String(value.day).padStart(2, "0");
+  } else {
+    var stamp = new Date(value);
+    if (Number.isNaN(stamp.getTime())) {
+      return text || "—";
+    }
+    iso =
+      String(stamp.getUTCFullYear()) +
+      "-" +
+      String(stamp.getUTCMonth() + 1).padStart(2, "0") +
+      "-" +
+      String(stamp.getUTCDate()).padStart(2, "0");
   }
-  var stamp = new Date(value);
-  if (Number.isNaN(stamp.getTime())) {
-    return text;
+  var parts = iso.split("-");
+  if (parts.length < 3 || parts[0].length !== 4) {
+    return text || "—";
   }
-  var month = String(stamp.getMonth() + 1).padStart(2, "0");
-  var day = String(stamp.getDate()).padStart(2, "0");
-  return String(stamp.getFullYear()) + "-" + month + "-" + day;
+  return parts[1] + "/" + parts[2] + "/" + parts[0];
 }
 
 function formatPolicyTooltip(params) {
@@ -236,7 +253,7 @@ function formatPolicyTooltip(params) {
     var day = "";
     var number = null;
     if (Array.isArray(data)) {
-      day = formatPolicyDay(data[0]);
+      day = formatMDY(data[0]);
       if (typeof data[1] === "number" && Number.isFinite(data[1])) {
         number = data[1];
       }
@@ -248,7 +265,7 @@ function formatPolicyTooltip(params) {
     lines.push(escapeHtml(row.seriesName || "Value") + "  " + shown);
   }
   if (!dateLabel && !lines.length) {
-    return "";
+    return;
   }
   return tooltipBox(escapeHtml(dateLabel) + (lines.length ? "<br/>" + lines.join("<br/>") : ""));
 }
@@ -336,10 +353,20 @@ function applyTheme(option, palette, compact) {
   option.tooltip.borderWidth = 1;
   option.tooltip.padding = [8, 10];
   option.tooltip.textStyle = { color: "#f4f6f8", fontSize: 13 };
+  // appendToBody defaults to true in this ECharts build. That mounts the
+  // tooltip on document.body, outside the component shadow root, so the box
+  // is positioned against the page, picks up Streamlit's light background,
+  // and steals the pointer. Keeping it in the chart and ignoring pointer
+  // events stops the flicker, the blank white box, and the jump.
+  option.tooltip.appendToBody = false;
+  option.tooltip.enterable = false;
+  option.tooltip.transitionDuration = 0;
+  option.tooltip.className = "mi-echart-tooltip";
+  option.tooltip.renderMode = "html";
   option.tooltip.extraCssText =
     "background:rgba(22,24,28,0.96)!important;color:#f4f6f8!important;" +
     "border:1px solid rgba(255,255,255,0.14)!important;border-radius:8px;" +
-    "box-shadow:none;padding:8px 10px;";
+    "box-shadow:none;padding:8px 10px;pointer-events:none;";
   option.tooltip.formatter =
     option.chartKind === "policy_rates"
       ? formatPolicyTooltip
@@ -351,17 +378,39 @@ function applyTheme(option, palette, compact) {
     snap: true,
     lineStyle: { color: palette.grid, type: "dashed" },
   };
+  if (option.xAxis && option.xAxis.type === "time") {
+    option.xAxis.axisLabel = option.xAxis.axisLabel || {};
+    option.xAxis.axisLabel.hideOverlap = true;
+    option.xAxis.axisLabel.formatter = function (value) {
+      return formatMDY(value);
+    };
+    option.tooltip.axisPointer.label = {
+      formatter: function (params) {
+        return formatMDY(params && params.value);
+      },
+    };
+  }
   option.tooltip.position = function (point, _params, _dom, _rect, size) {
+    var gap = 14;
     var boxWidth = size.contentSize[0];
+    var boxHeight = size.contentSize[1];
     var viewWidth = size.viewSize[0];
-    var left = point[0] - boxWidth / 2;
+    var viewHeight = size.viewSize[1];
+    var left = point[0] + gap;
+    var top = point[1] + gap;
+    if (left + boxWidth > viewWidth - 8) {
+      left = point[0] - boxWidth - gap;
+    }
     if (left < 8) {
       left = 8;
     }
-    if (left + boxWidth > viewWidth - 8) {
-      left = Math.max(8, viewWidth - boxWidth - 8);
+    if (top + boxHeight > viewHeight - 8) {
+      top = point[1] - boxHeight - gap;
     }
-    return [left, size.viewSize[1] - size.contentSize[1] - 28];
+    if (top < 8) {
+      top = 8;
+    }
+    return [left, top];
   };
   return option;
 }
@@ -383,7 +432,7 @@ function createState(root) {
   }
   applyFrameHeight(root);
   var chart = echarts.init(container, null, { renderer: "canvas" });
-  var state = { root: root, container: container, chart: chart, compact: null };
+  var state = { root: root, container: container, chart: chart, compact: null, signature: null, sizeW: -1, sizeH: -1 };
   state.observer = new ResizeObserver(function () {
     applyFrameHeight(root);
     var compact = window.matchMedia(MOBILE_QUERY).matches;
@@ -391,6 +440,13 @@ function createState(root) {
       state.compact = compact;
       chart.setOption(applyTheme(state.option, paletteFor(root), compact), true);
     }
+    var width = container.clientWidth || 0;
+    var height = container.clientHeight || 0;
+    if (width === state.sizeW && height === state.sizeH) {
+      return;
+    }
+    state.sizeW = width;
+    state.sizeH = height;
     chart.resize();
     keepPageScroll(chart);
   });
@@ -416,7 +472,14 @@ function updateState(state, data) {
   }
   state.root.__tenorMobile = Number(data.mobile_height) || MOBILE_HEIGHT;
   state.root.__tenorDesktop = Number(data.desktop_height) || DESKTOP_HEIGHT;
-  var option = JSON.parse(JSON.stringify(source));
+  var signature = JSON.stringify(source);
+  var compact = window.matchMedia(MOBILE_QUERY).matches;
+  if (state.signature === signature && state.compact === compact) {
+    applyFrameHeight(state.root);
+    return;
+  }
+  state.signature = signature;
+  var option = JSON.parse(signature);
   option.dataZoom = [];
   option.toolbox = { show: false };
   if (!option.legend) {

@@ -44,6 +44,7 @@ from market_intelligence.components.tenor_chart import (
     signed_change_bar_chart,
     tenor_curve_chart,
 )
+from market_intelligence.display_dates import DATE_INPUT_FORMAT, format_calendar_date
 from market_intelligence.curve_compare import (
     AFTER_CURRENT_MESSAGE,
     COMPARE_CUSTOM,
@@ -259,7 +260,7 @@ def _render_commodities_panel(cats: dict[str, Any], *, heading: str = "Commoditi
 
 
 def _full_month_date(day: date) -> str:
-    return "{0} {1}, {2}".format(day.strftime("%B"), day.day, day.year)
+    return format_calendar_date(day)
 
 
 def _parse_stored_date(value: Any) -> date | None:
@@ -355,6 +356,7 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
             min_value=available_dates[0],
             max_value=available_dates[-1],
             key="yahoo_vix_curve_date",
+            format=DATE_INPUT_FORMAT,
         )
         requested = _parse_stored_date(selected) or available_dates[-1]
         resolved = resolve_curve_date(requested, available_dates)
@@ -837,6 +839,7 @@ def _custom_comparison_date(current_date: date | None) -> date | None:
         min_value=earliest,
         max_value=latest,
         key="rates_custom_date",
+        format=DATE_INPUT_FORMAT,
         help="Type a date or use the calendar. Weekends and holidays use the prior complete Treasury curve.",
     )
     return parse_curve_date(picked)
@@ -884,6 +887,7 @@ def _tips_custom_date(current_date: date | None) -> date | None:
         min_value=earliest,
         max_value=latest,
         key="rates_tips_custom_date",
+        format=DATE_INPUT_FORMAT,
         help="Type a date or use the calendar. Dates with no TIPS print use the prior observation date.",
     )
     return parse_curve_date(picked)

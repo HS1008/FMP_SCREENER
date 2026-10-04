@@ -209,6 +209,53 @@ CATALOG: tuple[SeriesSpec, ...] = (
        value_kind="balance", transforms=("wow_change", "chg_4w"), label="Fed total assets (Wednesday level)",
        aggregation=AGG_WED_LEVEL, display_divisor=1000.0, display_units="billions_usd",
        notes="Millions of USD (provider units), weekly Wednesday level, NSA. Display in billions is an explicit /1000 conversion."),
+    _s("TREAST", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="U.S. Treasury securities held outright (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 Assets: Securities Held Outright: U.S. Treasury Securities: All: Wednesday Level. "
+             "Millions of USD, NSA. Not a change series."),
+    _s("WSHOMCB", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="Mortgage-backed securities held outright (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 Assets: Securities Held Outright: Mortgage-Backed Securities: Wednesday Level. "
+             "Millions of USD, NSA. Not a change series."),
+    _s("WSHOFADSL", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="Federal agency debt securities held outright (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 Assets: Securities Held Outright: Federal Agency Debt Securities: Wednesday Level. "
+             "Millions of USD, NSA. Not a change series."),
+    _s("WLCFLPCL", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="Primary credit (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 Assets: Liquidity and Credit Facilities: Loans: Primary Credit: Wednesday Level. "
+             "Millions of USD, NSA. Not a change series."),
+    _s("WRBWFRBL", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="Reserve balances with Federal Reserve Banks (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 Reserve Balances with Federal Reserve Banks: Wednesday Level. Millions of USD, NSA. "
+             "Not WRESBAL, which is the week average."),
+    _s("WCICL", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="Currency in circulation (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 Currency in Circulation: Wednesday Level. Millions of USD, NSA. Not a change series."),
+    _s("WDTGAL", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="Treasury General Account (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 U.S. Treasury, General Account: Wednesday Level. Millions of USD, NSA. "
+             "Not WTREGEN, which is the week average."),
+    _s("WLRRAL", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="Reverse repurchase agreements (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 Reverse Repurchase Agreements: Wednesday Level. Millions of USD, NSA. "
+             "Not RRPONTSYD, which is daily overnight reverse repo in billions."),
+    _s("WCPIL", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="Capital paid in (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 Capital: Capital Paid in: Wednesday Level. Millions of USD, NSA. Not a change series."),
+    _s("WCSL", "liquidity", "fed_balance_sheet", CADENCE_WEEKLY, _MLN, expected_sa="NSA",
+       value_kind="balance", label="Surplus (Wednesday level)",
+       aggregation=AGG_WED_LEVEL, backfill_years=30,
+       notes="H.4.1 Capital: Surplus: Wednesday Level. Millions of USD, NSA. Not a change series."),
     _s("RRPONTSYD", "liquidity", "reverse_repo", CADENCE_DAILY, _BLN, expected_sa="NSA",
        value_kind="balance", transforms=("chg_1d", "chg_1w"), label="ON RRP (Treasury) usage",
        aggregation=AGG_POINT, notes="Billions of USD, daily, NSA."),
@@ -378,13 +425,28 @@ SLOPE_10Y2Y_METRIC = "curve.slope_10Y2Y_bps"
 FLY_2S5S10S_METRIC = "curve.fly_2s5s10s_bps"
 FED_FUNDS_TARGET_LOWER = "DFEDTARL"
 FED_FUNDS_TARGET_UPPER = "DFEDTARU"
+# H.4.1 Wednesday levels for the Fed balance-sheet table. A host that already
+# recorded the broader macro max-backfill marker still ingests this set.
+H41_WEDNESDAY_LEVEL_SERIES: tuple[str, ...] = (
+    "WALCL",
+    "TREAST",
+    "WSHOMCB",
+    "WSHOFADSL",
+    "WLCFLPCL",
+    "WRBWFRBL",
+    "WCICL",
+    "WDTGAL",
+    "WLRRAL",
+    "WCPIL",
+    "WCSL",
+)
 # Explicit max-history path for the Macro dashboard. Incremental refresh keeps catalog backfill_years.
 MACRO_MAX_BACKFILL_SERIES: tuple[str, ...] = (
     "DFF",
     "SOFR",
     FED_FUNDS_TARGET_LOWER,
     FED_FUNDS_TARGET_UPPER,
-    "WALCL",
+    *H41_WEDNESDAY_LEVEL_SERIES,
     "WRESBAL",
     "WTREGEN",
     "RRPONTSYD",
