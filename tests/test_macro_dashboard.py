@@ -297,6 +297,89 @@ def test_macro_page_renders_each_subsection(monkeypatch):
     assert "proprietary coincident index" in _texts(coincident)
 
 
+def test_policy_readout_uses_each_series_latest_print_and_leaves_gaps_blank():
+    from market_intelligence.components.tenor_chart import policy_readout
+
+    frame = policy_rate_frame(
+        [{"as_of": date(2008, 12, 16), "value": 0.0}, {"as_of": date(2026, 9, 18), "value": 3.75}],
+        [{"as_of": date(2008, 12, 16), "value": 0.25}, {"as_of": date(2026, 9, 18), "value": 4.0}],
+        [{"as_of": date(2026, 10, 1), "value": 3.88}, {"as_of": date(2026, 10, 2), "value": 3.87}],
+        [{"as_of": date(2018, 4, 3), "value": 1.8}],
+        [],
+        start=date(2000, 1, 1),
+        end=date(2026, 10, 2),
+    )
+    readout = policy_readout(frame)
+    by_label = {row["label"]: row for row in readout["rows"]}
+    assert readout["date"] == "2026-10-02"
+    assert by_label["Target lower"] == {"label": "Target lower", "date": "2026-09-18", "value": 3.75}
+    assert by_label["Target upper"]["value"] == 4.0
+    assert by_label["Effective Fed Funds"] == {
+        "label": "Effective Fed Funds",
+        "date": "2026-10-02",
+        "value": 3.87,
+    }
+    assert by_label["SOFR"]["date"] == "2018-04-03"
+    empty = policy_rate_frame([], [], [], [], [], start=date(2026, 1, 1), end=date(2026, 1, 31))
+    blank = policy_readout(empty)
+    assert blank["date"] is None
+    assert all(row["value"] is None for row in blank["rows"])
+    hovered = {item[0]: item[1] for item in frame["sofr"]}
+    assert hovered.get("2026-10-02") is None
+
+
+def test_fed_charts_share_one_window_and_keep_the_policy_default():
+    from market_intelligence.history_range import align_range_selection, quick_range_bounds
+    from market_intelligence.macro_dashboard import POLICY_RATES_DEFAULT_START
+    from market_intelligence.macro_ui import fed_shared_observation_rows
+
+    histories = {
+        "DFF": [{"as_of": date(1954, 7, 1), "value": 1.0}, {"as_of": date(2026, 10, 2), "value": 3.87}],
+        "DFEDTARL": [{"as_of": date(2008, 12, 16), "value": 0.0}],
+        "DFEDTARU": [{"as_of": date(2008, 12, 16), "value": 0.25}],
+        "SOFR": [{"as_of": date(2018, 4, 3), "value": 1.8}],
+        "M2SL": [{"as_of": date(1959, 1, 1), "value": 286.6}, {"as_of": date(2026, 8, 1), "value": 23342.8}],
+        "M2SL.yoy_pct": [{"as_of": date(1960, 1, 1), "value": 1.0}],
+        "NFCI": [{"as_of": date(1971, 1, 8), "value": 0.1}, {"as_of": date(2026, 9, 25), "value": -0.5}],
+        "WALCL": [{"as_of": date(2002, 12, 18), "value": 700000}],
+    }
+    start, end = history_window_bounds(fed_shared_observation_rows(histories))
+    assert start == date(1954, 7, 1)
+    assert end == date(2026, 10, 2)
+    assert quick_range_bounds("Full range", earliest=start, latest=end) == (start, end)
+    assert quick_range_bounds("1M", earliest=start, latest=end) == (date(2026, 9, 2), end)
+    assert quick_range_bounds("YTD", earliest=start, latest=end) == (date(2026, 1, 1), end)
+    assert quick_range_bounds("3Y", earliest=start, latest=end)[0] == date(2023, 10, 2)
+    default = align_range_selection(
+        earliest=start,
+        latest=end,
+        previous_span=None,
+        current_from=None,
+        current_to=None,
+        default_start=POLICY_RATES_DEFAULT_START,
+    )
+    assert default == (date(2000, 1, 1), end)
+    page = (ROOT / "market_intelligence" / "macro_ui.py").read_text(encoding="utf-8")
+    assert page.count('key="macro_fed"') == 0
+    assert "macro_fed_policy" in page
+    assert "chart_ranges=False" in page
+
+
+def test_fed_page_has_one_shared_date_window(monkeypatch):
+    at = _macro_page(monkeypatch, "Fed")
+    labels = [widget.label for widget in at.date_input]
+    assert labels.count("From") == 1
+    assert labels.count("To") == 1
+    assert "Comparison date" not in labels
+    names = [button.label for button in at.button]
+    assert "Full range" in names
+    assert "1Y" in names
+    landed = _texts(at)
+    assert "M2 Money Supply" in landed
+    assert "Financial Conditions" in landed
+    assert any(widget.label == "M2 Money Supply" for widget in at.pills)
+
+
 def test_m2_window_keeps_history_that_starts_before_nfci():
     from market_intelligence.macro_ui import _chart_histories
 
@@ -324,4 +407,7 @@ def test_chart_frontend_does_not_request_market_data():
     assert "No network calls" in chart_js
     assert 'padStart(2, "0") + "/"' in chart_js
     assert "appendToBody = false" in tenor_js
+    assert "policy-readout" in tenor_js
+    assert 'chart.on("globalout"' in tenor_js
+    assert "policyValueOnDay" in tenor_js
     assert "pointer-events:none" in tenor_js

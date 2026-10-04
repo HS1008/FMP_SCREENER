@@ -9,6 +9,29 @@
   touch-action: pan-y;
 }
 
+#policy-readout {
+  min-width: 0;
+  padding: 2px 2px 8px;
+  box-sizing: border-box;
+}
+
+#policy-readout[hidden] {
+  display: none;
+}
+
+#policy-readout-date {
+  font-size: 13px;
+  line-height: 1.2;
+  opacity: 0.78;
+}
+
+#policy-readout-value {
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 1.35;
+  white-space: pre-line;
+}
+
 #chart,
 #chart canvas {
   width: 100%;

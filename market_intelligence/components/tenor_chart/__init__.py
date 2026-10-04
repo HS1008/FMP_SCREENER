@@ -578,7 +578,7 @@ def build_policy_rate_option(frame: Mapping[str, Any]) -> dict[str, Any]:
     }
     if mark_area is not None:
         effective["markArea"] = mark_area
-    return {
+    option = {
         "chartKind": "policy_rates",
         "animation": False,
         "legend": {
@@ -594,6 +594,38 @@ def build_policy_rate_option(frame: Mapping[str, Any]) -> dict[str, Any]:
         "yAxis": {"type": "value", "name": "Percent", "scale": True, "splitLine": {"show": True}},
         "series": [lower, span, upper, effective, sofr],
     }
+    option["policyReadout"] = policy_readout(frame)
+    return option
+
+
+def policy_readout(frame: Mapping[str, Any]) -> dict[str, Any]:
+    """Latest in-window print for each policy series. Missing stays missing.
+
+    The date is the latest observation among series that have a value. A row
+    whose own date differs is kept so the readout can show it. Nothing is
+    copied onto a later day.
+    """
+    specs = (
+        ("lower", "Target lower"),
+        ("upper", "Target upper"),
+        ("effective", "Effective Fed Funds"),
+        ("sofr", "SOFR"),
+    )
+    rows: list[dict[str, Any]] = []
+    for key, label in specs:
+        last_day = None
+        last_value = None
+        for item in frame.get(key) or ():
+            if not isinstance(item, Sequence) or isinstance(item, (str, bytes)) or len(item) < 2:
+                continue
+            value = _finite_number(item[1])
+            if value is None:
+                continue
+            last_day = str(item[0])[:10]
+            last_value = value
+        rows.append({"label": label, "date": last_day, "value": last_value})
+    dates = [str(row["date"]) for row in rows if row["date"]]
+    return {"date": max(dates) if dates else None, "rows": rows}
 
 
 def policy_rate_chart(frame: Mapping[str, Any], *, key: str) -> None:
@@ -601,8 +633,8 @@ def policy_rate_chart(frame: Mapping[str, Any], *, key: str) -> None:
     render_echarts(
         build_policy_rate_option(frame),
         key=key,
-        desktop_height=440,
-        mobile_height=360,
+        desktop_height=540,
+        mobile_height=460,
     )
 
 
