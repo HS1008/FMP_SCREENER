@@ -13,6 +13,16 @@ import streamlit as st
 
 from market_intelligence.components.market_chart import lightweight_market_chart
 from market_intelligence.components.tenor_chart import policy_rate_chart
+from market_intelligence.display_dates import DATE_INPUT_FORMAT, format_calendar_date
+from market_intelligence.fed_balance_sheet import (
+    MILLIONS_LABEL,
+    build_statement,
+    comparison_lines,
+    current_dates_differ,
+    history_bounds,
+    statement_as_of,
+    statement_html,
+)
 from market_intelligence.history_range import historical_date_range, pills_layout_kwargs
 from market_intelligence.macro_dashboard import (
     CHARTS,
@@ -20,6 +30,7 @@ from market_intelligence.macro_dashboard import (
     GROUP_LABELS,
     GROUP_ORDER,
     LEADING_NOTE,
+    POLICY_RATES_DEFAULT_START,
     VINTAGE_NOTE,
     chart_format,
     chart_unit,
@@ -71,24 +82,123 @@ def _load_source(source_id: str) -> list[dict[str, Any]]:
     return [{"as_of": row.get("observation_date"), "value": row.get("value")} for row in rows]
 
 
+def _clip_bands(bands: list[dict[str, str]], start: date | None, end: date | None) -> list[dict[str, str]]:
+    if start is None or end is None or start > end:
+        return []
+    return [band for band in bands if band["end"] >= start.isoformat() and band["start"] <= end.isoformat()]
+
+
+def _chart_histories(chart: Mapping[str, Any], histories: Mapping[str, list[dict[str, Any]]]) -> list[list[dict[str, Any]]]:
+    """Observation lists for a chart, including every toggle mode.
+
+    M2's level and YoY live under ``series_by_mode``. Leaving them out makes the
+    shared M2/NFCI window start at NFCI instead of the earlier M2 history.
+    """
+    source_ids: list[str] = []
+    for item in chart.get("series") or ():
+        source_ids.append(str(item[0]))
+    for mode_rows in (chart.get("series_by_mode") or {}).values():
+        for item in mode_rows:
+            source_ids.append(str(item[0]))
+    ordered: list[str] = []
+    for source_id in source_ids:
+        if source_id not in ordered:
+            ordered.append(source_id)
+    return [histories.get(source_id) or [] for source_id in ordered]
+
+
 def _render_group(group: str) -> None:
     note = _GROUP_NOTES.get(group)
     if note:
         st.caption(note)
     st.caption(VINTAGE_NOTE)
     histories = {source_id: _load_source(source_id) for source_id in group_source_ids(group)}
-    earliest, latest = history_window_bounds(
-        [rows for source_id, rows in histories.items() if source_id != "USREC"]
-    )
-    start, end = historical_date_range(key="macro_{0}".format(group), earliest=earliest, latest=latest)
     bands = recession_intervals(histories.get("USREC") or [])
-    if start is not None and end is not None and start <= end:
-        bands = [band for band in bands if band["end"] >= start.isoformat() and band["start"] <= end.isoformat()]
-    for chart in CHARTS[group]:
-        _render_chart(group, chart, histories, start, end, bands)
+    if group == "fed":
+        _render_fed(histories, bands)
+    else:
+        earliest, latest = history_window_bounds(
+            [rows for source_id, rows in histories.items() if source_id != "USREC"]
+        )
+        start, end = historical_date_range(key="macro_{0}".format(group), earliest=earliest, latest=latest)
+        window_bands = _clip_bands(bands, start, end)
+        for chart in CHARTS[group]:
+            _render_chart(group, chart, histories, start, end, window_bands)
     with st.expander("Methodology & sources"):
         for line in methodology_lines(group):
             st.markdown(line)
+
+
+def _render_fed(histories: Mapping[str, list[dict[str, Any]]], bands: list[dict[str, str]]) -> None:
+    """Policy rates keep their own default start. The balance sheet is a current table."""
+    policy = next(chart for chart in CHARTS["fed"] if chart["kind"] == "policy")
+    sheet = next(chart for chart in CHARTS["fed"] if chart["kind"] == "balance_sheet")
+    rest = [chart for chart in CHARTS["fed"] if chart["kind"] not in {"policy", "balance_sheet"}]
+    st.subheader(policy["title"])
+    st.caption(chart_unit(policy))
+    earliest, latest = history_window_bounds(_chart_histories(policy, histories))
+    start, end = historical_date_range(
+        key="macro_fed_policy",
+        earliest=earliest,
+        latest=latest,
+        default_start=POLICY_RATES_DEFAULT_START,
+    )
+    if start is not None and end is not None and start <= end:
+        _render_policy(policy, histories, start, end, _clip_bands(bands, start, end))
+    _render_balance_sheet(sheet, histories)
+    rest_rows: list[list[dict[str, Any]]] = []
+    for chart in rest:
+        rest_rows.extend(_chart_histories(chart, histories))
+    rest_start, rest_end = history_window_bounds(rest_rows)
+    st.caption("M2 and financial conditions")
+    start, end = historical_date_range(key="macro_fed", earliest=rest_start, latest=rest_end)
+    window_bands = _clip_bands(bands, start, end)
+    for chart in rest:
+        _render_chart("fed", chart, histories, start, end, window_bands)
+
+
+def _render_balance_sheet(chart: Mapping[str, Any], histories: Mapping[str, list[dict[str, Any]]]) -> None:
+    st.subheader(chart["title"])
+    mode_label = _choice(
+        "Change Display",
+        ["Percentage", "Absolute"],
+        key="fed_bs_change_display",
+        default="Percentage",
+    )
+    mode = "absolute" if mode_label == "Absolute" else "percentage"
+    sheet_histories = {item[0]: histories.get(item[0]) or [] for item in chart.get("series") or ()}
+    earliest, latest = history_bounds(sheet_histories)
+    compare = st.checkbox("Compare to a previous date", key="fed_bs_compare")
+    comparison_date = None
+    if compare and earliest is not None and latest is not None:
+        comparison_date = st.date_input(
+            "Comparison date",
+            value=None,
+            min_value=earliest,
+            max_value=latest,
+            key="fed_bs_compare_date",
+            format=DATE_INPUT_FORMAT,
+            help="Current balances stay in the table. The first change column uses the latest H.4.1 observation on or before this date.",
+        )
+        if isinstance(comparison_date, date):
+            pass
+        else:
+            comparison_date = None
+    rows = build_statement(sheet_histories, comparison_date=comparison_date if compare else None)
+    as_of = statement_as_of(rows)
+    as_of_text = "As of {0}".format(format_calendar_date(as_of)) if as_of is not None else "As of —"
+    st.caption("{0} · {1}".format(as_of_text, MILLIONS_LABEL))
+    if current_dates_differ(rows):
+        st.caption("Components with an earlier print keep that observation. Hover a name for its date.")
+    for line in comparison_lines(rows, comparison_date if compare else None):
+        st.caption(line)
+    if as_of is None:
+        st.caption("No stored H.4.1 observations for this table.")
+        return
+    st.markdown(
+        statement_html(rows, mode=mode, comparing=comparison_date is not None),
+        unsafe_allow_html=True,
+    )
 
 
 def _render_chart(
@@ -99,6 +209,9 @@ def _render_chart(
     end: date | None,
     bands: list[dict[str, str]],
 ) -> None:
+    if chart["kind"] == "balance_sheet":
+        _render_balance_sheet(chart, histories)
+        return
     st.subheader(chart["title"])
     if chart.get("caption"):
         st.caption(str(chart["caption"]))

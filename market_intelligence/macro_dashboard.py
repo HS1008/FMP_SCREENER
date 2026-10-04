@@ -10,6 +10,7 @@ from datetime import date
 from typing import Any, Mapping, Sequence
 
 from market_intelligence.catalog import CATALOG_BY_ID, FRED_ATTRIBUTION, MACRO_MAX_BACKFILL_SERIES
+from market_intelligence.fed_balance_sheet import BALANCE_SHEET_SERIES
 from market_intelligence.components.market_chart import observation_day
 from market_intelligence.history_range import filter_history_rows, union_history_bounds
 
@@ -23,6 +24,8 @@ NFCI_NOTE = (
     "Negative values = looser-than-average financial conditions."
 )
 BREAKEVEN_NOTE = "Market-implied inflation compensation, not survey expectations."
+
+POLICY_RATES_DEFAULT_START = date(2000, 1, 1)
 
 GROUP_ORDER: tuple[str, ...] = ("fed", "inflation", "leading", "coincident", "lagging")
 GROUP_LABELS: dict[str, str] = {
@@ -46,7 +49,6 @@ CHART_TITLES: dict[str, tuple[str, ...]] = {
     "fed": (
         "Fed Policy Rates",
         "Federal Reserve Balance Sheet",
-        "System Liquidity Components",
         "M2 Money Supply",
         "Financial Conditions",
     ),
@@ -99,21 +101,9 @@ CHARTS: dict[str, tuple[dict[str, Any], ...]] = {
         },
         {
             "title": "Federal Reserve Balance Sheet",
-            "kind": "lines",
-            "unit": "USD tn",
-            "format": "number",
-            "series": (("WALCL", "Total assets", True),),
-        },
-        {
-            "title": "System Liquidity Components",
-            "kind": "lines",
-            "unit": "USD bn",
-            "format": "number",
-            "series": (
-                ("WRESBAL", "Reserve balances", True),
-                ("WTREGEN", "Treasury General Account", True),
-                ("RRPONTSYD", "Overnight reverse repo", True),
-            ),
+            "kind": "balance_sheet",
+            "unit": "Millions of USD",
+            "series": tuple((series_id, label) for series_id, label, _section in BALANCE_SHEET_SERIES),
         },
         {
             "title": "M2 Money Supply",
@@ -593,8 +583,10 @@ def methodology_lines(group: str) -> list[str]:
         "Claims 4-week average is the mean of the last four stored weekly prints."
     )
     lines.append(
-        "WALCL millions ÷ 1,000,000 = trillions. WRESBAL and WTREGEN millions ÷ 1,000 = billions. "
-        "M2 billions ÷ 1,000 = trillions. RRP is already billions. Raw rows are not rewritten."
+        "The balance-sheet table shows H.4.1 Wednesday levels in millions of USD. "
+        "Reserve balances use WRBWFRBL, the TGA uses WDTGAL, and reverse repo uses WLRRAL. "
+        "Those are not the week-average series WRESBAL and WTREGEN, and not daily RRPONTSYD. "
+        "M2 billions ÷ 1,000 = trillions on the M2 chart. Raw rows are not rewritten."
     )
     seen: set[str] = set()
     for source_id in group_source_ids(group):

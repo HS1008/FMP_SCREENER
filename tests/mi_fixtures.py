@@ -266,6 +266,20 @@ def synthetic_fred_data(end: date = date(2024, 12, 31)) -> dict[str, list[tuple[
     data["ICSA"] = [(d, "{0:.0f}".format(210000 + (i % 5) * 1000)) for i, d in enumerate(weekly_days)]
     data["CCSA"] = [(d, "{0:.0f}".format(1800000 + (i % 7) * 5000)) for i, d in enumerate(weekly_days)]
     data["WALCL"] = [(d, "{0:.0f}".format(7000000 - 3000 * i)) for i, d in enumerate(weekly_days)]
+    # H.4.1 Wednesday levels. Same weekly dates as WALCL so the liquidity section stays current.
+    for sid, level in (
+        ("TREAST", 4500000),
+        ("WSHOMCB", 1900000),
+        ("WSHOFADSL", 2300),
+        ("WLCFLPCL", 8700),
+        ("WRBWFRBL", 2800000),
+        ("WCICL", 2400000),
+        ("WDTGAL", 900000),
+        ("WLRRAL", 360000),
+        ("WCPIL", 40000),
+        ("WCSL", 7000),
+    ):
+        data[sid] = [(d, "{0:.0f}".format(level)) for d in weekly_days]
     # Millions of USD (official units); week averages ending Wednesday.
     data["WTREGEN"] = [(d, "{0:.1f}".format(700000 + (i % 9) * 10000)) for i, d in enumerate(weekly_days)]
     data["WRESBAL"] = [(d, "{0:.1f}".format(3300000 - 2000 * i)) for i, d in enumerate(weekly_days)]

@@ -33,6 +33,7 @@ from market_intelligence.catalog import (
     CATALOG_VERSION,
     CREDIT_SERIES,
     FRED_SOURCE_ID,
+    H41_WEDNESDAY_LEVEL_SERIES,
     MACRO_MAX_BACKFILL_SERIES,
     RATES_MAX_BACKFILL_SERIES,
     RETIRED_CBOE_SOURCE_IDS,
@@ -128,6 +129,18 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "action": "ingest" if fred_configured else "fail_unconfigured",
                 "mode": "max",
                 "series": list(MACRO_MAX_BACKFILL_SERIES),
+                "catalog_version": CATALOG_VERSION,
+            }
+        )
+    if getattr(args, "fred_h41_backfill", False):
+        steps.append(
+            {
+                "step": "fred_h41_backfill",
+                "source_id": FRED_SOURCE_ID,
+                "configured": fred_configured,
+                "action": "ingest" if fred_configured else "fail_unconfigured",
+                "mode": "max",
+                "series": list(H41_WEDNESDAY_LEVEL_SERIES),
                 "catalog_version": CATALOG_VERSION,
             }
         )
@@ -433,6 +446,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Print stored Macro series and chart-metric coverage. Does not call FRED and does not delete rows.",
     )
+    parser.add_argument(
+        "--fred-h41-backfill",
+        action="store_true",
+        help="Max-history FRED ingest for the 11 H.4.1 Wednesday-level balance-sheet series. Does not delete older rows. Not part of the incremental refresh.",
+    )
     parser.add_argument("--finra", action="store_true", help="Ingest FINRA Query API corporate-bond aggregates")
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
@@ -568,8 +586,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), getattr(args, "fred_macro_backfill", False), getattr(args, "fred_macro_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, getattr(args, "equity_markets_backfill", False), getattr(args, "equity_markets_coverage", False), args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), getattr(args, "yahoo_cross_asset", False), getattr(args, "yahoo_cross_asset_backfill", False), args.cftc, getattr(args, "cftc_positions_backfill", False), args.eia, getattr(args, "eia_backfill", False), getattr(args, "cross_asset_coverage", False), args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
-        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--fred-macro-backfill/--fred-macro-coverage/--finra/--legacy-sector/--treasury/--equity/--equity-markets-backfill/--equity-markets-coverage/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--yahoo-cross-asset/--yahoo-cross-asset-backfill/--cftc/--cftc-positions-backfill/--eia/--eia-backfill/--cross-asset-coverage/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
+    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), getattr(args, "fred_macro_backfill", False), getattr(args, "fred_h41_backfill", False), getattr(args, "fred_macro_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, getattr(args, "equity_markets_backfill", False), getattr(args, "equity_markets_coverage", False), args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), getattr(args, "yahoo_cross_asset", False), getattr(args, "yahoo_cross_asset_backfill", False), args.cftc, getattr(args, "cftc_positions_backfill", False), args.eia, getattr(args, "eia_backfill", False), getattr(args, "cross_asset_coverage", False), args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--fred-macro-backfill/--fred-h41-backfill/--fred-macro-coverage/--finra/--legacy-sector/--treasury/--equity/--equity-markets-backfill/--equity-markets-coverage/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--yahoo-cross-asset/--yahoo-cross-asset-backfill/--cftc/--cftc-positions-backfill/--eia/--eia-backfill/--cross-asset-coverage/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -1001,6 +1019,45 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                     "analytics": analytics.as_dict(),
                     "coverage": coverage,
                 }
+                if report.failed:
+                    failures += 1
+            elif name == "fred_h41_backfill":
+                from market_intelligence.fred_client import FredClient
+                from market_intelligence.ingest_fred import ingest_fred_catalog
+
+                print(
+                    "h41_backfill phase=ingest_start series={0}".format(len(H41_WEDNESDAY_LEVEL_SERIES)),
+                    flush=True,
+                )
+                client = fred_client_factory() if fred_client_factory else FredClient(fred_key)
+                report = ingest_fred_catalog(
+                    engine,
+                    client,
+                    series_ids=list(H41_WEDNESDAY_LEVEL_SERIES),
+                    mode="max",
+                    parent_run_id=parent_run_id,
+                    today=as_of,
+                )
+                print(
+                    "h41_backfill phase=ingest_done succeeded={0} failed={1} quarantined={2}".format(
+                        len(report.succeeded),
+                        len(report.failed),
+                        len(report.quarantined),
+                    ),
+                    flush=True,
+                )
+                for result in report.results:
+                    print(
+                        "h41_backfill series={0} status={1} metadata={2} first={3} latest={4}".format(
+                            result.series_id,
+                            result.status,
+                            result.metadata_status,
+                            result.first_observation.isoformat() if result.first_observation else "none",
+                            result.latest_observation.isoformat() if result.latest_observation else "none",
+                        ),
+                        flush=True,
+                    )
+                status["results"][name] = {"ingest": report.as_dict()}
                 if report.failed:
                     failures += 1
             elif name == "finra":

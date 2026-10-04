@@ -506,7 +506,7 @@ def _observed(value: Any) -> str:
     ts = parse_timestamp(value)
     if ts is None:
         return ""
-    return ts.astimezone(_ET).strftime("%Y-%m-%d %H:%M ET")
+    return ts.astimezone(_ET).strftime("%m/%d/%Y %H:%M ET")
 
 
 def _price_bars_by_symbol() -> dict[str, list[dict[str, Any]]]:

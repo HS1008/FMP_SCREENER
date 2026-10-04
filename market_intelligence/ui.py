@@ -15,6 +15,7 @@ import pandas as pd
 import streamlit as st
 
 from market_intelligence.catalog import FRED_ATTRIBUTION
+from market_intelligence.display_dates import format_calendar_date
 from market_intelligence.components.market_chart import lightweight_market_chart, time_series_points
 from market_intelligence.readonly_db import ReadOnlyUnavailable, readonly_connection
 
@@ -109,8 +110,8 @@ def compact_as_of(dates: list[Any], *, freshness: str | None = None) -> tuple[st
     if not present:
         return None, freshness
     if len(present) == 1:
-        return present[0], freshness
-    return "{0} … {1}".format(present[0], present[-1]), freshness
+        return format_calendar_date(present[0]), freshness
+    return "{0} … {1}".format(format_calendar_date(present[0]), format_calendar_date(present[-1])), freshness
 
 
 def implied_prior_yield(yield_pct: Any, change_bps: Any) -> float | None:

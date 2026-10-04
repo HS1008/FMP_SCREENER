@@ -576,7 +576,7 @@ def test_options_page_shows_yahoo_core_without_provider_imports(monkeypatch):
     assert "Implied − Realized Vol" in text
     assert "Implied vs Realized Vol" not in text
     assert "VIX − GSPC RV21" in text
-    assert "Curve as of September 24, 2026" in text
+    assert "Curve as of 09/24/2026" in text
     assert "RV20" not in text
     assert "GSPC RV20" not in text
     labels = [metric.label for metric in at.metric]
@@ -605,8 +605,8 @@ def test_options_page_shows_yahoo_core_without_provider_imports(monkeypatch):
         for kind in ("title", "subheader", "caption", "markdown", "info")
         for el in getattr(at, kind)
     )
-    assert "Curve as of September 22, 2026" in rerun_text
-    assert "Curve as of September 24, 2026" not in rerun_text
+    assert "Curve as of 09/22/2026" in rerun_text
+    assert "Curve as of 09/24/2026" not in rerun_text
 
 
 def test_options_page_nulls_stay_unavailable(monkeypatch):

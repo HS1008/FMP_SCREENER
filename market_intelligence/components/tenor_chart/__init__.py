@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from market_intelligence.components.chart_component import chart_component
+from market_intelligence.display_dates import format_calendar_date
 from market_intelligence.markets_analytics import column_color_scales, heatmap_cell_color
 from market_intelligence.perf import span
 
@@ -33,21 +34,6 @@ ECHARTS_VERSION = "6.1.0"
 DESKTOP_HEIGHT = 390
 MOBILE_HEIGHT = 320
 
-_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-_FULL_MONTHS = (
-    "January",
-    "February",
-    "March",
-    "April",
-    "May",
-    "June",
-    "July",
-    "August",
-    "September",
-    "October",
-    "November",
-    "December",
-)
 
 
 def calendar_day(value: Any) -> date | None:
@@ -91,11 +77,11 @@ def _index_name(ticker: str, tenor: str, explicit: Any) -> str:
 
 
 def _short_date(day: date) -> str:
-    return "{0} {1}, {2}".format(_MONTHS[day.month - 1], day.day, day.year)
+    return format_calendar_date(day)
 
 
 def _long_date(day: date) -> str:
-    return "{0} {1}, {2}".format(_FULL_MONTHS[day.month - 1], day.day, day.year)
+    return format_calendar_date(day)
 
 
 def build_tenor_curve(
@@ -232,22 +218,7 @@ def echarts_option(payload: Mapping[str, Any]) -> dict[str, Any]:
                 "labelLayout": {"hideOverlap": False, "moveOverlap": "shiftY"},
             }
         ],
-        "tooltip": {
-            "trigger": "axis",
-            "triggerOn": "mousemove|click",
-            "confine": True,
-            "backgroundColor": "rgba(22, 24, 28, 0.96)",
-            "borderColor": "rgba(255, 255, 255, 0.14)",
-            "borderWidth": 1,
-            "padding": [8, 10],
-            "textStyle": {"color": "#f4f6f8", "fontSize": 13},
-            "extraCssText": (
-                "background:rgba(22,24,28,0.96)!important;color:#f4f6f8!important;"
-                "border:1px solid rgba(255,255,255,0.14)!important;border-radius:8px;"
-                "box-shadow:none;padding:8px 10px;"
-            ),
-            "axisPointer": {"type": "line", "snap": True},
-        },
+        "tooltip": _dark_tooltip(),
     }
 
 
@@ -294,10 +265,16 @@ def _mount_echarts(option, key, desktop_height, mobile_height) -> None:
 
 
 def _dark_tooltip(*, trigger: str = "axis") -> dict[str, Any]:
+    """Tooltip stays inside the chart. ECharts otherwise appends it to document.body."""
     return {
         "trigger": trigger,
         "triggerOn": "mousemove|click",
         "confine": True,
+        "appendToBody": False,
+        "enterable": False,
+        "transitionDuration": 0,
+        "className": "mi-echart-tooltip",
+        "renderMode": "html",
         "backgroundColor": "rgba(22, 24, 28, 0.96)",
         "borderColor": "rgba(255, 255, 255, 0.14)",
         "borderWidth": 1,
@@ -306,8 +283,9 @@ def _dark_tooltip(*, trigger: str = "axis") -> dict[str, Any]:
         "extraCssText": (
             "background:rgba(22,24,28,0.96)!important;color:#f4f6f8!important;"
             "border:1px solid rgba(255,255,255,0.14)!important;border-radius:8px;"
-            "box-shadow:none;padding:8px 10px;"
+            "box-shadow:none;padding:8px 10px;pointer-events:none;"
         ),
+        "axisPointer": {"type": "line", "snap": True},
     }
 
 
@@ -585,7 +563,6 @@ def build_policy_rate_option(frame: Mapping[str, Any]) -> dict[str, Any]:
         "data": points("effective"),
         "connectNulls": False,
         "showSymbol": False,
-        "sampling": "lttb",
         "lineStyle": {"width": 1.5, "color": "#e15759"},
         "itemStyle": {"color": "#e15759"},
     }
@@ -596,7 +573,6 @@ def build_policy_rate_option(frame: Mapping[str, Any]) -> dict[str, Any]:
         "data": points("sofr"),
         "connectNulls": False,
         "showSymbol": False,
-        "sampling": "lttb",
         "lineStyle": {"width": 1.5, "color": "#f2c14e"},
         "itemStyle": {"color": "#f2c14e"},
     }

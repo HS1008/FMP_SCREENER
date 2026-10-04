@@ -49,6 +49,16 @@ NEW_SERIES = (
     "DRBLACBS",
     "ULCNFB",
     "USREC",
+    "TREAST",
+    "WSHOMCB",
+    "WSHOFADSL",
+    "WLCFLPCL",
+    "WRBWFRBL",
+    "WCICL",
+    "WDTGAL",
+    "WLRRAL",
+    "WCPIL",
+    "WCSL",
 )
 
 
@@ -145,11 +155,11 @@ def test_liquidity_display_scale_is_one_conversion():
     assert scale_level("M2SL", 21_000) == 21
     assert scale_level("M2SL", None) is None
     balance = next(chart for chart in CHARTS["fed"] if chart["title"] == "Federal Reserve Balance Sheet")
-    liquidity = next(chart for chart in CHARTS["fed"] if chart["title"] == "System Liquidity Components")
-    assert chart_unit(balance) == "USD tn"
-    assert chart_unit(liquidity) == "USD bn"
-    assert [item[0] for item in selected_lines(balance)] == ["WALCL"]
-    assert [item[0] for item in selected_lines(liquidity)] == ["WRESBAL", "WTREGEN", "RRPONTSYD"]
+    assert chart_unit(balance) == "Millions of USD"
+    assert balance["kind"] == "balance_sheet"
+    assert [item[0] for item in balance["series"]][0] == "WALCL"
+    assert "WRESBAL" not in {item[0] for item in balance["series"]}
+    assert "RRPONTSYD" not in {item[0] for item in balance["series"]}
     m2 = next(chart for chart in CHARTS["fed"] if chart["title"] == "M2 Money Supply")
     assert chart_unit(m2, mode="Level") == "USD tn"
     assert chart_unit(m2, mode="YoY %") == "Percent"
@@ -224,7 +234,15 @@ def test_macro_backfill_is_not_part_of_scheduled_refresh():
     scheduled = plan(build_parser().parse_args(["--all-configured"]), {})
     names = {step["step"] for step in scheduled["steps"]}
     assert "fred_macro_backfill" not in names
+    assert "fred_h41_backfill" not in names
     assert "fred_macro_coverage" not in names
+    from market_intelligence.catalog import H41_WEDNESDAY_LEVEL_SERIES
+
+    h41 = plan(build_parser().parse_args(["--fred-h41-backfill"]), {})
+    h41_step = h41["steps"][0]
+    assert h41_step["mode"] == "max"
+    assert h41_step["series"] == list(H41_WEDNESDAY_LEVEL_SERIES)
+    assert len(H41_WEDNESDAY_LEVEL_SERIES) == 11
     explicit = plan(build_parser().parse_args(["--fred-macro-backfill"]), {})
     step = explicit["steps"][0]
     assert step["mode"] == "max"
@@ -279,6 +297,21 @@ def test_macro_page_renders_each_subsection(monkeypatch):
     assert "proprietary coincident index" in _texts(coincident)
 
 
+def test_m2_window_keeps_history_that_starts_before_nfci():
+    from market_intelligence.macro_ui import _chart_histories
+
+    m2 = next(chart for chart in CHARTS["fed"] if chart["title"] == "M2 Money Supply")
+    nfci = next(chart for chart in CHARTS["fed"] if chart["title"] == "Financial Conditions")
+    histories = {
+        "M2SL": [{"as_of": date(1959, 1, 1), "value": 1.0}, {"as_of": date(2026, 8, 1), "value": 2.0}],
+        "M2SL.yoy_pct": [{"as_of": date(1960, 1, 1), "value": 1.0}],
+        "NFCI": [{"as_of": date(1971, 1, 8), "value": 0.1}, {"as_of": date(2026, 9, 25), "value": -0.5}],
+    }
+    start, end = history_window_bounds(_chart_histories(m2, histories) + _chart_histories(nfci, histories))
+    assert start == date(1959, 1, 1)
+    assert end == date(2026, 9, 25)
+
+
 def test_chart_frontend_does_not_request_market_data():
     chart_js = (ROOT / "market_intelligence" / "components" / "market_chart" / "frontend" / "chart.js").read_text(encoding="utf-8")
     tenor_js = (ROOT / "market_intelligence" / "components" / "tenor_chart" / "frontend" / "chart.js").read_text(encoding="utf-8")
@@ -289,3 +322,6 @@ def test_chart_frontend_does_not_request_market_data():
         assert "fred.stlouisfed.org" not in text
     assert "recession_bands" in chart_js or "recession" in chart_js
     assert "No network calls" in chart_js
+    assert 'padStart(2, "0") + "/"' in chart_js
+    assert "appendToBody = false" in tenor_js
+    assert "pointer-events:none" in tenor_js

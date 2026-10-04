@@ -40,6 +40,11 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "flock -w 5400" in host
     assert "--fred-rates-coverage" in host
     assert "fred_macro_backfill=heartbeat" in host
+    assert "fred_h41_wednesday_level_backfill.done" in host
+    assert "fred_h41_backfill=heartbeat" in host
+    assert "staged_python -u -m jobs.market_intelligence_refresh --fred-h41-backfill --wait-lock" in host
+    assert host.index("fred_macro_max_backfill.done") < host.index("fred_h41_wednesday_level_backfill.done")
+    assert host.index("fred_macro_backfill=already_recorded") < host.index("fred_h41_backfill=start")
     assert "staged_python -u -m jobs.market_intelligence_refresh --fred-macro-backfill --wait-lock" in host
     assert "--fred-macro-coverage" in host
     assert "concurrency:" in deploy
