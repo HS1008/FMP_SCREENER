@@ -450,7 +450,7 @@ CHARTS: dict[str, tuple[dict[str, Any], ...]] = {
             "kind": "lines",
             "unit": "Percent of disposable income",
             "format": "percent",
-            "caption": "Personal saving as a percent of disposable personal income, monthly, seasonally adjusted.",
+            "caption": "Personal saving as a percent of disposable personal income, monthly, seasonally adjusted annual rate.",
             "series": (("PSAVERT", "Personal saving rate", False),),
         },
         {
