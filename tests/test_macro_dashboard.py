@@ -285,6 +285,7 @@ def _fake_read(fn_name, *args, **kwargs):
         ]
     if fn_name == "metric_history":
         return [
+            {"as_of": date(1998, 1, 1), "value": 2.1},
             {"as_of": date(2020, 3, 1), "value": 2.5},
             {"as_of": date(2024, 6, 1), "value": 2.8},
         ]
@@ -495,8 +496,11 @@ def test_inflation_page_shares_one_window_and_keeps_an_empty_selection(monkeypat
     assert "CPI Decomposition" in landed
     assert "PCE Decomposition" in landed
     assert "Market Inflation Expectations" in landed
-    assert "CPI Short-Run Momentum" in landed
+    assert "CPI Short-Run Momentum" not in landed
+    assert "PCE Short-Run Momentum" not in landed
     assert "liquidity premiums" in landed
+    from_widget = next(widget for widget in at.date_input if widget.label == "From")
+    assert from_widget.value == date(2000, 1, 1)
     assert "not contributions" in landed
     cpi_pills = next(widget for widget in at.pills if widget.label == "Headline, Core, and Trimmed Mean CPI")
     assert set(cpi_pills.value) == {"CPIAUCSL.yoy_pct", "CPILFESL.yoy_pct", "TRMMEANCPIM159SFRBCLE"}

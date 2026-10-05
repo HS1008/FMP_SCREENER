@@ -120,7 +120,13 @@ def _render_group(group: str) -> None:
         earliest, latest = history_window_bounds(
             [rows for source_id, rows in histories.items() if source_id != "USREC"]
         )
-        start, end = historical_date_range(key="macro_{0}".format(group), earliest=earliest, latest=latest)
+        default_start = POLICY_RATES_DEFAULT_START if group == "inflation" else None
+        start, end = historical_date_range(
+            key="macro_{0}".format(group),
+            earliest=earliest,
+            latest=latest,
+            default_start=default_start,
+        )
         window_bands = _clip_bands(bands, start, end)
         for chart in CHARTS[group]:
             _render_chart(group, chart, histories, start, end, window_bands)
