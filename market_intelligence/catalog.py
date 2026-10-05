@@ -461,12 +461,12 @@ CATALOG: tuple[SeriesSpec, ...] = (
        transforms=("yoy_pct",), backfill_years=30, label="Real disposable personal income",
        aggregation=AGG_PERIOD_TOTAL,
        notes="Real disposable personal income, billions of chained 2017 dollars, monthly, SAAR. Not nominal."),
-    _s("PSAVERT", "growth", "saving", CADENCE_MONTHLY, _PCT, expected_sa="SA", value_kind="percent",
+    _s("PSAVERT", "growth", "saving", CADENCE_MONTHLY, _PCT, expected_sa="SAAR", value_kind="percent",
        backfill_years=30, label="Personal saving rate", aggregation=AGG_PERIOD_LEVEL,
-       notes="Personal saving as a percent of disposable personal income, monthly, SA."),
-    _s("DRCCLACBS", "growth", "credit", CADENCE_QUARTERLY, _PCT, expected_sa="NSA", value_kind="percent",
+       notes="Personal saving as a percent of disposable personal income, monthly, seasonally adjusted annual rate."),
+    _s("DRCCLACBS", "growth", "credit", CADENCE_QUARTERLY, _PCT, expected_sa="SA", value_kind="percent",
        backfill_years=30, label="Credit card delinquency rate", aggregation=AGG_PERIOD_LEVEL,
-       notes="Delinquency rate on credit card loans, all commercial banks, percent, quarterly, NSA. Not forward-filled."),
+       notes="Delinquency rate on credit card loans, all commercial banks, percent, quarterly, seasonally adjusted. Not forward-filled."),
     _s("MTSDS133FMS", "fiscal", "budget", CADENCE_MONTHLY, _MLN, expected_sa="NSA", value_kind="balance",
        transforms=("sum_12m",), backfill_years=30, label="Federal surplus or deficit",
        aggregation=AGG_PERIOD_TOTAL,
@@ -585,6 +585,8 @@ MACRO_EXPANSION_SERIES: tuple[str, ...] = (
     "A091RC1Q027SBEA",
     "FGRECPT",
     "PAYEMS",
+    "GDPC1",
+    "PCEC96",
 )
 # Explicit max-history path for the Macro dashboard. Incremental refresh keeps catalog backfill_years.
 MACRO_MAX_BACKFILL_SERIES: tuple[str, ...] = (
@@ -623,7 +625,11 @@ MACRO_MAX_BACKFILL_SERIES: tuple[str, ...] = (
     "DRBLACBS",
     "ULCNFB",
     "USREC",
-    *tuple(series_id for series_id in MACRO_EXPANSION_SERIES if series_id != "PAYEMS"),
+    *tuple(
+        series_id
+        for series_id in MACRO_EXPANSION_SERIES
+        if series_id not in {"PAYEMS", "GDPC1", "PCEC96"}
+    ),
 )
 MACRO_COVERAGE_METRICS: tuple[str, ...] = (
     "M2SL.yoy_pct",
