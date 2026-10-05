@@ -913,6 +913,226 @@
       "title": "Liabilities and Capital: Capital: Surplus: Wednesday Level",
       "units": "Millions of U.S. Dollars",
       "units_short": "Mil. of U.S. $"
+    },
+    "A091RC1Q027SBEA": {
+      "frequency": "Quarterly",
+      "frequency_short": "Q",
+      "id": "A091RC1Q027SBEA",
+      "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+      "seasonal_adjustment_short": "SAAR",
+      "source_url": "https://fred.stlouisfed.org/series/A091RC1Q027SBEA",
+      "title": "Federal government current expenditures: Interest payments",
+      "units": "Billions of Dollars",
+      "units_short": "Bil. of $"
+    },
+    "CES0500000003": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "CES0500000003",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/CES0500000003",
+      "title": "Average Hourly Earnings of All Employees, Total Private",
+      "units": "Dollars per Hour",
+      "units_short": "$ per Hour"
+    },
+    "CSUSHPINSA": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "CSUSHPINSA",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/CSUSHPINSA",
+      "title": "S&P CoreLogic Case-Shiller U.S. National Home Price Index",
+      "units": "Index Jan 2000=100",
+      "units_short": "Index"
+    },
+    "DRCCLACBS": {
+      "frequency": "Quarterly",
+      "frequency_short": "Q",
+      "id": "DRCCLACBS",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/DRCCLACBS",
+      "title": "Delinquency Rate on Credit Card Loans, All Commercial Banks",
+      "units": "Percent",
+      "units_short": "%"
+    },
+    "DSPIC96": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "DSPIC96",
+      "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+      "seasonal_adjustment_short": "SAAR",
+      "source_url": "https://fred.stlouisfed.org/series/DSPIC96",
+      "title": "Real Disposable Personal Income",
+      "units": "Billions of Chained 2017 Dollars",
+      "units_short": "Bil. of Chn. 2017 $"
+    },
+    "FGRECPT": {
+      "frequency": "Quarterly",
+      "frequency_short": "Q",
+      "id": "FGRECPT",
+      "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+      "seasonal_adjustment_short": "SAAR",
+      "source_url": "https://fred.stlouisfed.org/series/FGRECPT",
+      "title": "Federal Government Current Receipts",
+      "units": "Billions of Dollars",
+      "units_short": "Bil. of $"
+    },
+    "FYGFGDQ188S": {
+      "frequency": "Quarterly",
+      "frequency_short": "Q",
+      "id": "FYGFGDQ188S",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/FYGFGDQ188S",
+      "title": "Federal Debt Held by the Public as Percent of Gross Domestic Product",
+      "units": "Percent of GDP",
+      "units_short": "% of GDP"
+    },
+    "HOUST": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "HOUST",
+      "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+      "seasonal_adjustment_short": "SAAR",
+      "source_url": "https://fred.stlouisfed.org/series/HOUST",
+      "title": "New Privately-Owned Housing Units Started: Total Units",
+      "units": "Thousands of Units",
+      "units_short": "Thous. of Units"
+    },
+    "HSN1F": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "HSN1F",
+      "seasonal_adjustment": "Seasonally Adjusted Annual Rate",
+      "seasonal_adjustment_short": "SAAR",
+      "source_url": "https://fred.stlouisfed.org/series/HSN1F",
+      "title": "New One Family Houses Sold: United States",
+      "units": "Thousands",
+      "units_short": "Thous."
+    },
+    "JTSHIL": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "JTSHIL",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/JTSHIL",
+      "title": "Hires: Total Nonfarm",
+      "units": "Level in Thousands",
+      "units_short": "Thous."
+    },
+    "JTSJOL": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "JTSJOL",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/JTSJOL",
+      "title": "Job Openings: Total Nonfarm",
+      "units": "Level in Thousands",
+      "units_short": "Thous."
+    },
+    "JTSQUL": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "JTSQUL",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/JTSQUL",
+      "title": "Quits: Total Nonfarm",
+      "units": "Level in Thousands",
+      "units_short": "Thous."
+    },
+    "MORTGAGE30US": {
+      "frequency": "Weekly",
+      "frequency_short": "W",
+      "id": "MORTGAGE30US",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/MORTGAGE30US",
+      "title": "30-Year Fixed Rate Mortgage Average in the United States",
+      "units": "Percent",
+      "units_short": "%"
+    },
+    "MSACSR": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "MSACSR",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/MSACSR",
+      "title": "Monthly Supply of New Houses in the United States",
+      "units": "Months",
+      "units_short": "Months"
+    },
+    "MTSDS133FMS": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "MTSDS133FMS",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/MTSDS133FMS",
+      "title": "Federal Surplus or Deficit [-]",
+      "units": "Millions of Dollars",
+      "units_short": "Mil. of $"
+    },
+    "MTSO133FMS": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "MTSO133FMS",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/MTSO133FMS",
+      "title": "Federal Outlays",
+      "units": "Millions of Dollars",
+      "units_short": "Mil. of $"
+    },
+    "MTSR133FMS": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "MTSR133FMS",
+      "seasonal_adjustment": "Not Seasonally Adjusted",
+      "seasonal_adjustment_short": "NSA",
+      "source_url": "https://fred.stlouisfed.org/series/MTSR133FMS",
+      "title": "Federal Receipts",
+      "units": "Millions of Dollars",
+      "units_short": "Mil. of $"
+    },
+    "PSAVERT": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "PSAVERT",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/PSAVERT",
+      "title": "Personal Saving Rate",
+      "units": "Percent",
+      "units_short": "%"
+    },
+    "U6RATE": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "U6RATE",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/U6RATE",
+      "title": "Unemployment Rate - U6",
+      "units": "Percent",
+      "units_short": "%"
+    },
+    "UNEMPLOY": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "UNEMPLOY",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/UNEMPLOY",
+      "title": "Unemployment Level",
+      "units": "Thousands of Persons",
+      "units_short": "Thous. of Persons"
     }
   }
 }

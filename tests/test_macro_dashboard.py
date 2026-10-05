@@ -245,6 +245,9 @@ def test_macro_backfill_is_not_part_of_scheduled_refresh():
     assert "fred_macro_backfill" not in names
     assert "fred_h41_backfill" not in names
     assert "fred_inflation_backfill" not in names
+    assert "fred_macro_expansion_backfill" not in names
+    assert "treasury_auctions_backfill" not in names
+    assert "treasury_auctions" in names
     assert "fred_macro_coverage" not in names
     from market_intelligence.catalog import H41_WEDNESDAY_LEVEL_SERIES
 
@@ -260,6 +263,18 @@ def test_macro_backfill_is_not_part_of_scheduled_refresh():
     assert inflation_step["mode"] == "max"
     assert inflation_step["series"] == list(INFLATION_COMPONENT_SERIES)
     assert "TRMMEANCPIM159SFRBCLE" in MACRO_MAX_BACKFILL_SERIES
+    from market_intelligence.catalog import MACRO_EXPANSION_SERIES
+
+    expansion = plan(build_parser().parse_args(["--fred-macro-expansion-backfill"]), {"FRED_API_KEY": "test"})
+    expansion_step = expansion["steps"][0]
+    assert expansion_step["step"] == "fred_macro_expansion_backfill"
+    assert expansion_step["mode"] == "max"
+    assert "U6RATE" in expansion_step["series"]
+    assert "PAYEMS" in expansion_step["series"]
+    auctions = plan(build_parser().parse_args(["--treasury-auctions-backfill"]), {})
+    assert auctions["steps"][0]["step"] == "treasury_auctions_backfill"
+    assert auctions["steps"][0]["mode"] == "max"
+    assert "U6RATE" in MACRO_EXPANSION_SERIES
     assert "PCETRIM12M159SFRBDAL" in MACRO_MAX_BACKFILL_SERIES
     explicit = plan(build_parser().parse_args(["--fred-macro-backfill"]), {})
     step = explicit["steps"][0]
@@ -294,7 +309,7 @@ def _fake_read(fn_name, *args, **kwargs):
 
 def _macro_page(monkeypatch, section: str) -> AppTest:
     monkeypatch.setattr("market_intelligence.ui.cached_read", _fake_read)
-    at = AppTest.from_file(str(ROOT / "pages" / "11_Macro_Overview.py"), default_timeout=40)
+    at = AppTest.from_file(str(ROOT / "pages" / "11_Macro_Overview.py"), default_timeout=90)
     at.session_state["macro_section"] = section
     at.run()
     assert not at.exception, [item.value for item in at.exception]
@@ -498,6 +513,7 @@ def test_inflation_page_shares_one_window_and_keeps_an_empty_selection(monkeypat
     assert "Market Inflation Expectations" in landed
     assert "CPI Short-Run Momentum" not in landed
     assert "PCE Short-Run Momentum" not in landed
+    assert "Services Inflation ex Rent of Shelter" not in landed
     assert "liquidity premiums" in landed
     from_widget = next(widget for widget in at.date_input if widget.label == "From")
     assert from_widget.value == date(2000, 1, 1)
@@ -544,6 +560,54 @@ def test_series_toggle_memory_survives_when_the_widget_unmounts():
     at.run()
     assert not at.exception, [item.value for item in at.exception]
     assert list(at.pills[0].value or []) == []
+
+
+def test_new_macro_sections_render_with_specified_defaults(monkeypatch):
+    labor = _macro_page(monkeypatch, "Labor")
+    labor_text = _texts(labor)
+    for title in CHART_TITLES["labor"]:
+        assert title in labor_text
+    claims = next(widget for widget in labor.pills if widget.label == "Jobless Claims")
+    assert set(claims.value) == {"ICSA", "CCSA"}
+    payroll = next(widget for widget in labor.pills if widget.label == "Nonfarm Payrolls")
+    assert set(payroll.value) == {"PAYEMS.mom_change", "PAYEMS.mom_change_ma3"}
+    jolts = next(widget for widget in labor.pills if widget.label == "JOLTS Openings, Hires, and Quits")
+    assert set(jolts.value) == {"JTSJOL", "JTSHIL", "JTSQUL"}
+    unemployment = next(widget for widget in labor.pills if widget.label == "Unemployment Rate")
+    assert set(unemployment.value) == {"UNRATE", "U6RATE"}
+    labor_from = next(widget for widget in labor.date_input if widget.label == "From")
+    assert labor_from.value == date(2000, 1, 1)
+    assert [widget.label for widget in labor.date_input].count("From") == 1
+
+    housing = _macro_page(monkeypatch, "Housing")
+    housing_text = _texts(housing)
+    for title in CHART_TITLES["housing"]:
+        assert title in housing_text
+    assert "does not publish a free structured historical API" in housing_text
+    permits = next(widget for widget in housing.pills if widget.label == "Building Permits and Housing Starts")
+    assert set(permits.value) == {"PERMIT", "HOUST"}
+
+    growth = _macro_page(monkeypatch, "Growth & Consumer")
+    growth_text = _texts(growth)
+    for title in CHART_TITLES["growth"]:
+        assert title in growth_text
+    assert "withdrew redistribution" in growth_text
+    assert "not substituted" in growth_text
+    assert "Economic Growth" in growth_text
+    assert "Business Cycle" in growth_text
+    assert "Consumer" in growth_text
+
+    fiscal = _macro_page(monkeypatch, "Fiscal")
+    fiscal_text = _texts(fiscal)
+    for title in CHART_TITLES["fiscal"]:
+        assert title in fiscal_text
+    assert "positive value is a deficit" in fiscal_text
+    assert "Debt Held by the Public / GDP" in fiscal_text
+    receipts = next(widget for widget in fiscal.pills if widget.label == "Federal Receipts and Outlays")
+    assert set(receipts.value) == {"MTSR133FMS.sum_12m", "MTSO133FMS.sum_12m"}
+    issuance = next(widget for widget in fiscal.pills if widget.label == "Treasury Issuance")
+    assert set(issuance.value) == {"TREAS_GROSS_BILL", "TREAS_GROSS_NOTE", "TREAS_GROSS_BOND"}
+    assert "Budget" in fiscal_text and "Debt Service" in fiscal_text and "Treasury Financing" in fiscal_text
 
 
 def test_chart_frontend_does_not_request_market_data():

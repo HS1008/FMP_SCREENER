@@ -189,6 +189,9 @@ function seriesFromData(data) {
       return {
         label: (item && item.label) || "Value",
         points: item && Array.isArray(item.points) ? item.points : [],
+        colorIndex: item && typeof item.colorIndex === "number" ? item.colorIndex : undefined,
+        style: item && item.style ? item.style : "line",
+        priceScale: item && item.priceScale ? item.priceScale : "right",
       };
     });
   }
@@ -290,6 +293,7 @@ function applyTheme(state) {
       horzLines: { color: palette.grid },
     },
     rightPriceScale: { borderColor: palette.grid },
+    leftPriceScale: { borderColor: palette.grid },
     timeScale: { borderColor: palette.grid },
     crosshair: {
       mode: state.magnet,
@@ -561,15 +565,29 @@ function syncSeries(state, prepared) {
         byTime: {},
         apiByTime: {},
         fragments: [],
+        style: "",
+        priceScale: "",
       });
     }
     var entry = state.seriesList[i];
+    var nextStyle = prepared[i].style || "line";
+    var nextScale = prepared[i].priceScale || "right";
+    if (entry.style !== nextStyle || entry.priceScale !== nextScale) {
+      removeFragments(state, entry);
+      entry.style = nextStyle;
+      entry.priceScale = nextScale;
+    }
     var runs = runsOf(prepared[i].points);
     while (entry.fragments.length > runs.length) {
       state.chart.removeSeries(entry.fragments.pop());
     }
     while (entry.fragments.length < runs.length) {
-      entry.fragments.push(state.chart.addSeries(charts.LineSeries, lineOptions()));
+      var options = lineOptions();
+      if (entry.priceScale === "left") {
+        options.priceScaleId = "left";
+      }
+      var ctor = entry.style === "histogram" && charts.HistogramSeries ? charts.HistogramSeries : charts.LineSeries;
+      entry.fragments.push(state.chart.addSeries(ctor, options));
     }
     entry.label = prepared[i].label;
     entry.colorIndex = colorSlot(prepared[i], i);
@@ -607,6 +625,7 @@ function createState(root) {
     },
     crosshair: { mode: magnet },
     rightPriceScale: { borderVisible: true },
+    leftPriceScale: { visible: false, borderVisible: true },
     timeScale: {
       borderVisible: true,
       timeVisible: false,
@@ -1029,8 +1048,15 @@ function updateState(state, data) {
     return {
       label: item.label || "Value",
       points: normalizePoints(item.points),
+      colorIndex: item.colorIndex,
+      style: item.style || "line",
+      priceScale: item.priceScale || "right",
     };
   });
+  var showLeft = prepared.some(function (item) {
+    return item.priceScale === "left";
+  });
+  state.chart.applyOptions({ leftPriceScale: { visible: showLeft } });
   var signature = signatureOf(prepared);
   var changed = signature !== state.signature;
   if (changed) {

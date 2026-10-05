@@ -36,11 +36,13 @@ from market_intelligence.transforms import (
     curve_butterfly,
     curve_slope,
     latest_date,
+    mom_change_ma3,
     mom_pct,
     pct_to_bps,
     period_difference,
     previous_observation_change,
     qoq_annualized_pct,
+    sum_12m,
     window_statistics,
     yoy_pct,
 )
@@ -177,6 +179,10 @@ def series_metrics(spec: SeriesSpec, obs: Mapping[date, Decimal | None], *, at: 
             add("qoq_saar_pct", qoq_annualized_pct(obs, at))
         elif transform == "mom_change":
             add("mom_change", period_difference(obs, at, 1, units=level_units))
+        elif transform == "mom_change_ma3":
+            add("mom_change_ma3", mom_change_ma3(obs, at, units=level_units))
+        elif transform == "sum_12m":
+            add("sum_12m", sum_12m(obs, at, units=level_units))
         elif transform == "mom_change_pp":
             add("mom_change_pp", period_difference(obs, at, 1, units="pp"))
         elif transform == "yoy_change_pp":
@@ -222,6 +228,10 @@ def _metric_names_for(spec: SeriesSpec) -> list[tuple[str, str]]:
             names.append(("qoq_saar_pct", "pct"))
         elif transform == "mom_change":
             names.append(("mom_change", _level_units(spec)))
+        elif transform == "mom_change_ma3":
+            names.append(("mom_change_ma3", _level_units(spec)))
+        elif transform == "sum_12m":
+            names.append(("sum_12m", _level_units(spec)))
         elif transform == "mom_change_pp":
             names.append(("mom_change_pp", "pp"))
         elif transform == "yoy_change_pp":

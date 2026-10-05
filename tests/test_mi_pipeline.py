@@ -992,6 +992,7 @@ def test_refresh_dry_run_makes_no_calls_and_no_writes(pg_engine, populated, caps
         "fred",
         "finra",
         "treasury",
+        "treasury_auctions",
         "equity",
         "equity_markets",
         "options",

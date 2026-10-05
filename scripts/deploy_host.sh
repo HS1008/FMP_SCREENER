@@ -850,6 +850,88 @@ else
     echo "fred_inflation_backfill=failed rc=${INFLATION_RC}"
   fi
 fi
+# Labor, housing, growth, and fiscal FRED series. The earlier macro marker is
+# left in place. This one-shot ingests only the expansion series and rebuilds
+# their metrics. Older rows stay.
+MACRO_EXPANSION_BACKFILL_MARKER="/var/lib/fmp/fred_macro_expansion_backfill.done"
+MACRO_UI_RESTART=0
+if [ -f "$MACRO_EXPANSION_BACKFILL_MARKER" ]; then
+  echo "fred_macro_expansion_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "fred_macro_expansion_backfill=skipped_no_writer_env"
+else
+  echo "fred_macro_expansion_backfill=start"
+  EXPANSION_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    (
+      while sleep 20; do
+        echo "fred_macro_expansion_backfill=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      done
+    ) &
+    hb_pid=$!
+    set +e
+    staged_python -u -m jobs.market_intelligence_refresh --fred-macro-expansion-backfill --wait-lock
+    rc=$?
+    set -e
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+    exit "$rc"
+  ) || EXPANSION_RC=$?
+  if [ "$EXPANSION_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$MACRO_EXPANSION_BACKFILL_MARKER"
+    echo "fred_macro_expansion_backfill=complete"
+    MACRO_UI_RESTART=1
+  else
+    echo "fred_macro_expansion_backfill=failed rc=${EXPANSION_RC}"
+  fi
+fi
+# Gross Treasury bill, note, and bond auction history from Fiscal Data.
+TREASURY_AUCTIONS_MARKER="/var/lib/fmp/treasury_gross_issuance_backfill.done"
+if [ -f "$TREASURY_AUCTIONS_MARKER" ]; then
+  echo "treasury_auctions_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "treasury_auctions_backfill=skipped_no_writer_env"
+else
+  echo "treasury_auctions_backfill=start"
+  AUCTIONS_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    (
+      while sleep 20; do
+        echo "treasury_auctions_backfill=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      done
+    ) &
+    hb_pid=$!
+    set +e
+    staged_python -u -m jobs.market_intelligence_refresh --treasury-auctions-backfill --wait-lock
+    rc=$?
+    set -e
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+    exit "$rc"
+  ) || AUCTIONS_RC=$?
+  if [ "$AUCTIONS_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$TREASURY_AUCTIONS_MARKER"
+    echo "treasury_auctions_backfill=complete"
+    MACRO_UI_RESTART=1
+  else
+    echo "treasury_auctions_backfill=failed rc=${AUCTIONS_RC}"
+  fi
+fi
+if [ "$MACRO_UI_RESTART" = "1" ]; then
+  systemctl restart fmp-dashboard || true
+fi
 # One-shot max Yahoo history into MARKET_MONITOR_EOD. The previous
 # equity_markets_max_backfill.done marker is left in place and is not reused:
 # that run skipped IBKR symbols and wrote into EQUITY_EOD. This marker runs
