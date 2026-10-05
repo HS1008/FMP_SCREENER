@@ -46,14 +46,19 @@ PCE_DECOMP_NOTE = (
 
 POLICY_RATES_DEFAULT_START = date(2000, 1, 1)
 
-GROUP_ORDER: tuple[str, ...] = ("fed", "inflation", "leading", "coincident", "lagging")
+GROUP_ORDER: tuple[str, ...] = ("fed", "inflation", "labor", "housing", "growth", "fiscal", "leading", "coincident", "lagging")
 GROUP_LABELS: dict[str, str] = {
     "fed": "Fed",
     "inflation": "Inflation",
+    "labor": "Labor",
+    "housing": "Housing",
+    "growth": "Growth & Consumer",
+    "fiscal": "Fiscal",
     "leading": "Leading indicators",
     "coincident": "Coincident indicators",
     "lagging": "Lagging indicators",
 }
+SHARED_2000_GROUPS = frozenset({"inflation", "labor", "housing", "growth", "fiscal"})
 
 # One conversion from provider-native stored units. Not applied on top of level_display.
 DISPLAY_SCALE: dict[str, dict[str, Any]] = {
@@ -62,6 +67,13 @@ DISPLAY_SCALE: dict[str, dict[str, Any]] = {
     "WRESBAL": {"divisor": 1_000.0, "units": "USD bn", "source_units": "millions_usd"},
     "WTREGEN": {"divisor": 1_000.0, "units": "USD bn", "source_units": "millions_usd"},
     "RRPONTSYD": {"divisor": 1.0, "units": "USD bn", "source_units": "billions_usd"},
+    # Monthly Treasury Statement millions. A negative divisor flips a deficit to a positive magnitude.
+    "MTSDS133FMS.sum_12m": {"divisor": -1_000_000.0, "units": "USD tn", "source_units": "millions_usd"},
+    "MTSR133FMS.sum_12m": {"divisor": 1_000_000.0, "units": "USD tn", "source_units": "millions_usd"},
+    "MTSO133FMS.sum_12m": {"divisor": 1_000_000.0, "units": "USD tn", "source_units": "millions_usd"},
+    "TREAS_GROSS_BILL": {"divisor": 1_000_000_000_000.0, "units": "USD tn", "source_units": "dollars"},
+    "TREAS_GROSS_NOTE": {"divisor": 1_000_000_000_000.0, "units": "USD tn", "source_units": "dollars"},
+    "TREAS_GROSS_BOND": {"divisor": 1_000_000_000_000.0, "units": "USD tn", "source_units": "dollars"},
 }
 
 CHART_TITLES: dict[str, tuple[str, ...]] = {
@@ -74,10 +86,42 @@ CHART_TITLES: dict[str, tuple[str, ...]] = {
     "inflation": (
         "Headline, Core, and Trimmed Mean CPI",
         "Headline, Core, and Trimmed Mean PCE",
-        "Services Inflation ex Rent of Shelter",
         "CPI Decomposition",
         "PCE Decomposition",
         "Market Inflation Expectations",
+    ),
+    "labor": (
+        "Unemployment Rate",
+        "Nonfarm Payrolls",
+        "Jobless Claims",
+        "JOLTS Openings, Hires, and Quits",
+        "Job Openings per Unemployed Worker",
+        "Average Hourly Earnings",
+    ),
+    "housing": (
+        "30-Year Mortgage Rate",
+        "Building Permits and Housing Starts",
+        "New Home Sales",
+        "Months' Supply of New Houses",
+        "Case-Shiller Home Prices",
+        "NAHB Housing Market Index",
+    ),
+    "growth": (
+        "Real GDP Growth",
+        "Industrial Production",
+        "ISM Manufacturing and Services",
+        "ISM New Orders",
+        "Real Personal Consumption Expenditures",
+        "Real Disposable Personal Income",
+        "Personal Saving Rate",
+        "Credit Card Delinquency Rate",
+    ),
+    "fiscal": (
+        "Rolling 12-Month Federal Deficit",
+        "Federal Receipts and Outlays",
+        "Debt Held by the Public / GDP",
+        "Federal Interest Expense",
+        "Treasury Issuance",
     ),
     "leading": (
         "Initial Jobless Claims",
@@ -172,19 +216,6 @@ CHARTS: dict[str, tuple[dict[str, Any], ...]] = {
             ),
         },
         {
-            "title": "Services Inflation ex Rent of Shelter",
-            "kind": "toggle",
-            "unit": "Percent",
-            "format": "percent",
-            "modes": ("YoY", "3M annualized", "6M annualized"),
-            "default": "YoY",
-            "series_by_mode": {
-                "YoY": (("CUSR0000SASL2RS.yoy_pct", "Services ex rent YoY", False),),
-                "3M annualized": (("CUSR0000SASL2RS.ann3m_pct", "Services ex rent 3M ann.", False),),
-                "6M annualized": (("CUSR0000SASL2RS.ann6m_pct", "Services ex rent 6M ann.", False),),
-            },
-        },
-        {
             "title": "CPI Decomposition",
             "kind": "multi",
             "unit": "Percent",
@@ -219,6 +250,276 @@ CHARTS: dict[str, tuple[dict[str, Any], ...]] = {
                 ("T5YIE", "5Y Breakeven", False),
                 ("T10YIE", "10Y Breakeven", False),
                 ("T5YIFR", "5Y5Y Forward", False),
+            ),
+        },
+    ),
+    "labor": (
+        {
+            "title": "Unemployment Rate",
+            "kind": "multi",
+            "unit": "Percent",
+            "format": "percent",
+            "caption": "U-3 is the official unemployment rate. U-6 adds marginal attachment and involuntary part-time work. Both are monthly and seasonally adjusted.",
+            "series": (
+                ("UNRATE", "U-3", False),
+                ("U6RATE", "U-6", False),
+            ),
+        },
+        {
+            "title": "Nonfarm Payrolls",
+            "kind": "multi",
+            "unit": "Thousands of jobs",
+            "format": "thousands",
+            "caption": "Monthly change in total nonfarm payroll employment, and the mean of the latest three monthly changes. Not the employment level.",
+            "styles": {"PAYEMS.mom_change": "histogram"},
+            "series": (
+                ("PAYEMS.mom_change", "Monthly change", False),
+                ("PAYEMS.mom_change_ma3", "3-month average", False),
+            ),
+        },
+        {
+            "title": "Jobless Claims",
+            "kind": "multi",
+            "unit": "Persons, weekly, seasonally adjusted",
+            "format": "claims",
+            "caption": "Initial claims use the right axis. Continuing claims use the left axis. The 4-week average of initial claims is optional.",
+            "default_off": ("ICSA.avg_4w",),
+            "axes": {"CCSA": "left"},
+            "series": (
+                ("ICSA", "Initial claims", False),
+                ("CCSA", "Continuing claims", False),
+                ("ICSA.avg_4w", "Initial claims, 4-week average", False),
+            ),
+        },
+        {
+            "title": "JOLTS Openings, Hires, and Quits",
+            "kind": "multi",
+            "unit": "Thousands of persons, monthly, seasonally adjusted",
+            "format": "thousands",
+            "caption": "Total nonfarm job openings, hires, and quits. Layoffs and separations are not included.",
+            "series": (
+                ("JTSJOL", "Job openings", False),
+                ("JTSHIL", "Hires", False),
+                ("JTSQUL", "Quits", False),
+            ),
+        },
+        {
+            "title": "Job Openings per Unemployed Worker",
+            "kind": "lines",
+            "unit": "Openings per unemployed worker",
+            "format": "ratio",
+            "reference": 1.0,
+            "caption": "Total nonfarm job openings divided by the unemployment level on the same month. Both inputs are thousands of persons. 1.0 means one opening per unemployed worker. A missing input stays missing.",
+            "series": (("labor_tightness", "Openings / unemployed", False),),
+            "derived": {
+                "labor_tightness": {"op": "ratio", "numerator": "JTSJOL", "denominator": "UNEMPLOY", "scale": 1.0},
+            },
+        },
+        {
+            "title": "Average Hourly Earnings",
+            "kind": "toggle",
+            "unit": "Percent",
+            "format": "percent",
+            "caption": "Average hourly earnings of all private employees. YoY is the 12-month percent change. 3-month annualized is 100·((X_t/X_{t−3})^4 − 1).",
+            "modes": ("YoY", "3M annualized"),
+            "default": "YoY",
+            "series_by_mode": {
+                "YoY": (("CES0500000003.yoy_pct", "AHE YoY", False),),
+                "3M annualized": (("CES0500000003.ann3m_pct", "AHE 3M annualized", False),),
+            },
+        },
+    ),
+    "housing": (
+        {
+            "title": "30-Year Mortgage Rate",
+            "kind": "lines",
+            "unit": "Percent",
+            "format": "percent",
+            "caption": "Freddie Mac 30-year fixed mortgage rate, weekly, not seasonally adjusted.",
+            "series": (("MORTGAGE30US", "30-year fixed", False),),
+        },
+        {
+            "title": "Building Permits and Housing Starts",
+            "kind": "multi",
+            "unit": "Thousands of units, SAAR",
+            "format": "thousands",
+            "caption": "New privately owned units. Both series are monthly seasonally adjusted annual rates.",
+            "series": (
+                ("PERMIT", "Building permits", False),
+                ("HOUST", "Housing starts", False),
+            ),
+        },
+        {
+            "title": "New Home Sales",
+            "kind": "lines",
+            "unit": "Thousands, SAAR",
+            "format": "thousands",
+            "caption": "New one-family houses sold. Existing-home sales are not included.",
+            "series": (("HSN1F", "New home sales", False),),
+        },
+        {
+            "title": "Months' Supply of New Houses",
+            "kind": "lines",
+            "unit": "Months",
+            "format": "number",
+            "caption": "Months' supply of new houses, seasonally adjusted.",
+            "series": (("MSACSR", "Months' supply", False),),
+        },
+        {
+            "title": "Case-Shiller Home Prices",
+            "kind": "toggle",
+            "unit_by_mode": {"YoY %": "Percent", "Index": "Index, January 2000 = 100"},
+            "format_by_mode": {"YoY %": "percent", "Index": "index"},
+            "caption": "S&P CoreLogic Case-Shiller U.S. national index, not seasonally adjusted. YoY uses the 12-month percent change of the index.",
+            "modes": ("YoY %", "Index"),
+            "default": "YoY %",
+            "series_by_mode": {
+                "YoY %": (("CSUSHPINSA.yoy_pct", "Case-Shiller YoY", False),),
+                "Index": (("CSUSHPINSA", "Case-Shiller index", False),),
+            },
+        },
+        {
+            "title": "NAHB Housing Market Index",
+            "kind": "unavailable",
+            "caption": "The NAHB/Wells Fargo Housing Market Index is not shown. FRED no longer carries this proprietary series, and NAHB does not publish a free structured historical API.",
+        },
+    ),
+    "growth": (
+        {
+            "title": "Real GDP Growth",
+            "heading": "Economic Growth",
+            "kind": "toggle",
+            "unit": "Percent",
+            "format": "percent",
+            "caption": "Real GDP, billions of chained 2017 dollars. QoQ annualized is 100·((X_t/X_{t−1 quarter})^4 − 1). It is not the level and not the year-over-year rate.",
+            "modes": ("QoQ annualized", "YoY"),
+            "default": "QoQ annualized",
+            "series_by_mode": {
+                "QoQ annualized": (("GDPC1.qoq_saar_pct", "Real GDP QoQ annualized", False),),
+                "YoY": (("GDPC1.yoy_pct", "Real GDP YoY", False),),
+            },
+        },
+        {
+            "title": "Industrial Production",
+            "kind": "toggle",
+            "unit": "Percent",
+            "format": "percent",
+            "caption": "Industrial production index, 2017=100, seasonally adjusted. YoY is the 12-month percent change.",
+            "modes": ("YoY", "3M annualized"),
+            "default": "YoY",
+            "series_by_mode": {
+                "YoY": (("INDPRO.yoy_pct", "Industrial production YoY", False),),
+                "3M annualized": (("INDPRO.ann3m_pct", "Industrial production 3M annualized", False),),
+            },
+        },
+        {
+            "title": "ISM Manufacturing and Services",
+            "heading": "Business Cycle",
+            "kind": "unavailable",
+            "caption": "ISM manufacturing and services PMIs are not shown. ISM withdrew redistribution, and FRED removed the series in 2016. No free structured replacement is used.",
+        },
+        {
+            "title": "ISM New Orders",
+            "kind": "unavailable",
+            "caption": "The ISM manufacturing new orders index is not shown. Census durable-goods orders are a different series and are not substituted here.",
+        },
+        {
+            "title": "Real Personal Consumption Expenditures",
+            "heading": "Consumer",
+            "kind": "toggle",
+            "unit": "Percent",
+            "format": "percent",
+            "caption": "Real personal consumption expenditures, chained 2017 dollars, seasonally adjusted annual rate. Not nominal PCE.",
+            "modes": ("YoY", "3M annualized"),
+            "default": "YoY",
+            "series_by_mode": {
+                "YoY": (("PCEC96.yoy_pct", "Real PCE YoY", False),),
+                "3M annualized": (("PCEC96.ann3m_pct", "Real PCE 3M annualized", False),),
+            },
+        },
+        {
+            "title": "Real Disposable Personal Income",
+            "kind": "lines",
+            "unit": "Percent",
+            "format": "percent",
+            "caption": "Year-over-year percent change in real disposable personal income, chained 2017 dollars.",
+            "series": (("DSPIC96.yoy_pct", "Real disposable income YoY", False),),
+        },
+        {
+            "title": "Personal Saving Rate",
+            "kind": "lines",
+            "unit": "Percent of disposable income",
+            "format": "percent",
+            "caption": "Personal saving as a percent of disposable personal income, monthly, seasonally adjusted.",
+            "series": (("PSAVERT", "Personal saving rate", False),),
+        },
+        {
+            "title": "Credit Card Delinquency Rate",
+            "kind": "lines",
+            "unit": "Percent, quarterly",
+            "format": "percent",
+            "caption": "Delinquency rate on credit card loans at all commercial banks. Quarterly observations stay on their quarter dates and are not filled forward.",
+            "series": (("DRCCLACBS", "Credit card delinquency", False),),
+        },
+    ),
+    "fiscal": (
+        {
+            "title": "Rolling 12-Month Federal Deficit",
+            "heading": "Budget",
+            "kind": "lines",
+            "unit": "USD tn",
+            "format": "number",
+            "caption": "Trailing 12 monthly Treasury balances, sign flipped. A positive value is a deficit. A negative value is a 12-month surplus. Not a fiscal-year sum.",
+            "series": (("MTSDS133FMS.sum_12m", "12-month deficit", True),),
+        },
+        {
+            "title": "Federal Receipts and Outlays",
+            "kind": "multi",
+            "unit": "USD tn",
+            "format": "number",
+            "caption": "Trailing 12-month sums of monthly Treasury receipts and outlays. Same window as the deficit.",
+            "series": (
+                ("MTSR133FMS.sum_12m", "Receipts", True),
+                ("MTSO133FMS.sum_12m", "Outlays", True),
+            ),
+        },
+        {
+            "title": "Debt Held by the Public / GDP",
+            "heading": "Debt",
+            "kind": "lines",
+            "unit": "Percent of GDP",
+            "format": "percent",
+            "caption": "Federal debt held by the public as a percent of GDP. This is not gross federal debt.",
+            "series": (("FYGFGDQ188S", "Debt held by the public / GDP", False),),
+        },
+        {
+            "title": "Federal Interest Expense",
+            "heading": "Debt Service",
+            "kind": "toggle",
+            "unit_by_mode": {"Interest expense": "USD bn, quarterly SAAR", "Interest / receipts": "Percent of receipts"},
+            "format_by_mode": {"Interest expense": "number", "Interest / receipts": "percent"},
+            "caption": "BEA federal interest payments and current receipts are both quarterly SAAR billions. The ratio is 100 times interest divided by receipts in the same quarter. It is not a monthly Treasury interest figure divided by one month of receipts.",
+            "modes": ("Interest expense", "Interest / receipts"),
+            "default": "Interest expense",
+            "series_by_mode": {
+                "Interest expense": (("A091RC1Q027SBEA", "Interest expense", False),),
+                "Interest / receipts": (("interest_burden", "Interest / receipts", False),),
+            },
+            "derived": {
+                "interest_burden": {"op": "ratio", "numerator": "A091RC1Q027SBEA", "denominator": "FGRECPT", "scale": 100.0},
+            },
+        },
+        {
+            "title": "Treasury Issuance",
+            "heading": "Treasury Financing",
+            "kind": "multi",
+            "unit": "USD tn, gross accepted",
+            "format": "number",
+            "caption": "Gross accepted auction amounts by calendar month of the auction date. Bills, notes, and bonds only. TIPS, floating-rate notes, and cash-management bills are excluded. This is not net issuance.",
+            "series": (
+                ("TREAS_GROSS_BILL", "Bills", True),
+                ("TREAS_GROSS_NOTE", "Notes", True),
+                ("TREAS_GROSS_BOND", "Bonds", True),
             ),
         },
     ),
@@ -421,15 +722,24 @@ def recession_intervals(rows: Sequence[Mapping[str, Any]], *, date_key: str = "a
     return intervals
 
 
+def derived_ids(group: str) -> set[str]:
+    found: set[str] = set()
+    for chart in CHARTS[group]:
+        found.update((chart.get("derived") or {}).keys())
+    return found
+
+
 def group_source_ids(group: str) -> list[str]:
     """Series and metric ids the group charts read, plus USREC shading."""
     found: list[str] = []
     seen: set[str] = set()
+    computed = derived_ids(group)
 
     def add(source_id: str) -> None:
-        if source_id not in seen:
-            seen.add(source_id)
-            found.append(source_id)
+        if source_id in computed or source_id in seen:
+            return
+        seen.add(source_id)
+        found.append(source_id)
 
     for chart in CHARTS[group]:
         for item in chart.get("series") or ():
@@ -437,6 +747,9 @@ def group_source_ids(group: str) -> list[str]:
         for mode_rows in (chart.get("series_by_mode") or {}).values():
             for item in mode_rows:
                 add(item[0])
+        for spec in (chart.get("derived") or {}).values():
+            add(str(spec["numerator"]))
+            add(str(spec["denominator"]))
         members = chart.get("members") or {}
         windows = chart.get("windows") or {}
         for series_id in members.values():
@@ -444,6 +757,47 @@ def group_source_ids(group: str) -> list[str]:
                 add("{0}.{1}".format(series_id, metric))
     add("USREC")
     return found
+
+
+def aligned_ratio(
+    numerator: Sequence[Mapping[str, Any]],
+    denominator: Sequence[Mapping[str, Any]],
+    *,
+    scale: float = 1.0,
+) -> list[dict[str, Any]]:
+    """Divide matching observation dates. A missing input or a zero denominator is omitted."""
+    bottoms: dict[date, float] = {}
+    for row in denominator:
+        day = observation_day(row.get("as_of"))
+        raw = row.get("value")
+        if day is None or raw is None:
+            continue
+        bottoms[day] = float(raw)
+    points: list[dict[str, Any]] = []
+    for row in numerator:
+        day = observation_day(row.get("as_of"))
+        raw = row.get("value")
+        if day is None or raw is None or day not in bottoms:
+            continue
+        bottom = bottoms[day]
+        if bottom == 0:
+            continue
+        points.append({"as_of": day, "value": float(scale) * float(raw) / bottom})
+    points.sort(key=lambda item: item["as_of"])
+    return points
+
+
+def materialize_derived(group: str, histories: dict[str, list[dict[str, Any]]]) -> None:
+    """Fill chart-only ratios from series already loaded for the group."""
+    for chart in CHARTS[group]:
+        for key, spec in (chart.get("derived") or {}).items():
+            if spec.get("op") != "ratio":
+                continue
+            histories[key] = aligned_ratio(
+                histories.get(str(spec["numerator"])) or [],
+                histories.get(str(spec["denominator"])) or [],
+                scale=float(spec.get("scale") or 1.0),
+            )
 
 
 def selected_lines(
@@ -603,6 +957,32 @@ def methodology_lines(group: str) -> list[str]:
         lines.append(LEADING_NOTE)
     if group == "coincident":
         lines.append(COINCIDENT_NOTE)
+    if group == "labor":
+        lines.append(
+            "Payroll changes are monthly differences in thousands of jobs. "
+            "The 3-month average is the mean of those three differences. "
+            "Openings per unemployed worker uses JTSJOL divided by UNEMPLOY on the same month."
+        )
+    if group == "housing":
+        lines.append(
+            "Permits and starts are both thousands of units at a seasonally adjusted annual rate. "
+            "Case-Shiller YoY is the 12-month percent change of the not-seasonally-adjusted national index. "
+            "The NAHB Housing Market Index is omitted because no free structured history is available."
+        )
+    if group == "growth":
+        lines.append(
+            "Real GDP QoQ annualized is 100·((X_t/X_{t−1 quarter})^4 − 1) of the chained-dollar level. "
+            "Real PCE and real disposable income are chained 2017 dollars, not nominal. "
+            "ISM indexes are omitted because ISM withdrew redistribution. "
+            "Credit-card delinquency stays on its quarterly dates."
+        )
+    if group == "fiscal":
+        lines.append(
+            "The deficit chart is the trailing 12 monthly Treasury balances with the sign flipped, in trillions. "
+            "A positive value is a deficit. Receipts and outlays use that same 12-month sum. "
+            "Interest / receipts is the same-quarter ratio of two BEA SAAR billion series. "
+            "Treasury issuance is gross accepted auction dollars for bills, notes, and bonds, excluding TIPS, FRNs, and cash-management bills."
+        )
     if group == "inflation":
         lines.append(
             "Trimmed-mean CPI and PCE are the published 12-month percent changes. "

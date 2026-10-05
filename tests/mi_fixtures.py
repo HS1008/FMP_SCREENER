@@ -324,6 +324,30 @@ def synthetic_fred_data(end: date = date(2024, 12, 31)) -> dict[str, list[tuple[
         data["USREC"].append((d, "1" if 8 <= i <= 14 else "0"))
     data["DRBLACBS"] = [(date(y, m, 1), "{0:.2f}".format(1.1 + 0.02 * i)) for i, (y, m) in enumerate((yy, mm) for yy in range(2019, 2025) for mm in (1, 4, 7, 10))]
     data["ULCNFB"] = [(date(y, m, 1), "{0:.3f}".format(100 + 0.4 * i)) for i, (y, m) in enumerate((yy, mm) for yy in range(2019, 2025) for mm in (1, 4, 7, 10))]
+    for sid, start, growth in (
+        ("U6RATE", 7.2, -0.001),
+        ("JTSJOL", 7500.0, 0.002),
+        ("JTSHIL", 5600.0, 0.001),
+        ("JTSQUL", 3200.0, 0.001),
+        ("UNEMPLOY", 6000.0, -0.001),
+        ("CES0500000003", 28.0, 0.003),
+        ("HOUST", 1400.0, 0.001),
+        ("HSN1F", 680.0, 0.001),
+        ("MSACSR", 6.5, 0.001),
+        ("CSUSHPINSA", 220.0, 0.004),
+        ("DSPIC96", 16000.0, 0.002),
+        ("PSAVERT", 5.5, 0.001),
+        ("MTSDS133FMS", -180000.0, 0.0),
+        ("MTSR133FMS", 350000.0, 0.002),
+        ("MTSO133FMS", 530000.0, 0.002),
+    ):
+        data[sid] = monthly_index(month_end, 40, start, growth)
+    data["MORTGAGE30US"] = [(d, "{0:.2f}".format(6.5 + (i % 5) * 0.05)) for i, d in enumerate(weekly_days)]
+    quarters = [(date(y, m, 1), i) for i, (y, m) in enumerate((yy, mm) for yy in range(2019, 2025) for mm in (1, 4, 7, 10))]
+    data["DRCCLACBS"] = [(d, "{0:.2f}".format(2.1 + 0.03 * i)) for d, i in quarters]
+    data["FYGFGDQ188S"] = [(d, "{0:.2f}".format(80 + 0.4 * i)) for d, i in quarters]
+    data["A091RC1Q027SBEA"] = [(d, "{0:.1f}".format(500 + 8 * i)) for d, i in quarters]
+    data["FGRECPT"] = [(d, "{0:.1f}".format(3800 + 20 * i)) for d, i in quarters]
     return data
 
 

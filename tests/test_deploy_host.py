@@ -47,6 +47,12 @@ def test_deploy_yml_is_thin_auto_deploy_with_pinned_ssh():
     assert "fred_inflation_backfill=heartbeat" in host
     assert "staged_python -u -m jobs.market_intelligence_refresh --fred-inflation-backfill --wait-lock" in host
     assert host.index("fred_h41_wednesday_level_backfill.done") < host.index("fred_inflation_components_backfill.done")
+    assert "fred_macro_expansion_backfill.done" in host
+    assert "treasury_gross_issuance_backfill.done" in host
+    assert "staged_python -u -m jobs.market_intelligence_refresh --fred-macro-expansion-backfill --wait-lock" in host
+    assert "staged_python -u -m jobs.market_intelligence_refresh --treasury-auctions-backfill --wait-lock" in host
+    assert host.index("fred_inflation_components_backfill.done") < host.index("fred_macro_expansion_backfill.done")
+    assert host.index("fred_macro_expansion_backfill.done") < host.index("treasury_gross_issuance_backfill.done")
     assert host.index("fred_macro_max_backfill.done") < host.index("fred_h41_wednesday_level_backfill.done")
     assert host.index("fred_macro_backfill=already_recorded") < host.index("fred_h41_backfill=start")
     assert "staged_python -u -m jobs.market_intelligence_refresh --fred-macro-backfill --wait-lock" in host

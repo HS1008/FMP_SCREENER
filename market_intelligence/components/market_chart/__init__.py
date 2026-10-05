@@ -187,6 +187,12 @@ def build_market_chart_payload(
         slot = source.get("color_index")
         if slot is not None:
             row["colorIndex"] = int(slot)
+        style = source.get("style")
+        if style:
+            row["style"] = str(style)
+        price_scale = source.get("price_scale")
+        if price_scale:
+            row["priceScale"] = str(price_scale)
     payload: dict[str, Any] = {
         "series": plotted,
         "ranges": bool(ranges),

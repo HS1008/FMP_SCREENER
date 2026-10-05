@@ -35,6 +35,7 @@ from market_intelligence.catalog import (
     FRED_SOURCE_ID,
     H41_WEDNESDAY_LEVEL_SERIES,
     INFLATION_COMPONENT_SERIES,
+    MACRO_EXPANSION_SERIES,
     MACRO_MAX_BACKFILL_SERIES,
     RATES_MAX_BACKFILL_SERIES,
     RETIRED_CBOE_SOURCE_IDS,
@@ -157,6 +158,18 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "catalog_version": CATALOG_VERSION,
             }
         )
+    if getattr(args, "fred_macro_expansion_backfill", False):
+        steps.append(
+            {
+                "step": "fred_macro_expansion_backfill",
+                "source_id": FRED_SOURCE_ID,
+                "configured": fred_configured,
+                "action": "ingest" if fred_configured else "fail_unconfigured",
+                "mode": "max",
+                "series": list(MACRO_EXPANSION_SERIES),
+                "catalog_version": CATALOG_VERSION,
+            }
+        )
     if getattr(args, "fred_macro_coverage", False):
         steps.append(
             {
@@ -205,6 +218,25 @@ def plan(args: argparse.Namespace, env: dict[str, str]) -> dict[str, Any]:
                 "source_id": "TREASURY",
                 "configured": ust_on,
                 "action": "ingest" if ust_on else ("skip_unconfigured" if want_all else "fail_unconfigured"),
+            }
+        )
+    auctions_backfill = getattr(args, "treasury_auctions_backfill", False)
+    auctions_incremental = getattr(args, "treasury_auctions", False) or want_all
+    if auctions_backfill or auctions_incremental:
+        auctions_on = treasury_enabled(env)
+        if auctions_backfill and not auctions_on:
+            auctions_action = "fail_unconfigured"
+        elif auctions_on:
+            auctions_action = "ingest"
+        else:
+            auctions_action = "skip_unconfigured" if want_all else "fail_unconfigured"
+        steps.append(
+            {
+                "step": "treasury_auctions_backfill" if auctions_backfill else "treasury_auctions",
+                "source_id": "TREASURY_FISCAL",
+                "configured": auctions_on,
+                "action": auctions_action,
+                "mode": "max" if auctions_backfill else args.mode,
             }
         )
     from market_intelligence.equity_eod import adapter_from_env
@@ -469,6 +501,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Max-history FRED ingest for trimmed-mean inflation and CPI/PCE component indexes, then rebuild their year-over-year metrics. Does not delete older rows. Not part of the incremental refresh.",
     )
+    parser.add_argument(
+        "--fred-macro-expansion-backfill",
+        action="store_true",
+        help="Max-history FRED ingest for the labor, housing, growth, and fiscal series, then rebuild their metrics. Does not delete older rows. Not part of the incremental refresh.",
+    )
+    parser.add_argument(
+        "--treasury-auctions-backfill",
+        action="store_true",
+        help="Max-history gross Treasury bill, note, and bond auction totals from Fiscal Data. Does not delete older rows.",
+    )
+    parser.add_argument(
+        "--treasury-auctions",
+        action="store_true",
+        help="Incremental gross Treasury auction totals. Included in the scheduled refresh. Skips when already refreshed today.",
+    )
     parser.add_argument("--finra", action="store_true", help="Ingest FINRA Query API corporate-bond aggregates")
     parser.add_argument("--legacy-sector", action="store_true", help="Ingest legacy precomputed sector bundles (no FMP calls)")
     parser.add_argument("--treasury", action="store_true", help="Ingest official Treasury daily XML par yields")
@@ -604,8 +651,8 @@ def run(argv: list[str] | None = None, *, engine=None, fred_client_factory=None,
     parser = build_parser()
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
-    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), getattr(args, "fred_macro_backfill", False), getattr(args, "fred_h41_backfill", False), getattr(args, "fred_inflation_backfill", False), getattr(args, "fred_macro_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, getattr(args, "equity_markets_backfill", False), getattr(args, "equity_markets_coverage", False), args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), getattr(args, "yahoo_cross_asset", False), getattr(args, "yahoo_cross_asset_backfill", False), args.cftc, getattr(args, "cftc_positions_backfill", False), args.eia, getattr(args, "eia_backfill", False), getattr(args, "cross_asset_coverage", False), args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
-        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--fred-macro-backfill/--fred-h41-backfill/--fred-inflation-backfill/--fred-macro-coverage/--finra/--legacy-sector/--treasury/--equity/--equity-markets-backfill/--equity-markets-coverage/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--yahoo-cross-asset/--yahoo-cross-asset-backfill/--cftc/--cftc-positions-backfill/--eia/--eia-backfill/--cross-asset-coverage/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
+    if not any((args.fred, getattr(args, "fred_credit_backfill", False), getattr(args, "fred_rates_backfill", False), getattr(args, "fred_rates_coverage", False), getattr(args, "fred_macro_backfill", False), getattr(args, "fred_h41_backfill", False), getattr(args, "fred_inflation_backfill", False), getattr(args, "fred_macro_expansion_backfill", False), getattr(args, "treasury_auctions_backfill", False), getattr(args, "treasury_auctions", False), getattr(args, "fred_macro_coverage", False), args.finra, args.legacy_sector, args.treasury, args.equity, getattr(args, "equity_markets_backfill", False), getattr(args, "equity_markets_coverage", False), args.yahoo_live, getattr(args, "yahoo_eod", False), args.options, args.vix, getattr(args, "yahoo_vol", False), getattr(args, "yahoo_vol_backfill", False), getattr(args, "yahoo_cross_asset", False), getattr(args, "yahoo_cross_asset_backfill", False), args.cftc, getattr(args, "cftc_positions_backfill", False), args.eia, getattr(args, "eia_backfill", False), getattr(args, "cross_asset_coverage", False), args.openfigi, args.edgar, args.build_analytics, args.build_morning, args.all_configured, getattr(args, "due_configured", False), args.probe_config)):
+        parser.error("choose at least one of --fred/--fred-credit-backfill/--fred-rates-backfill/--fred-rates-coverage/--fred-macro-backfill/--fred-h41-backfill/--fred-inflation-backfill/--fred-macro-expansion-backfill/--treasury-auctions-backfill/--treasury-auctions/--fred-macro-coverage/--finra/--legacy-sector/--treasury/--equity/--equity-markets-backfill/--equity-markets-coverage/--yahoo-live/--yahoo-eod/--options/--vix/--yahoo-vol/--yahoo-vol-backfill/--yahoo-cross-asset/--yahoo-cross-asset-backfill/--cftc/--cftc-positions-backfill/--eia/--eia-backfill/--cross-asset-coverage/--openfigi/--edgar/--build-analytics/--build-morning/--all-configured/--due-configured/--probe-config")
     the_plan = plan(args, env)
     status: dict[str, Any] = {"plan": the_plan, "results": {}, "status": "PLANNED"}
 
@@ -1144,6 +1191,76 @@ def _execute(args, the_plan, status, engine, fred_client_factory, env) -> int:
                 )
                 status["results"][name] = {"ingest": report.as_dict(), "analytics": analytics.as_dict()}
                 if report.failed:
+                    failures += 1
+            elif name == "fred_macro_expansion_backfill":
+                from market_intelligence.analytics import build_analytics
+                from market_intelligence.fred_client import FredClient
+                from market_intelligence.ingest_fred import ingest_fred_catalog
+                from market_intelligence.store import finish_run, start_run
+
+                print(
+                    "macro_expansion_backfill phase=ingest_start series={0}".format(len(MACRO_EXPANSION_SERIES)),
+                    flush=True,
+                )
+                client = fred_client_factory() if fred_client_factory else FredClient(fred_key)
+                report = ingest_fred_catalog(
+                    engine,
+                    client,
+                    series_ids=list(MACRO_EXPANSION_SERIES),
+                    mode="max",
+                    parent_run_id=parent_run_id,
+                    today=as_of,
+                )
+                print(
+                    "macro_expansion_backfill phase=ingest_done succeeded={0} failed={1} quarantined={2}".format(
+                        len(report.succeeded),
+                        len(report.failed),
+                        len(report.quarantined),
+                    ),
+                    flush=True,
+                )
+                print("macro_expansion_backfill phase=analytics_start", flush=True)
+                with engine.begin() as conn:
+                    rid = start_run(
+                        conn,
+                        source_id="ANALYTICS",
+                        dataset="macro_expansion_backfill",
+                        parent_run_id=parent_run_id,
+                    )
+                    analytics = build_analytics(
+                        conn,
+                        as_of=as_of,
+                        run_id=rid,
+                        history_start=date(1900, 1, 1),
+                        series_ids=list(MACRO_EXPANSION_SERIES),
+                    )
+                    finish_run(
+                        conn,
+                        rid,
+                        status="SUCCEEDED",
+                        counts={"inserted": analytics.metrics_written},
+                        details=analytics.as_dict(),
+                    )
+                print(
+                    "macro_expansion_backfill phase=analytics_done metrics_written={0}".format(analytics.metrics_written),
+                    flush=True,
+                )
+                status["results"][name] = {"ingest": report.as_dict(), "analytics": analytics.as_dict()}
+                if report.failed:
+                    failures += 1
+            elif name in {"treasury_auctions", "treasury_auctions_backfill"}:
+                from market_intelligence.treasury_auctions import ingest_treasury_auctions
+
+                print("treasury_auctions phase=start mode={0}".format(step.get("mode")), flush=True)
+                report = ingest_treasury_auctions(
+                    engine,
+                    parent_run_id=parent_run_id,
+                    today=as_of,
+                    mode="max" if name == "treasury_auctions_backfill" else step.get("mode") or args.mode,
+                )
+                print("treasury_auctions phase=done status={0}".format(report.get("status")), flush=True)
+                status["results"][name] = report
+                if report.get("status") not in {"SUCCEEDED", "SKIPPED"}:
                     failures += 1
             elif name == "finra":
                 from market_intelligence.finra_client import FinraClient, credentials_from_env

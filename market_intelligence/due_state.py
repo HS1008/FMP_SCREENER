@@ -485,6 +485,12 @@ def evaluate_due_steps(
                     series_ids=fred_series_ids,
                 )
             )
+        elif step == "treasury_auctions":
+            refreshed = _source_latest("TREASURY_FISCAL", "auctions_query")
+            if refreshed is not None and refreshed >= now.date():
+                out.append(DueDecision(step, "TREASURY_FISCAL", False, "already_refreshed_today", "SKIPPED_ALREADY_CURRENT"))
+            else:
+                out.append(DueDecision(step, "TREASURY_FISCAL", True, "auction_refresh"))
         elif step == "treasury":
             out.append(
                 daily_source_due(

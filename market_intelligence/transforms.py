@@ -148,6 +148,51 @@ def period_difference(obs: Mapping[date, Any], at: date, months: int, *, units: 
     return TransformResult(x_t - x_lag, units, detail=detail)
 
 
+def mom_change_ma3(obs: Mapping[date, Any], at: date, *, units: str) -> TransformResult:
+    """Mean of the three exact monthly differences ending at ``at``.
+
+    Requires levels at t, t−1, t−2, and t−3. A missing lag stays missing.
+    The average is of payroll changes, not of the employment level.
+    """
+    diffs: list[float] = []
+    missing: list[str] = []
+    anchors: list[str] = []
+    for offset in range(3):
+        current = shift_months(at, -offset)
+        prior = shift_months(at, -(offset + 1))
+        anchors.append(current.isoformat())
+        left = _f(obs.get(current))
+        right = _f(obs.get(prior))
+        if left is None or right is None:
+            missing.append(current.isoformat() if left is None else prior.isoformat())
+        else:
+            diffs.append(left - right)
+    detail = {"at": at.isoformat(), "anchors": anchors, "months": 3}
+    if missing or len(diffs) != 3:
+        return _missing(units, "missing_lag_observation", missing=missing, **detail)
+    return TransformResult(statistics.fmean(diffs), units, detail=detail)
+
+
+def sum_12m(obs: Mapping[date, Any], at: date, *, units: str) -> TransformResult:
+    """Sum of the observation and the prior 11 exact calendar months.
+
+    A gap stays missing. This is not the sum of the last 12 valid rows.
+    """
+    dates = [shift_months(at, -offset) for offset in range(12)]
+    values: list[float] = []
+    missing: list[str] = []
+    for day in dates:
+        value = _f(obs.get(day))
+        if value is None:
+            missing.append(day.isoformat())
+        else:
+            values.append(value)
+    detail = {"at": at.isoformat(), "window_start": dates[-1].isoformat(), "months": 12}
+    if missing:
+        return _missing(units, "missing_window_observation", missing=missing, **detail)
+    return TransformResult(sum(values), units, detail=detail)
+
+
 # ---- units -------------------------------------------------------------------------
 
 def pct_to_bps(value: float | None) -> float | None:
@@ -351,10 +396,12 @@ __all__ = [
     "curve_butterfly",
     "curve_slope",
     "latest_date",
+    "mom_change_ma3",
     "mom_pct",
     "pct_to_bps",
     "percentile_rank",
     "period_difference",
+    "sum_12m",
     "period_ratio_pct",
     "previous_observation_change",
     "qoq_annualized_pct",

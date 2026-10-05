@@ -29,6 +29,8 @@ from market_intelligence.macro_dashboard import (
     COINCIDENT_NOTE,
     GROUP_LABELS,
     GROUP_ORDER,
+    SHARED_2000_GROUPS,
+    materialize_derived,
     LEADING_NOTE,
     POLICY_RATES_DEFAULT_START,
     VINTAGE_NOTE,
@@ -113,6 +115,7 @@ def _render_group(group: str) -> None:
         st.caption(note)
     st.caption(VINTAGE_NOTE)
     histories = {source_id: _load_source(source_id) for source_id in group_source_ids(group)}
+    materialize_derived(group, histories)
     bands = recession_intervals(histories.get("USREC") or [])
     if group == "fed":
         _render_fed(histories, bands)
@@ -120,7 +123,7 @@ def _render_group(group: str) -> None:
         earliest, latest = history_window_bounds(
             [rows for source_id, rows in histories.items() if source_id != "USREC"]
         )
-        default_start = POLICY_RATES_DEFAULT_START if group == "inflation" else None
+        default_start = POLICY_RATES_DEFAULT_START if group in SHARED_2000_GROUPS else None
         start, end = historical_date_range(
             key="macro_{0}".format(group),
             earliest=earliest,
@@ -259,7 +262,12 @@ def _render_chart(
     if chart["kind"] == "balance_sheet":
         _render_balance_sheet(chart, histories)
         return
+    if chart.get("heading"):
+        st.markdown("**{0}**".format(chart["heading"]))
     st.subheader(chart["title"])
+    if chart["kind"] == "unavailable":
+        st.info(str(chart.get("caption") or "This series is not available from a free structured source."))
+        return
     if chart.get("caption"):
         st.caption(str(chart["caption"]))
     mode = None
@@ -289,10 +297,13 @@ def _render_chart(
         )
         st.caption(chart_unit(chart))
     elif chart["kind"] == "multi":
+        hidden = {str(item) for item in chart.get("default_off") or ()}
+        default = [item[0] for item in chart["series"] if item[0] not in hidden]
         chosen = series_toggles(
             [(item[0], item[1]) for item in chart["series"]],
             key="macro_{0}_{1}".format(group, _slug(chart["title"])),
             group_label=chart["title"],
+            default=default if hidden else None,
         )
         st.caption(chart_unit(chart))
     else:
@@ -320,7 +331,14 @@ def _render_chart(
             scale_series=source_id if scale else None,
         )
         if points:
-            series.append({"label": label, "points": points, "color_index": color_index.get(source_id, len(series))})
+            row = {"label": label, "points": points, "color_index": color_index.get(source_id, len(series))}
+            style = (chart.get("styles") or {}).get(source_id)
+            axis = (chart.get("axes") or {}).get(source_id)
+            if style:
+                row["style"] = style
+            if axis:
+                row["price_scale"] = axis
+            series.append(row)
     if not series:
         st.caption("No stored observations in this range.")
         return
