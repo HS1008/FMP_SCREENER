@@ -122,13 +122,18 @@ def test_missing_component_stays_blank_and_headers_follow_the_toggle():
         "% Change 1Y",
         "% Change 3Y",
     )
-    assert column_headers(mode="percentage", comparing=True)[2] == "% Change From Current"
+    comparing = column_headers(mode="percentage", comparing=True)
+    assert comparing[2] == "Comparison"
+    assert comparing[3] == "% Change From Current"
+    assert "Comparison" not in column_headers(mode="percentage", comparing=False)
     assert column_headers(mode="absolute", comparing=False)[2:] == (
         "Absolute Change Since Last",
         "Absolute Change 1Y",
         "Absolute Change 3Y",
     )
-    assert column_headers(mode="absolute", comparing=True)[2] == "Absolute Change From Current"
+    absolute = column_headers(mode="absolute", comparing=True)
+    assert absolute[2] == "Comparison"
+    assert absolute[3] == "Absolute Change From Current"
     html = statement_html((missing,), mode="percentage", comparing=False)
     assert "Surplus" in html
     assert "Equity / Capital" in html
@@ -154,7 +159,18 @@ def test_statement_sections_and_mixed_observation_dates():
     assert by_id["TREAST"].current is None
     assert statement_as_of(rows) == date(2024, 1, 17)
     assert by_id["WALCL"].historical_date == date(2024, 1, 10)
-    html = statement_html(rows, mode="absolute", comparing=True)
+    html = statement_html(rows, mode="absolute", comparing=True, comparison_date=date(2024, 1, 12))
+    assert "<th>Comparison</th>" in html
+    assert "1,000" in html
+    assert "01/10/2024" in html
+    assert by_id["WALCL"].current == 1100
+    assert by_id["WALCL"].year_1_date != date(2024, 1, 10)
+    percent = statement_html(rows, mode="percentage", comparing=True, comparison_date=date(2024, 1, 12))
+    assert "% Change From Current" in percent
+    assert "% Change 1Y" in percent
+    assert "<th>Comparison</th>" in percent
+    absent = statement_html(rows, mode="percentage", comparing=False)
+    assert "<th>Comparison</th>" not in absent
     assert "Assets" in html and "Liabilities" in html and "Equity / Capital" in html
     assert "Total Assets" in html and "Bank Reserves" in html and "Capital Paid In" in html
     assert "1,100" in html

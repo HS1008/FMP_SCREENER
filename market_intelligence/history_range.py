@@ -7,6 +7,7 @@ points the page already passed in.
 
 from __future__ import annotations
 
+import calendar
 import inspect
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
@@ -137,6 +138,40 @@ def ordered_selection(options: Sequence[str], selected: Sequence[str]) -> list[s
     """Canonical order, dropping ids that are not in ``options``."""
     chosen = set(selected)
     return [item for item in options if item in chosen]
+
+
+def calendar_shift_months(day: date, months: int) -> date:
+    """Shift a calendar month without inventing a day past the target month."""
+    index = day.year * 12 + (day.month - 1) + months
+    year = index // 12
+    month = index - year * 12 + 1
+    last_day = calendar.monthrange(year, month)[1]
+    return date(year, month, min(day.day, last_day))
+
+
+def quick_range_bounds(kind: str, *, earliest: date, latest: date) -> tuple[date, date]:
+    """Inclusive window ending on the latest stored observation.
+
+    Full range is the combined stored span. Other labels match the chart
+    buttons: one, three, and six months, year to date, one year, and three
+    years. The start is never before the first stored observation.
+    """
+    if earliest > latest:
+        return latest, latest
+    if kind == "Full range":
+        return earliest, latest
+    if kind == "YTD":
+        start = date(latest.year, 1, 1)
+    else:
+        months = {"1M": -1, "3M": -3, "6M": -6, "1Y": -12, "3Y": -36}.get(kind)
+        if months is None:
+            return earliest, latest
+        start = calendar_shift_months(latest, months)
+    if start < earliest:
+        start = earliest
+    if start > latest:
+        start = latest
+    return start, latest
 
 
 def _as_date(value: Any) -> date | None:

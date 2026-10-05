@@ -21,7 +21,8 @@ function sizeBox(el, height) {
 }
 
 function applyFrameHeight(root) {
-  var height = frameHeight() + "px";
+  var full = frameHeight(root);
+  var height = full + "px";
   var node = root && root.host ? root.host : null;
   var container = null;
   var current = node;
@@ -40,9 +41,12 @@ function applyFrameHeight(root) {
     }
   }
   sizeBox(node, height);
+  var readout = root ? root.querySelector("#policy-readout") : null;
+  var used = readout && !readout.hidden ? readout.offsetHeight || 96 : 0;
+  var chartHeight = Math.max(160, full - used) + "px";
   var chart = root.querySelector("#chart");
   if (chart) {
-    sizeBox(chart, height);
+    sizeBox(chart, chartHeight);
     if (chart.parentElement && chart.parentElement !== root) {
       sizeBox(chart.parentElement, height);
     }
@@ -415,6 +419,140 @@ function applyTheme(option, palette, compact) {
   return option;
 }
 
+function policyIso(value) {
+  var text = String(value == null ? "" : value);
+  if (text.length >= 10 && text.charAt(4) === "-" && text.charAt(7) === "-") {
+    return text.slice(0, 10);
+  }
+  var stamp = new Date(value);
+  if (Number.isNaN(stamp.getTime())) {
+    return "";
+  }
+  return (
+    String(stamp.getUTCFullYear()) +
+    "-" +
+    String(stamp.getUTCMonth() + 1).padStart(2, "0") +
+    "-" +
+    String(stamp.getUTCDate()).padStart(2, "0")
+  );
+}
+
+function policyPercent(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "—";
+  }
+  return value.toFixed(2) + "%";
+}
+
+function policySeriesList(option) {
+  var wanted = {
+    "Target lower": true,
+    "Target upper": true,
+    "Effective Fed Funds": true,
+    SOFR: true,
+  };
+  var series = option && Array.isArray(option.series) ? option.series : [];
+  var out = [];
+  var index;
+  for (index = 0; index < series.length; index++) {
+    if (wanted[series[index].name]) {
+      out.push(series[index]);
+    }
+  }
+  return out;
+}
+
+function policyValueOnDay(series, iso) {
+  var data = series && Array.isArray(series.data) ? series.data : [];
+  var index;
+  for (index = 0; index < data.length; index++) {
+    var row = data[index];
+    if (!Array.isArray(row) || policyIso(row[0]) !== iso) {
+      continue;
+    }
+    if (typeof row[1] === "number" && Number.isFinite(row[1])) {
+      return row[1];
+    }
+    return null;
+  }
+  return null;
+}
+
+function writePolicyReadout(root, headerIso, rows) {
+  var box = root.querySelector("#policy-readout");
+  var dateEl = root.querySelector("#policy-readout-date");
+  var valueEl = root.querySelector("#policy-readout-value");
+  if (!box || !dateEl || !valueEl) {
+    return;
+  }
+  box.hidden = false;
+  dateEl.textContent = headerIso ? formatMDY(headerIso) : "—";
+  var lines = [];
+  var index;
+  for (index = 0; index < rows.length; index++) {
+    var row = rows[index];
+    var line = row.label + "  " + policyPercent(row.value);
+    if (row.date && headerIso && row.date !== headerIso) {
+      line += "  " + formatMDY(row.date);
+    }
+    lines.push(line);
+  }
+  valueEl.textContent = lines.length ? lines.join("\n") : "—";
+}
+
+function renderPolicyDefault(state) {
+  var option = state.option;
+  var box = state.root.querySelector("#policy-readout");
+  if (!option || option.chartKind !== "policy_rates") {
+    if (box) {
+      box.hidden = true;
+    }
+    return;
+  }
+  var payload = option.policyReadout || {};
+  writePolicyReadout(state.root, payload.date || "", Array.isArray(payload.rows) ? payload.rows : []);
+}
+
+function renderPolicyHover(state, rawDay) {
+  var iso = policyIso(rawDay);
+  if (!iso) {
+    renderPolicyDefault(state);
+    return;
+  }
+  var series = policySeriesList(state.option);
+  var rows = [];
+  var index;
+  for (index = 0; index < series.length; index++) {
+    rows.push({
+      label: series[index].name,
+      date: iso,
+      value: policyValueOnDay(series[index], iso),
+    });
+  }
+  writePolicyReadout(state.root, iso, rows);
+}
+
+function bindPolicyReadout(state) {
+  if (state.policyBound) {
+    return;
+  }
+  state.policyBound = true;
+  state.chart.on("updateAxisPointer", function (event) {
+    if (!state.option || state.option.chartKind !== "policy_rates") {
+      return;
+    }
+    var info = event && event.axesInfo && event.axesInfo[0];
+    if (!info || info.value == null) {
+      renderPolicyDefault(state);
+      return;
+    }
+    renderPolicyHover(state, info.value);
+  });
+  state.chart.on("globalout", function () {
+    renderPolicyDefault(state);
+  });
+}
+
 function keepPageScroll(chart) {
   var dom = chart.getDom();
   dom.style.touchAction = "pan-y";
@@ -461,6 +599,7 @@ function createState(root) {
     attributes: true,
     attributeFilter: ["class", "data-theme", "style"],
   });
+  bindPolicyReadout(state);
   keepPageScroll(chart);
   return state;
 }
@@ -489,6 +628,8 @@ function updateState(state, data) {
   state.compact = window.matchMedia(MOBILE_QUERY).matches;
   applyFrameHeight(state.root);
   state.chart.setOption(state.option, true);
+  renderPolicyDefault(state);
+  applyFrameHeight(state.root);
   state.chart.resize();
   keepPageScroll(state.chart);
 }

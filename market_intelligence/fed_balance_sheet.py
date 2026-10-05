@@ -158,16 +158,20 @@ def absolute_change(current: float | None, base: float | None) -> float | None:
     return result
 
 
-def column_headers(*, mode: str, comparing: bool) -> tuple[str, str, str, str, str]:
-    """Table headers. The first change column follows the comparison date."""
+def column_headers(*, mode: str, comparing: bool) -> tuple[str, ...]:
+    """Table headers. Comparison level sits beside Current only while a date is selected."""
     absolute = str(mode).lower() == "absolute"
     if comparing:
         lead = "Absolute Change From Current" if absolute else "% Change From Current"
     else:
         lead = "Absolute Change Since Last" if absolute else "% Change Since Last"
     if absolute:
-        return ("Component", "Current", lead, "Absolute Change 1Y", "Absolute Change 3Y")
-    return ("Component", "Current", lead, "% Change 1Y", "% Change 3Y")
+        changes = (lead, "Absolute Change 1Y", "Absolute Change 3Y")
+    else:
+        changes = (lead, "% Change 1Y", "% Change 3Y")
+    if comparing:
+        return ("Component", "Current", "Comparison", *changes)
+    return ("Component", "Current", *changes)
 
 
 @dataclass(frozen=True)
@@ -356,21 +360,39 @@ def _cell_title(row: ComponentSnapshot, *, comparing: bool) -> str:
     return ". ".join(parts)
 
 
+def _comparison_cell(row: ComponentSnapshot, comparison_date: date | None) -> str:
+    """Level on or before the requested date. A different print date is shown in the cell."""
+    level = html.escape(format_millions(row.historical))
+    if (
+        comparison_date is not None
+        and row.historical_date is not None
+        and row.historical_date != comparison_date
+    ):
+        level += '<span class="fed-bs-asof">{0}</span>'.format(
+            html.escape(format_calendar_date(row.historical_date))
+        )
+    return level
+
+
 def statement_html(
     rows: Sequence[ComponentSnapshot],
     *,
     mode: str,
     comparing: bool,
+    comparison_date: date | None = None,
 ) -> str:
     """Dark-theme table. Numbers are right-aligned. There is no index column."""
     headers = column_headers(mode=mode, comparing=comparing)
     head = "".join("<th>{0}</th>".format(html.escape(label)) for label in headers)
     body: list[str] = []
     last_section = None
+    span = len(headers)
     for row in rows:
         if row.section_id != last_section:
             body.append(
-                '<tr class="fed-bs-section"><td colspan="5">{0}</td></tr>'.format(html.escape(row.section_label))
+                '<tr class="fed-bs-section"><td colspan="{0}">{1}</td></tr>'.format(
+                    span, html.escape(row.section_label)
+                )
             )
             last_section = row.section_id
         lead = displayed_change(row, mode=mode, comparing=comparing, horizon="lead")
@@ -378,17 +400,22 @@ def statement_html(
         year_3 = displayed_change(row, mode=mode, comparing=comparing, horizon="3y")
         title = _cell_title(row, comparing=comparing)
         tip = ' title="{0}"'.format(html.escape(title, quote=True)) if title else ""
+        comparison = ""
+        if comparing:
+            comparison = '<td class="num">{0}</td>'.format(_comparison_cell(row, comparison_date))
         body.append(
             "<tr>"
             "<td{0}>{1}</td>"
             '<td class="num">{2}</td>'
-            '<td class="{3}">{4}</td>'
-            '<td class="{5}">{6}</td>'
-            '<td class="{7}">{8}</td>'
+            "{3}"
+            '<td class="{4}">{5}</td>'
+            '<td class="{6}">{7}</td>'
+            '<td class="{8}">{9}</td>'
             "</tr>".format(
                 tip,
                 html.escape(row.label),
                 html.escape(format_millions(row.current)),
+                comparison,
                 _change_class(lead),
                 html.escape(_format_change(lead, mode=mode)),
                 _change_class(year_1),
@@ -405,6 +432,7 @@ def statement_html(
         ".fed-bs th{font-size:12px;font-weight:650;text-align:right;white-space:normal;}"
         ".fed-bs th:first-child,.fed-bs td:first-child{text-align:left;}"
         ".fed-bs td.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;}"
+        ".fed-bs-asof{display:block;font-size:11px;font-weight:500;opacity:0.75;white-space:nowrap;}"
         ".fed-bs td.pos{color:#2ecc71;}"
         ".fed-bs td.neg{color:#e74c3c;}"
         ".fed-bs tr.fed-bs-section td{padding-top:12px;font-size:12px;font-weight:700;letter-spacing:0.04em;"

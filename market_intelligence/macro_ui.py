@@ -23,7 +23,7 @@ from market_intelligence.fed_balance_sheet import (
     statement_as_of,
     statement_html,
 )
-from market_intelligence.history_range import historical_date_range, pills_layout_kwargs
+from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, quick_range_bounds
 from market_intelligence.macro_dashboard import (
     CHARTS,
     COINCIDENT_NOTE,
@@ -129,32 +129,66 @@ def _render_group(group: str) -> None:
             st.markdown(line)
 
 
+_FED_QUICK_RANGES = ("1M", "3M", "6M", "YTD", "1Y", "3Y", "Full range")
+
+
+def fed_shared_observation_rows(histories: Mapping[str, list[dict[str, Any]]]) -> list[list[dict[str, Any]]]:
+    """Policy, M2, and NFCI histories that share one From/To window.
+
+    The balance sheet is omitted. Its comparison date is not a chart window.
+    """
+    policy = next(chart for chart in CHARTS["fed"] if chart["kind"] == "policy")
+    rest = [chart for chart in CHARTS["fed"] if chart["kind"] not in {"policy", "balance_sheet"}]
+    rows = list(_chart_histories(policy, histories))
+    for chart in rest:
+        rows.extend(_chart_histories(chart, histories))
+    return rows
+
+
+def _apply_fed_quick_range(key: str, earliest: date, latest: date) -> None:
+    pending = st.session_state.pop("{0}_quick".format(key), None)
+    if not isinstance(pending, str):
+        return
+    start, end = quick_range_bounds(pending, earliest=earliest, latest=latest)
+    st.session_state["{0}_from".format(key)] = start
+    st.session_state["{0}_to".format(key)] = end
+
+
+def _render_fed_quick_ranges(key: str) -> None:
+    columns = st.columns(len(_FED_QUICK_RANGES))
+    for column, label in zip(columns, _FED_QUICK_RANGES):
+        if column.button(label, key="{0}_btn_{1}".format(key, label)):
+            st.session_state["{0}_quick".format(key)] = label
+            st.rerun()
+
+
 def _render_fed(histories: Mapping[str, list[dict[str, Any]]], bands: list[dict[str, str]]) -> None:
-    """Policy rates keep their own default start. The balance sheet is a current table."""
+    """One From/To for policy rates, M2, and NFCI. Default From stays 01/01/2000."""
     policy = next(chart for chart in CHARTS["fed"] if chart["kind"] == "policy")
     sheet = next(chart for chart in CHARTS["fed"] if chart["kind"] == "balance_sheet")
     rest = [chart for chart in CHARTS["fed"] if chart["kind"] not in {"policy", "balance_sheet"}]
     st.subheader(policy["title"])
     st.caption(chart_unit(policy))
-    earliest, latest = history_window_bounds(_chart_histories(policy, histories))
+    earliest, latest = history_window_bounds(fed_shared_observation_rows(histories))
+    window_key = "macro_fed_policy"
+    if earliest is not None and latest is not None:
+        _apply_fed_quick_range(window_key, earliest, latest)
     start, end = historical_date_range(
-        key="macro_fed_policy",
+        key=window_key,
         earliest=earliest,
         latest=latest,
         default_start=POLICY_RATES_DEFAULT_START,
     )
+    if earliest is not None and latest is not None:
+        _render_fed_quick_ranges(window_key)
     if start is not None and end is not None and start <= end:
-        _render_policy(policy, histories, start, end, _clip_bands(bands, start, end))
-    _render_balance_sheet(sheet, histories)
-    rest_rows: list[list[dict[str, Any]]] = []
-    for chart in rest:
-        rest_rows.extend(_chart_histories(chart, histories))
-    rest_start, rest_end = history_window_bounds(rest_rows)
-    st.caption("M2 and financial conditions")
-    start, end = historical_date_range(key="macro_fed", earliest=rest_start, latest=rest_end)
-    window_bands = _clip_bands(bands, start, end)
-    for chart in rest:
-        _render_chart("fed", chart, histories, start, end, window_bands)
+        window_bands = _clip_bands(bands, start, end)
+        _render_policy(policy, histories, start, end, window_bands)
+        _render_balance_sheet(sheet, histories)
+        for chart in rest:
+            _render_chart("fed", chart, histories, start, end, window_bands, chart_ranges=False)
+    else:
+        _render_balance_sheet(sheet, histories)
 
 
 def _render_balance_sheet(chart: Mapping[str, Any], histories: Mapping[str, list[dict[str, Any]]]) -> None:
@@ -196,7 +230,12 @@ def _render_balance_sheet(chart: Mapping[str, Any], histories: Mapping[str, list
         st.caption("No stored H.4.1 observations for this table.")
         return
     st.markdown(
-        statement_html(rows, mode=mode, comparing=comparison_date is not None),
+        statement_html(
+            rows,
+            mode=mode,
+            comparing=comparison_date is not None,
+            comparison_date=comparison_date if compare else None,
+        ),
         unsafe_allow_html=True,
     )
 
@@ -208,6 +247,8 @@ def _render_chart(
     start: date | None,
     end: date | None,
     bands: list[dict[str, str]],
+    *,
+    chart_ranges: bool = True,
 ) -> None:
     if chart["kind"] == "balance_sheet":
         _render_balance_sheet(chart, histories)
@@ -266,7 +307,7 @@ def _render_chart(
     reference = chart.get("reference")
     lightweight_market_chart(
         series=series,
-        ranges=True,
+        ranges=chart_ranges,
         value_format=chart_format(chart, mode=mode),
         reference_price=None if reference is None else float(reference),
         recession_bands=bands,

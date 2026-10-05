@@ -1015,6 +1015,7 @@ function updateState(state, data) {
   var formatChanged = nextFormat !== state.valueFormat;
   state.valueFormat = nextFormat;
   state.rangesEl.hidden = state.data.ranges !== true;
+  state.reset.hidden = state.data.ranges !== true;
   applyChartHeight(state, state.data);
   var prepared = seriesFromData(state.data).map(function (item) {
     return {
