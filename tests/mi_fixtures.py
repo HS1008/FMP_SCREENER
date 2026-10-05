@@ -257,8 +257,25 @@ def synthetic_fred_data(end: date = date(2024, 12, 31)) -> dict[str, list[tuple[
     data["DFEDTARU"] = daily_series(end, 800, 4.50, 0)
     for sid, start in (("BAMLC0A0CM", 0.80), ("BAMLH0A0HYM2", 2.9), ("BAMLEMCBPIOAS", 3.1), ("BAMLC0A1CAAA", 0.4), ("BAMLC0A2CAA", 0.5), ("BAMLC0A3CA", 0.7), ("BAMLC0A4CBBB", 1.0), ("BAMLH0A1HYBB", 1.9), ("BAMLH0A2HYB", 2.8), ("BAMLH0A3HYC", 8.0)):
         data[sid] = daily_series(end, 300, start, 0.0007)  # ICE history limited (~14 months) by design
-    for sid, start, g in (("CPIAUCSL", 290.0, 0.0025), ("CPILFESL", 300.0, 0.0022), ("PCEPI", 118.0, 0.002), ("PCEPILFE", 119.0, 0.0021), ("INDPRO", 102.0, 0.001), ("M2SL", 20800.0, 0.003), ("RSAFS", 690000.0, 0.003)):
+    for sid, start, g in (
+        ("CPIAUCSL", 290.0, 0.0025),
+        ("CPILFESL", 300.0, 0.0022),
+        ("CPIUFDSL", 310.0, 0.0024),
+        ("CPIENGSL", 250.0, 0.0015),
+        ("CUSR0000SACL1E", 160.0, 0.0012),
+        ("CUSR0000SASLE", 380.0, 0.0026),
+        ("PCEPI", 118.0, 0.002),
+        ("PCEPILFE", 119.0, 0.0021),
+        ("DDURRG3M086SBEA", 105.0, 0.0008),
+        ("DNDGRG3M086SBEA", 112.0, 0.0016),
+        ("DSERRG3M086SBEA", 120.0, 0.0022),
+        ("INDPRO", 102.0, 0.001),
+        ("M2SL", 20800.0, 0.003),
+        ("RSAFS", 690000.0, 0.003),
+    ):
         data[sid] = monthly_index(date(end.year, end.month, 1), 40, start, g)
+    data["TRMMEANCPIM159SFRBCLE"] = [(d, "{0:.2f}".format(2.4)) for d, _ in data["CPIAUCSL"]]
+    data["PCETRIM12M159SFRBDAL"] = [(d, "{0:.2f}".format(2.2)) for d, _ in data["PCEPI"]]
     data["PAYEMS"] = [(d, "{0:.0f}".format(155000 + 150 * i)) for i, (d, _) in enumerate(monthly_index(date(end.year, end.month, 1), 40, 1, 0))]
     data["UNRATE"] = [(d, "{0:.1f}".format(3.6 + 0.02 * i)) for i, (d, _) in enumerate(monthly_index(date(end.year, end.month, 1), 40, 1, 0))]
     data["GDPC1"] = [(date(y, m, 1), "{0:.1f}".format(22000 + 100 * i)) for i, (y, m) in enumerate((yy, mm) for yy in range(2019, 2025) for mm in (1, 4, 7, 10))]

@@ -161,6 +161,48 @@ CATALOG: tuple[SeriesSpec, ...] = (
     _s("PCEPILFE", "inflation", "pce", CADENCE_MONTHLY, _IDX, expected_sa="SA", value_kind="index",
        transforms=("yoy_pct", "ann3m_pct", "ann6m_pct"), label="Core PCE Price Index", aggregation=AGG_PERIOD_LEVEL,
        notes="Index 2017=100, monthly, SA."),
+    _s("TRMMEANCPIM159SFRBCLE", "inflation", "cpi", CADENCE_MONTHLY, _PCT, expected_sa="SA",
+       value_kind="percent", label="Cleveland Fed 16% trimmed-mean CPI", aggregation=AGG_PERIOD_LEVEL,
+       backfill_years=30,
+       notes="Federal Reserve Bank of Cleveland 16% trimmed-mean CPI. Percent change from a year ago, monthly, SA. "
+             "Drops the CPI components with the highest and lowest 8% of the one-month price-change distribution. "
+             "Not TRMMEANCPIM158SFRBCLE, which is the one-month annualized rate, and not median CPI."),
+    _s("PCETRIM12M159SFRBDAL", "inflation", "pce", CADENCE_MONTHLY, _PCT, expected_sa="SA",
+       value_kind="percent", label="Dallas Fed trimmed-mean PCE", aggregation=AGG_PERIOD_LEVEL,
+       backfill_years=30,
+       notes="Federal Reserve Bank of Dallas trimmed-mean PCE. Percent change from a year ago, monthly, SA. "
+             "Not PCETRIM1M158SFRBDAL, the one-month annualized rate, and not PCETRIM6M680SFRBDAL, the six-month annualized rate."),
+    _s("CPIUFDSL", "inflation", "cpi", CADENCE_MONTHLY, _IDX, expected_sa="SA", value_kind="index",
+       transforms=("yoy_pct",), label="CPI food", aggregation=AGG_PERIOD_LEVEL, backfill_years=30,
+       notes="CPI-U food. Index 1982-1984=100, monthly, SA. The chart uses the 12-month percent change. "
+             "Not a contribution to headline CPI."),
+    _s("CPIENGSL", "inflation", "cpi", CADENCE_MONTHLY, _IDX, expected_sa="SA", value_kind="index",
+       transforms=("yoy_pct",), label="CPI energy", aggregation=AGG_PERIOD_LEVEL, backfill_years=30,
+       notes="CPI-U energy. Index 1982-1984=100, monthly, SA. The chart uses the 12-month percent change. "
+             "Not a contribution to headline CPI."),
+    _s("CUSR0000SACL1E", "inflation", "cpi", CADENCE_MONTHLY, _IDX, expected_sa="SA", value_kind="index",
+       transforms=("yoy_pct",), label="CPI core goods", aggregation=AGG_PERIOD_LEVEL, backfill_years=30,
+       notes="CPI-U commodities less food and energy commodities. Index 1982-1984=100, monthly, SA. "
+             "Mutually exclusive with food, energy, and services less energy services. "
+             "The chart uses the 12-month percent change, not a contribution."),
+    _s("CUSR0000SASLE", "inflation", "cpi", CADENCE_MONTHLY, _IDX, expected_sa="SA", value_kind="index",
+       transforms=("yoy_pct",), label="CPI core services", aggregation=AGG_PERIOD_LEVEL, backfill_years=30,
+       notes="CPI-U services less energy services. Index 1982-1984=100, monthly, SA. Shelter is inside this aggregate. "
+             "Mutually exclusive with food, energy, and core goods. The chart uses the 12-month percent change, not a contribution."),
+    _s("DDURRG3M086SBEA", "inflation", "pce", CADENCE_MONTHLY, _IDX, expected_sa="SA", value_kind="index",
+       transforms=("yoy_pct",), label="PCE durable goods", aggregation=AGG_PERIOD_LEVEL, backfill_years=30,
+       notes="BEA chain-type price index for PCE durable goods, account DDURRG. Index 2017=100, monthly, SA. "
+             "Mutually exclusive with nondurable goods and services. The chart uses the 12-month percent change, not a contribution."),
+    _s("DNDGRG3M086SBEA", "inflation", "pce", CADENCE_MONTHLY, _IDX, expected_sa="SA", value_kind="index",
+       transforms=("yoy_pct",), label="PCE nondurable goods", aggregation=AGG_PERIOD_LEVEL, backfill_years=30,
+       notes="BEA chain-type price index for PCE nondurable goods, account DNDGRG. Index 2017=100, monthly, SA. "
+             "Food and energy goods sit inside this aggregate. Mutually exclusive with durable goods and services. "
+             "The chart uses the 12-month percent change, not a contribution."),
+    _s("DSERRG3M086SBEA", "inflation", "pce", CADENCE_MONTHLY, _IDX, expected_sa="SA", value_kind="index",
+       transforms=("yoy_pct",), label="PCE services", aggregation=AGG_PERIOD_LEVEL, backfill_years=30,
+       notes="BEA chain-type price index for PCE services, account DSERRG. Index 2017=100, monthly, SA. "
+             "Energy services sit inside this aggregate. Mutually exclusive with durable and nondurable goods. "
+             "The chart uses the 12-month percent change, not a contribution."),
     # Policy
     _s("DFF", "policy", "fed_funds", CADENCE_DAILY, _PCT, expected_sa="NSA", value_kind="percent",
        transforms=("level_pct", "chg_bps"), label="Effective Fed Funds"),
@@ -440,6 +482,19 @@ H41_WEDNESDAY_LEVEL_SERIES: tuple[str, ...] = (
     "WCPIL",
     "WCSL",
 )
+# Trimmed-mean rates and CPI/PCE component indexes added after the macro max-history
+# marker already existed. A host that recorded that marker still ingests this set.
+INFLATION_COMPONENT_SERIES: tuple[str, ...] = (
+    "TRMMEANCPIM159SFRBCLE",
+    "PCETRIM12M159SFRBDAL",
+    "CPIUFDSL",
+    "CPIENGSL",
+    "CUSR0000SACL1E",
+    "CUSR0000SASLE",
+    "DDURRG3M086SBEA",
+    "DNDGRG3M086SBEA",
+    "DSERRG3M086SBEA",
+)
 # Explicit max-history path for the Macro dashboard. Incremental refresh keeps catalog backfill_years.
 MACRO_MAX_BACKFILL_SERIES: tuple[str, ...] = (
     "DFF",
@@ -456,6 +511,7 @@ MACRO_MAX_BACKFILL_SERIES: tuple[str, ...] = (
     "CPILFESL",
     "PCEPI",
     "PCEPILFE",
+    *INFLATION_COMPONENT_SERIES,
     "CUSR0000SASL2RS",
     "T5YIE",
     "T10YIE",
@@ -491,6 +547,13 @@ MACRO_COVERAGE_METRICS: tuple[str, ...] = (
     "PCEPILFE.yoy_pct",
     "PCEPILFE.ann3m_pct",
     "PCEPILFE.ann6m_pct",
+    "CPIUFDSL.yoy_pct",
+    "CPIENGSL.yoy_pct",
+    "CUSR0000SACL1E.yoy_pct",
+    "CUSR0000SASLE.yoy_pct",
+    "DDURRG3M086SBEA.yoy_pct",
+    "DNDGRG3M086SBEA.yoy_pct",
+    "DSERRG3M086SBEA.yoy_pct",
     "CUSR0000SASL2RS.yoy_pct",
     "CUSR0000SASL2RS.ann3m_pct",
     "CUSR0000SASL2RS.ann6m_pct",

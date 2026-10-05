@@ -271,14 +271,23 @@ def series_toggles(
     labels = {series_id: label for series_id, label in options}
     ids = [series_id for series_id, _label in options]
     pills_key = "{0}_pills".format(key)
-    if pills_key not in st.session_state:
+    memory_key = "{0}_memory".format(key)
+    if memory_key not in st.session_state:
         chosen = list(default) if default is not None else list(ids)
-        st.session_state[pills_key] = [item for item in chosen if item in ids]
+        st.session_state[memory_key] = [item for item in chosen if item in ids]
+    else:
+        st.session_state[memory_key] = [
+            item for item in st.session_state[memory_key] if item in ids
+        ]
+    if pills_key not in st.session_state:
+        st.session_state[pills_key] = list(st.session_state[memory_key])
     select_col, clear_col = st.columns(2)
     if select_col.button("Select all", key="{0}_select_all".format(key)):
         st.session_state[pills_key] = list(ids)
+        st.session_state[memory_key] = list(ids)
     if clear_col.button("Clear all", key="{0}_clear_all".format(key)):
         st.session_state[pills_key] = []
+        st.session_state[memory_key] = []
     selected = st.pills(
         group_label,
         ids,
@@ -289,7 +298,10 @@ def series_toggles(
         **pills_layout_kwargs(),
     )
     if selected is None:
-        return []
-    if isinstance(selected, str):
-        return ordered_selection(ids, [selected])
-    return ordered_selection(ids, list(selected))
+        chosen_ids: list[str] = []
+    elif isinstance(selected, str):
+        chosen_ids = ordered_selection(ids, [selected])
+    else:
+        chosen_ids = ordered_selection(ids, list(selected))
+    st.session_state[memory_key] = chosen_ids
+    return chosen_ids

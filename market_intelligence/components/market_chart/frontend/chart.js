@@ -83,6 +83,13 @@ function seriesColor(palette, index) {
   return EXTRA_LINE_COLORS[(index - 1) % EXTRA_LINE_COLORS.length];
 }
 
+function colorSlot(row, index) {
+  if (row && typeof row.colorIndex === "number" && Number.isFinite(row.colorIndex)) {
+    return row.colorIndex;
+  }
+  return index;
+}
+
 function escapeHtml(value) {
   return String(value == null ? "" : value).replace(/[&<>"']/g, function (ch) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
@@ -104,7 +111,7 @@ function renderLegend(state, prepared) {
   var html = "";
   var index;
   for (index = 0; index < rows.length; index++) {
-    var color = seriesColor(palette, index);
+    var color = seriesColor(palette, colorSlot(rows[index], index));
     var label = rows[index].label || "Series " + String(index + 1);
     html +=
       '<span class="legend-item"><span class="legend-swatch" style="background:' +
@@ -291,7 +298,7 @@ function applyTheme(state) {
     },
   });
   state.seriesList.forEach(function (entry, index) {
-    var color = seriesColor(palette, index);
+    var color = seriesColor(palette, colorSlot(entry, index));
     entry.fragments.forEach(function (api) {
       api.applyOptions({ color: color, lineWidth: 2 });
     });
@@ -565,6 +572,7 @@ function syncSeries(state, prepared) {
       entry.fragments.push(state.chart.addSeries(charts.LineSeries, lineOptions()));
     }
     entry.label = prepared[i].label;
+    entry.colorIndex = colorSlot(prepared[i], i);
     entry.byTime = {};
     entry.apiByTime = {};
     var runIndex;
