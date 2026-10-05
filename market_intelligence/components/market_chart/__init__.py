@@ -181,6 +181,12 @@ def build_market_chart_payload(
     plotted = _align_to_union(specs) if align_union else [
         {"label": label, "points": list(rows)} for label, rows in specs
     ]
+    sources = list(series) if series is not None else [{"label": series_label}]
+    for index, row in enumerate(plotted):
+        source = sources[index] if index < len(sources) else {}
+        slot = source.get("color_index")
+        if slot is not None:
+            row["colorIndex"] = int(slot)
     payload: dict[str, Any] = {
         "series": plotted,
         "ranges": bool(ranges),

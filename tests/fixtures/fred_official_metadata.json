@@ -144,6 +144,83 @@
       "units": "Index 1982-1984=100",
       "units_short": "Index 1982-1984=100"
     },
+    "CPIENGSL": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "CPIENGSL",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/CPIENGSL",
+      "title": "Consumer Price Index for All Urban Consumers: Energy in U.S. City Average",
+      "units": "Index 1982-1984=100",
+      "units_short": "Index 1982-1984=100"
+    },
+    "CPIUFDSL": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "CPIUFDSL",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/CPIUFDSL",
+      "title": "Consumer Price Index for All Urban Consumers: Food in U.S. City Average",
+      "units": "Index 1982-1984=100",
+      "units_short": "Index 1982-1984=100"
+    },
+    "CUSR0000SACL1E": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "CUSR0000SACL1E",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/CUSR0000SACL1E",
+      "title": "Consumer Price Index for All Urban Consumers: Commodities Less Food and Energy Commodities in U.S. City Average",
+      "units": "Index 1982-1984=100",
+      "units_short": "Index 1982-1984=100"
+    },
+    "CUSR0000SASLE": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "CUSR0000SASLE",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/CUSR0000SASLE",
+      "title": "Consumer Price Index for All Urban Consumers: Services Less Energy Services in U.S. City Average",
+      "units": "Index 1982-1984=100",
+      "units_short": "Index 1982-1984=100"
+    },
+    "DDURRG3M086SBEA": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "DDURRG3M086SBEA",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/DDURRG3M086SBEA",
+      "title": "Personal consumption expenditures: Durable goods (chain-type price index)",
+      "units": "Index 2017=100",
+      "units_short": "Index 2017=100"
+    },
+    "DNDGRG3M086SBEA": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "DNDGRG3M086SBEA",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/DNDGRG3M086SBEA",
+      "title": "Personal consumption expenditures: Nondurable goods (chain-type price index)",
+      "units": "Index 2017=100",
+      "units_short": "Index 2017=100"
+    },
+    "DSERRG3M086SBEA": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "DSERRG3M086SBEA",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/DSERRG3M086SBEA",
+      "title": "Personal consumption expenditures: Services (chain-type price index)",
+      "units": "Index 2017=100",
+      "units_short": "Index 2017=100"
+    },
     "DCOILWTICO": {
       "frequency": "Daily",
       "frequency_short": "D",
@@ -430,6 +507,17 @@
       "units": "Index 2017=100",
       "units_short": "Index 2017=100"
     },
+    "PCETRIM12M159SFRBDAL": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "PCETRIM12M159SFRBDAL",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/PCETRIM12M159SFRBDAL",
+      "title": "Trimmed Mean PCE Inflation Rate",
+      "units": "Percent Change from Year Ago",
+      "units_short": "%"
+    },
     "PCOPPUSDM": {
       "frequency": "Monthly",
       "frequency_short": "M",
@@ -505,6 +593,17 @@
       "source_url": "https://fred.stlouisfed.org/series/T5YIFR",
       "title": "5-Year, 5-Year Forward Inflation Expectation Rate",
       "units": "Percent",
+      "units_short": "%"
+    },
+    "TRMMEANCPIM159SFRBCLE": {
+      "frequency": "Monthly",
+      "frequency_short": "M",
+      "id": "TRMMEANCPIM159SFRBCLE",
+      "seasonal_adjustment": "Seasonally Adjusted",
+      "seasonal_adjustment_short": "SA",
+      "source_url": "https://fred.stlouisfed.org/series/TRMMEANCPIM159SFRBCLE",
+      "title": "16% Trimmed-Mean Consumer Price Index",
+      "units": "Percent Change from Year Ago",
       "units_short": "%"
     },
     "UNRATE": {

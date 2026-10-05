@@ -59,6 +59,15 @@ NEW_SERIES = (
     "WLRRAL",
     "WCPIL",
     "WCSL",
+    "TRMMEANCPIM159SFRBCLE",
+    "PCETRIM12M159SFRBDAL",
+    "CPIUFDSL",
+    "CPIENGSL",
+    "CUSR0000SACL1E",
+    "CUSR0000SASLE",
+    "DDURRG3M086SBEA",
+    "DNDGRG3M086SBEA",
+    "DSERRG3M086SBEA",
 )
 
 
@@ -235,6 +244,7 @@ def test_macro_backfill_is_not_part_of_scheduled_refresh():
     names = {step["step"] for step in scheduled["steps"]}
     assert "fred_macro_backfill" not in names
     assert "fred_h41_backfill" not in names
+    assert "fred_inflation_backfill" not in names
     assert "fred_macro_coverage" not in names
     from market_intelligence.catalog import H41_WEDNESDAY_LEVEL_SERIES
 
@@ -243,6 +253,14 @@ def test_macro_backfill_is_not_part_of_scheduled_refresh():
     assert h41_step["mode"] == "max"
     assert h41_step["series"] == list(H41_WEDNESDAY_LEVEL_SERIES)
     assert len(H41_WEDNESDAY_LEVEL_SERIES) == 11
+    from market_intelligence.catalog import INFLATION_COMPONENT_SERIES
+
+    inflation = plan(build_parser().parse_args(["--fred-inflation-backfill"]), {})
+    inflation_step = inflation["steps"][0]
+    assert inflation_step["mode"] == "max"
+    assert inflation_step["series"] == list(INFLATION_COMPONENT_SERIES)
+    assert "TRMMEANCPIM159SFRBCLE" in MACRO_MAX_BACKFILL_SERIES
+    assert "PCETRIM12M159SFRBDAL" in MACRO_MAX_BACKFILL_SERIES
     explicit = plan(build_parser().parse_args(["--fred-macro-backfill"]), {})
     step = explicit["steps"][0]
     assert step["mode"] == "max"
@@ -393,6 +411,135 @@ def test_m2_window_keeps_history_that_starts_before_nfci():
     start, end = history_window_bounds(_chart_histories(m2, histories) + _chart_histories(nfci, histories))
     assert start == date(1959, 1, 1)
     assert end == date(2026, 9, 25)
+
+
+def test_inflation_charts_use_yoy_rates_and_published_trimmed_means():
+    from market_intelligence.catalog import INFLATION_COMPONENT_SERIES
+
+    cpi = next(chart for chart in CHARTS["inflation"] if chart["title"] == "Headline, Core, and Trimmed Mean CPI")
+    pce = next(chart for chart in CHARTS["inflation"] if chart["title"] == "Headline, Core, and Trimmed Mean PCE")
+    cpi_parts = next(chart for chart in CHARTS["inflation"] if chart["title"] == "CPI Decomposition")
+    pce_parts = next(chart for chart in CHARTS["inflation"] if chart["title"] == "PCE Decomposition")
+    expectations = next(chart for chart in CHARTS["inflation"] if chart["title"] == "Market Inflation Expectations")
+    assert [row[0] for row in cpi["series"]] == [
+        "CPIAUCSL.yoy_pct",
+        "CPILFESL.yoy_pct",
+        "TRMMEANCPIM159SFRBCLE",
+    ]
+    assert [row[0] for row in pce["series"]] == [
+        "PCEPI.yoy_pct",
+        "PCEPILFE.yoy_pct",
+        "PCETRIM12M159SFRBDAL",
+    ]
+    for series_id in ("TRMMEANCPIM159SFRBCLE", "PCETRIM12M159SFRBDAL"):
+        spec = CATALOG_BY_ID[series_id]
+        assert spec.transforms == ()
+        assert spec.value_kind == "percent"
+        assert spec.expected_sa == "SA"
+        assert spec.expected_frequency == "M"
+        assert series_id in INFLATION_COMPONENT_SERIES
+    for forbidden in (
+        "TRMMEANCPIM158SFRBCLE",
+        "PCETRIM1M158SFRBDAL",
+        "PCETRIM6M680SFRBDAL",
+        "MEDCPIM158SFRBCLE",
+    ):
+        assert forbidden not in CATALOG_BY_ID
+    assert all(row[0].endswith(".yoy_pct") for row in cpi_parts["series"])
+    assert all(row[0].endswith(".yoy_pct") for row in pce_parts["series"])
+    assert [row[1] for row in cpi_parts["series"]] == ["Food", "Energy", "Core goods", "Core services"]
+    assert [row[1] for row in pce_parts["series"]] == ["Durable goods", "Nondurable goods", "Services"]
+    assert "not contributions" in cpi_parts["caption"]
+    assert "not contributions" in pce_parts["caption"]
+    for series_id, _label, _scale in cpi_parts["series"] + pce_parts["series"]:
+        spec = CATALOG_BY_ID[series_id.split(".", 1)[0]]
+        assert spec.transforms == ("yoy_pct",)
+        assert spec.value_kind == "index"
+    assert [row[0] for row in expectations["series"]] == ["T5YIE", "T10YIE", "T5YIFR"]
+    assert "liquidity premiums" in expectations["caption"]
+    assert "survey" in expectations["caption"]
+    assert selected_lines(cpi)[2][0] == "TRMMEANCPIM159SFRBCLE"
+    assert selected_lines(cpi, chosen=["CPILFESL.yoy_pct"]) == [("CPILFESL.yoy_pct", "Core", False)]
+    colored = build_market_chart_payload(
+        series=[{"label": "Core", "points": [{"as_of": "2024-08-01", "value": 2.5}], "color_index": 1}],
+        align_union=False,
+    )
+    assert colored["series"][0]["colorIndex"] == 1
+    assert selected_lines(cpi, chosen=[]) == []
+    levels = {date(2023, 8, 1): 100.0, date(2024, 8, 1): 103.0}
+    assert math.isclose(yoy_pct(levels, date(2024, 8, 1)).value, 3.0)
+    assert yoy_pct({date(2024, 8, 1): 103.0}, date(2024, 8, 1)).value is None
+    monthly = [
+        {"as_of": date(2024, 1, 1), "value": 2.0},
+        {"as_of": date(2024, 8, 1), "value": None},
+        {"as_of": date(2024, 9, 1), "value": 2.4},
+    ]
+    daily = [{"as_of": date(2024, 8, 2), "value": 2.31}]
+    assert [point["as_of"] for point in prepare_line_points(monthly, start=date(2024, 3, 1), end=date(2024, 9, 1))] == [
+        date(2024, 9, 1)
+    ]
+    assert prepare_line_points(daily, start=date(2024, 8, 1), end=date(2024, 8, 2))[0]["as_of"] == date(2024, 8, 2)
+    assert prepare_line_points(monthly, start=date(2024, 8, 2), end=date(2024, 8, 2)) == []
+
+
+def test_inflation_page_shares_one_window_and_keeps_an_empty_selection(monkeypatch):
+    from market_intelligence.macro_ui import _slug
+
+    at = _macro_page(monkeypatch, "Inflation")
+    labels = [widget.label for widget in at.date_input]
+    assert labels.count("From") == 1
+    assert labels.count("To") == 1
+    landed = _texts(at)
+    assert "Headline, Core, and Trimmed Mean CPI" in landed
+    assert "Headline, Core, and Trimmed Mean PCE" in landed
+    assert "CPI Decomposition" in landed
+    assert "PCE Decomposition" in landed
+    assert "Market Inflation Expectations" in landed
+    assert "CPI Short-Run Momentum" in landed
+    assert "liquidity premiums" in landed
+    assert "not contributions" in landed
+    cpi_pills = next(widget for widget in at.pills if widget.label == "Headline, Core, and Trimmed Mean CPI")
+    assert set(cpi_pills.value) == {"CPIAUCSL.yoy_pct", "CPILFESL.yoy_pct", "TRMMEANCPIM159SFRBCLE"}
+    key = "macro_inflation_{0}_pills".format(_slug("CPI Decomposition"))
+    at.session_state[key] = []
+    at.run()
+    assert not at.exception, [item.value for item in at.exception]
+    cleared = _texts(at)
+    assert "Select at least one series." in cleared
+    assert "Headline, Core, and Trimmed Mean CPI" in cleared
+    assert [widget.label for widget in at.date_input].count("From") == 1
+    kept = next(widget for widget in at.pills if widget.label == "Headline, Core, and Trimmed Mean CPI")
+    assert "TRMMEANCPIM159SFRBCLE" in set(kept.value)
+    memory = "macro_inflation_{0}_memory".format(_slug("CPI Decomposition"))
+    assert at.session_state[memory] == []
+
+
+def test_series_toggle_memory_survives_when_the_widget_unmounts():
+    at = AppTest.from_string(
+        "\n".join(
+            [
+                "import streamlit as st",
+                "from market_intelligence.history_range import series_toggles",
+                "if st.session_state.get('show', True):",
+                "    series_toggles([('a', 'A'), ('b', 'B')], key='demo', group_label='Demo')",
+            ]
+        )
+    )
+    at.run()
+    assert not at.exception, [item.value for item in at.exception]
+    assert set(at.pills[0].value) == {"a", "b"}
+    at.session_state["demo_pills"] = []
+    at.run()
+    assert list(at.pills[0].value or []) == []
+    assert at.session_state["demo_memory"] == []
+    at.session_state["show"] = False
+    at.run()
+    assert at.pills == []
+    assert at.session_state["demo_memory"] == []
+    at.session_state["show"] = True
+    at.run()
+    assert not at.exception, [item.value for item in at.exception]
+    assert list(at.pills[0].value or []) == []
 
 
 def test_chart_frontend_does_not_request_market_data():

@@ -23,7 +23,7 @@ from market_intelligence.fed_balance_sheet import (
     statement_as_of,
     statement_html,
 )
-from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, quick_range_bounds
+from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, quick_range_bounds, series_toggles
 from market_intelligence.macro_dashboard import (
     CHARTS,
     COINCIDENT_NOTE,
@@ -259,6 +259,7 @@ def _render_chart(
     mode = None
     series_mode = None
     window_mode = None
+    chosen = None
     if chart["kind"] == "toggle":
         mode = _choice(
             chart["title"],
@@ -281,8 +282,18 @@ def _render_chart(
             default=str(chart["default_window"]),
         )
         st.caption(chart_unit(chart))
+    elif chart["kind"] == "multi":
+        chosen = series_toggles(
+            [(item[0], item[1]) for item in chart["series"]],
+            key="macro_{0}_{1}".format(group, _slug(chart["title"])),
+            group_label=chart["title"],
+        )
+        st.caption(chart_unit(chart))
     else:
         st.caption(chart_unit(chart))
+    if chart["kind"] == "multi" and not chosen:
+        st.caption("Select at least one series.")
+        return
     if start is None or end is None:
         return
     if start > end:
@@ -290,7 +301,10 @@ def _render_chart(
     if chart["kind"] == "policy":
         _render_policy(chart, histories, start, end, bands)
         return
-    lines = selected_lines(chart, mode=mode, series_mode=series_mode, window_mode=window_mode)
+    lines = selected_lines(chart, mode=mode, series_mode=series_mode, window_mode=window_mode, chosen=chosen)
+    color_index = {
+        item[0]: index for index, item in enumerate(chart.get("series") or ())
+    }
     series = []
     for source_id, label, scale in lines:
         points = prepare_line_points(
@@ -300,7 +314,7 @@ def _render_chart(
             scale_series=source_id if scale else None,
         )
         if points:
-            series.append({"label": label, "points": points})
+            series.append({"label": label, "points": points, "color_index": color_index.get(source_id, len(series))})
     if not series:
         st.caption("No stored observations in this range.")
         return

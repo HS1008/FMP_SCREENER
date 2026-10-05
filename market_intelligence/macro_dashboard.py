@@ -23,7 +23,26 @@ NFCI_NOTE = (
     "Positive values = tighter-than-average financial conditions. "
     "Negative values = looser-than-average financial conditions."
 )
-BREAKEVEN_NOTE = "Market-implied inflation compensation, not survey expectations."
+BREAKEVEN_NOTE = (
+    "Market-implied inflation compensation, including risk and liquidity premiums. "
+    "Not a survey expectation or a pure forecast."
+)
+CPI_COMPARE_NOTE = (
+    "Year-over-year inflation. Headline and core are 12-month changes in the seasonally adjusted CPI indexes. "
+    "Trimmed mean is the Cleveland Fed 16% trimmed-mean CPI, already published as a percent change from a year ago."
+)
+PCE_COMPARE_NOTE = (
+    "Year-over-year inflation. Headline and core are 12-month changes in the seasonally adjusted PCE price indexes. "
+    "Trimmed mean is the Dallas Fed trimmed-mean PCE, already published as a percent change from a year ago."
+)
+CPI_DECOMP_NOTE = (
+    "Year-over-year percent change in each CPI index. Food, energy, core goods, and core services are mutually exclusive. "
+    "These are component inflation rates, not contributions to headline CPI, and they do not sum to the headline rate."
+)
+PCE_DECOMP_NOTE = (
+    "Year-over-year percent change in each PCE price index. Durable goods, nondurable goods, and services are mutually exclusive. "
+    "Food and energy sit inside those categories. These are component inflation rates, not contributions, and they do not sum to headline PCE."
+)
 
 POLICY_RATES_DEFAULT_START = date(2000, 1, 1)
 
@@ -53,12 +72,14 @@ CHART_TITLES: dict[str, tuple[str, ...]] = {
         "Financial Conditions",
     ),
     "inflation": (
-        "CPI Inflation",
+        "Headline, Core, and Trimmed Mean CPI",
         "CPI Short-Run Momentum",
-        "PCE Inflation",
+        "Headline, Core, and Trimmed Mean PCE",
         "PCE Short-Run Momentum",
         "Services Inflation ex Rent of Shelter",
-        "Market Inflation Compensation",
+        "CPI Decomposition",
+        "PCE Decomposition",
+        "Market Inflation Expectations",
     ),
     "leading": (
         "Initial Jobless Claims",
@@ -129,13 +150,15 @@ CHARTS: dict[str, tuple[dict[str, Any], ...]] = {
     ),
     "inflation": (
         {
-            "title": "CPI Inflation",
-            "kind": "lines",
+            "title": "Headline, Core, and Trimmed Mean CPI",
+            "kind": "multi",
             "unit": "Percent",
             "format": "percent",
+            "caption": CPI_COMPARE_NOTE,
             "series": (
-                ("CPIAUCSL.yoy_pct", "Headline CPI YoY", False),
-                ("CPILFESL.yoy_pct", "Core CPI YoY", False),
+                ("CPIAUCSL.yoy_pct", "Headline", False),
+                ("CPILFESL.yoy_pct", "Core", False),
+                ("TRMMEANCPIM159SFRBCLE", "Trimmed mean", False),
             ),
         },
         {
@@ -151,13 +174,15 @@ CHARTS: dict[str, tuple[dict[str, Any], ...]] = {
             "windows": {"3M annualized": "ann3m_pct", "6M annualized": "ann6m_pct"},
         },
         {
-            "title": "PCE Inflation",
-            "kind": "lines",
+            "title": "Headline, Core, and Trimmed Mean PCE",
+            "kind": "multi",
             "unit": "Percent",
             "format": "percent",
+            "caption": PCE_COMPARE_NOTE,
             "series": (
-                ("PCEPI.yoy_pct", "Headline PCE YoY", False),
-                ("PCEPILFE.yoy_pct", "Core PCE YoY", False),
+                ("PCEPI.yoy_pct", "Headline", False),
+                ("PCEPILFE.yoy_pct", "Core", False),
+                ("PCETRIM12M159SFRBDAL", "Trimmed mean", False),
             ),
         },
         {
@@ -186,7 +211,32 @@ CHARTS: dict[str, tuple[dict[str, Any], ...]] = {
             },
         },
         {
-            "title": "Market Inflation Compensation",
+            "title": "CPI Decomposition",
+            "kind": "multi",
+            "unit": "Percent",
+            "format": "percent",
+            "caption": CPI_DECOMP_NOTE,
+            "series": (
+                ("CPIUFDSL.yoy_pct", "Food", False),
+                ("CPIENGSL.yoy_pct", "Energy", False),
+                ("CUSR0000SACL1E.yoy_pct", "Core goods", False),
+                ("CUSR0000SASLE.yoy_pct", "Core services", False),
+            ),
+        },
+        {
+            "title": "PCE Decomposition",
+            "kind": "multi",
+            "unit": "Percent",
+            "format": "percent",
+            "caption": PCE_DECOMP_NOTE,
+            "series": (
+                ("DDURRG3M086SBEA.yoy_pct", "Durable goods", False),
+                ("DNDGRG3M086SBEA.yoy_pct", "Nondurable goods", False),
+                ("DSERRG3M086SBEA.yoy_pct", "Services", False),
+            ),
+        },
+        {
+            "title": "Market Inflation Expectations",
             "kind": "lines",
             "unit": "Percent",
             "format": "percent",
@@ -428,11 +478,20 @@ def selected_lines(
     mode: str | None = None,
     series_mode: str | None = None,
     window_mode: str | None = None,
+    chosen: Sequence[str] | None = None,
 ) -> list[tuple[str, str, bool]]:
-    """``(source_id, label, scale)`` for the active toggle. One unit family only."""
+    """``(source_id, label, scale)`` for the active toggle. One unit family only.
+
+    ``chosen`` filters a multiselect chart. ``None`` keeps every configured series.
+    An empty selection stays empty.
+    """
     kind = chart["kind"]
-    if kind == "lines":
-        return [(item[0], item[1], bool(item[2])) for item in chart["series"]]
+    if kind in {"lines", "multi"}:
+        rows = [(item[0], item[1], bool(item[2])) for item in chart["series"]]
+        if kind == "multi" and chosen is not None:
+            wanted = set(chosen)
+            return [row for row in rows if row[0] in wanted]
+        return rows
     if kind == "toggle":
         chosen = mode or chart["default"]
         rows = chart["series_by_mode"][chosen]
@@ -570,6 +629,14 @@ def methodology_lines(group: str) -> list[str]:
         lines.append(LEADING_NOTE)
     if group == "coincident":
         lines.append(COINCIDENT_NOTE)
+    if group == "inflation":
+        lines.append(
+            "Trimmed-mean CPI and PCE are the published 12-month percent changes. "
+            "They are not transformed again, and they are not median inflation or one-month annualized rates. "
+            "Decomposition charts show component year-over-year inflation rates. "
+            "They are not stacked, and they are not contributions to headline inflation."
+        )
+        lines.append(BREAKEVEN_NOTE)
     lines.append(
         "YoY = 100·(X_t/X_{t−12} − 1). "
         "3M annualized = 100·((X_t/X_{t−3})^4 − 1). "

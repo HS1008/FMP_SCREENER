@@ -809,6 +809,47 @@ else
     echo "fred_h41_backfill=failed rc=${H41_RC}"
   fi
 fi
+# Trimmed-mean rates and CPI/PCE component indexes. The macro max-backfill
+# marker above is left in place: a host that already recorded it would
+# otherwise never fetch series added later. This one-shot ingests only these
+# series from the provider's observation_start and rebuilds their YoY metrics.
+# Older rows stay.
+INFLATION_BACKFILL_MARKER="/var/lib/fmp/fred_inflation_components_backfill.done"
+if [ -f "$INFLATION_BACKFILL_MARKER" ]; then
+  echo "fred_inflation_backfill=already_recorded"
+elif [ ! -f "$YAHOO_ENV" ]; then
+  echo "fred_inflation_backfill=skipped_no_writer_env"
+else
+  echo "fred_inflation_backfill=start"
+  INFLATION_RC=0
+  (
+    set -a
+    # shellcheck disable=SC1091
+    . "$YAHOO_ENV"
+    set +a
+    unset FMP_STREAMLIT_READONLY STREAMLIT_ALLOW_PROVIDER_FETCH DASHBOARD_ALLOW_WRITER_FALLBACK
+    export PYTHONUNBUFFERED=1
+    (
+      while sleep 20; do
+        echo "fred_inflation_backfill=heartbeat $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+      done
+    ) &
+    hb_pid=$!
+    set +e
+    staged_python -u -m jobs.market_intelligence_refresh --fred-inflation-backfill --wait-lock
+    rc=$?
+    set -e
+    kill "$hb_pid" 2>/dev/null || true
+    wait "$hb_pid" 2>/dev/null || true
+    exit "$rc"
+  ) || INFLATION_RC=$?
+  if [ "$INFLATION_RC" = "0" ]; then
+    printf '%s\n' "$SHA" > "$INFLATION_BACKFILL_MARKER"
+    echo "fred_inflation_backfill=complete"
+  else
+    echo "fred_inflation_backfill=failed rc=${INFLATION_RC}"
+  fi
+fi
 # One-shot max Yahoo history into MARKET_MONITOR_EOD. The previous
 # equity_markets_max_backfill.done marker is left in place and is not reused:
 # that run skipped IBKR symbols and wrote into EQUITY_EOD. This marker runs
