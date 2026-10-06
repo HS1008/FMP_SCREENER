@@ -204,6 +204,7 @@ outputs/
 !data/power_producer_watchlist.csv
 !data/power_market_hub_map.csv
 *.xlsx
+!market_intelligence/assets/Market_Overview_Template.xlsx
 *.pkl
 .env
 .streamlit/secrets.toml

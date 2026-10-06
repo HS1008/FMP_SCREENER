@@ -241,7 +241,7 @@ def _since_open_columns(columns: Sequence[str]) -> list[str]:
 
 def _index_snapshot(history: Mapping[str, Any]) -> None:
     """Five index cards. Each horizon badge is colored on its own sign."""
-    st.subheader("Index Snapshot")
+    st.subheader("Index Snapshot", anchor="index-snapshot")
     returns = history.get("returns") or {}
     stored_prices = history.get("latest_price") or {}
     live_prices, since_open = _index_quote_state(_dashboard_loaded_rows())
@@ -334,7 +334,7 @@ def _absolute_price_chart(
 
 
 def _us_relative_performance(history: Mapping[str, Any], start: date | None, end: date | None, *, mode: str) -> None:
-    st.subheader("Relative Performance")
+    st.subheader("Relative Performance", anchor="relative-performance")
     indexed = mode != "Absolute"
     if indexed:
         st.caption("Indexed to 100 rebases each price ratio at the first overlapping session. It does not divide two indexed price series.")
@@ -476,7 +476,7 @@ def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
 
 
 def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
-    st.subheader("Sector Performance")
+    st.subheader("Sector Performance", anchor="sector-performance")
     analytical = "relative" if mode == "Relative vs SPY" else "absolute"
     if analytical == "relative":
         st.caption("Relative vs SPY subtracts the SPY return on the same session and price basis, in percentage points. +2.30% means the sector outperformed SPY by 2.30 percentage points. A live quote that does not share SPY's session uses the EQUITY_EOD pair.")
@@ -600,7 +600,7 @@ def _us_subsector_heatmap(
     bars: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     legs: dict[str, dict[str, Any]] | None = None,
 ) -> None:
-    st.subheader("Subsector Performance")
+    st.subheader("Subsector Performance", anchor="subsector-performance")
     groups = subsector_groups()
     names = [name for name, _members in groups]
     if "us_subsector_sector" not in st.session_state:

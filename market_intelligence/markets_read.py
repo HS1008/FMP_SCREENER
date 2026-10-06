@@ -54,17 +54,23 @@ def _iso(day: date | None) -> str | None:
     return day.isoformat()
 
 
-def load_monitor_history(conn, symbols: Sequence[str]) -> dict[str, Any]:
+def load_monitor_history(conn, symbols: Sequence[str], *, since: date | None = None) -> dict[str, Any]:
     """Adjusted market-monitor closes and session returns for ``symbols`` only.
 
     Reads ``mi_v_market_monitor_closes``. That view requires provider YAHOO on
     ``MARKET_MONITOR_EOD`` and excludes every other provider, so a short IBKR
     ``EQUITY_EOD`` history cannot truncate the chart.
     The dashboard role can select the view and cannot select ``mi_market_bars``.
+    ``since`` bounds the read for callers that only need window statistics; the
+    session-window returns are unchanged as long as the window fits inside it.
     """
     wanted = [str(symbol) for symbol in symbols]
     grouped: dict[str, dict[str, list[tuple[date, float, str | None]]]] = {symbol: {} for symbol in wanted}
     if wanted:
+        bound = "" if since is None else "  AND bar_date >= :since\n"
+        params: dict[str, Any] = {"syms": wanted}
+        if since is not None:
+            params["since"] = since
         rows = conn.execute(
             text(
                 """
@@ -72,10 +78,10 @@ def load_monitor_history(conn, symbols: Sequence[str]) -> dict[str, Any]:
                 FROM mi_v_market_monitor_closes
                 WHERE adj_close_price IS NOT NULL
                   AND symbol IN :syms
-                ORDER BY symbol, bar_date
-                """
+                {bound}ORDER BY symbol, bar_date
+                """.format(bound=bound)
             ).bindparams(bindparam("syms", expanding=True)),
-            {"syms": wanted},
+            params,
         ).all()
         for instrument_id, bar_date, price, provider, basis, _source in rows:
             symbol = str(instrument_id)
@@ -128,12 +134,13 @@ def us_markets_history(conn) -> dict[str, Any]:
     return load_monitor_history(conn, US_MARKET_SYMBOLS)
 
 
-def load_equity_eod_closes(conn, symbols: Sequence[str]) -> dict[str, dict[str, Any]]:
+def load_equity_eod_closes(conn, symbols: Sequence[str], *, since: date | None = None) -> dict[str, dict[str, Any]]:
     """Adjusted EQUITY_EOD closes for ``symbols`` in one query.
 
     IBKR is preferred when both providers exist. Yahoo is the fallback, not a splice.
     Duplicate dates keep the last row after sorting. Null adjusted closes are omitted.
     More than one adjustment basis on the chosen provider rejects the series.
+    ``since`` bounds the read when only recent session windows are needed.
     """
     wanted = [str(symbol) for symbol in symbols]
     loaded: dict[str, dict[str, Any]] = {
@@ -142,6 +149,10 @@ def load_equity_eod_closes(conn, symbols: Sequence[str]) -> dict[str, dict[str, 
     }
     if not wanted:
         return loaded
+    bound = "" if since is None else "  AND bar_date >= :since\n"
+    params: dict[str, Any] = {"syms": wanted}
+    if since is not None:
+        params["since"] = since
     rows = conn.execute(
         text(
             """
@@ -150,10 +161,10 @@ def load_equity_eod_closes(conn, symbols: Sequence[str]) -> dict[str, dict[str, 
             WHERE source_id = 'EQUITY_EOD'
               AND adj_close_price IS NOT NULL
               AND symbol IN :syms
-            ORDER BY symbol, bar_date
-            """
+            {bound}ORDER BY symbol, bar_date
+            """.format(bound=bound)
         ).bindparams(bindparam("syms", expanding=True)),
-        {"syms": wanted},
+        params,
     ).all()
     grouped: dict[str, dict[str, dict[date, tuple[float, str | None]]]] = {symbol: {} for symbol in wanted}
     for instrument_id, bar_date, price, provider, basis in rows:

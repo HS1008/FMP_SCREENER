@@ -26,10 +26,16 @@ from market_intelligence.cross_asset_universe import (
     EIA_FUNDAMENTALS,
     FRED_COMMODITY_SERIES,
     FX_INSTRUMENTS,
+    FX_WINDOWS,
     INSTRUMENT_BY_ID,
+    MOVE_INSTRUMENT,
+    MOVE_INSTRUMENT_ID,
+    MOVE_SOURCE_NOTE,
+    USDCNH_SOURCE_NOTE,
 )
 from market_intelligence.fx_analytics import levels_by_id
 from market_intelligence.markets_analytics import as_day
+from market_intelligence.overview_metrics import observation_returns
 
 
 def _rows(conn, sql: str, params: Mapping[str, Any] | None = None) -> list[dict[str, Any]]:
@@ -38,6 +44,15 @@ def _rows(conn, sql: str, params: Mapping[str, Any] | None = None) -> list[dict[
 
 def _has_relation(conn, name: str) -> bool:
     return bool(conn.execute(text("SELECT to_regclass(:name)"), {"name": name}).scalar())
+
+
+def _has_column(conn, relation: str, column: str) -> bool:
+    return bool(
+        conn.execute(
+            text("SELECT 1 FROM information_schema.columns WHERE table_name = :relation AND column_name = :column LIMIT 1"),
+            {"relation": relation, "column": column},
+        ).scalar()
+    )
 
 
 def _points(pairs: Sequence[tuple[date, float]]) -> list[dict[str, Any]]:
@@ -52,20 +67,56 @@ def _bounds(groups: Sequence[Sequence[Mapping[str, Any]]]) -> tuple[date | None,
     return min(days), max(days)
 
 
-def _yahoo_bars(conn, instrument_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
+def _yahoo_bars(conn, instrument_ids: Sequence[str] | None = None, *, since: date | None = None) -> list[dict[str, Any]]:
+    """Stored Yahoo cross-asset closes. ``since`` bounds the read for window statistics."""
     if not _has_relation(conn, "mi_v_yahoo_cross_asset_history"):
         return []
+    # Migration 046 appends retrieved_at. Older databases still serve the history.
+    stamp = ", retrieved_at" if _has_column(conn, "mi_v_yahoo_cross_asset_history", "retrieved_at") else ", NULL AS retrieved_at"
     sql = """
         SELECT instrument_id, source_id, bar_date, close_price AS close, adj_close_price,
-               provider_symbol, provider
+               provider_symbol, provider{stamp}
         FROM mi_v_yahoo_cross_asset_history
-    """
+    """.format(stamp=stamp)
+    clauses: list[str] = []
     params: dict[str, Any] = {}
     if instrument_ids is not None:
-        sql += " WHERE instrument_id = ANY(:instrument_ids)"
+        clauses.append("instrument_id = ANY(:instrument_ids)")
         params["instrument_ids"] = list(instrument_ids)
+    if since is not None:
+        clauses.append("bar_date >= :since")
+        params["since"] = since
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY instrument_id, bar_date"
     return _rows(conn, sql, params)
+
+
+def yahoo_cross_asset_bars(conn, instrument_ids: Sequence[str] | None = None, *, since: date | None = None) -> list[dict[str, Any]]:
+    """Public read used by the Market Overview snapshot. Same view and columns as the full pages."""
+    return _yahoo_bars(conn, instrument_ids, since=since)
+
+
+def move_index_context(conn) -> dict[str, Any]:
+    """ICE BofA MOVE (Yahoo ^MOVE) level, observation returns, and stored history for Rates & Curve."""
+    bars = _yahoo_bars(conn, [MOVE_INSTRUMENT_ID])
+    points = close_points(bars)
+    latest_row = bars[-1] if bars else None
+    returns = observation_returns(points, FX_WINDOWS)
+    return {
+        "status": "OK" if points else "UNAVAILABLE",
+        "instrument_id": MOVE_INSTRUMENT_ID,
+        "label": "MOVE",
+        "yahoo_symbol": MOVE_INSTRUMENT.yahoo_symbol,
+        "units": "index points",
+        "value": points[-1][1] if points else None,
+        "as_of": points[-1][0] if points else None,
+        "retrieved_at": None if latest_row is None else latest_row.get("retrieved_at"),
+        "returns": returns,
+        "history": _points(points),
+        "source_note": MOVE_SOURCE_NOTE,
+        "windows": [label for label, _lag in FX_WINDOWS],
+    }
 
 
 def _monitor_prices(conn) -> dict[str, dict[date, float]]:
@@ -152,9 +203,11 @@ def forex_context(conn) -> dict[str, Any]:
             _card("DXY", dxy),
             _card("EUR/USD", pairs.get("EURUSD") or []),
             _card("USD/JPY", pairs.get("USDJPY") or []),
+            _card("USD/CNH", pairs.get("USDCNH") or []),
         ],
         "earliest": earliest,
         "latest": latest,
+        "usdcnh_note": USDCNH_SOURCE_NOTE,
     }
 
 

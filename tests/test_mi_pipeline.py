@@ -825,7 +825,7 @@ def test_pages_render_populated_state_db_only(consumer, page):
     # Overview is intentionally table-light (signals + cards + charts). Options may be empty
     # when no published snapshots exist. Other pages still show at least one dataframe.
     if page.stem == "10_Market_Pulse":
-        assert at.metric or at.plotly_chart or at.subheader
+        assert at.dataframe or at.subheader or at.info
     elif page.stem == "21_Options_Volatility":
         assert at.info or at.dataframe or at.metric
     elif page.stem == "11_Macro_Overview":
@@ -872,9 +872,8 @@ def test_pages_render_populated_state_db_only(consumer, page):
     if page.stem not in fred_exempt:
         assert "not endorsed or certified by the Federal Reserve Bank of St. Louis" in text_out
     if page.stem == "10_Market_Pulse":
-        assert "not labeled as overnight" in text_out.lower() or "quotes" in text_out.lower()
-        assert "What matters" in text_out
-        assert "Market Overview" in text_out or "Category snapshot" in text_out
+        assert "Market Overview" in text_out
+        assert "What matters" not in text_out and "Category snapshot" not in text_out
         assert "Day to day" not in text_out
     if page.stem == "16_Morning_Context":
         assert at.expander
@@ -902,15 +901,15 @@ def test_dashboard_entry_point_overview_links_use_registry(consumer):
     assert not at.exception, [e.value for e in at.exception]
     text_out = _texts(at)
     assert "Overview" in text_out or (at.title and "Overview" in str(at.title[0].value))
-    assert "What matters" in text_out or "Category snapshot" in text_out
+    assert "Export to Excel" in text_out or at.get("download_button")
     journeys = (
-        ("sectors", "Equities & Sectors"),
+        ("us_markets", "US Equities"),
         ("rates", "Rates & Curve"),
         ("credit", "Credit"),
         ("macro", "Macro & Liquidity"),
-        ("order_flow", "Bond Trading Activity"),
-        ("fixed_income", "Bond Research"),
+        ("forex", "FOREX"),
         ("commodities", "Commodities"),
+        ("crypto", "Crypto"),
         ("options", "Options & Volatility"),
     )
     for route_id, title in journeys:

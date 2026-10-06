@@ -251,6 +251,19 @@ def coverage_rows(conn) -> list[dict[str, Any]]:
     return [dict(row) for row in rows]
 
 
+def incremental_start(stored: date | None, *, today: date) -> date | None:
+    """Short lookback behind the newest stored bar. ``None`` (provider max) for an unseen instrument.
+
+    An instrument added to the universe after the one-shot max backfill marker was
+    recorded has no stored bars; requesting only a 21-day window would leave it
+    without history forever. The upsert is idempotent, so the first incremental
+    run backfills it and later runs return to the short lookback.
+    """
+    if stored is None:
+        return None
+    return stored - timedelta(days=INCREMENTAL_LOOKBACK_DAYS)
+
+
 def ingest_yahoo_cross_asset(engine, *, parent_run_id: str | None = None, today: date | None = None, mode: str = "incremental") -> YahooCrossAssetReport:
     """``mode='full'`` requests provider max history. Incremental uses a short lookback."""
     full = mode == "full"
@@ -271,9 +284,7 @@ def ingest_yahoo_cross_asset(engine, *, parent_run_id: str | None = None, today:
         for instrument in YAHOO_CROSS_ASSET:
             start = None
             if not full:
-                stored = _latest_stored(conn, instrument)
-                anchor = stored or (today or date.today())
-                start = anchor - timedelta(days=INCREMENTAL_LOOKBACK_DAYS)
+                start = incremental_start(_latest_stored(conn, instrument), today=today or date.today())
             try:
                 bars = fetch_yahoo_history(instrument, start=start)
             except Exception as exc:  # noqa: BLE001

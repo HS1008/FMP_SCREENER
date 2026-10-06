@@ -33,6 +33,7 @@ def main() -> None:
     load_streamlit_env()
     st.set_page_config(page_title="Market Intelligence", page_icon="📊", layout="wide")
     from market_intelligence import pages_ui
+    from market_intelligence.navigation_links import apply_pending_scroll
     from market_intelligence.page_registry import (
         NAV_SECTIONS,
         visible_page_specs,
@@ -54,6 +55,8 @@ def main() -> None:
     set_registered_pages(registered)
     navigation = st.navigation(grouped)
     navigation.run()
+    # Overview drilldowns request an in-page anchor; scroll once the target page rendered.
+    apply_pending_scroll()
 
 
 if __name__ == "__main__":

@@ -294,6 +294,36 @@ without deleting `mi_market_quotes` / `mi_collector_status`.
 * Writer identity only in backend jobs; pages and API use the read-only role with no fallback.
 * No QuantConnect backtest was launched by this work; CI never carries QC/provider/DB secrets.
 
+## Market Overview template and Excel export
+
+* The Market Overview page mirrors `market_intelligence/assets/Market_Overview_Template.xlsx`
+  (sheet `Market Overview`, A1:I98). `overview_snapshot.overview_snapshot(conn)` builds one frozen
+  snapshot from the same loaders and window definitions as the full pages (session windows for
+  US/Global/Sectors, calendar-anchored bps moves for yields and OAS, provider observations for
+  FX/commodities/VIX/MOVE, calendar days for crypto). The page and the "Export to Excel" button
+  read that single snapshot; the export (`overview_export.fill_template`) writes values and number
+  formats into the packaged template in memory and never touches PostgreSQL or providers.
+  Missing values stay blank (`"<label> - n/a"` in column A), stale rows (> 5 days) are flagged, and
+  nothing is written as zero. Filename: `Market_Overview_YYYY-MM-DD_HHMM_ET.xlsx`.
+* Each section header has a chevron (collapse only, state kept in `st.session_state`) and a title
+  button that navigates to the owning page and anchor via `navigation_links.navigate_to`. Sector
+  rows open the US Markets subsector heatmap with the canonical sector pre-selected
+  (`SUBSECTOR_GROUP_BY_SECTOR`, e.g. Technology -> "Tech").
+* **USD/CNH** is stored as instrument `USDCNH` from Yahoo `CNH=F` (CME USD/Offshore RMB future).
+  Yahoo's spot `CNH=X` exposes no daily history and the host runs FMP-free, so the futures contract
+  is the only free daily history; it is labeled as a futures proxy wherever shown. The quote is
+  USD/CNH (rising = USD appreciation) and is inverted only in the FOREX "vs USD" view, like
+  USD/JPY. Onshore CNY is never substituted.
+* **MOVE** is stored as instrument `MOVE` from Yahoo `^MOVE` (ICE BofA MOVE index) under the
+  cross-asset Yahoo ingest; it is an end-of-day index level in points, shown on Rates & Curve with
+  observation and retrieval timestamps. No ETF realized volatility stands in for it.
+* New instruments backfill through the existing `jobs.market_intelligence_refresh` incremental
+  run: an instrument with no stored bars requests provider `max` history (idempotent upserts).
+  Migration `046` exposes `retrieved_at` on `mi_v_yahoo_cross_asset_history`.
+* Retired sidebar entries (Equities & Sectors, Bond Trading Activity, Bond Research, Power
+  Producers, Morning Brief, Methodology) stay in `page_registry.PAGE_SPECS` as `hidden=True`: their
+  pages, data, Power instrument groups, and subsector configuration remain in the repository.
+
 ## Known limits
 
 * Real FRED validation is a **manually dispatched** GitHub Actions workflow

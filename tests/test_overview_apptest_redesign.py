@@ -69,44 +69,52 @@ def _seed_contexts():
     }
 
 
-def test_overview_apptest_signal_layout(monkeypatch):
-    seed = _seed_contexts()
+def _empty_snapshot():
+    from market_intelligence.overview_snapshot import overview_snapshot
+
+    class _Conn:
+        def begin_nested(self):
+            raise RuntimeError("no database in this test")
+
+    return overview_snapshot(_Conn())
+
+
+def test_overview_apptest_template_layout(monkeypatch):
+    snapshot = _empty_snapshot()
 
     def fake_cached(fn_name, *args, **kwargs):
-        if fn_name in seed:
-            return seed[fn_name]
-        raise RuntimeError("unexpected optional read {0}".format(fn_name))
+        if fn_name == "overview_snapshot":
+            return snapshot
+        raise RuntimeError("unexpected read {0}".format(fn_name))
 
     monkeypatch.setattr("market_intelligence.ui.cached_read", fake_cached)
     at = AppTest.from_file(str(ROOT / "pages" / "10_Market_Pulse.py"), default_timeout=30)
     at.run()
     assert not at.exception, [e.value for e in at.exception]
-    text = "\n".join(item.value for item in at.markdown) + "\n".join(item.value for item in at.text) + "\n".join(str(t.value) for t in at.title) + "\n".join(c.value for c in at.caption) + "\n".join(i.value for i in at.info)
-    # subheaders
     heads = [h.value for h in at.subheader]
-    assert "What matters" in heads
-    assert "Category snapshot" in heads
-    assert "Day to day" not in heads
-    assert "What changed" not in heads
+    assert "What matters" not in heads and "Category snapshot" not in heads and "Sector leadership" not in heads
     assert "Market Overview" in [t.value for t in at.title]
-    assert "Sector leadership" in heads
+    labels = [button.label for button in at.button]
+    assert labels.index("US Indexes") < labels.index("Yield Curve") < labels.index("Crypto")
 
 
-def test_optional_options_failure_does_not_stop_overview(monkeypatch):
-    seed = _seed_contexts()
+def test_overview_survives_every_read_failing(monkeypatch):
+    snapshot = _empty_snapshot()
+    assert snapshot["rows_total"] > 0 and snapshot["rows_missing"] == snapshot["rows_total"]
+    assert set(snapshot["read_errors"]) >= {"observations", "credit", "yahoo_cross_asset"}
 
     def fake_cached(fn_name, *args, **kwargs):
-        if fn_name == "options_volatility_context":
-            raise RuntimeError("options view missing")
-        if fn_name in seed:
-            return seed[fn_name]
+        if fn_name == "overview_snapshot":
+            return snapshot
         return {}
 
     monkeypatch.setattr("market_intelligence.ui.cached_read", fake_cached)
     at = AppTest.from_file(str(ROOT / "pages" / "10_Market_Pulse.py"), default_timeout=30)
     at.run()
     assert not at.exception, [e.value for e in at.exception]
-    assert "What matters" in [h.value for h in at.subheader]
+    assert any("Some stored reads failed" in str(w.value) for w in at.warning)
+    assert any("No stored observations yet" in str(i.value) for i in at.info)
+    assert len(at.metric) == 0
 
 
 def test_credit_page_keeps_broad_and_ratings_on_one_page(monkeypatch):

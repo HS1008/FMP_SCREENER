@@ -15,7 +15,7 @@ from market_intelligence.cftc_positions import ASSET_GROUPS, CATEGORY_LABELS, PO
 from market_intelligence.commodity_analytics import COMMODITY_METHODOLOGY, COMMODITY_WINDOWS, same_date_ratio, window_returns
 from market_intelligence.components.market_chart import lightweight_market_chart
 from market_intelligence.components.tenor_chart import ranked_bar_chart, return_heatmap
-from market_intelligence.cross_asset_universe import COMMODITY_INSTRUMENTS, CURRENCY_VS_USD, FX_WINDOWS
+from market_intelligence.cross_asset_universe import COMMODITY_INSTRUMENTS, CURRENCY_VS_USD, FX_PAIRS, FX_WINDOWS
 from market_intelligence.crypto_analytics import CRYPTO_METHODOLOGY, CRYPTO_WINDOWS, calendar_return, drawdown_series, same_date_ratio as crypto_ratio
 from market_intelligence.fx_analytics import FX_METHODOLOGY, latest_window_returns
 from market_intelligence.history_range import filter_history_rows, historical_date_range, series_toggles
@@ -88,8 +88,14 @@ def _line(series: Sequence[Mapping[str, Any]], *, key: str, value_format: str = 
 
 
 def _rebased(histories: Mapping[str, Sequence[Mapping[str, Any]]], selected: Sequence[tuple[str, str]], *, key: str) -> None:
-    ids = [series_id for series_id, _label in selected]
     labels = {series_id: label for series_id, label in selected}
+    missing = [label for series_id, label in selected if not histories.get(series_id)]
+    if missing:
+        st.caption("No stored history yet for {0}; drawn without it.".format(", ".join(missing)))
+    ids = [series_id for series_id, _label in selected if histories.get(series_id)]
+    if not ids:
+        st.caption("No stored observations for the selected series.")
+        return
     result = normalize_selected_to_100({series_id: _tuples(histories.get(series_id) or []) for series_id in ids}, ids)
     if result.get("start") is None:
         st.caption("No common date with a value for every selected series.")
@@ -131,7 +137,7 @@ def render_forex_page() -> None:
     _line([{"label": "DXY", "points": dxy}], key="forex_dxy")
     versus = {key: _clip(rows, start, end) for key, rows in (payload.get("versus_usd") or {}).items()}
     st.subheader("Major Currencies vs USD")
-    st.caption("Rising means the foreign currency strengthened versus USD. USD/JPY, USD/CAD, and USD/CHF are inverted before rebasing.")
+    st.caption("Rising means the foreign currency strengthened versus USD. USD/JPY, USD/CAD, USD/CHF, and USD/CNH are inverted before rebasing.")
     chosen = series_toggles(CURRENCY_VS_USD, key="forex_versus", group_label="Currencies", default=[row[0] for row in CURRENCY_VS_USD])
     selected = [(series_id, label) for series_id, label in CURRENCY_VS_USD if series_id in chosen]
     _rebased(versus, selected, key="forex_versus_chart")
@@ -154,7 +160,9 @@ def render_forex_page() -> None:
     _heatmap(heat_labels, [label for label, _lag in FX_WINDOWS], heat_rows, key="forex_heat")
     st.subheader("Major FX Pairs")
     st.caption("Raw Yahoo quote convention. Several pairs are rebased to 100 so different quote scales are not drawn on one axis.")
-    pair_options = [(series_id, label) for series_id, label in (("EURUSD", "EUR/USD"), ("GBPUSD", "GBP/USD"), ("USDJPY", "USD/JPY"), ("AUDUSD", "AUD/USD"), ("USDCAD", "USD/CAD"), ("USDCHF", "USD/CHF"))]
+    if payload.get("usdcnh_note"):
+        st.caption(str(payload["usdcnh_note"]))
+    pair_options = list(FX_PAIRS)
     pair_choice = series_toggles(pair_options, key="forex_pairs", group_label="Pairs", default=["EURUSD"])
     raw = {key: _clip(rows, start, end) for key, rows in (payload.get("pairs") or {}).items()}
     picked = [(series_id, label) for series_id, label in pair_options if series_id in pair_choice]
