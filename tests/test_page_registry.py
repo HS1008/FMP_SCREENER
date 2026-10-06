@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_registry_covers_required_routes_and_sections():
-    assert NAV_SECTIONS == ("Overview", "Markets", "FOREX", "Positioning", "Commodities", "Crypto", "Economy", "Research", "System")
+    assert NAV_SECTIONS == ("Markets", "Positioning", "Economy", "Research", "System")
     required = {
         "overview",
         "sectors",
@@ -34,17 +34,24 @@ def test_registry_covers_required_routes_and_sections():
     }
     assert required <= set(PAGE_BY_ROUTE)
     grouped = specs_by_section()
-    assert [spec.title for spec in grouped["Overview"]] == ["Market Overview"]
+    assert "Overview" not in grouped
+    assert [spec.title for spec in grouped["Markets"]][0] == "Market Overview"
     assert {spec.title for spec in grouped["Markets"]} == {
+        "Market Overview",
         "US Markets",
         "Global Markets",
-        "Equities & Sectors",
         "Rates & Curve",
         "Credit",
         "Options & Volatility",
-        "Bond Trading Activity",
+        "FOREX",
+        "Commodities",
+        "Crypto",
     }
-    assert {spec.title for spec in grouped["Research"]} >= {"Bond Research", "Strategy Monitor", "Power Producers"}
+    assert {spec.title for spec in grouped["Research"]} == {"Strategy Monitor"}
+    listed = {spec.title for specs in grouped.values() for spec in specs}
+    for retired in ("Equities & Sectors", "Bond Trading Activity", "Bond Research", "Power Producers", "Morning Brief", "Methodology"):
+        assert retired not in listed
+    assert all(PAGE_BY_ROUTE[route].hidden for route in ("sectors", "order_flow", "fixed_income", "power_producers", "morning_brief", "methodology"))
     assert any(spec.default for spec in PAGE_SPECS)
     urls = [spec.url_path for spec in PAGE_SPECS]
     assert len(urls) == len(set(urls))
@@ -54,7 +61,7 @@ def test_registry_covers_required_routes_and_sections():
     assert PAGE_BY_ROUTE["options"].url_path == "Options_Volatility"
     assert PAGE_BY_ROUTE["order_flow"].title == "Bond Trading Activity"
     assert PAGE_BY_ROUTE["fixed_income"].title == "Bond Research"
-    assert PAGE_BY_ROUTE["fixed_income"].section == "Research"
+    assert PAGE_BY_ROUTE["fixed_income"].hidden
 
 
 def test_dashboard_builds_navigation_from_registry():
@@ -63,20 +70,21 @@ def test_dashboard_builds_navigation_from_registry():
     assert "set_registered_pages" in source
     assert "st.navigation" in source
     titles = {spec.title for spec in PAGE_SPECS} | set(NAV_SECTIONS)
-    for label in ("Overview", "Markets", "Economy", "Research", "System", "Legacy FMP comparison", "Morning Brief", "Bond Trading Activity"):
+    for label in ("Markets", "Economy", "Research", "System", "Legacy FMP comparison"):
         assert label in source or label in titles
     assert "st.Page(" in source
+    assert "visible_page_specs" in source
 
 
 def test_overview_drilldowns_use_registry_not_wrapper_paths():
     source = (ROOT / "market_intelligence" / "pages_ui.py").read_text(encoding="utf-8")
-    assert 'open_registered_page("sectors"' in source
     assert 'open_registered_page("rates"' in source
     assert 'open_registered_page("credit"' in source
     assert 'open_registered_page("macro"' in source
-    assert 'open_registered_page("order_flow"' in source
     assert 'open_registered_page("options"' in source
     assert "pages/14_Sector_Rotation_V2.py" not in source
+    overview = (ROOT / "market_intelligence" / "overview_ui.py").read_text(encoding="utf-8")
+    assert "navigate_to(" in overview and "st.switch_page" not in overview
     assert "pages/12_Rates_Curve.py" not in source
     opener = source.split("def open_registered_page", 1)[1].split("\n\n", 1)[0]
     assert "st.caption(label)" not in opener

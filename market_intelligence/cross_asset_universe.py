@@ -1,8 +1,18 @@
-"""Verified Yahoo symbols for FOREX, commodity futures proxies, and crypto.
+"""Verified Yahoo symbols for FOREX, commodity futures proxies, crypto, and rate-vol indexes.
 
-Symbols were checked against Yahoo history on 2026-09-28. Charts use close,
-not an adjusted series. Futures symbols are provider-maintained rolling
-proxies, not an official continuous settlement history.
+Symbols were checked against Yahoo history on 2026-09-28 (USD/CNH and MOVE on
+2026-10-06). Charts use close, not an adjusted series. Futures symbols are
+provider-maintained rolling proxies, not an official continuous settlement history.
+
+USD/CNH: Yahoo's spot quote ``CNH=X`` (offshore yuan per USD) serves only the
+current day, so it cannot back a daily history. The CME *Standard-Size
+USD/Offshore RMB* future ``CNH=F`` is the stored series: offshore CNH per USD,
+rising = USD appreciation, daily closes since 2013-02-11. It is a futures proxy
+and is labeled as such; it is never onshore CNY and the quote is not reversed.
+
+MOVE: ``^MOVE`` is the ICE BofA MOVE index as published through Yahoo Finance
+(daily closes since 2002-11-12, index points, end-of-day only). It is not an ETF
+realized-volatility substitute.
 """
 
 from __future__ import annotations
@@ -94,6 +104,13 @@ FX_INSTRUMENTS: tuple[YahooInstrument, ...] = (
     _fx("AUDUSD", "AUDUSD=X", "AUD/USD", base="AUD", quote="USD", invert_vs_usd=False),
     _fx("USDCAD", "USDCAD=X", "USD/CAD", base="USD", quote="CAD", invert_vs_usd=True),
     _fx("USDCHF", "USDCHF=X", "USD/CHF", base="USD", quote="CHF", invert_vs_usd=True),
+    _fx("USDCNH", "CNH=F", "USD/CNH", base="USD", quote="CNH", invert_vs_usd=True),
+)
+USDCNH_INSTRUMENT_ID = "USDCNH"
+USDCNH_SOURCE_NOTE = (
+    "USD/CNH is the CME Standard-Size USD/Offshore RMB future (Yahoo CNH=F), offshore CNH per USD; "
+    "rising means USD appreciation. Yahoo's CNH=X spot quote carries no daily history, so the "
+    "futures close is the stored proxy. It is not onshore CNY."
 )
 
 COMMODITY_INSTRUMENTS: tuple[YahooInstrument, ...] = (
@@ -114,7 +131,17 @@ CRYPTO_INSTRUMENTS: tuple[YahooInstrument, ...] = (
     YahooInstrument("ETH", "ETH-USD", "Ethereum", "CRYPTO", YAHOO_CRYPTO_SOURCE, YAHOO_CRYPTO_DATASET, "crypto", base_currency="ETH", quote_currency="USD"),
 )
 
-YAHOO_CROSS_ASSET: tuple[YahooInstrument, ...] = FX_INSTRUMENTS + COMMODITY_INSTRUMENTS + CRYPTO_INSTRUMENTS
+# Rates-volatility index. Stored beside VIX under YAHOO_FUTURES_PROXY so the same
+# ingest, history view, and freshness row cover it. It is not a commodity.
+MOVE_INSTRUMENT_ID = "MOVE"
+MOVE_INSTRUMENT = YahooInstrument(MOVE_INSTRUMENT_ID, "^MOVE", "MOVE index", "INDEX", YAHOO_FUTURES_SOURCE, YAHOO_FUTURES_DATASET, "volatility")
+MOVE_SOURCE_NOTE = (
+    "ICE BofA MOVE index via Yahoo Finance (^MOVE). Index points (implied Treasury yield volatility), "
+    "end-of-day close, delayed; not a real-time quote and not an ETF realized-volatility substitute."
+)
+INDEX_INSTRUMENTS: tuple[YahooInstrument, ...] = (MOVE_INSTRUMENT,)
+
+YAHOO_CROSS_ASSET: tuple[YahooInstrument, ...] = FX_INSTRUMENTS + COMMODITY_INSTRUMENTS + CRYPTO_INSTRUMENTS + INDEX_INSTRUMENTS
 INSTRUMENT_BY_ID = {row.instrument_id: row for row in YAHOO_CROSS_ASSET}
 INSTRUMENT_BY_SYMBOL = {row.yahoo_symbol: row for row in YAHOO_CROSS_ASSET}
 
@@ -125,6 +152,11 @@ CURRENCY_VS_USD: tuple[tuple[str, str], ...] = (
     ("AUDUSD", "AUD"),
     ("USDCAD", "CAD"),
     ("USDCHF", "CHF"),
+    ("USDCNH", "CNH"),
+)
+# Quoted-pair order for the FOREX page and the Market Overview.
+FX_PAIRS: tuple[tuple[str, str], ...] = tuple(
+    (row.instrument_id, row.display_name) for row in FX_INSTRUMENTS if row.instrument_id != "DXY"
 )
 
 FRED_COMMODITY_SERIES = (

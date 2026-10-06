@@ -1,7 +1,7 @@
 """FOREX display orientation and provider-observation returns.
 
 A rising standardized series means the foreign currency strengthened versus
-the US dollar. USD/JPY, USD/CAD, and USD/CHF are inverted for that view only.
+the US dollar. USD/JPY, USD/CAD, USD/CHF, and USD/CNH are inverted for that view only.
 Raw pair charts keep the Yahoo quote convention.
 
 Windows count valid Yahoo daily observations on that series. They are not
@@ -21,7 +21,9 @@ from market_intelligence.markets_analytics import _finite, as_day
 FX_METHODOLOGY = (
     "Yahoo daily closes. DXY is DX-Y.NYB and is not rebased. "
     "Major Currencies vs USD rises when the foreign currency strengthens: "
-    "EUR/USD, GBP/USD, and AUD/USD are used directly; USD/JPY, USD/CAD, and USD/CHF are inverted. "
+    "EUR/USD, GBP/USD, and AUD/USD are used directly; USD/JPY, USD/CAD, USD/CHF, and USD/CNH are inverted. "
+    "USD/CNH is the offshore renminbi (CNH, not onshore CNY) from the CME USD/Offshore RMB future on Yahoo (CNH=F), "
+    "kept in USD/CNH quote convention so a rising value is USD appreciation. "
     "The comparable chart is rebased to 100 at the first common valid date in the selected range. "
     "Returns use that same orientation and count provider daily observations "
     "(1, 5, 21, 63, 126, 252), not NYSE holidays and not a 7-calendar-day crypto week. "

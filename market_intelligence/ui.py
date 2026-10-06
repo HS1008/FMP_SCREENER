@@ -17,9 +17,12 @@ import streamlit as st
 from market_intelligence.catalog import FRED_ATTRIBUTION
 from market_intelligence.display_dates import format_calendar_date
 from market_intelligence.components.market_chart import lightweight_market_chart, time_series_points
+from market_intelligence.navigation_links import came_from_overview
+from market_intelligence.page_registry import registered_page
 from market_intelligence.readonly_db import ReadOnlyUnavailable, readonly_connection
 
 CACHE_TTL_SECONDS = 300
+OVERVIEW_TITLE = "Market Overview"
 QUOTE_CACHE_TTL_SECONDS = 15
 NEG_COLOR = "#c0392b"
 POS_COLOR = "#1e8449"
@@ -98,6 +101,8 @@ def page_header(
         if st.button("Refresh", help="Reloads cached database reads only. No provider calls."):
             clear_read_cache()
             st.rerun()
+    if title != OVERVIEW_TITLE and came_from_overview() and registered_page("overview") is not None:
+        st.page_link(registered_page("overview"), label="← Back to Market Overview")
     if warning:
         st.warning(warning)
     if fred:

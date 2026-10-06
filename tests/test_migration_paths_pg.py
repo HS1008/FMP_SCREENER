@@ -77,7 +77,7 @@ def test_gateway_migration_is_the_next_number_and_last():
     names = [p.name for p in _all_files()]
     numbers = [int(n[:3]) for n in names]
     assert numbers == list(range(1, len(names) + 1)), "migration numbers must be contiguous"
-    assert names[-1] == "045_treasury_auction_source.sql"
+    assert names[-1] == "046_cross_asset_history_retrieved_at.sql"
     assert not any(n.startswith("020_ai_gateway") for n in names), "the concurrent PR's duplicate 020 must not survive"
 
 

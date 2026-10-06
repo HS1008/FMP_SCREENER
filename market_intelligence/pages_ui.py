@@ -65,6 +65,7 @@ from market_intelligence.freshness import is_current_status
 from market_intelligence.macro_ui import render_macro_dashboard
 from market_intelligence.markets_ui import render_global_markets_page, render_us_markets_page
 from market_intelligence.nulls import strict_dumps
+from market_intelligence.overview_ui import render_market_overview
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
 from market_intelligence.live_session import quote_observation_status
 from market_intelligence.quote_status import exception_note
@@ -76,7 +77,6 @@ from market_intelligence.read_models import (
     curve_levels_on_date,
     resolve_curve_date,
 )
-from market_intelligence.signals import build_what_matters
 from market_intelligence.surface_status import worst_surface_status
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.taxonomy import NO_SUBSECTOR_CLASSIFICATION, constituent_label
@@ -106,7 +106,6 @@ CATEGORY_TITLES = {
     "credit": "Credit",
     "commodities": "Commodities",
 }
-PRIMARY_MACRO = ("growth", "labor", "inflation", "liquidity")
 TRANSFORM_LABELS = {
     "yoy_pct": "YoY",
     "ann3m_pct": "3M annualized",
@@ -206,6 +205,9 @@ def open_registered_page(route_id: str, label: str) -> None:
         st.page_link(page, label=label)
         return
     if navigation_active():
+        if spec.hidden:
+            # Retired sidebar destination: the page is not routable, so no link is drawn.
+            return
         target = spec.file_path or spec.url_path
         st.page_link(target, label=label)
         return
@@ -346,7 +348,7 @@ def _render_yahoo_vol_core(yahoo: dict[str, Any] | None) -> None:
         "Missing values stay missing."
     )
 
-    st.markdown("**VIX index term structure**")
+    st.subheader("VIX index term structure", anchor="vix-term-structure")
     if not available_dates:
         st.caption("No VIX index tenor observations are stored yet.")
     else:
@@ -500,298 +502,9 @@ def render_options_volatility() -> None:
     open_registered_page("data_health", "Open Data Health")
 
 
-def _overview_displayed_dates(
-    *,
-    rates: dict[str, Any],
-    credit: dict[str, Any],
-    sectors: dict[str, Any],
-    order_flow: dict[str, Any],
-) -> list[Any]:
-    dates: list[Any] = []
-    for row in rates.get("curve") or []:
-        dates.append(row.get("observation_date"))
-    for row in credit.get("buckets") or []:
-        dates.append(row.get("as_of"))
-    for row in (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []:
-        dates.append(row.get("as_of"))
-    for row in (order_flow.get("breadth") or {}).get("rows") or []:
-        dates.append(row.get("observation_date"))
-    return dates
-
-
-def _render_overview_cards(
-    *,
-    rates: dict[str, Any],
-    credit: dict[str, Any],
-    sectors: dict[str, Any],
-    macro: dict[str, Any],
-    order_flow: dict[str, Any],
-    options: dict[str, Any] | None,
-    horizon: str,
-) -> None:
-    cards: list[dict[str, Any]] = []
-    rs_rows = (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []
-    metric = {"1D": "ret_1d", "1W": "ret_1w", "1M": "ret_1m"}.get(horizon, "ret_1d")
-    day_ranked = [row for row in rs_rows if (row.get("metrics") or {}).get(metric) is not None]
-    if day_ranked:
-        day_ranked = sorted(day_ranked, key=lambda row: -((row.get("metrics") or {}).get(metric) or 0))
-        lead = day_ranked[0]
-        lag = day_ranked[-1]
-        cards.append(
-            {
-                "title": "Equities & Sectors",
-                "primary": str(lead.get("sector_key") or "—"),
-                "primary_delta": fmt_signed((lead.get("metrics") or {}).get(metric), "fraction"),
-                "support": "Laggard {0} {1}".format(lag.get("sector_key") or "—", fmt_signed((lag.get("metrics") or {}).get(metric), "fraction")),
-                "as_of": lead.get("as_of"),
-                "route": "sectors",
-                "link": "Open Equities & Sectors",
-            }
-        )
-    curve = [row for row in rates.get("curve") or [] if row.get("tenor") == "10Y" and row.get("yield_pct") is not None]
-    if curve:
-        ten = curve[0]
-        slope = (rates.get("slopes") or {}).get("2s10s") or (rates.get("slopes") or {}).get("2Y10Y") or {}
-        slope_txt = fmt_signed(slope.get("value"), "bps") if isinstance(slope, dict) and slope.get("value") is not None else "—"
-        cards.append(
-            {
-                "title": "Rates & Curve",
-                "primary": fmt(ten.get("yield_pct"), "pct"),
-                "primary_delta": fmt_signed(ten.get("chg_prev_bps"), "bps") if ten.get("chg_prev_bps") is not None else None,
-                "support": "2s10s {0}".format(slope_txt),
-                "as_of": ten.get("observation_date"),
-                "route": "rates",
-                "link": "Open Rates & Curve",
-            }
-        )
-    buckets = [row for row in (credit.get("buckets") or []) if row.get("bucket") in {"ig_broad", "hy_broad"}]
-    if buckets:
-        ig = next((row for row in buckets if row["bucket"] == "ig_broad"), buckets[0])
-        hy = next((row for row in buckets if row["bucket"] == "hy_broad"), None)
-        support = "HY {0}".format(fmt(hy.get("oas_bps"), "bps").replace("+", "") if hy and hy.get("oas_bps") is not None else "—")
-        if hy and hy.get("change_1d_bps") is not None:
-            support += " ({0})".format(fmt_signed(hy.get("change_1d_bps"), "bps"))
-        cards.append(
-            {
-                "title": "Credit",
-                "primary": "IG {0}".format(fmt(ig.get("oas_bps"), "bps").replace("+", "") if ig.get("oas_bps") is not None else "—"),
-                "primary_delta": fmt_signed(ig.get("change_1d_bps"), "bps") if ig.get("change_1d_bps") is not None else None,
-                "support": support,
-                "as_of": ig.get("as_of"),
-                "route": "credit",
-                "link": "Open Credit",
-            }
-        )
-    cats = macro.get("categories") or {}
-    for cat in PRIMARY_MACRO:
-        blocks = cats.get(cat) or []
-        if not blocks:
-            continue
-        block = blocks[0]
-        transforms = block.get("transforms") or {}
-        headline = transforms.get("yoy_pct") or transforms.get("qoq_saar_pct") or transforms.get("mom_change") or transforms.get("chg_4w") or transforms.get("wow_change")
-        cards.append(
-            {
-                "title": "Macro & Liquidity",
-                "primary": str(block.get("label") or block.get("series_id") or cat),
-                "primary_delta": _transform_text(headline) if headline else None,
-                "support": "Observation {0}".format(block.get("latest", {}).get("observation_date") or "—"),
-                "as_of": block.get("latest", {}).get("observation_date"),
-                "route": "macro",
-                "link": "Open Macro & Liquidity",
-            }
-        )
-        break
-    commodity_blocks = cats.get("commodities") or []
-    if commodity_blocks:
-        block = commodity_blocks[0]
-        transforms = block.get("transforms") or {}
-        headline = transforms.get("chg_prev") or transforms.get("mom_pct") or transforms.get("wow_change")
-        cards.append(
-            {
-                "title": "Commodities",
-                "primary": str(block.get("label") or block.get("series_id")),
-                "primary_delta": _transform_text(headline) if headline else fmt(block.get("latest", {}).get("value"), None),
-                "support": "Cadence-aware release; not a live futures quote",
-                "as_of": block.get("latest", {}).get("observation_date"),
-                "route": "commodities",
-                "link": "Open Commodities",
-            }
-        )
-    yahoo = (options or {}).get("yahoo_core") or {}
-    yahoo_vix = yahoo.get("vix") or {}
-    if yahoo.get("status") == "OK" and yahoo_vix.get("value") is not None:
-        cards.append(
-            {
-                "title": "Options & Volatility",
-                "primary": "VIX {0}".format(_fmt_or_dash(yahoo_vix.get("value"), None)),
-                "primary_delta": None,
-                "support": "Yahoo spot as of {0}".format(yahoo_vix.get("as_of") or "—"),
-                "as_of": yahoo_vix.get("as_of"),
-                "route": "options",
-                "link": "Open Options & Volatility",
-            }
-        )
-    breadth = next((row for row in ((order_flow.get("breadth") or {}).get("rows") or []) if (row.get("product_category") or "").lower() == "all securities"), None)
-    if breadth and len(cards) < 6:
-        cards.append(
-            {
-                "title": "Bond Trading Activity",
-                "primary": fmt(breadth.get("total_volume"), None),
-                "primary_delta": fmt_signed(breadth.get("volume_change"), None) if breadth.get("volume_change") is not None else None,
-                "support": "Trades {0}".format(fmt(breadth.get("total_trades"), None)),
-                "as_of": breadth.get("observation_date"),
-                "route": "order_flow",
-                "link": "Open Bond Trading Activity",
-            }
-        )
-    cards = cards[:6]
-    if not cards:
-        st.info("No category cards have usable stored observations yet.")
-        return
-    cols = st.columns(min(3, len(cards)))
-    for index, card in enumerate(cards):
-        with cols[index % len(cols)]:
-            st.markdown("**{0}**".format(card["title"]))
-            st.metric("Primary", card["primary"], card.get("primary_delta"), label_visibility="collapsed")
-            if card.get("support"):
-                st.caption(card["support"])
-            if card.get("as_of"):
-                st.caption("Observation {0}".format(card["as_of"]))
-            open_registered_page(card["route"], card["link"])
-
-
-def _render_overview_visuals(*, rates: dict[str, Any], credit: dict[str, Any], sectors: dict[str, Any], horizon: str) -> None:
-    left, right = st.columns(2)
-    rs_rows = (sectors.get("datasets") or {}).get("ETF_RS_VS_SPY") or []
-    metric = {"1D": "ret_1d", "1W": "ret_1w", "1M": "ret_1m"}.get(horizon, "ret_1d")
-    with left:
-        st.subheader("Sector leadership")
-        usable = [row for row in rs_rows if (row.get("metrics") or {}).get(metric) is not None]
-        if usable:
-            frame = pd.DataFrame(
-                [
-                    {
-                        "Sector": row.get("sector_key") or row.get("instrument_id"),
-                        "Return": (row.get("metrics") or {}).get(metric),
-                    }
-                    for row in usable
-                ]
-            ).sort_values("Return", ascending=True)
-            ranked_bar_chart(
-                frame["Sector"].tolist(),
-                frame["Return"].tolist(),
-                key="pulse-sector-rank",
-                unit="percent",
-                title="{0} absolute return".format(horizon),
-            )
-            st.caption("Absolute ETF proxy returns for the selected horizon. Relative strength lives on Equities & Sectors.")
-            open_registered_page("sectors", "Open Equities & Sectors")
-        else:
-            st.info("No sector returns stored for {0}.".format(horizon))
-    with right:
-        curve = [row for row in (rates.get("curve") or []) if row.get("yield_pct") is not None]
-        buckets = [row for row in (credit.get("buckets") or []) if row.get("bucket") in {"ig_broad", "hy_broad"} and row.get("oas_bps") is not None]
-        mixed = bool(rates.get("curve_dates_mixed"))
-        if curve and not mixed:
-            st.subheader("Treasury curve")
-            category_line_chart(
-                [row.get("tenor") for row in curve],
-                [{"name": "Yield %", "values": [row.get("yield_pct") for row in curve]}],
-                key="pulse-treasury-curve",
-                y_title="percent",
-            )
-            st.caption("Same-date complete curve on {0}. Mixed-date legs are not drawn as one print.".format(rates.get("complete_curve_date") or "—"))
-            open_registered_page("rates", "Open Rates & Curve")
-        elif curve and mixed:
-            st.subheader("Treasury curve")
-            st.warning(
-                "Tenors span observation dates {0}. A connected curve is withheld; open Rates for the tenor table.".format(
-                    ", ".join(rates.get("curve_observation_dates") or []) or "—"
-                )
-            )
-            st.dataframe(
-                pd.DataFrame(
-                    [
-                        {"Tenor": row.get("tenor"), "Yield %": row.get("yield_pct"), "Observation": row.get("observation_date"), "Source": row.get("source_id")}
-                        for row in curve
-                    ]
-                ),
-                use_container_width=True,
-                hide_index=True,
-            )
-            open_registered_page("rates", "Open Rates & Curve")
-        elif buckets:
-            st.subheader("Credit spreads")
-            category_bar_chart(
-                [row.get("label") for row in buckets],
-                [row.get("oas_bps") for row in buckets],
-                key="pulse-credit-oas",
-                y_title="OAS bps",
-                unit="bps",
-            )
-            open_registered_page("credit", "Open Credit")
-        else:
-            st.subheader("Rates / Credit")
-            st.info("No Treasury curve or broad credit spreads are stored for a second overview visual.")
-
-
 def render_market_pulse() -> None:
-    health_result = load_optional("source_health", default=[])
-    health = health_result.get("data") or []
-    rates = load_or_stop("rates_context")
-    credit = load_or_stop("credit_context")
-    sectors = load_or_stop("sectors_context")
-    macro = _optional_data(load_optional("macro_context", default={})) or {}
-    order_flow = _optional_data(load_optional("order_flow_overview", default={})) or {}
-    options_result = load_optional("options_volatility_context", default={})
-    options_vol = options_result.get("data") if options_result.get("available") else None
-
-    displayed = _overview_displayed_dates(rates=rates, credit=credit, sectors=sectors, order_flow=order_flow)
-    as_of, freshness = compact_as_of(displayed, freshness=_worst_freshness(health) if health else None)
-    page_header(
-        "Market Overview",
-        "High-level market intelligence from validated stored observations. Detail lives on each category page.",
-        as_of=as_of,
-        freshness=freshness,
-        warning=_material_warning(health, displayed_dates=displayed),
-    )
-    st.caption("Dashboard prices are stored Yahoo quotes. A closed session is not a collection failure.")
-
-    horizon = st.radio("Market-move horizon", ("1D", "1W", "1M"), index=0, horizontal=True, key="overview_horizon")
-    st.caption("Horizon applies to daily equity session moves only. Macro releases and weekly positioning keep their own cadence.")
-
-    takeaways = build_what_matters(
-        rates=rates,
-        credit=credit,
-        sectors=sectors,
-        macro=macro,
-        order_flow=order_flow,
-        options=options_vol if isinstance(options_vol, dict) else None,
-        horizon=horizon,
-        limit=5,
-    )
-    st.subheader("What matters")
-    if takeaways:
-        for signal in takeaways:
-            cols = st.columns([6, 1.2])
-            cols[0].markdown("- {0}".format(signal.text))
-            with cols[1]:
-                open_registered_page(signal.drilldown_route, "Open {0}".format(signal.category))
-    else:
-        st.info("No material stored changes passed the display rules for this horizon.")
-
-    st.subheader("Category snapshot")
-    _render_overview_cards(
-        rates=rates,
-        credit=credit,
-        sectors=sectors,
-        macro=macro,
-        order_flow=order_flow,
-        options=options_vol if isinstance(options_vol, dict) else None,
-        horizon=horizon,
-    )
-    _render_overview_visuals(rates=rates, credit=credit, sectors=sectors, horizon=horizon)
+    """Market Overview in the template layout. Lives in ``overview_ui``; this name is the registry render."""
+    render_market_overview()
 
 
 # ---- Macro ---------------------------------------------------------------------------
@@ -1099,6 +812,32 @@ def _comparison_frame(rows: list[dict[str, Any]]) -> pd.DataFrame | None:
     return frame.sort_values("tenor_order")
 
 
+def _render_move_index(move: dict[str, Any]) -> None:
+    """ICE BofA MOVE index (Yahoo ``^MOVE``): a level in index points, not a yield or bps change."""
+    st.subheader("MOVE index", anchor="move-index")
+    if not move or move.get("status") == "missing" or move.get("value") is None:
+        st.info("No MOVE index observations are stored yet. The index appears after the next cross-asset refresh backfills Yahoo ^MOVE.")
+        st.caption(str((move or {}).get("source_note") or ""))
+        return
+    returns = move.get("returns") or {}
+    cols = st.columns(5)
+    cols[0].metric("MOVE", "{0:.2f}".format(float(move["value"])), help="Index points. Implied Treasury volatility, not a yield.")
+    for column, label in zip(cols[1:], ("1D", "1W", "1M", "3M")):
+        value = returns.get(label)
+        column.metric("{0} change".format(label), "—" if value is None else "{0:+.2f}%".format(float(value) * 100.0))
+    retrieved = str(move.get("retrieved_at") or "")[:16].replace("T", " ")
+    st.caption(
+        "Observation {0} (end-of-day close; delayed, not real time){1}. Source: {2} via Yahoo Finance {3}. Percent changes are over provider daily observations.".format(
+            move.get("as_of") or "—",
+            " · stored {0} UTC".format(retrieved) if retrieved else "",
+            move.get("label") or "MOVE",
+            move.get("yahoo_symbol") or "^MOVE",
+        )
+    )
+    history_chart(list(move.get("history") or []), x="as_of", y="value", title="MOVE index history", units="index points")
+    st.caption(str(move.get("source_note") or ""))
+
+
 def render_rates_curve() -> None:
     rates = load_or_stop("rates_context")
     curve = rates.get("curve") or []
@@ -1201,6 +940,7 @@ def render_rates_curve() -> None:
         history_x = "observation_date"
     history_units = "bps" if str(history_metric).startswith("curve.slope_") else "percent"
     history_chart(history_rows, x=history_x, y="value", title=str(history_label), units=history_units)
+    _render_move_index(_optional_data(load_optional("move_index_context", default={})) or {})
 
     with st.expander("Tenor table and other slopes"):
         st.dataframe(

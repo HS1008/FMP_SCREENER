@@ -355,4 +355,4 @@ def test_pages_are_database_only_and_render_required_sections():
         "Methodology & sources",
     ):
         assert heading in ui
-    assert [label for _instrument, label in CURRENCY_VS_USD] == ["EUR", "GBP", "JPY", "AUD", "CAD", "CHF"]
+    assert [label for _instrument, label in CURRENCY_VS_USD] == ["EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "CNH"]

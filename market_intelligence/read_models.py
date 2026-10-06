@@ -30,7 +30,11 @@ from market_intelligence.catalog import (
     FRED_ATTRIBUTION,
     TIPS_TENORS,
 )
-from market_intelligence.cross_asset_read import commodities_context, crypto_context, forex_context, positioning_context
+from market_intelligence.cross_asset_read import commodities_context, crypto_context, forex_context, move_index_context, positioning_context
+# The snapshot builder reuses rates_context / credit_context / yahoo_vol_core from this
+# module, so it is referenced as a module (resolved at call time) instead of importing
+# the function at load time, which would be a circular import.
+from market_intelligence import overview_snapshot as _overview_snapshot_module
 from market_intelligence.markets_read import aligned_us_equity_returns, global_markets_history, us_markets_history
 from market_intelligence.freshness import (
     FRESHNESS_POLICY_VERSION,
@@ -1806,7 +1810,14 @@ def strategies_context(conn) -> dict[str, Any]:
     return {"strategies": strategies, "note": "COMPLETE research is not an economic pass; promotion stays locked until a human decision."}
 
 
+def overview_snapshot(conn) -> dict[str, Any]:
+    """One frozen Market Overview snapshot (template layout) for the page and the Excel export."""
+    return _overview_snapshot_module.overview_snapshot(conn)
+
+
 __all__ = [
+    "overview_snapshot",
+    "move_index_context",
     "SNAPSHOT_AGE_POLICY_VERSION",
     "credit_context",
     "cftc_context",

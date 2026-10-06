@@ -1,4 +1,8 @@
-"""Overview and Rates must not draw a connected mixed-date Treasury curve."""
+"""Rates & Curve must not draw a connected mixed-date Treasury curve.
+
+The Market Overview no longer draws a curve chart (it is a template table), so
+the mixed-date guard is exercised on the Rates & Curve page that owns it.
+"""
 
 from __future__ import annotations
 
@@ -26,18 +30,15 @@ def _seed(*, mixed: bool):
     return {
         "source_health": [],
         "rates_context": rates,
-        "credit_context": {"buckets": [], "attribution": "", "coverage_note": ""},
-        "sectors_context": {"datasets": {"ETF_RS_VS_SPY": []}},
-        "macro_context": {"categories": {}},
-        "order_flow_overview": {"breadth": {"rows": []}},
-        "options_volatility_context": {"reason": "none"},
-        "ibkr_collector_status": [],
-        "ibkr_quotes_latest": [],
+        "metric_history": [],
+        "observation_history": [],
+        "fed_funds_target_on_or_before": {},
+        "move_index_context": {"status": "UNAVAILABLE", "value": None, "source_note": "MOVE unavailable in test"},
     }
 
 
-def test_overview_withholds_connected_curve_when_dates_mixed(monkeypatch):
-    seed = _seed(mixed=True)
+def _run(monkeypatch, *, mixed: bool) -> AppTest:
+    seed = _seed(mixed=mixed)
 
     def fake_cached(fn_name, *args, **kwargs):
         if fn_name in seed:
@@ -45,25 +46,22 @@ def test_overview_withholds_connected_curve_when_dates_mixed(monkeypatch):
         return {}
 
     monkeypatch.setattr("market_intelligence.ui.cached_read", fake_cached)
-    at = AppTest.from_file(str(ROOT / "pages" / "10_Market_Pulse.py"), default_timeout=30)
+    at = AppTest.from_file(str(ROOT / "pages" / "12_Rates_Curve.py"), default_timeout=30)
     at.run()
     assert not at.exception, [e.value for e in at.exception]
+    return at
+
+
+def test_rates_withholds_connected_curve_when_dates_mixed(monkeypatch):
+    at = _run(monkeypatch, mixed=True)
     text = "\n".join([*(str(w.value) for w in at.warning), *(str(c.value) for c in at.caption), *(str(i.value) for i in at.info)])
-    assert "Connected curve is withheld" in text or "dates differ" in text.lower() or "span observation dates" in text.lower()
-    assert "Latest coherent curve" not in "\n".join(str(p) for p in at)
+    assert "Connected curve withheld" in text
+    assert "Complete curve: No" in text
 
 
-def test_overview_draws_coherent_curve_when_same_date(monkeypatch):
-    seed = _seed(mixed=False)
-
-    def fake_cached(fn_name, *args, **kwargs):
-        if fn_name in seed:
-            return seed[fn_name]
-        return {}
-
-    monkeypatch.setattr("market_intelligence.ui.cached_read", fake_cached)
-    at = AppTest.from_file(str(ROOT / "pages" / "10_Market_Pulse.py"), default_timeout=30)
-    at.run()
-    assert not at.exception, [e.value for e in at.exception]
+def test_rates_draws_coherent_curve_when_same_date(monkeypatch):
+    at = _run(monkeypatch, mixed=False)
     captions = "\n".join(str(c.value) for c in at.caption)
-    assert "Same-date complete curve" in captions or at.plotly_chart
+    assert "Complete curve: Yes" in captions
+    assert not any("Connected curve withheld" in str(w.value) for w in at.warning)
+    assert "MOVE index" in [h.value for h in at.subheader]
