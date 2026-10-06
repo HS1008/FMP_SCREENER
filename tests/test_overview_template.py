@@ -14,7 +14,6 @@ from openpyxl import load_workbook
 from streamlit.testing.v1 import AppTest
 
 from market_intelligence import overview_snapshot as snapshot_module
-from market_intelligence.catalog import CURVE_TENORS
 from market_intelligence.cross_asset_universe import CURRENCY_VS_USD, FX_PAIRS, INSTRUMENT_BY_ID, MOVE_INSTRUMENT, YAHOO_CROSS_ASSET
 from market_intelligence.ibkr_live_universe import STOCK_GROUPS, SUBSECTOR_ETFS, subsector_groups
 from market_intelligence.ingest_yahoo_cross_asset import incremental_start
@@ -110,15 +109,15 @@ def _bars() -> list[dict]:
 
 
 def _observations(series_ids: list[str]) -> dict:
+    """FRED series end yesterday; Treasury (UST_*) series carry today's print, as on the host."""
     days = _daily(TODAY - timedelta(days=400), 401, 4.0, 0.0)
-    return {series_id: [{"observation_date": day, "value": 4.0 + 0.001 * offset} for offset, day in enumerate(days)] for series_id in series_ids}
-
-
-def _rates() -> dict:
-    curve = []
-    for tenor in CURVE_TENORS:
-        curve.append({"tenor": tenor, "yield_pct": 4.0, "observation_date": TODAY.isoformat(), "chg_prev_bps": 1.0, "chg_1w_bps": 2.0, "chg_1m_bps": 3.0, "chg_3m_bps": 4.0, "source_id": "TREASURY"})
-    return {"curve": curve}
+    out: dict = {}
+    for series_id in series_ids:
+        rows = [{"observation_date": day, "value": 4.0 + 0.001 * offset} for offset, day in enumerate(days)]
+        if series_id.startswith("DGS"):
+            rows = rows[:-1]
+        out[series_id] = rows
+    return out
 
 
 def _credit() -> dict:
@@ -130,21 +129,19 @@ def _credit() -> dict:
     }
 
 
-def _vol() -> dict:
+def _vol(metric_ids: list[str]) -> dict:
     days = _daily(TODAY - timedelta(days=100), 101, 15.0, 0.0)
-    return {"history": {metric: [{"as_of": day, "value": 15.0 + index + 0.01 * offset} for offset, day in enumerate(days)] for index, metric in enumerate(("VIX_1M", "VIX_3M", "VIX_6M", "VIX_1Y"))}}
+    return {metric: [{"as_of": day, "value": 15.0 + index + 0.01 * offset} for offset, day in enumerate(days)] for index, metric in enumerate(metric_ids)}
 
 
 @pytest.fixture
 def snapshot(monkeypatch):
     monkeypatch.setattr(snapshot_module, "load_monitor_history", lambda conn, symbols, since=None: _monitor_history(list(symbols)))
     monkeypatch.setattr(snapshot_module, "load_equity_eod_closes", lambda conn, symbols, since=None: _eod_closes(list(symbols)))
-    monkeypatch.setattr(snapshot_module.read_models, "rates_context", lambda conn: _rates())
     monkeypatch.setattr(snapshot_module.read_models, "credit_context", lambda conn: _credit())
     monkeypatch.setattr(snapshot_module.read_models, "recent_observations", lambda conn, ids, limit=40: _observations(list(ids)))
-    monkeypatch.setattr(snapshot_module.read_models, "metric_latest", lambda conn: {"curve.slope_10Y2Y_bps": {"value": 30.0, "as_of": TODAY.isoformat()}})
     monkeypatch.setattr(snapshot_module.read_models, "metric_history", lambda conn, metric_id, limit=40: [{"as_of": TODAY - timedelta(days=offset), "value": 30.0 - offset * 0.1} for offset in range(200)])
-    monkeypatch.setattr(snapshot_module.read_models, "yahoo_vol_core", lambda conn: _vol())
+    monkeypatch.setattr(snapshot_module.read_models, "yahoo_vol_metric_history", lambda conn, ids, since=None: _vol(list(ids)))
     monkeypatch.setattr(snapshot_module, "yahoo_cross_asset_bars", lambda conn, since=None: _bars())
     return overview_snapshot(_FakeConn(), today=TODAY)
 
@@ -224,8 +221,13 @@ def test_snapshot_matches_template_sections_rows_and_statuses(snapshot):
     move = next(row for row in yields["rows"] if row["key"] == "MOVE")
     assert move["status"] == "ok" and move["drill"]["anchor"] == "move-index"
     ten = next(row for row in yields["rows"] if row["key"] == "10Y")
-    assert ten["changes"]["1D"] == 1.0 and ten["changes_pct"]["1D"] == pytest.approx(0.01 / 3.99)
-    assert ten["changes"]["6M"] is not None and ten["changes"]["1Y"] is not None
+    assert ten["as_of"] == TODAY.isoformat() and ten["source"] == "TREASURY", "Treasury print wins over the lagging FRED copy"
+    assert ten["level"] == pytest.approx(4.4)
+    assert ten["changes"]["1D"] == pytest.approx(0.1) and ten["changes_pct"]["1D"] == pytest.approx(0.001 / 4.399)
+    assert ten["changes"]["1W"] == pytest.approx(0.7) and ten["changes"]["1Y"] == pytest.approx(36.5)
+    assert ten["changes"]["6M"] is not None
+    slope = next(row for row in yields["rows"] if row["key"] == "2s10s")
+    assert slope["level"] == 30.0 and slope["changes"]["1W"] == pytest.approx(0.7)
     sectors = section_by_id(snapshot, SECTION_SECTORS)
     utilities = next(row for row in sectors["rows"] if row["label"] == "Utilities")
     assert utilities["status"] == "missing" and utilities["changes"]["1D"] is None
@@ -285,8 +287,8 @@ def test_export_fills_every_field_and_preserves_template_layout(snapshot):
     assert isinstance(sheet["G2"].value, (int, float)) and isinstance(sheet["I2"].value, (int, float))
     # Yield curve: %Change columns carry the fractional change of the level, 6 horizons
     ten = TEMPLATE_ROWS[SECTION_YIELD_CURVE]["10Y"]
-    assert sheet["A{0}".format(ten)].value == 4.0 and sheet["A{0}".format(ten)].number_format.endswith('0.00"%"')
-    assert sheet["C{0}".format(ten)].value == pytest.approx(0.01 / 3.99)
+    assert sheet["A{0}".format(ten)].value == pytest.approx(4.4) and sheet["A{0}".format(ten)].number_format.endswith('0.00"%"')
+    assert sheet["C{0}".format(ten)].value == pytest.approx(0.001 / 4.399)
     assert sheet["H{0}".format(ten)].value is not None
     # Credit: basis-point moves, numeric
     ig = TEMPLATE_ROWS[SECTION_CREDIT]["BAMLC0A0CM"]

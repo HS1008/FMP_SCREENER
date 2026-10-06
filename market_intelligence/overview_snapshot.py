@@ -12,11 +12,16 @@ numbers agree with that page:
 * Sectors: the shared ``EQUITY_EOD`` session panel of
   :func:`markets_analytics.build_aligned_us_panel` (absolute mode of the US
   Markets sector heatmap).
-* Yield Curve and Credit Spreads: :func:`read_models.rates_context` /
-  :func:`read_models.credit_context` stored metrics; 6M and 1Y moves use the same
-  ``transforms.calendar_change`` rule the ingest uses for 1W-3M.
+* Yield Curve: the same Treasury/FRED observations and
+  :func:`source_resolve.resolve_observation` rule as Rates & Curve, with every
+  bps move produced by the ingest's own ``transforms`` functions (so the stored
+  ``DGSx.chg_*_bps`` metrics and these numbers coincide) without paying for the
+  full ``rates_context`` / ``metric_latest`` reads.
+* Credit Spreads: :func:`read_models.credit_context` stored metrics; 6M and 1Y
+  moves use the same ``transforms.calendar_change`` rule the ingest uses for 1W-3M.
 * VIX term structure: ``mi_v_yahoo_vol_history`` tenors (``^VIX``, ``^VIX3M``,
-  ``^VIX6M``, ``^VIX1Y``).
+  ``^VIX6M``, ``^VIX1Y``) through the bounded
+  :func:`read_models.yahoo_vol_metric_history`.
 * MOVE, Commodities, FOREX, Crypto: ``mi_v_yahoo_cross_asset_history`` closes with
   the provider-observation windows of the FOREX/Commodities pages and the
   calendar-day windows of the Crypto page.
@@ -59,13 +64,14 @@ from market_intelligence.overview_metrics import (
     risk_window_stats,
 )
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
+from market_intelligence.source_resolve import EQUIVALENTS, resolve_observation
 from market_intelligence.taxonomy import BENCHMARK_SPY, GLOBAL_MARKET_ETFS, SECTOR_PROXIES, US_LEADERSHIP
 from market_intelligence.transforms import calendar_change, previous_observation_change
 
 SNAPSHOT_VERSION = "market_overview_template_v1"
 STALE_AFTER_DAYS = 5
 HISTORY_LOOKBACK_DAYS = 420
-CALENDAR_LOOKBACK_OBSERVATIONS = 300
+CALENDAR_LOOKBACK_OBSERVATIONS = 330  # > one year of daily prints plus the 1Y anchor lag
 
 SHORT_WINDOWS: tuple[str, ...] = ("1D", "1W", "1M", "3M")
 LONG_WINDOWS: tuple[str, ...] = ("1D", "1W", "1M", "3M", "6M", "1Y")
@@ -333,23 +339,52 @@ def _calendar_moves(obs: Mapping[date, float], at: date | None, *, scale: float)
     }
 
 
-def _yield_rows(rates: Mapping[str, Any], observations: Mapping[str, Sequence[Mapping[str, Any]]], *, today: date) -> list[dict[str, Any]]:
+def _series_source(series_id: str) -> str:
+    return "TREASURY" if str(series_id).startswith("UST_") else "FRED"
+
+
+def resolved_tenor_observations(
+    series_id: str,
+    observations: Mapping[str, Sequence[Mapping[str, Any]]],
+) -> tuple[dict[date, float], dict[date, str]]:
+    """Per-date observations for one curve tenor across its equivalent series.
+
+    Treasury (``UST_*``) and FRED (``DGS*``) publish the same par yields; the
+    Rates & Curve page resolves each date with :func:`resolve_observation`
+    (newest wins, Treasury preferred on a tie). The same rule is applied here so
+    the levels agree, and the merged per-date series feeds the change windows.
+    """
+    by_date: dict[date, list[dict[str, Any]]] = {}
+    for alt in EQUIVALENTS.get(series_id, (series_id,)):
+        for row in observations.get(alt) or []:
+            day = as_day(row.get("observation_date"))
+            if day is None or row.get("value") is None:
+                continue
+            by_date.setdefault(day, []).append({"series_id": alt, "source_id": _series_source(alt), "observation_date": day, "value": row.get("value")})
+    values: dict[date, float] = {}
+    sources: dict[date, str] = {}
+    for day, candidates in by_date.items():
+        picked = resolve_observation(series_id, candidates)
+        if picked is None or picked.value is None:
+            continue
+        values[day] = float(picked.value)
+        sources[day] = picked.source_id
+    return values, sources
+
+
+def _yield_rows(observations: Mapping[str, Sequence[Mapping[str, Any]]], *, today: date) -> list[dict[str, Any]]:
+    """Par yields in percent with bps moves from the ingest's own transform rules.
+
+    1D is the previous-observation change and 1W/1M/3M/6M/1Y are calendar-anchored
+    changes (``transforms.previous_observation_change`` / ``calendar_change``),
+    the functions that publish the ``DGSx.chg_*_bps`` metrics shown on Rates & Curve.
+    """
     out: list[dict[str, Any]] = []
-    legs = {str(row.get("tenor")): row for row in rates.get("curve") or []}
     for tenor, series_id in CURVE_TENORS.items():
-        leg = legs.get(tenor) or {}
-        level = leg.get("yield_pct")
-        at = as_day(leg.get("observation_date"))
-        obs = _observation_map(observations.get(series_id) or [], date_key="observation_date", value_key="value")
-        computed = _calendar_moves(obs, at, scale=100.0)
-        changes = {
-            "1D": leg.get("chg_prev_bps"),
-            "1W": leg.get("chg_1w_bps"),
-            "1M": leg.get("chg_1m_bps"),
-            "3M": leg.get("chg_3m_bps"),
-            "6M": computed["6M"],
-            "1Y": computed["1Y"],
-        }
+        obs, sources = resolved_tenor_observations(series_id, observations)
+        at = max(obs) if obs else None
+        level = obs.get(at) if at is not None else None
+        changes = _calendar_moves(obs, at, scale=100.0)
         out.append(
             _row(
                 tenor,
@@ -359,25 +394,23 @@ def _yield_rows(rates: Mapping[str, Any], observations: Mapping[str, Sequence[Ma
                 changes=changes,
                 changes_pct={label: percent_change_of_level(level, move) for label, move in changes.items()},
                 today=today,
-                source=str(leg.get("source_id") or "TREASURY/FRED"),
+                source=sources.get(at, "TREASURY/FRED") if at is not None else "TREASURY/FRED",
             )
         )
     return out
 
 
 def _metric_rows(
-    entries: Sequence[tuple[str, str, str, Mapping[str, Any] | None, Sequence[Mapping[str, Any]]]],
+    entries: Sequence[tuple[str, str, str, Sequence[Mapping[str, Any]]]],
     *,
     today: date,
 ) -> list[dict[str, Any]]:
+    """Stored derived metrics (slope, butterfly): latest row of the bounded history is the level."""
     out: list[dict[str, Any]] = []
-    for key, label, source, latest, history in entries:
+    for key, label, source, history in entries:
         obs = _observation_map(history, date_key="as_of", value_key="value")
-        value = None if latest is None else latest.get("value")
-        at = None if latest is None else as_day(latest.get("as_of"))
-        if at is None and obs:
-            at = max(obs)
-            value = obs[at] if value is None else value
+        at = max(obs) if obs else None
+        value = obs.get(at) if at is not None else None
         changes = _calendar_moves(obs, at, scale=1.0)
         out.append(
             _row(
@@ -443,8 +476,7 @@ def _credit_rows(credit: Mapping[str, Any], observations: Mapping[str, Sequence[
     return out
 
 
-def _vix_rows(vol: Mapping[str, Any], *, today: date) -> list[dict[str, Any]]:
-    history = vol.get("history") or {}
+def _vix_rows(history: Mapping[str, Sequence[Mapping[str, Any]]], *, today: date) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for metric_id, label in VIX_TERM_ROWS:
         points = points_from_rows(history.get(metric_id) or [], date_key="as_of", value_key="value")
@@ -539,14 +571,21 @@ def overview_snapshot(conn, *, today: date | None = None) -> dict[str, Any]:
     sector_symbols = [BENCHMARK_SPY, *SECTOR_PROXIES.values()]
     closes = _guarded(conn, "equity_eod", lambda: load_equity_eod_closes(conn, sector_symbols, since=since), {}, errors)
     panel = build_aligned_us_panel(closes, baskets=())
-    rates = _guarded(conn, "rates", lambda: read_models.rates_context(conn), {}, errors)
     credit = _guarded(conn, "credit", lambda: read_models.credit_context(conn), {}, errors)
-    series_ids = [*CURVE_TENORS.values(), *(series_id for series_id, _short in CREDIT_BROAD_TILES)]
+    series_ids: list[str] = []
+    for canonical in CURVE_TENORS.values():
+        series_ids.extend(alt for alt in EQUIVALENTS.get(canonical, (canonical,)) if alt not in series_ids)
+    series_ids.extend(series_id for series_id, _short in CREDIT_BROAD_TILES)
     observations = _guarded(conn, "observations", lambda: read_models.recent_observations(conn, series_ids, limit=CALENDAR_LOOKBACK_OBSERVATIONS), {}, errors)
-    metrics = _guarded(conn, "metrics", lambda: read_models.metric_latest(conn), {}, errors)
     slope_history = _guarded(conn, "slope_history", lambda: read_models.metric_history(conn, SLOPE_10Y2Y_METRIC, limit=CALENDAR_LOOKBACK_OBSERVATIONS), [], errors)
     fly_history = _guarded(conn, "fly_history", lambda: read_models.metric_history(conn, FLY_2S5S10S_METRIC, limit=CALENDAR_LOOKBACK_OBSERVATIONS), [], errors)
-    vol = _guarded(conn, "yahoo_vol", lambda: read_models.yahoo_vol_core(conn), {}, errors)
+    vol_history = _guarded(
+        conn,
+        "yahoo_vol",
+        lambda: read_models.yahoo_vol_metric_history(conn, [metric_id for metric_id, _label in VIX_TERM_ROWS], since=since),
+        {},
+        errors,
+    )
     bars = _guarded(conn, "yahoo_cross_asset", lambda: yahoo_cross_asset_bars(conn, since=since), [], errors)
     monitor_source = "MARKET_MONITOR_EOD (Yahoo adjusted closes)"
 
@@ -593,11 +632,11 @@ def overview_snapshot(conn, *, today: date | None = None) -> dict[str, Any]:
             change_kind="bps",
             level_kind="yield_pct",
             rows=[
-                *_yield_rows(rates, observations, today=reference),
+                *_yield_rows(observations, today=reference),
                 *_metric_rows(
                     (
-                        ("2s10s", "2s10s", "Derived curve slope (bps)", metrics.get(SLOPE_10Y2Y_METRIC), slope_history),
-                        ("2s5s10s", "2s5s10s", "Derived curve butterfly (bps)", metrics.get(FLY_2S5S10S_METRIC), fly_history),
+                        ("2s10s", "2s10s", "Derived curve slope (bps)", slope_history),
+                        ("2s5s10s", "2s5s10s", "Derived curve butterfly (bps)", fly_history),
                     ),
                     today=reference,
                 ),
@@ -627,7 +666,7 @@ def overview_snapshot(conn, *, today: date | None = None) -> dict[str, Any]:
             change_columns=SHORT_WINDOWS,
             change_kind="fraction",
             level_kind="index",
-            rows=_vix_rows(vol, today=reference),
+            rows=_vix_rows(vol_history, today=reference),
             risk=False,
             source="YAHOO_VOL (^VIX, ^VIX3M, ^VIX6M, ^VIX1Y closes)",
             notes=("Index levels in volatility points. Changes are percent moves over 1, 5, 21, and 63 stored observations.",),

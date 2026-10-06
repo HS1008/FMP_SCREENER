@@ -101,7 +101,7 @@ def test_overview_apptest_template_layout(monkeypatch):
 def test_overview_survives_every_read_failing(monkeypatch):
     snapshot = _empty_snapshot()
     assert snapshot["rows_total"] > 0 and snapshot["rows_missing"] == snapshot["rows_total"]
-    assert set(snapshot["read_errors"]) >= {"rates", "credit", "yahoo_cross_asset"}
+    assert set(snapshot["read_errors"]) >= {"observations", "credit", "yahoo_cross_asset"}
 
     def fake_cached(fn_name, *args, **kwargs):
         if fn_name == "overview_snapshot":

@@ -31,8 +31,9 @@ from market_intelligence.catalog import (
     TIPS_TENORS,
 )
 from market_intelligence.cross_asset_read import commodities_context, crypto_context, forex_context, move_index_context, positioning_context
-# The snapshot builder reuses rates_context / credit_context / yahoo_vol_core from this
-# module, so it is referenced as a module (resolved at call time) instead of importing
+# The snapshot builder reuses credit_context / recent_observations / metric_history /
+# yahoo_vol_metric_history from this module, so it is referenced as a module (resolved
+# at call time) instead of importing
 # the function at load time, which would be a circular import.
 from market_intelligence import overview_snapshot as _overview_snapshot_module
 from market_intelligence.markets_read import aligned_us_equity_returns, global_markets_history, us_markets_history
@@ -1605,6 +1606,37 @@ def _yahoo_vol_metric(latest: list[dict[str, Any]], metric_id: str) -> dict[str,
     return None
 
 
+def yahoo_vol_metric_history(conn, metric_ids: Sequence[str], *, since: date | None = None) -> dict[str, list[dict[str, Any]]]:
+    """Stored ``mi_v_yahoo_vol_history`` rows for a few metric ids only.
+
+    The Market Overview needs the four VIX tenor closes over roughly a year; it
+    must not pay for :func:`yahoo_vol_core`'s full-history read of every metric.
+    """
+    wanted = [str(metric_id) for metric_id in metric_ids if metric_id]
+    history: dict[str, list[dict[str, Any]]] = {metric_id: [] for metric_id in wanted}
+    if not wanted or not _view_exists(conn, "mi_v_yahoo_vol_history"):
+        return history
+    binds = {"m{0}".format(index): metric_id for index, metric_id in enumerate(wanted)}
+    params: dict[str, Any] = dict(binds)
+    bound = ""
+    if since is not None:
+        bound = " AND as_of >= :since"
+        params["since"] = since
+    rows = _rows(
+        conn,
+        """
+        SELECT metric_id, as_of, value, status
+        FROM mi_v_yahoo_vol_history
+        WHERE metric_id IN ({ids}){bound}
+        ORDER BY metric_id, as_of
+        """.format(ids=", ".join(":{0}".format(key) for key in binds), bound=bound),
+        params,
+    )
+    for row in rows:
+        history.setdefault(str(row.get("metric_id")), []).append(row)
+    return history
+
+
 def yahoo_vol_core(conn) -> dict[str, Any]:
     """Yahoo-backed VIX / SKEW / term / implied−realized from stored metrics. Never calls Yahoo."""
     if not _view_exists(conn, "mi_v_yahoo_vol_latest"):
@@ -1818,6 +1850,7 @@ def overview_snapshot(conn) -> dict[str, Any]:
 __all__ = [
     "overview_snapshot",
     "move_index_context",
+    "yahoo_vol_metric_history",
     "SNAPSHOT_AGE_POLICY_VERSION",
     "credit_context",
     "cftc_context",
