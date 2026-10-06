@@ -825,7 +825,7 @@ def test_pages_render_populated_state_db_only(consumer, page):
     # Overview is intentionally table-light (signals + cards + charts). Options may be empty
     # when no published snapshots exist. Other pages still show at least one dataframe.
     if page.stem == "10_Market_Pulse":
-        assert at.metric or at.plotly_chart or at.subheader
+        assert at.dataframe or at.subheader or at.info
     elif page.stem == "21_Options_Volatility":
         assert at.info or at.dataframe or at.metric
     elif page.stem == "11_Macro_Overview":

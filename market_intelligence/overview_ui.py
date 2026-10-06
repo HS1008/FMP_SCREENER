@@ -296,6 +296,8 @@ def render_market_overview() -> None:
         warning=warning,
     )
     render_export_controls(snapshot)
+    if snapshot.get("rows_total") and snapshot.get("rows_missing") == snapshot.get("rows_total"):
+        st.info("No stored observations yet for any Market Overview instrument. Rows fill in after the ingestion jobs run; nothing is fabricated in the meantime.")
     for section in snapshot.get("sections") or []:
         render_section(section)
 

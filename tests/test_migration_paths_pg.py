@@ -85,7 +85,7 @@ def test_scenario_a_fresh_database_applies_everything_once_with_hashes(scratch_d
     engine, _url = scratch_db
     first = apply_migrations(engine=engine)
     assert first and not any(name.endswith("(skipped)") for name in first)
-    assert first[-1] == "045_treasury_auction_source.sql"
+    assert first[-1] == "046_cross_asset_history_retrieved_at.sql"
     recorded = _recorded(engine)
     for path in _all_files():
         assert recorded[path.name] == migration_sha256(path)
@@ -117,7 +117,7 @@ def test_scenario_b_simulated_production_001_019_upgrades_through_028(scratch_db
     applied = [n for n in upgraded if not n.endswith("(skipped)")]
     assert len(skipped) == 19
     assert applied == [p.name for p in _all_files() if p.name >= "020"]
-    assert applied[-1] == "045_treasury_auction_source.sql"
+    assert applied[-1] == "046_cross_asset_history_retrieved_at.sql"
     recorded = _recorded(engine)
     # Historical rows adopted the trusted baseline hash (not a bless of whatever was on disk: the
     # values are equal here only because the files are the committed baseline files).

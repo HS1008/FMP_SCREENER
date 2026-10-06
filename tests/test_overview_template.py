@@ -380,7 +380,10 @@ def test_sector_tile_primes_subsector_selector_and_switches_page(monkeypatch, sn
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["us_subsector_sector"] == "Tech"
     assert at.session_state["mi_pending_scroll_anchor"] == "subsector-performance"
-    assert calls == ["pages/22_US_Markets.py"]
+    # Outside dashboard.py the target is the script path; when st.navigation is live it is the registered st.Page.
+    assert len(calls) == 1
+    target = calls[0]
+    assert target == "pages/22_US_Markets.py" or "22_US_Markets" in str(getattr(target, "_page", target))
 
 
 def test_overview_page_does_not_fetch_or_write(monkeypatch, snapshot):

@@ -113,6 +113,8 @@ def test_overview_survives_every_read_failing(monkeypatch):
     at.run()
     assert not at.exception, [e.value for e in at.exception]
     assert any("Some stored reads failed" in str(w.value) for w in at.warning)
+    assert any("No stored observations yet" in str(i.value) for i in at.info)
+    assert len(at.metric) == 0
 
 
 def test_credit_page_keeps_broad_and_ratings_on_one_page(monkeypatch):

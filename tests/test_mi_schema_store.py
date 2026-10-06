@@ -67,6 +67,7 @@ def test_new_migrations_are_additive_and_numbered_after_007():
         "043_yahoo_dashboard_quotes.sql",
         "044_yahoo_price_daily.sql",
         "045_treasury_auction_source.sql",
+        "046_cross_asset_history_retrieved_at.sql",
     ]
     for name in new:
         sql = (MIGRATIONS / name).read_text(encoding="utf-8").upper()
