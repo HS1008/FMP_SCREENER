@@ -7,6 +7,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 
 from market_intelligence.due_state import evaluate_due_steps
 from market_intelligence.ingest_eia import _candidate_queries
@@ -32,7 +33,7 @@ from market_intelligence.cross_asset_universe import (
 )
 from market_intelligence.crypto_analytics import calendar_return, drawdown_series, utc_observation_date
 from market_intelligence.fx_analytics import FX_WINDOWS as FX_RETURN_WINDOWS
-from market_intelligence.fx_analytics import levels_by_id, observation_return, oriented_fx_level
+from market_intelligence.fx_analytics import levels_by_id, max_gap_days, observation_return, oriented_fx_level
 from market_intelligence.ingest_yahoo_cross_asset import bars_from_yahoo_frame, observation_date_for_bar
 from market_intelligence.markets_analytics import normalize_selected_to_100
 
@@ -98,6 +99,17 @@ def test_fx_return_direction_uses_foreign_currency_strength():
     assert observation_return(jpy, 1) < 0
     assert [label for label, _lag in FX_RETURN_WINDOWS] == ["1D", "1W", "1M", "3M", "6M", "1Y"]
     assert observation_return(eur[:2], 5) is None
+
+
+def test_observation_return_blanks_windows_anchored_too_far_back():
+    # CME CNH=F skipped most of September 2026 on Yahoo: the "previous observation" was 25 days earlier.
+    sparse = [(date(2026, 9, 8), 6.70), (date(2026, 9, 9), 6.705), (date(2026, 9, 10), 6.713), (date(2026, 9, 11), 6.7075), (date(2026, 10, 6), 6.6685)]
+    assert observation_return(sparse, 1) is None
+    assert observation_return(sparse[:-1], 1) == pytest.approx(6.7075 / 6.713 - 1.0)
+    # A long weekend or holiday is inside the tolerance for every window.
+    assert max_gap_days(1) >= 4 and max_gap_days(5) >= 11 and max_gap_days(21) >= 35 and max_gap_days(252) >= 370
+    weekend = [(date(2026, 10, 2), 1.0), (date(2026, 10, 6), 1.01)]
+    assert observation_return(weekend, 1) == pytest.approx(0.01)
 
 
 def test_normalized_fx_starts_at_100_and_keeps_gaps():
