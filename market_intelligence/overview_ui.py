@@ -290,7 +290,7 @@ def render_market_overview() -> None:
     page_header(
         "Market Overview",
         "Stored end-of-day observations in the Market Overview template layout. Click a section title to open the full page; use the chevron to collapse it.",
-        fred=False,
+        fred=True,  # yields and credit OAS come from FRED; its terms require the attribution
         as_of=as_of,
         freshness="STALE" if snapshot.get("rows_stale") else None,
         warning=warning,
