@@ -159,11 +159,16 @@ def _write_number(cell, value: Any, number_format: str) -> None:
 
 def _row_changes(section: Mapping[str, Any], row: Mapping[str, Any]) -> tuple[Mapping[str, Any], str]:
     """Values and format for the change columns following the template header units."""
-    export_kind = section.get("export_change_kind") or section.get("change_kind")
+    row_kind = row.get("change_kind")
+    if row_kind == "bps":
+        # Spreads (2s10s, 2s5s10s) stay in bps: a percent change of a spread that
+        # crosses zero is meaningless, so the cell carries its own " bps" unit.
+        return (row.get("changes") or {}), BPS_FORMAT
+    export_kind = row_kind or section.get("export_change_kind") or section.get("change_kind")
     if export_kind == "fraction" and section.get("change_kind") == "bps":
         # Template header says %Change for this section; the snapshot carries the
         # fractional change of the level alongside the bps move.
-        return (row.get("changes_pct") or {}), PERCENT_FORMAT
+        return (row.get("changes_pct") or row.get("changes") or {}), PERCENT_FORMAT
     if export_kind == "bps":
         return (row.get("changes") or {}), BPS_FORMAT
     return (row.get("changes") or {}), PERCENT_FORMAT

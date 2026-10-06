@@ -88,8 +88,14 @@ def _line(series: Sequence[Mapping[str, Any]], *, key: str, value_format: str = 
 
 
 def _rebased(histories: Mapping[str, Sequence[Mapping[str, Any]]], selected: Sequence[tuple[str, str]], *, key: str) -> None:
-    ids = [series_id for series_id, _label in selected]
     labels = {series_id: label for series_id, label in selected}
+    missing = [label for series_id, label in selected if not histories.get(series_id)]
+    if missing:
+        st.caption("No stored history yet for {0}; drawn without it.".format(", ".join(missing)))
+    ids = [series_id for series_id, _label in selected if histories.get(series_id)]
+    if not ids:
+        st.caption("No stored observations for the selected series.")
+        return
     result = normalize_selected_to_100({series_id: _tuples(histories.get(series_id) or []) for series_id in ids}, ids)
     if result.get("start") is None:
         st.caption("No common date with a value for every selected series.")

@@ -18,6 +18,7 @@ from market_intelligence.cross_asset_universe import CURRENCY_VS_USD, FX_PAIRS, 
 from market_intelligence.ibkr_live_universe import STOCK_GROUPS, SUBSECTOR_ETFS, subsector_groups
 from market_intelligence.ingest_yahoo_cross_asset import incremental_start
 from market_intelligence.overview_export import (
+    BPS_FORMAT,
     EXCEL_MIME,
     METADATA_COLUMN,
     PERCENT_FORMAT,
@@ -231,6 +232,7 @@ def test_snapshot_matches_template_sections_rows_and_statuses(snapshot):
     assert slope["level"] == pytest.approx(0.0) and slope["as_of"] == TODAY.isoformat() and slope["changes"]["1W"] == pytest.approx(0.0)
     fly = next(row for row in yields["rows"] if row["key"] == "2s5s10s")
     assert fly["level"] == pytest.approx(0.0) and fly["status"] == "ok"
+    assert slope["change_kind"] == "bps" and fly["level_kind"] == "bps" and fly["changes_pct"] is None
     sectors = section_by_id(snapshot, SECTION_SECTORS)
     utilities = next(row for row in sectors["rows"] if row["label"] == "Utilities")
     assert utilities["status"] == "missing" and utilities["changes"]["1D"] is None
@@ -293,6 +295,9 @@ def test_export_fills_every_field_and_preserves_template_layout(snapshot):
     assert sheet["A{0}".format(ten)].value == pytest.approx(4.4) and sheet["A{0}".format(ten)].number_format.endswith('0.00"%"')
     assert sheet["C{0}".format(ten)].value == pytest.approx(0.001 / 4.399)
     assert sheet["H{0}".format(ten)].value is not None
+    # Spreads stay in bps (level and moves) rather than a percent change of a spread
+    assert sheet["A43"].value == pytest.approx(0.0) and sheet["A43"].number_format == '"2s10s - "0" bps"'
+    assert sheet["C44"].value == pytest.approx(0.0) and sheet["C44"].number_format == BPS_FORMAT
     # Credit: basis-point moves, numeric
     ig = TEMPLATE_ROWS[SECTION_CREDIT]["BAMLC0A0CM"]
     assert sheet["A{0}".format(ig)].value == 90.0 and sheet["C{0}".format(ig)].value == -1.0

@@ -446,9 +446,12 @@ def _metric_rows(
                 level=value,
                 as_of=at,
                 changes=changes,
-                changes_pct={name: (None if value is None or move is None or (float(value) - move) == 0 else move / abs(float(value) - move)) for name, move in changes.items()},
                 today=today,
                 source=source,
+                # Spreads are kept in bps everywhere (table and export): a percent
+                # change of a spread that passes through zero has no meaning.
+                change_kind="bps",
+                level_kind="bps",
             )
         )
     return out
@@ -674,7 +677,7 @@ def overview_snapshot(conn, *, today: date | None = None) -> dict[str, Any]:
             risk=False,
             source="Treasury / FRED par yields; Yahoo ^MOVE",
             notes=(
-                "Yields in percent; yield, slope, and butterfly moves in basis points (1D vs prior observation; 1W = 7 calendar days; 1M-1Y = calendar months, same anchors as Rates & Curve). The Excel export writes the template's %Change as the fractional change of each level.",
+                "Yields in percent; yield, slope, and butterfly moves in basis points (1D vs prior observation; 1W = 7 calendar days; 1M-1Y = calendar months, same anchors as Rates & Curve). The Excel export writes the template's %Change as the fractional change of each yield; 2s10s and 2s5s10s stay in basis points because a percent change of a spread that crosses zero has no meaning.",
                 "2s10s = 10Y minus 2Y; 2s5s10s = 2x5Y minus 2Y minus 10Y, both in basis points on a common observation date, computed from the same resolved yields with the metric pipeline's formulas.",
                 "MOVE is an index level in points, not a yield; its moves are percent changes over provider observations.",
             ),
