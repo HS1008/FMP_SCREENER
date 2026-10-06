@@ -115,8 +115,6 @@ def section_frame(section: Mapping[str, Any]) -> tuple[pd.DataFrame, list[str]]:
     records: list[dict[str, Any]] = []
     for row in section.get("rows") or []:
         record: dict[str, Any] = {"Instrument": row.get("label")}
-        if row.get("description"):
-            record["ETF" if section.get("section_id") == SECTION_SECTORS else "Description"] = row.get("description")
         record["Level"] = format_level(row.get("level"), str(row.get("level_kind") or level_kind))
         record["As of"] = format_as_of(row)
         kind = row_change_kind(section, row)
@@ -126,6 +124,10 @@ def section_frame(section: Mapping[str, Any]) -> tuple[pd.DataFrame, list[str]]:
             risk = row.get("risk") or {}
             for key, title in RISK_COLUMNS:
                 record[title] = _format_risk(key, risk.get(key))
+        if row.get("description"):
+            # Last so the level and moves stay on screen on a phone; the template's
+            # description rows are secondary to the numbers.
+            record["ETF" if section.get("section_id") == SECTION_SECTORS else "Description"] = row.get("description")
         records.append(record)
     frame = pd.DataFrame(records)
     signed = [label for label in change_columns if label in frame.columns]
