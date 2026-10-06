@@ -24,16 +24,27 @@ _SCROLL_HTML = """
 (function () {
   var anchor = %s;
   var tries = 0;
+  var settled = 0;
+  var lastTop = null;
   var timer = setInterval(function () {
     tries += 1;
     var doc = window.parent.document;
     var target = doc.getElementById(anchor) || doc.querySelector('a[href="#' + anchor + '"]');
-    if (target) {
-      target.scrollIntoView({behavior: "smooth", block: "start"});
-      clearInterval(timer);
-    } else if (tries > 40) {
-      clearInterval(timer);
+    if (!target) {
+      if (tries > 40) { clearInterval(timer); }
+      return;
     }
+    // Charts above the anchor keep growing for a few seconds after first paint,
+    // so re-pin the heading until the layout has stopped moving it.
+    var top = Math.round(target.getBoundingClientRect().top);
+    if (top === lastTop) {
+      settled += 1;
+    } else {
+      target.scrollIntoView({behavior: "auto", block: "start"});
+      settled = 0;
+      lastTop = Math.round(target.getBoundingClientRect().top);
+    }
+    if (settled > 8 || tries > 60) { clearInterval(timer); }
   }, 150);
 })();
 </script>
