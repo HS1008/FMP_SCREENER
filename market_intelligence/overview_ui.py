@@ -28,6 +28,8 @@ COLLAPSE_STATE_KEY = "overview_sections_collapsed"
 EXPAND_ICON = "▾"
 COLLAPSE_ICON = "▸"
 MISSING_TEXT = "—"
+TABLE_ROW_PX = 35
+TABLE_MAX_PX = 560
 RISK_COLUMNS: tuple[tuple[str, str], ...] = (("vol_ann", "Vol 3M (ann.)"), ("sharpe", "Sharpe 3M"), ("max_dd", "Max DD 3M"))
 
 _LEVEL_FORMATS: dict[str, str] = {
@@ -160,10 +162,10 @@ def render_section(section: Mapping[str, Any]) -> None:
             str(section.get("title")),
             key="overview_title_{0}".format(section_id),
             type="tertiary",
-            help=_open_label(section),
+            help="{0}. Opens the full page at this section.".format(_open_label(section).rstrip(" →")),
         ):
             navigate_to(str(section.get("route_id")), anchor=section.get("anchor"))
-        st.caption("{0} · {1}".format(_open_label(section), _section_as_of(section)))
+        st.caption(_section_as_of(section))
     if collapsed:
         return
     rows = section.get("rows") or []
@@ -172,24 +174,24 @@ def render_section(section: Mapping[str, Any]) -> None:
         return
     frame, signed = section_frame(section)
     key = "overview_table_{0}".format(section_id)
+    height = table_height(len(rows))
     if section_id == SECTION_SECTORS:
         event = st.dataframe(
             _styled(frame, signed),
             key=key,
             hide_index=True,
             use_container_width=True,
+            height=height,
             on_select="rerun",
             selection_mode="single-row",
         )
         selected = list(getattr(getattr(event, "selection", None), "rows", []) or [])
         if selected:
-            row = rows[int(selected[0])]
-            drill = row.get("drill") or {}
-            if drill.get("route_id"):
-                navigate_to(str(drill["route_id"]), anchor=drill.get("anchor"), state=drill.get("state") or {})
-        st.caption("Select a sector row to open its subsector heatmap on US Markets.")
+            _drill(rows[int(selected[0])])
+        st.caption("Select a sector row, or one of the tiles below, to open that sector's subsector heatmap on US Markets.")
+        render_sector_tiles(rows)
     else:
-        st.dataframe(_styled(frame, signed), key=key, hide_index=True, use_container_width=True)
+        st.dataframe(_styled(frame, signed), key=key, hide_index=True, use_container_width=True, height=height)
     notes = section.get("notes") or []
     if notes or section.get("source"):
         with st.expander("Definitions and sources", expanded=False):
@@ -203,6 +205,34 @@ def render_section(section: Mapping[str, Any]) -> None:
                 st.caption("Stale (older than {0} days): {1}".format(STALE_AFTER_DAYS, ", ".join(str(label) for label in stale_rows)))
             if missing_rows:
                 st.caption("Missing (no stored value; never shown as zero): {0}".format(", ".join(str(label) for label in missing_rows)))
+
+
+def table_height(row_count: int) -> int:
+    """Show every template row without an inner scrollbar (Streamlit rows are 35px)."""
+    return min(TABLE_ROW_PX * (row_count + 1) + 3, TABLE_MAX_PX)
+
+
+def _drill(row: Mapping[str, Any]) -> None:
+    drill = row.get("drill") or {}
+    if drill.get("route_id"):
+        navigate_to(str(drill["route_id"]), anchor=drill.get("anchor"), state=drill.get("state") or {})
+
+
+def render_sector_tiles(rows: Sequence[Mapping[str, Any]]) -> None:
+    """One small button per canonical sector; each opens the subsector heatmap for that sector."""
+    with st.container(horizontal=True):
+        for row in rows:
+            drill = row.get("drill") or {}
+            if not drill.get("route_id"):
+                continue
+            label = str(row.get("label"))
+            if st.button(
+                label,
+                key="overview_sector_tile_{0}".format(row.get("key")),
+                type="secondary",
+                help="Open the {0} subsector heatmap on US Markets.".format(label),
+            ):
+                _drill(row)
 
 
 def _section_as_of(section: Mapping[str, Any]) -> str:

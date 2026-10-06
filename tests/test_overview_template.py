@@ -365,6 +365,19 @@ def test_overview_sections_collapse_independently_and_persist(monkeypatch, snaps
     assert len(at.dataframe) == len(SECTION_ORDER) - 2
 
 
+def test_sector_tile_primes_subsector_selector_and_switches_page(monkeypatch, snapshot):
+    at = _overview_app(monkeypatch, snapshot)
+    tiles = [button for button in at.button if button.key and button.key.startswith("overview_sector_tile_")]
+    assert [button.label for button in tiles] == list(CANONICAL_SECTORS)
+    calls: list = []
+    monkeypatch.setattr("market_intelligence.navigation_links.st.switch_page", lambda target: calls.append(target))
+    next(button for button in tiles if button.label == "Technology").click().run()
+    assert not at.exception, [e.value for e in at.exception]
+    assert at.session_state["us_subsector_sector"] == "Tech"
+    assert at.session_state["mi_pending_scroll_anchor"] == "subsector-performance"
+    assert calls == ["pages/22_US_Markets.py"]
+
+
 def test_overview_page_does_not_fetch_or_write(monkeypatch, snapshot):
     source = (ROOT / "market_intelligence" / "overview_ui.py").read_text(encoding="utf-8") + (ROOT / "market_intelligence" / "overview_export.py").read_text(encoding="utf-8")
     for forbidden in ("yfinance", "requests.", "ingest_", "INSERT", "UPDATE ", "psycopg", "sqlalchemy"):
