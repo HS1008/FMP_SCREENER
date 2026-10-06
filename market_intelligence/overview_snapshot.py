@@ -66,7 +66,7 @@ from market_intelligence.overview_metrics import (
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.source_resolve import EQUIVALENTS, resolve_observation
 from market_intelligence.taxonomy import BENCHMARK_SPY, GLOBAL_MARKET_ETFS, SECTOR_PROXIES, US_LEADERSHIP
-from market_intelligence.transforms import calendar_change, previous_observation_change
+from market_intelligence.transforms import calendar_change, curve_butterfly, curve_slope, previous_observation_change
 
 SNAPSHOT_VERSION = "market_overview_template_v1"
 STALE_AFTER_DAYS = 5
@@ -372,7 +372,11 @@ def resolved_tenor_observations(
     return values, sources
 
 
-def _yield_rows(observations: Mapping[str, Sequence[Mapping[str, Any]]], *, today: date) -> list[dict[str, Any]]:
+def _resolved_curve(observations: Mapping[str, Sequence[Mapping[str, Any]]]) -> dict[str, tuple[dict[date, float], dict[date, str]]]:
+    return {tenor: resolved_tenor_observations(series_id, observations) for tenor, series_id in CURVE_TENORS.items()}
+
+
+def _yield_rows(curve: Mapping[str, tuple[Mapping[date, float], Mapping[date, str]]], *, today: date) -> list[dict[str, Any]]:
     """Par yields in percent with bps moves from the ingest's own transform rules.
 
     1D is the previous-observation change and 1W/1M/3M/6M/1Y are calendar-anchored
@@ -380,8 +384,8 @@ def _yield_rows(observations: Mapping[str, Sequence[Mapping[str, Any]]], *, toda
     the functions that publish the ``DGSx.chg_*_bps`` metrics shown on Rates & Curve.
     """
     out: list[dict[str, Any]] = []
-    for tenor, series_id in CURVE_TENORS.items():
-        obs, sources = resolved_tenor_observations(series_id, observations)
+    for tenor in CURVE_TENORS:
+        obs, sources = curve.get(tenor) or ({}, {})
         at = max(obs) if obs else None
         level = obs.get(at) if at is not None else None
         changes = _calendar_moves(obs, at, scale=100.0)
@@ -400,15 +404,38 @@ def _yield_rows(observations: Mapping[str, Sequence[Mapping[str, Any]]], *, toda
     return out
 
 
+def derived_curve_series(curve: Mapping[str, tuple[Mapping[date, float], Mapping[date, str]]]) -> dict[str, dict[date, float]]:
+    """2s10s and 2s5s10s on every common observation date, with the metric pipeline's own formulas.
+
+    ``transforms.curve_slope`` / ``curve_butterfly`` publish ``curve.slope_10Y2Y_bps`` and
+    ``curve.fly_2s5s10s_bps``; recomputing them from the resolved observations keeps the
+    rows current with the yields above them even when the derived-metric job lags.
+    """
+    two = dict((curve.get("2Y") or ({}, {}))[0])
+    five = dict((curve.get("5Y") or ({}, {}))[0])
+    ten = dict((curve.get("10Y") or ({}, {}))[0])
+    slope: dict[date, float] = {}
+    fly: dict[date, float] = {}
+    for day in sorted(set(two) & set(ten)):
+        result = curve_slope(ten, two, day)
+        if result.value is not None:
+            slope[day] = float(result.value)
+        if day in five:
+            fly_result = curve_butterfly(two, five, ten, day)
+            if fly_result.value is not None:
+                fly[day] = float(fly_result.value)
+    return {"2s10s": slope, "2s5s10s": fly}
+
+
 def _metric_rows(
-    entries: Sequence[tuple[str, str, str, Sequence[Mapping[str, Any]]]],
+    entries: Sequence[tuple[str, str, str, Mapping[date, float], Sequence[Mapping[str, Any]]]],
     *,
     today: date,
 ) -> list[dict[str, Any]]:
-    """Stored derived metrics (slope, butterfly): latest row of the bounded history is the level."""
+    """Derived curve metrics: computed from the resolved observations, else the stored metric history."""
     out: list[dict[str, Any]] = []
-    for key, label, source, history in entries:
-        obs = _observation_map(history, date_key="as_of", value_key="value")
+    for key, label, source, computed, history in entries:
+        obs = dict(computed) if computed else _observation_map(history, date_key="as_of", value_key="value")
         at = max(obs) if obs else None
         value = obs.get(at) if at is not None else None
         changes = _calendar_moves(obs, at, scale=1.0)
@@ -587,6 +614,8 @@ def overview_snapshot(conn, *, today: date | None = None) -> dict[str, Any]:
         errors,
     )
     bars = _guarded(conn, "yahoo_cross_asset", lambda: yahoo_cross_asset_bars(conn, since=since), [], errors)
+    curve = _resolved_curve(observations)
+    derived = derived_curve_series(curve)
     monitor_source = "MARKET_MONITOR_EOD (Yahoo adjusted closes)"
 
     sections = [
@@ -632,11 +661,11 @@ def overview_snapshot(conn, *, today: date | None = None) -> dict[str, Any]:
             change_kind="bps",
             level_kind="yield_pct",
             rows=[
-                *_yield_rows(observations, today=reference),
+                *_yield_rows(curve, today=reference),
                 *_metric_rows(
                     (
-                        ("2s10s", "2s10s", "Derived curve slope (bps)", slope_history),
-                        ("2s5s10s", "2s5s10s", "Derived curve butterfly (bps)", fly_history),
+                        ("2s10s", "2s10s", "10Y minus 2Y on a common observation date (bps)", derived["2s10s"], slope_history),
+                        ("2s5s10s", "2s5s10s", "2x5Y minus 2Y minus 10Y on a common observation date (bps)", derived["2s5s10s"], fly_history),
                     ),
                     today=reference,
                 ),
@@ -646,7 +675,7 @@ def overview_snapshot(conn, *, today: date | None = None) -> dict[str, Any]:
             source="Treasury / FRED par yields; Yahoo ^MOVE",
             notes=(
                 "Yields in percent; yield, slope, and butterfly moves in basis points (1D vs prior observation; 1W = 7 calendar days; 1M-1Y = calendar months, same anchors as Rates & Curve). The Excel export writes the template's %Change as the fractional change of each level.",
-                "2s10s = 10Y minus 2Y; 2s5s10s = 2x5Y minus 2Y minus 10Y, both in basis points on a common observation date.",
+                "2s10s = 10Y minus 2Y; 2s5s10s = 2x5Y minus 2Y minus 10Y, both in basis points on a common observation date, computed from the same resolved yields with the metric pipeline's formulas.",
                 "MOVE is an index level in points, not a yield; its moves are percent changes over provider observations.",
             ),
             export_change_kind="fraction",

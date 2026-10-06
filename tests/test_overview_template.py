@@ -227,7 +227,10 @@ def test_snapshot_matches_template_sections_rows_and_statuses(snapshot):
     assert ten["changes"]["1W"] == pytest.approx(0.7) and ten["changes"]["1Y"] == pytest.approx(36.5)
     assert ten["changes"]["6M"] is not None
     slope = next(row for row in yields["rows"] if row["key"] == "2s10s")
-    assert slope["level"] == 30.0 and slope["changes"]["1W"] == pytest.approx(0.7)
+    # all synthetic tenors share one series, so 10Y - 2Y = 0 bps on the common (Treasury) date and the stored metric history is not used
+    assert slope["level"] == pytest.approx(0.0) and slope["as_of"] == TODAY.isoformat() and slope["changes"]["1W"] == pytest.approx(0.0)
+    fly = next(row for row in yields["rows"] if row["key"] == "2s5s10s")
+    assert fly["level"] == pytest.approx(0.0) and fly["status"] == "ok"
     sectors = section_by_id(snapshot, SECTION_SECTORS)
     utilities = next(row for row in sectors["rows"] if row["label"] == "Utilities")
     assert utilities["status"] == "missing" and utilities["changes"]["1D"] is None
