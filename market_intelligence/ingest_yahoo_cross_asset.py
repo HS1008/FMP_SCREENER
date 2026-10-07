@@ -18,10 +18,23 @@ from sqlalchemy import text
 
 from market_intelligence.cross_asset_universe import YAHOO_CROSS_ASSET, YahooInstrument
 from market_intelligence.crypto_analytics import utc_observation_date
+from market_intelligence.return_policy import bar_is_provisional
 from market_intelligence.store import RUN_FAILED, RUN_SUCCEEDED, coverage_with_provider_latest, finish_run, record_freshness, start_run
 
 INCREMENTAL_LOOKBACK_DAYS = 21
 PROVIDER = "YAHOO"
+BAR_COMPLETE = "COMPLETE"
+BAR_PROVISIONAL = "PROVISIONAL"
+
+
+def bar_quality_for(instrument: YahooInstrument, bar_date: date, *, retrieved_at: datetime) -> str:
+    """PROVISIONAL while the instrument's session for that trade date is still open, else COMPLETE.
+
+    Session boundaries come from the central policy (CME/CBOT/ICE electronic
+    sessions, the 17:00 New York FX roll, UTC days for crypto), so a futures
+    bar written at 15:00 ET on its trade date is not mistaken for a close.
+    """
+    return BAR_PROVISIONAL if bar_is_provisional(instrument.instrument_id, bar_date, now=retrieved_at) else BAR_COMPLETE
 
 
 @dataclass
@@ -201,10 +214,10 @@ def upsert_cross_asset_bars(conn, bars: Sequence[CrossAssetBar], *, run_id: str,
                 """
                 INSERT INTO mi_market_bars (
                     instrument_id, source_id, bar_interval, bar_date, open_price, high_price, low_price,
-                    close_price, adj_close_price, currency, adjustment_basis, retrieved_at,
+                    close_price, adj_close_price, currency, adjustment_basis, bar_quality, retrieved_at,
                     ingestion_run_id, first_seen_at, last_seen_at, provider_symbol, provider
                 ) VALUES (
-                    :i, :s, '1D', :d, :o, :h, :l, :c, :a, :currency, :adj, :t, :run, :t, :t, :sym, :p
+                    :i, :s, '1D', :d, :o, :h, :l, :c, :a, :currency, :adj, :quality, :t, :run, :t, :t, :sym, :p
                 )
                 ON CONFLICT (instrument_id, source_id, bar_interval, bar_date) DO UPDATE SET
                     open_price = EXCLUDED.open_price,
@@ -213,6 +226,7 @@ def upsert_cross_asset_bars(conn, bars: Sequence[CrossAssetBar], *, run_id: str,
                     close_price = EXCLUDED.close_price,
                     adj_close_price = EXCLUDED.adj_close_price,
                     adjustment_basis = EXCLUDED.adjustment_basis,
+                    bar_quality = EXCLUDED.bar_quality,
                     last_seen_at = EXCLUDED.retrieved_at,
                     ingestion_run_id = EXCLUDED.ingestion_run_id,
                     provider_symbol = EXCLUDED.provider_symbol,
@@ -230,6 +244,7 @@ def upsert_cross_asset_bars(conn, bars: Sequence[CrossAssetBar], *, run_id: str,
                 "a": bar.adj_close,
                 "currency": bar.instrument.currency,
                 "adj": _basis(bar.instrument.asset_class),
+                "quality": bar_quality_for(bar.instrument, bar.bar_date, retrieved_at=retrieved_at),
                 "t": retrieved_at,
                 "run": run_id,
                 "sym": bar.instrument.yahoo_symbol,

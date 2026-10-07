@@ -27,6 +27,7 @@ from typing import Any, Mapping, Sequence
 from market_intelligence.baskets import BASKET_METHOD_VERSION, daily_rebalanced_equal_weight, window_return
 from market_intelligence.calendars import skipped_session
 from market_intelligence.live_session import equal_dollar_live_return
+from market_intelligence.return_policy import BASIS_LABELS, BASIS_LAST_CLOSE, BASIS_SESSION_OPEN, last_updated_label
 from market_intelligence.sector_mapping import CANONICAL_SECTORS
 from market_intelligence.taxonomy import (
     BENCHMARK_SPY,
@@ -39,6 +40,9 @@ from market_intelligence.taxonomy import (
 
 DRAWDOWN_SESSIONS = 252
 MIN_SUBSECTOR_CONSTITUENTS = 2
+# Live 1D legs whose reference is one named session (open or completed close).
+# "RTH_OPEN" is the legacy name for SESSION_OPEN kept for stored callers.
+QUOTE_POLICY_BASES = frozenset({"RTH_OPEN", BASIS_SESSION_OPEN, BASIS_LAST_CLOSE})
 _HEAT_RED = (179, 64, 64)
 _HEAT_NEUTRAL = (44, 48, 54)
 _HEAT_GREEN = (61, 140, 90)
@@ -826,7 +830,11 @@ def _quote_leg(symbol: str, by_symbol: Mapping[str, Any], *, panel_basis: str | 
     live = _finite(row.get("live_return"))
     if status == "HISTORICAL" or live is None:
         return None
-    if row.get("return_basis") == "RTH_OPEN":
+    policy_basis = str(row.get("return_basis") or "")
+    if policy_basis in QUOTE_POLICY_BASES:
+        # Policy 1D: SESSION_OPEN pairs the price with the named session's open;
+        # LAST_CLOSE pairs it with that session's completed close. Both legs of a
+        # relative cell must share the basis and the reference session.
         session = as_day(row.get("session_open_date"))
         if session is None:
             return None
@@ -836,7 +844,7 @@ def _quote_leg(symbol: str, by_symbol: Mapping[str, Any], *, panel_basis: str | 
             "status": status,
             "current_session": session,
             "baseline_session": session,
-            "basis": "RTH_OPEN",
+            "basis": policy_basis,
             "updated": str(updated) if updated else None,
         }
     current_session = as_day(row.get("current_session") or current.get("session_date"))
@@ -928,11 +936,18 @@ def _cell_source_note(detail: Mapping[str, Any] | None, *, count: int | None, re
         label = captions.get(status, status)
     current = (detail or {}).get("current_session")
     baseline = (detail or {}).get("baseline_session")
-    session = " · {0} vs {1}".format(current, baseline) if current and baseline else ""
-    aligned = " · same session as SPY" if relative else ""
+    basis = str((detail or {}).get("basis") or "")
+    if basis in QUOTE_POLICY_BASES:
+        basis_label = BASIS_LABELS.get(basis, "Since session open")
+        session = " · {0} · reference session {1}".format(basis_label, current) if current else " · {0}".format(basis_label)
+    else:
+        session = " · {0} vs {1}".format(current, baseline) if current and baseline else ""
+    updated = (detail or {}).get("updated")
+    stamp = " · {0}".format(last_updated_label(updated)) if updated and status != "HISTORICAL" else ""
+    aligned = " · same session and basis as SPY" if relative else ""
     if isinstance(count, int):
-        return "Constituents: {0} · equal-dollar daily rebalance · {1}{2}{3}".format(count, label, session, aligned)
-    return "{0}{1}{2}".format(label, session, aligned)
+        return "Constituents: {0} · equal-dollar daily rebalance · {1}{2}{3}{4}".format(count, label, session, stamp, aligned)
+    return "{0}{1}{2}{3}".format(label, session, stamp, aligned)
 
 
 def _later_stamp(current: str | None, stamp: str | None) -> str | None:

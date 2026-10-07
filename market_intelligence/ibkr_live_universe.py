@@ -2,12 +2,16 @@
 
 Display groups may repeat a ticker (NVDA, TSLA, SPCX). One contract per symbol.
 VIX is included. Yahoo quotes use ``yahoo_symbol``; VIX is ``^VIX``.
-The eight Power names are part of this universe.
+The eight Power names are part of this universe. The Global Markets regional
+ETFs (VEA, VGK, EWJ, VWO, MCHI, INDA, EWZ) are included so their 1D follows the
+same stored-quote policy as the US indexes.
 """
 
 from __future__ import annotations
 
 from typing import Any, Mapping
+
+from market_intelligence.taxonomy import GLOBAL_MARKET_ETFS
 
 APPROVED_EXTRA_INDEXES = frozenset({"VIX"})
 
@@ -151,6 +155,9 @@ def _equity_symbols() -> tuple[str, ...]:
     for _group, members in STOCK_GROUPS:
         for symbol in members:
             _add(ordered, seen, symbol)
+    # Global Markets regional ETFs: SPY is already present; seven new tickers.
+    for symbol, _label in GLOBAL_MARKET_ETFS:
+        _add(ordered, seen, symbol)
     return tuple(ordered)
 
 
@@ -349,6 +356,7 @@ def stock_heatmap_rows(quotes: list[Mapping[str, Any]] | None) -> list[dict[str,
                     "open_to_current": change,
                     "quote_ts": quote.get("quote_ts"),
                     "note": " · ".join(note_parts),
+                    "quote": quote or None,
                 }
             )
     return display

@@ -83,7 +83,7 @@ def test_overview_apptest_template_layout(monkeypatch):
     snapshot = _empty_snapshot()
 
     def fake_cached(fn_name, *args, **kwargs):
-        if fn_name == "overview_snapshot":
+        if fn_name in ("overview_snapshot", "overview_snapshot_published"):
             return snapshot
         raise RuntimeError("unexpected read {0}".format(fn_name))
 
@@ -104,7 +104,7 @@ def test_overview_survives_every_read_failing(monkeypatch):
     assert set(snapshot["read_errors"]) >= {"observations", "credit", "yahoo_cross_asset"}
 
     def fake_cached(fn_name, *args, **kwargs):
-        if fn_name == "overview_snapshot":
+        if fn_name in ("overview_snapshot", "overview_snapshot_published"):
             return snapshot
         return {}
 

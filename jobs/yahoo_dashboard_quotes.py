@@ -16,6 +16,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from market_intelligence.overview_publish import publish_overview_snapshot
 from market_intelligence.writer_db import WriterConfigurationError, writer_engine
 from market_intelligence.yahoo_dashboard import POLL_SECONDS, backoff_seconds, collect_once, should_poll
 from market_intelligence.yahoo_price_history import ingest_price_history
@@ -151,6 +152,18 @@ def run() -> int:
                 len(history.get("skipped") or []),
                 len(history.get("errors") or {}),
             )
+        # The Market Overview EOD snapshot is composed here, on the server, so the
+        # Streamlit page only reads one published row and overlays stored quotes.
+        try:
+            with engine.begin() as conn:
+                published = publish_overview_snapshot(conn, now=datetime.now(timezone.utc))
+        except Exception:
+            logger.exception("overview snapshot publish failed")
+            state["overview_snapshot_error"] = "publish_failed"
+        else:
+            state["overview_snapshot_error"] = None
+            state["overview_snapshot_id"] = published.get("snapshot_id")
+            state["overview_snapshot_published_at"] = datetime.now(timezone.utc).isoformat()
         state_path.write_text(json.dumps(state), encoding="utf-8")
         logger.info(
             "yahoo quotes priced=%s/%s inserted=%s missing=%s",

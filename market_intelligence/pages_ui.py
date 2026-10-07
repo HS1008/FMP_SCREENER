@@ -7,7 +7,7 @@ fabricating numbers. Missing values render as "—".
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
@@ -62,11 +62,22 @@ from market_intelligence.curve_compare import (
     source_display,
 )
 from market_intelligence.freshness import is_current_status
+from market_intelligence.live_1d_ui import (
+    EOD_ONLY_CAPTION,
+    basis_badge_title,
+    freshness_word,
+    observation_label,
+    one_day_cell,
+    one_day_note,
+    quote_price_and_ts,
+)
 from market_intelligence.macro_ui import render_macro_dashboard
 from market_intelligence.markets_ui import render_global_markets_page, render_us_markets_page
 from market_intelligence.nulls import strict_dumps
+from market_intelligence.overview_live import EOD_LABEL
 from market_intelligence.overview_ui import render_market_overview
 from market_intelligence.page_registry import PAGE_BY_ROUTE, navigation_active, registered_page
+from market_intelligence.return_policy import format_eastern
 from market_intelligence.live_session import quote_observation_status
 from market_intelligence.quote_status import exception_note
 from market_intelligence.read_models import (
@@ -460,28 +471,25 @@ def _render_ibkr_vix() -> None:
     if quote is None:
         st.caption("Yahoo VIX is unavailable. The history below is not a substitute current quote.")
         return
-    provenance = quote.get("provenance") or {}
-    if not isinstance(provenance, dict):
-        provenance = {}
-    price = provenance.get("current_price")
-    if price is None:
-        price = quote.get("last_price")
-    change = provenance.get("open_to_current")
-    session_name = str(provenance.get("session") or "unknown")
-    observed = quote.get("quote_ts") or "—"
+    now = datetime.now(timezone.utc)
+    price, quote_ts = quote_price_and_ts(quote)
+    one_day = one_day_cell("VIX", quote, now=now)
+    provenance = quote.get("provenance") if isinstance(quote.get("provenance"), dict) else {}
     error = str(provenance.get("quote_error") or "")
-    basis = str(provenance.get("open_basis") or "")
-    change_text = "N/A" if not isinstance(change, (int, float)) else "{0:+.2f}%".format(float(change) * 100.0)
-    price_text = "N/A" if not isinstance(price, (int, float)) else "{0:.2f}".format(float(price))
-    st.metric("VIX", price_text, change_text if change_text != "N/A" else None, help="Since open uses the most recent regular-session open when Yahoo supplies one. VIX does not use equity extended hours.")
+    price_text = "N/A" if price is None else "{0:.2f}".format(price)
+    delta = None
+    if one_day.value is not None:
+        delta = "{0:+.2f}% {1}".format(one_day.value * 100.0, one_day.basis_label.lower())
+    st.metric("VIX", price_text, delta, help=one_day_note(one_day, symbol="VIX", now=now))
     st.caption(
-        "Yahoo ^VIX. Price observed {0}. Session {1}. Since open {2}. {3}".format(
-            observed,
-            session_name,
-            basis or "reference unavailable",
-            error or "No collection error stored.",
+        "Yahoo ^VIX. {0} · {1}. {2}{3}".format(
+            observation_label(quote_ts) if quote_ts is not None else "Observation time unavailable",
+            freshness_word("VIX", quote_ts, now=now),
+            basis_badge_title(one_day),
+            " Collection note: {0}".format(error) if error else "",
         )
     )
+    st.caption("Other VIX tenors (VIX9D, VIX3M, VIX6M, VIX1Y) and SKEW below are stored daily closes: " + EOD_ONLY_CAPTION)
 
 
 def render_options_volatility() -> None:
@@ -824,14 +832,20 @@ def _render_move_index(move: dict[str, Any]) -> None:
     cols[0].metric("MOVE", "{0:.2f}".format(float(move["value"])), help="Index points. Implied Treasury volatility, not a yield.")
     for column, label in zip(cols[1:], ("1D", "1W", "1M", "3M")):
         value = returns.get(label)
-        column.metric("{0} change".format(label), "—" if value is None else "{0:+.2f}%".format(float(value) * 100.0))
-    retrieved = str(move.get("retrieved_at") or "")[:16].replace("T", " ")
+        column.metric(
+            "{0} change".format(label),
+            "—" if value is None else "{0:+.2f}%".format(float(value) * 100.0),
+            help=EOD_ONLY_CAPTION if label == "1D" else "Completed close-to-close over provider daily observations.",
+        )
+    retrieved = format_eastern(move.get("retrieved_at"))
     st.caption(
-        "Observation {0} (end-of-day close; delayed, not real time){1}. Source: {2} via Yahoo Finance {3}. Percent changes are over provider daily observations.".format(
+        "Observation {0} · {1}{2}. Source: {3} via Yahoo Finance {4}. {5}".format(
             move.get("as_of") or "—",
-            " · stored {0} UTC".format(retrieved) if retrieved else "",
+            EOD_LABEL,
+            " · close collected {0}".format(retrieved) if retrieved else "",
             move.get("label") or "MOVE",
             move.get("yahoo_symbol") or "^MOVE",
+            EOD_ONLY_CAPTION,
         )
     )
     history_chart(list(move.get("history") or []), x="as_of", y="value", title="MOVE index history", units="index points")
@@ -979,11 +993,12 @@ def render_rates_curve() -> None:
 # ---- Credit ---------------------------------------------------------------------------
 
 def _load_oas_histories(series_ids: list[str]) -> dict[str, list[dict[str, Any]]]:
-    histories: dict[str, list[dict[str, Any]]] = {}
-    for series_id in series_ids:
-        rows = load_or_stop("metric_history", "{0}.oas_bps".format(series_id), limit=STORED_HISTORY_LIMIT)
-        histories[series_id] = list(rows or [])
-    return histories
+    """OAS histories for every selected series in one batched read."""
+    if not series_ids:
+        return {}
+    metric_ids = ["{0}.oas_bps".format(series_id) for series_id in series_ids]
+    grouped = load_or_stop("metric_histories", metric_ids, limit=STORED_HISTORY_LIMIT) or {}
+    return {series_id: list(grouped.get(metric_id) or []) for series_id, metric_id in zip(series_ids, metric_ids)}
 
 
 def _render_oas_history_chart(

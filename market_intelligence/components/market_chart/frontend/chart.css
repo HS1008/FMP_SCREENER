@@ -115,6 +115,13 @@
   padding: 6px 8px;
 }
 
+#ranges button[aria-pressed="true"],
+#reset[aria-pressed="true"] {
+  background: currentColor;
+  color: var(--mc-background, #ffffff);
+  font-weight: 600;
+}
+
 #chart,
 #chart canvas {
   width: 100%;

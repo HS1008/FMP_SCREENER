@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -22,8 +22,11 @@ from market_intelligence.price_returns import (
     add_months,
     calendar_target,
     commit_or_keep,
+    history_floor,
+    needs_extension,
     plan_history_window,
-    price_horizons,
+    horizons_from_endpoint,
+    completed_price_horizons,
     quote_anchor_date,
 )
 from market_intelligence.yahoo_price_history import bar_quality, parse_daily_closes, series_has_split
@@ -89,27 +92,27 @@ def test_calendar_targets_handle_month_end_and_leap_day():
 
 def test_weekend_holiday_and_missing_history_stay_na():
     anchor = date(2026, 9, 30)
-    after_target = price_horizons([_bar(date(2026, 9, 25), 80.0), _bar(date(2026, 9, 28), 90.0)], 100.0, anchor)
+    after_target = horizons_from_endpoint([_bar(date(2026, 9, 25), 80.0), _bar(date(2026, 9, 28), 90.0)], 100.0, anchor)
     assert after_target["1W"]["target"] == date(2026, 9, 23)
     assert after_target["1W"]["value"] is None
     sunday_anchor = date(2026, 9, 27)
-    legs = price_horizons([_bar(date(2026, 9, 25), 80.0)], 100.0, sunday_anchor)
+    legs = horizons_from_endpoint([_bar(date(2026, 9, 25), 80.0)], 100.0, sunday_anchor)
     assert legs["1W"]["target"] == date(2026, 9, 20)
     assert legs["1W"]["reference"] is None
-    friday_only = price_horizons([_bar(date(2026, 9, 25), 80.0)], 100.0, date(2026, 10, 2))
+    friday_only = horizons_from_endpoint([_bar(date(2026, 9, 25), 80.0)], 100.0, date(2026, 10, 2))
     assert friday_only["1W"]["target"] == date(2026, 9, 25)
     assert friday_only["1W"]["reference"] == date(2026, 9, 25)
     assert friday_only["1W"]["value"] == pytest.approx(0.25)
-    holiday = price_horizons([_bar(date(2025, 7, 3), 50.0)], 55.0, date(2025, 7, 11))
+    holiday = horizons_from_endpoint([_bar(date(2025, 7, 3), 50.0)], 55.0, date(2025, 7, 11))
     assert holiday["1W"]["target"] == date(2025, 7, 4)
     assert holiday["1W"]["reference"] == date(2025, 7, 3)
     assert holiday["1W"]["value"] == pytest.approx(0.1)
-    short = price_horizons([_bar(date(2026, 9, 29), 10.0)], 12.0, anchor)
+    short = horizons_from_endpoint([_bar(date(2026, 9, 29), 10.0)], 12.0, anchor)
     assert short["1Y"]["value"] is None
     assert short["1W"]["value"] is None
-    assert price_horizons([_bar(date(2026, 9, 23), 0.0), _bar(date(2026, 9, 22), -5.0)], 10.0, anchor)["1W"]["value"] is None
-    assert price_horizons([], 10.0, anchor)["1M"]["value"] is None
-    assert price_horizons([_bar(date(2026, 9, 23), 80.0)], None, anchor)["1W"]["value"] is None
+    assert horizons_from_endpoint([_bar(date(2026, 9, 23), 0.0), _bar(date(2026, 9, 22), -5.0)], 10.0, anchor)["1W"]["value"] is None
+    assert horizons_from_endpoint([], 10.0, anchor)["1M"]["value"] is None
+    assert horizons_from_endpoint([_bar(date(2026, 9, 23), 80.0)], None, anchor)["1W"]["value"] is None
 
 
 def test_reference_uses_the_last_completed_close_on_or_before_the_target():
@@ -118,16 +121,33 @@ def test_reference_uses_the_last_completed_close_on_or_before_the_target():
         _bar(date(2026, 9, 24), 81.0, quality="PROVISIONAL"),
         _bar(date(2026, 9, 30), 99.0, quality="PROVISIONAL"),
     ]
-    legs = price_horizons(bars, 100.0, date(2026, 9, 30))
+    legs = horizons_from_endpoint(bars, 100.0, date(2026, 9, 30))
     assert legs["1W"]["reference"] == date(2026, 9, 23)
     assert legs["1W"]["value"] == pytest.approx(100.0 / 80.0 - 1.0)
     mixed = [
         _bar(date(2026, 9, 23), 80.0),
         _bar(date(2026, 9, 26), 90.0, basis="SPLIT_ADJUSTED_UNKNOWN_DIVIDEND"),
     ]
-    assert price_horizons(mixed, 100.0, date(2026, 9, 30))["1W"]["reason"] == "adjustment mismatch"
+    assert horizons_from_endpoint(mixed, 100.0, date(2026, 9, 30))["1W"]["reason"] == "adjustment mismatch"
     weekend_quote = quote_anchor_date(datetime(2026, 9, 26, 15, 0, tzinfo=ET))
     assert weekend_quote == date(2026, 9, 25)
+
+
+def test_longer_horizons_use_the_latest_completed_close_not_the_quote():
+    bars = [
+        _bar(date(2026, 9, 22), 80.0),
+        _bar(date(2026, 9, 29), 90.0),
+        _bar(date(2026, 9, 30), 120.0, quality="PROVISIONAL"),
+    ]
+    legs = completed_price_horizons(bars)
+    # The endpoint is the Sep 29 completed close; the provisional Sep 30 bar is ignored.
+    assert legs["1W"]["endpoint"] == date(2026, 9, 29)
+    assert legs["1W"]["reference"] == date(2026, 9, 22)
+    assert legs["1W"]["value"] == pytest.approx(90.0 / 80.0 - 1.0)
+    # A changed quote cannot move these columns: the inputs do not include one.
+    assert completed_price_horizons(bars) == legs
+    assert completed_price_horizons([])["1M"]["reason"] == "no completed close"
+    assert completed_price_horizons(bars, not_after=date(2026, 9, 22))["1W"]["value"] is None
 
 
 def test_failed_fetch_keeps_prices_and_gaps_are_repaired_without_a_full_download():
@@ -141,20 +161,37 @@ def test_failed_fetch_keeps_prices_and_gaps_are_repaired_without_a_full_download
     updated = commit_or_keep(existing, [_bar(date(2026, 9, 29), 12.0), _bar(date(2026, 9, 29), 13.0)], failed=False)
     assert updated[date(2026, 9, 29)]["close"] == 13.0
     assert len(updated) == 2
+    already_extended = history_floor(date(2026, 10, 1))
     closed = plan_history_window(
         [date(2026, 9, 28), date(2026, 9, 29), date(2026, 9, 30)],
         today=date(2026, 10, 1),
         last_completed=date(2026, 9, 30),
         session_open=False,
         repair=False,
+        coverage_floor=already_extended,
     )
     assert closed is None
+    # A series that was stored under the old ~400-day floor is extended back to
+    # the three-year floor exactly once; the window stops at the first stored bar.
+    extend = plan_history_window(
+        [date(2026, 9, 28), date(2026, 9, 29), date(2026, 9, 30)],
+        today=date(2026, 10, 1),
+        last_completed=date(2026, 9, 30),
+        session_open=False,
+        repair=False,
+    )
+    assert extend is not None and extend[2] == "extend"
+    assert extend[0] == already_extended <= date(2023, 10, 1)
+    assert extend[1] <= date(2026, 10, 2)
+    assert needs_extension(date(2026, 9, 28), today=date(2026, 10, 1), coverage_floor=already_extended) is False
+    assert needs_extension(already_extended + timedelta(days=3), today=date(2026, 10, 1), coverage_floor=None) is False
     gap = plan_history_window(
         [date(2026, 9, 28), date(2026, 9, 29), date(2026, 10, 1)],
         today=date(2026, 10, 2),
         last_completed=date(2026, 10, 1),
         session_open=False,
         repair=False,
+        coverage_floor=already_extended,
     )
     assert gap is not None
     assert gap[2] in {"incremental", "repair"}
@@ -166,6 +203,7 @@ def test_failed_fetch_keeps_prices_and_gaps_are_repaired_without_a_full_download
         last_completed=date(2026, 9, 29),
         session_open=True,
         repair=False,
+        coverage_floor=history_floor(date(2026, 9, 30)),
     )
     assert overlap is not None and overlap[2] == "incremental"
     assert (overlap[1] - overlap[0]).days < 40

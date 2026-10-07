@@ -71,14 +71,18 @@ def _yahoo_bars(conn, instrument_ids: Sequence[str] | None = None, *, since: dat
     """Stored Yahoo cross-asset closes. ``since`` bounds the read for window statistics."""
     if not _has_relation(conn, "mi_v_yahoo_cross_asset_history"):
         return []
-    # Migration 046 appends retrieved_at. Older databases still serve the history.
+    # Migration 046 appends retrieved_at; 049 appends bar_quality. Older databases still serve the history.
     stamp = ", retrieved_at" if _has_column(conn, "mi_v_yahoo_cross_asset_history", "retrieved_at") else ", NULL AS retrieved_at"
+    has_quality = _has_column(conn, "mi_v_yahoo_cross_asset_history", "bar_quality")
+    quality = ", bar_quality" if has_quality else ", NULL AS bar_quality"
     sql = """
         SELECT instrument_id, source_id, bar_date, close_price AS close, adj_close_price,
-               provider_symbol, provider{stamp}
+               provider_symbol, provider{stamp}{quality}
         FROM mi_v_yahoo_cross_asset_history
-    """.format(stamp=stamp)
-    clauses: list[str] = []
+    """.format(stamp=stamp, quality=quality)
+    # Completed closes only: a bar collected while its session was still open is
+    # not a close and must not become the endpoint of a close-to-close return.
+    clauses: list[str] = ["bar_quality IS DISTINCT FROM 'PROVISIONAL'"] if has_quality else []
     params: dict[str, Any] = {}
     if instrument_ids is not None:
         clauses.append("instrument_id = ANY(:instrument_ids)")
@@ -238,9 +242,9 @@ def forex_header_cards(
 
 
 def forex_context(conn) -> dict[str, Any]:
-    bars = _yahoo_bars(conn)
+    # Only FX instruments are read; commodities and crypto rows never leave PostgreSQL here.
     fx_ids = {row.instrument_id for row in FX_INSTRUMENTS}
-    fx_bars = [row for row in bars if row["instrument_id"] in fx_ids]
+    fx_bars = _yahoo_bars(conn, sorted(fx_ids))
     raw_levels = {row.instrument_id: levels_by_id(fx_bars, instrument_id=row.instrument_id, orient=False) for row in FX_INSTRUMENTS}
     pairs = {instrument_id: _points(levels) for instrument_id, levels in raw_levels.items() if instrument_id != "DXY"}
     versus = {instrument_id: _points(levels_by_id(fx_bars, instrument_id=instrument_id, orient=True)) for instrument_id, _label in CURRENCY_VS_USD}
@@ -334,12 +338,11 @@ def positioning_context(conn) -> dict[str, Any]:
 
 
 def commodities_context(conn) -> dict[str, Any]:
-    bars = _yahoo_bars(conn)
+    wanted = [instrument.instrument_id for instrument in COMMODITY_INSTRUMENTS if instrument.instrument_id != "VIX"]
+    bars = _yahoo_bars(conn, wanted)
     histories = {}
-    for instrument in COMMODITY_INSTRUMENTS:
-        if instrument.instrument_id == "VIX":
-            continue
-        histories[instrument.instrument_id] = _points(close_points([row for row in bars if row["instrument_id"] == instrument.instrument_id]))
+    for instrument_id in wanted:
+        histories[instrument_id] = _points(close_points([row for row in bars if row["instrument_id"] == instrument_id]))
     earliest, latest = _bounds(list(histories.values()))
     return {
         "status": "OK" if any(histories.values()) else "EMPTY",
@@ -361,7 +364,7 @@ def commodities_context(conn) -> dict[str, Any]:
 
 
 def crypto_context(conn) -> dict[str, Any]:
-    bars = _yahoo_bars(conn)
+    bars = _yahoo_bars(conn, [instrument.instrument_id for instrument in CRYPTO_INSTRUMENTS])
     histories = {
         instrument.instrument_id: _points(close_points([row for row in bars if row["instrument_id"] == instrument.instrument_id]))
         for instrument in CRYPTO_INSTRUMENTS

@@ -27,6 +27,7 @@ _JS = (
     + (_FRONTEND / "chart.js").read_text(encoding="utf-8")
 )
 LIGHTWEIGHT_CHARTS_VERSION = "5.2.1"
+CHART_RANGE_KINDS: tuple[str, ...] = ("1M", "3M", "6M", "YTD", "1Y", "3Y")
 
 
 def observation_day(value: Any) -> date | None:
@@ -165,8 +166,13 @@ def build_market_chart_payload(
     keep_missing: bool = False,
     recession_bands: Sequence[Mapping[str, Any]] | None = None,
     align_union: bool = True,
+    initial_range: str | None = None,
 ) -> dict[str, Any]:
     """Data passed to the chart, before the component mount.
+
+    ``initial_range`` (one of the toolbar buttons: 1M, 3M, 6M, YTD, 1Y, 3Y)
+    selects the opening zoom when ``ranges`` is enabled. It never trims the
+    supplied points.
 
     ``series`` items are ``{"label", "points"}``. Each points sequence is
     normalized with :func:`time_series_points`. When ``series`` is omitted,
@@ -200,6 +206,8 @@ def build_market_chart_payload(
     }
     if reference_price is not None:
         payload["reference_price"] = float(reference_price)
+    if ranges and initial_range in CHART_RANGE_KINDS:
+        payload["initial_range"] = initial_range
     cleaned_bands = _recession_bands(recession_bands)
     if cleaned_bands:
         payload["recession_bands"] = cleaned_bands
@@ -230,6 +238,7 @@ def lightweight_market_chart(
     keep_missing: bool = False,
     recession_bands: Sequence[Mapping[str, Any]] | None = None,
     align_union: bool = True,
+    initial_range: str | None = None,
 ) -> None:
     """Render one or more time series on a shared calendar axis.
 
@@ -248,6 +257,7 @@ def lightweight_market_chart(
         keep_missing=keep_missing,
         recession_bands=recession_bands,
         align_union=align_union,
+        initial_range=initial_range,
     )
     resolved_height = 420 if height is None else int(height)
     data: dict[str, Any] = {

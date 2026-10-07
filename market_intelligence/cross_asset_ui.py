@@ -6,7 +6,7 @@ FRED, or the database driver.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
 
 import streamlit as st
@@ -15,12 +15,14 @@ from market_intelligence.cftc_positions import ASSET_GROUPS, CATEGORY_LABELS, PO
 from market_intelligence.commodity_analytics import COMMODITY_METHODOLOGY, COMMODITY_WINDOWS, same_date_ratio, window_returns
 from market_intelligence.components.market_chart import lightweight_market_chart
 from market_intelligence.components.tenor_chart import column_scaled_return_heatmap, ranked_bar_chart, return_heatmap
-from market_intelligence.cross_asset_universe import COMMODITY_INSTRUMENTS, CURRENCY_VS_USD, FX_PAIRS, FX_WINDOWS
+from market_intelligence.cross_asset_universe import COMMODITY_INSTRUMENTS, CRYPTO_INSTRUMENTS, CURRENCY_VS_USD, FX_INSTRUMENTS, FX_PAIRS, FX_WINDOWS
 from market_intelligence.crypto_analytics import CRYPTO_METHODOLOGY, CRYPTO_WINDOWS, calendar_return, drawdown_series, same_date_ratio as crypto_ratio
 from market_intelligence.fx_analytics import FX_METHODOLOGY, latest_window_returns
 from market_intelligence.history_range import filter_history_rows, historical_date_range, series_toggles
+from market_intelligence.live_1d_ui import ONE_DAY_POLICY_CAPTION, freshness_summary, one_day_cell, one_day_note, quote_price_and_ts
 from market_intelligence.markets_analytics import as_day, normalize_selected_to_100
-from market_intelligence.ui import html_text, load_or_stop, page_header, return_badge
+from market_intelligence.return_policy import OneDay, format_eastern, policy_for
+from market_intelligence.ui import html_text, load_or_stop, load_quote_optional, page_header, return_badge, signed_percent
 
 _CHART_HEIGHT = 420
 _POSITION_METRICS = (
@@ -42,13 +44,45 @@ def _fmt(value: Any, digits: int = 2) -> str:
         return "—"
 
 
-def _cards(cards: Sequence[Mapping[str, Any]]) -> None:
-    shown = [card for card in cards if card.get("value") is not None]
+_CARD_INSTRUMENT_BY_LABEL = {"WTI": "CL", "Gold": "GC", "Copper": "HG", "Natural Gas": "NG", "BTC": "BTC", "ETH": "ETH"}
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _stored_quotes(instrument_ids: Sequence[str]) -> dict[str, Mapping[str, Any]]:
+    """Latest stored Yahoo quotes for the listed cross-asset instruments (never a provider call)."""
+    loaded = load_quote_optional("cross_asset_quotes_latest", list(instrument_ids), default=[])
+    if not loaded.get("available"):
+        return {}
+    return {str(row.get("instrument_id") or "").upper(): row for row in loaded.get("data") or []}
+
+
+def _cards(cards: Sequence[Mapping[str, Any]], quotes: Mapping[str, Mapping[str, Any]] | None = None, *, now: datetime | None = None) -> None:
+    """Metric cards: stored close, or the stored live quote with its policy 1D and own ET observation time."""
+    shown = [card for card in cards if card.get("value") is not None or (quotes or {}).get(_CARD_INSTRUMENT_BY_LABEL.get(str(card.get("label")), ""))]
     if not shown:
         return
+    moment = now or _now()
     columns = st.columns(len(shown))
+    cells: dict[str, OneDay] = {}
     for column, card in zip(columns, shown):
-        column.metric(str(card.get("label") or ""), _fmt(card.get("value")))
+        label = str(card.get("label") or "")
+        instrument_id = _CARD_INSTRUMENT_BY_LABEL.get(label, label)
+        quote = (quotes or {}).get(instrument_id)
+        if quote is None:
+            column.metric(label, _fmt(card.get("value")), help="Last stored daily close ({0}). No stored quote; EOD close-to-close.".format(card.get("as_of") or "—"))
+            continue
+        price, _ts = quote_price_and_ts(quote)
+        one_day = one_day_cell(instrument_id, quote, now=moment)
+        cells[instrument_id] = one_day
+        note = one_day_note(one_day, symbol=instrument_id, now=moment)
+        delta = "{0} {1}".format(signed_percent(one_day.value), one_day.basis_label.lower()) if one_day.available else "1D {0}".format("pending" if one_day.price_ts else "N/A")
+        column.metric(label, _fmt(price if price is not None else card.get("value")), delta=delta, delta_color="normal" if one_day.available else "off", help=note)
+        column.caption("Last updated: {0}".format(format_eastern(one_day.price_ts)) if one_day.price_ts else "Last updated: unavailable")
+    if cells:
+        st.caption(freshness_summary(cells, now=moment))
 
 
 def _tuples(points: Sequence[Mapping[str, Any]], *, value_key: str = "value", date_key: str = "as_of") -> list[tuple[date, float]]:
@@ -147,25 +181,59 @@ def _finite_or_none(value: Any) -> float | None:
     return number
 
 
+def fx_card_with_quote(card: Mapping[str, Any], quote: Mapping[str, Any] | None, *, now: datetime) -> dict[str, Any]:
+    """Card plus the stored live quote: current price, policy 1D, and the quote's own observation time.
+
+    1W and 1M stay completed close-to-close from the stored daily closes.
+    """
+    merged = dict(card)
+    instrument_id = str(card.get("instrument_id") or "")
+    if not quote:
+        merged["one_day"] = None
+        return merged
+    price, _ts = quote_price_and_ts(quote)
+    one_day = one_day_cell(instrument_id, quote, now=now)
+    merged["one_day"] = one_day
+    merged["one_day_note"] = one_day_note(one_day, symbol=instrument_id, now=now)
+    merged["observed_at"] = one_day.price_ts
+    if price is not None:
+        merged["eod_value"] = card.get("value")
+        merged["value"] = price
+    returns = dict(card.get("returns") or {})
+    returns["1D"] = one_day.value
+    merged["returns"] = returns
+    return merged
+
+
 def fx_card_html(card: Mapping[str, Any]) -> str:
-    """One FX header card: label, latest quote, 1D/1W/1M badges, as-of and staleness."""
+    """One FX header card: label, latest quote, 1D/1W/1M badges, as-of or last-updated, staleness."""
     instrument_id = str(card.get("instrument_id") or "")
     label = str(card.get("label") or instrument_id)
     quote = _fx_quote_text(card.get("value"), instrument_id)
     as_of = as_day(card.get("as_of"))
     stale = bool(card.get("stale"))
-    if as_of is None:
+    one_day = card.get("one_day")
+    live = isinstance(one_day, OneDay)
+    if live and one_day.price_ts is not None:
+        stamp = "Last updated: {0}".format(format_eastern(one_day.price_ts))
+        stamp += " · " + (one_day.basis_label if one_day.available else "1D pending")
+    elif as_of is None:
         stamp = "no stored observation"
     else:
-        stamp = "as of {0}".format(as_of.isoformat())
+        stamp = "as of {0} · EOD close-to-close".format(as_of.isoformat())
         if stale:
             stamp += " · stale"
     returns = card.get("returns") or {}
-    badges = "".join(
-        return_badge(window, returns.get(window), title="{0}: {1} change in the displayed quote ({2}); positive means {3} rose.".format(label, window, quote, label))
-        for window in FX_CARD_WINDOW_LABELS
-    )
-    stale_color = "color:#9b1c1c;" if stale else "opacity:0.7;"
+    badges = ""
+    for window in FX_CARD_WINDOW_LABELS:
+        if window == "1D" and live:
+            title = str(card.get("one_day_note") or "")
+        elif window == "1D":
+            title = "{0}: EOD close-to-close change over the last two stored daily closes; positive means {0} rose. No stored quote.".format(label)
+        else:
+            title = "{0}: {1} completed close-to-close change in the displayed quote; positive means {0} rose.".format(label, window)
+        badges += return_badge(window, returns.get(window), title=title)
+    stale_color = "color:#9b1c1c;" if stale and not live else "opacity:0.7;"
     return (
         '<div style="{style}" title="{title}">'
         '<div style="font-size:12px;font-weight:650;opacity:0.85;">{label}</div>'
@@ -175,7 +243,7 @@ def fx_card_html(card: Mapping[str, Any]) -> str:
         "</div>"
     ).format(
         style=_FX_CARD_STYLE,
-        title=html_text("{0}: latest stored Yahoo daily close in quote convention. {1}.".format(label, stamp)),
+        title=html_text("{0}: {1} in quote convention. {2}.".format(label, "newest stored Yahoo quote" if live else "latest stored Yahoo daily close", stamp)),
         label=html_text(label),
         quote=html_text(quote),
         badges=badges,
@@ -184,26 +252,39 @@ def fx_card_html(card: Mapping[str, Any]) -> str:
     )
 
 
-def _fx_header(cards: Sequence[Mapping[str, Any]]) -> None:
+def _fx_header(cards: Sequence[Mapping[str, Any]], quotes: Mapping[str, Mapping[str, Any]] | None = None, *, now: datetime | None = None) -> None:
     """Every tracked FX instrument from config (DXY once) in a wrapping grid."""
     if not cards:
         return
+    moment = now or _now()
+    merged = [fx_card_with_quote(card, (quotes or {}).get(str(card.get("instrument_id") or "")), now=moment) for card in cards]
     st.markdown(
-        '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;">' + "".join(fx_card_html(card) for card in cards) + "</div>",
+        '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;">' + "".join(fx_card_html(card) for card in merged) + "</div>",
         unsafe_allow_html=True,
     )
+    cells = {str(card.get("instrument_id")): card["one_day"] for card in merged if isinstance(card.get("one_day"), OneDay)}
+    if cells:
+        st.caption(freshness_summary(cells, now=moment))
     st.caption(
-        "Latest stored Yahoo daily closes in quote convention; 1D/1W/1M are changes over 1, 5, and 21 provider observations "
-        "(the FX heatmap's definitions). Positive means the displayed pair rose: for USD/JPY, USD/CAD, USD/CHF, and USD/CNH "
-        "that is USD strength, so the heatmap's foreign-vs-USD rows carry the opposite sign. "
-        "Stale marks a pair whose newest observation trails the newest FX observation by more than 5 days."
+        "Quote convention: positive means the displayed pair rose; for USD/JPY, USD/CAD, USD/CHF, and USD/CNH that is USD strength, "
+        "so the heatmap's foreign-vs-USD rows carry the opposite sign. 1W/1M are completed close-to-close over 5 and 21 provider daily observations. "
+        + ONE_DAY_POLICY_CAPTION
+        + " Stale marks a pair whose newest daily close trails the newest FX close by more than 5 days."
     )
+    st.caption("Sessions: " + " | ".join(policy_for(symbol).description for symbol in ("EURUSD", "DXY", "USDCNH")))
 
 
 def render_forex_page() -> None:
     page_header("FOREX", "US dollar level and major-currency performance versus the dollar. Stored Yahoo daily bars.", fred=False)
     payload = load_or_stop("forex_context")
-    _fx_header(payload.get("cards") or [])
+    quotes = _stored_quotes([spec.instrument_id for spec in FX_INSTRUMENTS])
+    _fx_header(payload.get("cards") or [], quotes, now=_now())
+    _forex_history_section(payload)
+
+
+@st.fragment
+def _forex_history_section(payload: Mapping[str, Any]) -> None:
+    """Range selector and every range-driven chart. A range or toggle change reruns only this section."""
     start, end = historical_date_range(key="forex_range", earliest=as_day(payload.get("earliest")), latest=as_day(payload.get("latest")))
     if start is None or end is None or start > end:
         st.info("No Yahoo FX history is stored yet.")
@@ -396,7 +477,14 @@ def render_commodities_page() -> None:
     )
     st.caption("Gold (LBMA daily) was removed from FRED in 2022. No substitute is invented for that FRED series. Gold here is a Yahoo futures proxy.")
     payload = load_or_stop("commodities_context")
-    _cards(payload.get("cards") or [])
+    _cards(payload.get("cards") or [], _stored_quotes([row.instrument_id for row in COMMODITY_INSTRUMENTS if row.instrument_id != "VIX"]), now=_now())
+    st.caption(ONE_DAY_POLICY_CAPTION + " Futures proxies use their exchange's electronic session (CME Globex 18:00-17:00 ET; CBOT grains 19:00-13:20 CT; ICE Brent 20:00-18:00 ET).")
+    _commodity_history_section(payload)
+
+
+@st.fragment
+def _commodity_history_section(payload: Mapping[str, Any]) -> None:
+    """Section radio, range selector, and charts. Section/range changes rerun only this body."""
     section = st.radio("Section", ["Overview", "Energy", "Metals", "Agriculture"], horizontal=True, key="commodity_section")
     start, end = historical_date_range(key="commodity_range", earliest=as_day(payload.get("earliest")), latest=as_day(payload.get("latest")))
     histories = _commodity_histories(payload, start, end) if start and end and start <= end else {}
@@ -475,7 +563,14 @@ def render_commodities_page() -> None:
 def render_crypto_page() -> None:
     page_header("Crypto", "Bitcoin and Ethereum daily closes. UTC dates, including weekends.", fred=False)
     payload = load_or_stop("crypto_context")
-    _cards(payload.get("cards") or [])
+    _cards(payload.get("cards") or [], _stored_quotes([row.instrument_id for row in CRYPTO_INSTRUMENTS]), now=_now())
+    st.caption(ONE_DAY_POLICY_CAPTION + " Crypto sessions are UTC calendar days: 1D is the current price over the 00:00 UTC open of the current day.")
+    _crypto_history_section(payload)
+
+
+@st.fragment
+def _crypto_history_section(payload: Mapping[str, Any]) -> None:
+    """Range selector and charts. Range/horizon changes rerun only this body."""
     start, end = historical_date_range(key="crypto_range", earliest=as_day(payload.get("earliest")), latest=as_day(payload.get("latest")))
     prices = payload.get("prices") or {}
     if start is None or end is None or start > end:

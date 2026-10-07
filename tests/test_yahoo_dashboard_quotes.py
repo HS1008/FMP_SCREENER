@@ -42,7 +42,7 @@ def _et(day: str, hour: int, minute: int = 0) -> datetime:
 
 def test_canonical_universe_maps_every_symbol_including_vix_and_power():
     symbols = [row["symbol"] for row in approved_contracts()]
-    assert len(symbols) == EXPECTED_IBKR_LIVE_COUNT == 93
+    assert len(symbols) == EXPECTED_IBKR_LIVE_COUNT == 100
     assert "VIX" in symbols
     assert yahoo_symbol("VIX") == "^VIX"
     assert yahoo_symbol("BRK.B") == "BRK-B"

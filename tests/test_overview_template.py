@@ -335,7 +335,7 @@ def test_export_filename_and_mime():
 
 def _overview_app(monkeypatch, snapshot):
     def fake_cached(fn_name, *args, **kwargs):
-        if fn_name == "overview_snapshot":
+        if fn_name in ("overview_snapshot", "overview_snapshot_published"):
             return snapshot
         raise RuntimeError("unexpected read {0}".format(fn_name))
 
