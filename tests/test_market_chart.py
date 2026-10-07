@@ -23,6 +23,19 @@ FRONTEND = ROOT / "frontend"
 PAGES_UI = Path(__file__).resolve().parents[1] / "market_intelligence" / "pages_ui.py"
 
 
+def test_legend_click_toggles_a_series():
+    source = (FRONTEND / "chart.js").read_text(encoding="utf-8")
+    css = (FRONTEND / "chart.css").read_text(encoding="utf-8")
+    assert 'data-index="' in source
+    assert "legend-hidden" in source
+    assert "applyOptions({ visible: !entry.hidden })" in source
+    assert "onLegendClick" in source
+    assert 'tabindex="0"' in source
+    assert 'event.key !== "Enter"' in source
+    assert ".legend-item.legend-hidden" in css
+    assert "cursor: pointer" in css
+
+
 def test_vix_history_points_keep_real_dates_and_numbers():
     eastern = timezone(timedelta(hours=-4))
     rows = [

@@ -30,11 +30,12 @@ from market_intelligence.cross_asset_universe import (
     FX_WINDOWS,
     INSTRUMENT_BY_SYMBOL,
     YAHOO_CROSS_ASSET,
+    YahooInstrument,
 )
 from market_intelligence.crypto_analytics import calendar_return, drawdown_series, utc_observation_date
 from market_intelligence.fx_analytics import FX_WINDOWS as FX_RETURN_WINDOWS
 from market_intelligence.fx_analytics import levels_by_id, max_gap_days, observation_return, oriented_fx_level
-from market_intelligence.ingest_yahoo_cross_asset import bars_from_yahoo_frame, observation_date_for_bar
+from market_intelligence.ingest_yahoo_cross_asset import CrossAssetBar, bars_from_yahoo_frame, bars_not_after, observation_date_for_bar
 from market_intelligence.markets_analytics import normalize_selected_to_100
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -123,6 +124,16 @@ def test_normalized_fx_starts_at_100_and_keeps_gaps():
     assert result["series"]["EURUSD"][0] == (start, 100.0)
     assert result["series"]["GBPUSD"][0] == (start, 100.0)
     assert all(day != start + timedelta(days=1) for day, _value in result["series"]["EURUSD"])
+
+
+def test_cross_asset_ingest_drops_bars_after_the_session_day():
+    instrument = YahooInstrument("EURUSD", "EURUSD=X", "EUR", "FX", "YAHOO_FX", "fx_daily", "fx")
+    bars = [
+        CrossAssetBar(instrument, date(2026, 10, 6), 1.0, 1.0, 1.0, 1.0, 1.0),
+        CrossAssetBar(instrument, date(2026, 10, 7), 1.1, 1.1, 1.1, 1.1, 1.1),
+    ]
+    kept = bars_not_after(bars, date(2026, 10, 6))
+    assert [bar.bar_date for bar in kept] == [date(2026, 10, 6)]
 
 
 def test_crypto_utc_dates_do_not_shift_and_weekends_stay():

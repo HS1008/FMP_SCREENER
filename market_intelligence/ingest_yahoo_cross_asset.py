@@ -53,6 +53,26 @@ class YahooCrossAssetReport:
         }
 
 
+def bars_not_after(bars: Sequence[CrossAssetBar], today: date) -> list[CrossAssetBar]:
+    """Drop provider bars dated after the ingest session day."""
+    return [bar for bar in bars if bar.bar_date <= today]
+
+
+def _delete_future_bars(conn, instrument: YahooInstrument, today: date) -> None:
+    conn.execute(
+        text(
+            """
+            DELETE FROM mi_market_bars
+            WHERE instrument_id = :instrument_id
+              AND source_id = :source_id
+              AND bar_interval = '1D'
+              AND bar_date > :today
+            """
+        ),
+        {"instrument_id": instrument.instrument_id, "source_id": instrument.source_id, "today": today},
+    )
+
+
 def observation_date_for_bar(value: datetime | date, asset_class: str) -> date:
     """Crypto uses the UTC calendar day. Other Yahoo bars keep the provider timestamp's own date."""
     if isinstance(value, datetime) and asset_class == "CRYPTO":
@@ -267,6 +287,7 @@ def incremental_start(stored: date | None, *, today: date) -> date | None:
 def ingest_yahoo_cross_asset(engine, *, parent_run_id: str | None = None, today: date | None = None, mode: str = "incremental") -> YahooCrossAssetReport:
     """``mode='full'`` requests provider max history. Incremental uses a short lookback."""
     full = mode == "full"
+    session_day = today or date.today()
     written = 0
     symbols: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -284,9 +305,9 @@ def ingest_yahoo_cross_asset(engine, *, parent_run_id: str | None = None, today:
         for instrument in YAHOO_CROSS_ASSET:
             start = None
             if not full:
-                start = incremental_start(_latest_stored(conn, instrument), today=today or date.today())
+                start = incremental_start(_latest_stored(conn, instrument), today=session_day)
             try:
-                bars = fetch_yahoo_history(instrument, start=start)
+                bars = bars_not_after(fetch_yahoo_history(instrument, start=start), session_day)
             except Exception as exc:  # noqa: BLE001
                 errors.append(instrument.yahoo_symbol)
                 errors_by_source.setdefault(instrument.source_id, []).append(instrument.yahoo_symbol)
@@ -294,6 +315,7 @@ def ingest_yahoo_cross_asset(engine, *, parent_run_id: str | None = None, today:
                 continue
             try:
                 with conn.begin_nested():
+                    _delete_future_bars(conn, instrument, session_day)
                     count = upsert_cross_asset_bars(conn, bars, run_id=runs[(instrument.source_id, instrument.dataset)], retrieved_at=retrieved)
             except Exception as exc:  # noqa: BLE001
                 errors.append(instrument.yahoo_symbol)

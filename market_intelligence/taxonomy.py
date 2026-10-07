@@ -132,7 +132,11 @@ US_MARKET_SYMBOLS: tuple[str, ...] = _ordered_symbols(
     US_SNAPSHOT_SYMBOLS,
 )
 GLOBAL_MARKET_SYMBOLS: tuple[str, ...] = _ordered_symbols(GLOBAL_MARKET_ETFS)
-MARKET_MONITOR_SYMBOLS: tuple[str, ...] = _ordered_symbols(US_MARKET_SYMBOLS, GLOBAL_MARKET_SYMBOLS)
+MARKET_MONITOR_SYMBOLS: tuple[str, ...] = _ordered_symbols(
+    US_MARKET_SYMBOLS,
+    GLOBAL_MARKET_SYMBOLS,
+    tuple(SECTOR_PROXIES.values()),
+)
 
 # Industry ETF comparisons we actually have as listed ETFs. Empty means explicit unavailable.
 INDUSTRY_PROXIES: dict[str, dict[str, str]] = {

@@ -421,10 +421,18 @@ def _aligned_source_caption(panel: Mapping[str, Any]) -> None:
     basis = panel.get("adjustment_basis") or "unspecified"
     method = panel.get("method") or "equal_dollar_daily_rebalance_v1"
     st.caption(
-        "Shared EQUITY_EOD session endpoint {0}. Adjustment basis {1}. Sector ETFs, curated baskets, and SPY use these sessions. A missing endpoint or a different adjustment basis is N/A. Basket method {2}.".format(
+        "Shared EQUITY_EOD session endpoint {0}. Adjustment basis {1}. Curated stock baskets and their SPY comparison use these sessions. A missing endpoint or a different adjustment basis is N/A. Basket method {2}.".format(
             endpoint, basis, method
         )
     )
+    sector_endpoint = panel.get("sector_endpoint")
+    if sector_endpoint and str(sector_endpoint) != str(endpoint):
+        sector_basis = panel.get("sector_adjustment_basis") or "unspecified"
+        st.caption(
+            "Sector ETFs use Yahoo market-monitor closes through {0} ({1}). Relative sector performance subtracts that Yahoo SPY return. Stock baskets stay on the EQUITY_EOD endpoint above.".format(
+                sector_endpoint, sector_basis
+            )
+        )
 
 
 def _quote_snapshot(panel: Mapping[str, Any], quotes: Sequence[Mapping[str, Any]], *, mode: str) -> dict[str, Any]:
@@ -449,10 +457,16 @@ def _quote_snapshot(panel: Mapping[str, Any], quotes: Sequence[Mapping[str, Any]
     return {"panel": overlaid, "caption": caption}
 
 
-def _return_matrix(panel: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], *, mode: str) -> dict[str, Any]:
+def _return_matrix(
+    panel: Mapping[str, Any],
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    mode: str,
+    spy_returns: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     return subsector_matrix(
         rows,
-        panel.get("spy_returns") or {},
+        spy_returns if spy_returns is not None else (panel.get("spy_returns") or {}),
         mode=mode,
         spy_eod_returns=panel.get("spy_eod_returns"),
         spy_quote=panel.get("spy_quote_1d"),
@@ -488,7 +502,12 @@ def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
     rows = list(panel.get("sectors") or [])
     if not rows:
         return
-    matrix = _return_matrix(panel, rows, mode=analytical)
+    matrix = _return_matrix(
+        panel,
+        rows,
+        mode=analytical,
+        spy_returns=panel.get("sector_spy_returns") or panel.get("spy_returns"),
+    )
     st.caption(
         "Since open is the newest stored Yahoo price divided by the most recent regular-session open. "
         "Extended-hours prices are included when Yahoo supplies them. A missing open is N/A."

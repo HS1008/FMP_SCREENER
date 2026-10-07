@@ -46,6 +46,8 @@ from market_intelligence.markets_read import (
     choose_provider,
     load_monitor_history,
     market_monitor_coverage,
+    prefer_current_sector_records,
+    sector_monitor_symbols,
     yahoo_backfill_symbols,
 )
 from market_intelligence.read_models import _bounded_history_sql, rates_context, recent_observations
@@ -202,6 +204,36 @@ def test_global_proxy_map_is_the_curated_usd_etf_set():
         assert symbol in MARKET_MONITOR_SYMBOLS
         assert symbol not in UNIVERSE_SYMBOLS
         assert symbol in SERIES_POLICIES
+    for etf in SECTOR_PROXIES.values():
+        assert etf in MARKET_MONITOR_SYMBOLS
+    assert MARKET_MONITOR_SYMBOLS.index("SPY") < MARKET_MONITOR_SYMBOLS.index("XLK")
+
+
+def _price_record(day: date, price: float = 1.0) -> dict:
+    return {"prices": {day: price}, "adjustment_basis": "IBKR_ADJUSTED_LAST", "provider": "IBKR", "bars": [], "rejection": None}
+
+
+def test_newer_complete_monitor_history_replaces_the_sector_set_only():
+    old = date(2026, 9, 25)
+    new = date(2026, 10, 6)
+    symbols = sector_monitor_symbols()
+    equity = {symbol: _price_record(old) for symbol in symbols}
+    equity["AAPL"] = _price_record(old, 3.0)
+    incomplete = {symbol: _price_record(new, 2.0) for symbol in symbols if symbol != "XLK"}
+    chosen, source = prefer_current_sector_records(equity, incomplete)
+    assert source == EQUITY_EOD_SOURCE_ID
+    assert chosen["XLK"]["prices"][old] == 1.0
+    monitor = {symbol: _price_record(new, 2.0) for symbol in symbols}
+    for record in monitor.values():
+        record["provider"] = "YAHOO"
+        record["adjustment_basis"] = "SPLIT_ADJUSTED_UNKNOWN_DIVIDEND"
+    chosen, source = prefer_current_sector_records(equity, monitor)
+    assert source == MARKET_MONITOR_SOURCE_ID
+    assert chosen["XLK"]["prices"][new] == 2.0
+    assert "AAPL" not in chosen
+    tie = {symbol: _price_record(old, 2.0) for symbol in symbols}
+    _chosen, source = prefer_current_sector_records(equity, tie)
+    assert source == EQUITY_EOD_SOURCE_ID
 
 
 def test_yahoo_backfill_does_not_overwrite_another_provider():
@@ -688,6 +720,65 @@ def test_rates_history_query_stays_indexable_and_batched():
     batched = inspect.getsource(recent_observations)
     assert "JOIN LATERAL" in batched
     assert "IS NULL OR" not in batched
+
+
+def test_incremental_monitor_backfills_an_unseen_symbol_and_drops_a_future_bar(mi_db):
+    today = date(2026, 10, 6)
+    retrieved = datetime(2026, 10, 6, tzinfo=timezone.utc)
+    with mi_db.begin() as conn:
+        upsert_bars(
+            conn,
+            [
+                EquityBar(
+                    "SPY",
+                    today - timedelta(days=1),
+                    500.0,
+                    500.0,
+                    source_id=MARKET_MONITOR_SOURCE_ID,
+                    provider="YAHOO",
+                ),
+                EquityBar(
+                    "SPY",
+                    today + timedelta(days=1),
+                    501.0,
+                    501.0,
+                    source_id=MARKET_MONITOR_SOURCE_ID,
+                    provider="YAHOO",
+                ),
+            ],
+            run_id="seed",
+            retrieved_at=retrieved,
+            provider="YAHOO",
+        )
+    yahoo_bars = [
+        EquityBar("SPY", date(1993, 1, 29), 10.0, 10.0, provider="YAHOO"),
+        EquityBar("SPY", today, 510.0, 510.0, provider="YAHOO"),
+        EquityBar("XLK", date(1998, 12, 22), 20.0, 20.0, provider="YAHOO"),
+        EquityBar("XLK", today, 210.0, 210.0, provider="YAHOO"),
+        EquityBar("XLK", today + timedelta(days=1), 220.0, 220.0, provider="YAHOO"),
+    ]
+    report = ingest_market_monitor(
+        mi_db,
+        mode="incremental",
+        adapter=FixtureAdapter(bars=yahoo_bars),
+        today=today,
+        symbols=["SPY", "XLK"],
+    )
+    assert report["failed"] is False
+    with mi_db.connect() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT instrument_id, MIN(bar_date), MAX(bar_date)
+                FROM mi_market_bars
+                WHERE source_id = 'MARKET_MONITOR_EOD' AND instrument_id IN ('SPY', 'XLK')
+                GROUP BY instrument_id
+                """
+            )
+        ).all()
+    bounds = {row[0]: (row[1], row[2]) for row in rows}
+    assert bounds["SPY"] == (today - timedelta(days=1), today)
+    assert bounds["XLK"] == (date(1998, 12, 22), today)
 
 
 def test_verifier_treats_a_query_failure_as_a_failed_page():

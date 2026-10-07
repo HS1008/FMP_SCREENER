@@ -63,6 +63,12 @@
   align-items: center;
   gap: 6px;
   white-space: nowrap;
+  cursor: pointer;
+}
+
+.legend-item.legend-hidden {
+  opacity: 0.35;
+  text-decoration: line-through;
 }
 
 .legend-swatch {

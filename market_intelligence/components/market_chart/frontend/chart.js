@@ -113,8 +113,14 @@ function renderLegend(state, prepared) {
   for (index = 0; index < rows.length; index++) {
     var color = seriesColor(palette, colorSlot(rows[index], index));
     var label = rows[index].label || "Series " + String(index + 1);
+    var entry = state.seriesList && state.seriesList[index];
+    var hiddenClass = entry && entry.hidden ? " legend-hidden" : "";
     html +=
-      '<span class="legend-item"><span class="legend-swatch" style="background:' +
+      '<span class="legend-item' +
+      hiddenClass +
+      '" data-index="' +
+      String(index) +
+      '" role="button" tabindex="0" title="Show or hide this series"><span class="legend-swatch" style="background:' +
       color +
       '"></span>' +
       escapeHtml(label) +
@@ -597,6 +603,7 @@ function syncSeries(state, prepared) {
     for (runIndex = 0; runIndex < runs.length; runIndex++) {
       var run = runs[runIndex];
       entry.fragments[runIndex].setData(run);
+      entry.fragments[runIndex].applyOptions({ visible: !entry.hidden });
       var pointIndex;
       for (pointIndex = 0; pointIndex < run.length; pointIndex++) {
         entry.byTime[run[pointIndex].time] = run[pointIndex].value;
@@ -824,6 +831,34 @@ function createState(root) {
     applyRange(state, button.getAttribute("data-range"));
   };
   ranges.addEventListener("click", state.onRangeClick);
+  var legend = root.querySelector("#legend");
+  if (legend) {
+    state.onLegendClick = function (event) {
+      if (event.type === "keydown" && event.key !== "Enter" && event.key !== " ") {
+        return;
+      }
+      var item = event.target && event.target.closest ? event.target.closest(".legend-item") : null;
+      if (!item) {
+        return;
+      }
+      if (event.type === "keydown") {
+        event.preventDefault();
+      }
+      var index = Number(item.getAttribute("data-index"));
+      var entry = state.seriesList[index];
+      if (!entry) {
+        return;
+      }
+      entry.hidden = !entry.hidden;
+      var fragmentIndex;
+      for (fragmentIndex = 0; fragmentIndex < entry.fragments.length; fragmentIndex++) {
+        entry.fragments[fragmentIndex].applyOptions({ visible: !entry.hidden });
+      }
+      item.classList.toggle("legend-hidden", !!entry.hidden);
+    };
+    legend.addEventListener("click", state.onLegendClick);
+    legend.addEventListener("keydown", state.onLegendClick);
+  }
   return state;
 }
 
