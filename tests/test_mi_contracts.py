@@ -172,6 +172,17 @@ def test_curve_slope_requires_common_date_and_reports_missing_legs():
     assert common == d - timedelta(days=1) and missing == []
     slope_common = transforms.curve_slope(ten, two, common)
     assert slope_common.value == pytest.approx(20.0)
+    same_day, same_missing = transforms.common_curve_date({"DGS10": {d: 4.5}, "DGS2": {d: 4.2}}, d)
+    assert same_day == d and same_missing == []
+    later, later_missing = transforms.common_curve_date(
+        {"DGS10": {date(2024, 1, 2): 1.0}, "DGS2": {date(2024, 1, 5): 2.0}},
+        date(2024, 1, 5),
+    )
+    assert later == date(2024, 1, 5) and later_missing == ["DGS10"]
+    empty, empty_missing = transforms.common_curve_date({"DGS10": {d: 4.5}, "DGS2": {}}, d)
+    assert empty == d and empty_missing == ["DGS2"]
+    none, none_missing = transforms.common_curve_date({"DGS10": {}, "DGS2": {}}, d)
+    assert none is None and none_missing == ["DGS10", "DGS2"]
 
 
 def test_window_statistics_coverage_zero_variance_and_midrank():
