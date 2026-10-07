@@ -109,6 +109,7 @@ def test_migration_is_idempotent_and_additive():
         "044_yahoo_price_daily.sql",
         "045_treasury_auction_source.sql",
         "046_cross_asset_history_retrieved_at.sql",
+        "047_metric_latest_index_lookup.sql",
     ]
     assert "004_stage2_artifact_transport.sql" in names
     skipped = pending_migration_files(files, {path.name for path in files})
