@@ -393,19 +393,55 @@ def curve_butterfly(
     return TransformResult(pct_to_bps((2.0 * five) - two - ten), units, detail=detail)
 
 
+def _has_valid_on(rows: Sequence[tuple[date, float]], last: int, day: date) -> bool:
+    """True when ``day`` is a valid row at or before index ``last``."""
+    if last < 0:
+        return False
+    idx = _first_on_or_after(rows, day)
+    return idx <= last and idx < len(rows) and rows[idx][0] == day
+
+
 def common_curve_date(legs: Mapping[str, Mapping[date, Any]], as_of: date) -> tuple[date | None, list[str]]:
-    """Latest date <= as_of at which every leg with data has a value; also list legs missing there."""
-    candidates: set[date] = set()
-    for series in legs.values():
-        candidates.update(d for d, v in series.items() if _f(v) is not None and d <= as_of)
-    if not candidates:
+    """Latest date <= as_of at which every leg has a value; also list legs missing there.
+
+    A date present on every leg returns immediately. A gap walks backward from
+    each leg's latest valid row instead of rebuilding the full history.
+    """
+    prepared: list[tuple[str, list[tuple[date, float]], int]] = []
+    any_point = False
+    all_on_as_of = True
+    for name, series in legs.items():
+        rows = _sorted_valid(series)
+        end = _first_on_or_after(rows, as_of)
+        if end < len(rows) and rows[end][0] == as_of:
+            last = end
+        else:
+            last = end - 1
+            all_on_as_of = False
+        if last >= 0:
+            any_point = True
+        else:
+            all_on_as_of = False
+        prepared.append((name, rows, last))
+    if not any_point:
         return None, sorted(legs)
-    for d in sorted(candidates, reverse=True):
-        missing = [name for name, series in legs.items() if _f(series.get(d)) is None]
+    if all_on_as_of:
+        return as_of, []
+    idxs = [last for _name, _rows, last in prepared]
+    while True:
+        dated = [prepared[i][1][idxs[i]][0] for i in range(len(prepared)) if idxs[i] >= 0]
+        if not dated:
+            break
+        day = max(dated)
+        missing = [prepared[i][0] for i in range(len(prepared)) if idxs[i] < 0 or prepared[i][1][idxs[i]][0] != day]
         if not missing:
-            return d, []
-    best = max(candidates)
-    return best, [name for name, series in legs.items() if _f(series.get(best)) is None]
+            return day, []
+        for i in range(len(prepared)):
+            if idxs[i] >= 0 and prepared[i][1][idxs[i]][0] == day:
+                idxs[i] -= 1
+    best = max(rows[last][0] for _name, rows, last in prepared if last >= 0)
+    missing = [name for name, rows, last in prepared if not _has_valid_on(rows, last, best)]
+    return best, missing
 
 
 # ---- descriptive statistics ----------------------------------------------------------
