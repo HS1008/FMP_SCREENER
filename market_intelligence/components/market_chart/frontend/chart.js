@@ -479,18 +479,47 @@ function rangeStart(last, kind) {
   return "";
 }
 
+function plottedTimes(state) {
+  // Gap dates stay in state.times so the line can break, but they are not
+  // bars. Logical indexes have to follow the points that were actually drawn.
+  var times = [];
+  var i;
+  var seriesIndex;
+  for (i = 0; i < state.times.length; i++) {
+    var time = state.times[i];
+    for (seriesIndex = 0; seriesIndex < state.seriesList.length; seriesIndex++) {
+      var values = state.seriesList[seriesIndex].byTime;
+      if (values && typeof values[time] === "number") {
+        times.push(time);
+        break;
+      }
+    }
+  }
+  return times;
+}
+
 function applyRange(state, kind) {
   // Zoom inside the points Streamlit supplied. Does not fetch older data
   // and does not change the page's From/To selectors. Full range is fitContent.
-  var times = state.times;
+  var times = plottedTimes(state);
   if (!times.length) {
     return;
   }
-  var start = rangeStart(times[times.length - 1], kind);
-  if (!start) {
+  var end = times[times.length - 1];
+  if (!kind || kind === "Full range") {
+    state.rangeKind = "";
+    state.chart.timeScale().fitContent();
+    showAtTime(state, end);
     return;
   }
-  var fromIndex = times.length - 1;
+  var start = rangeStart(end, kind);
+  if (!start) {
+    state.rangeKind = "";
+    state.chart.timeScale().fitContent();
+    showAtTime(state, end);
+    return;
+  }
+  var fromIndex = 0;
   var i;
   for (i = 0; i < times.length; i++) {
     if (times[i] >= start) {
@@ -498,10 +527,16 @@ function applyRange(state, kind) {
       break;
     }
   }
+  var toIndex = times.length - 1;
+  if (toIndex <= fromIndex) {
+    fromIndex = Math.max(0, toIndex - 1);
+  }
+  state.rangeKind = kind;
   state.chart.timeScale().setVisibleLogicalRange({
     from: fromIndex - 0.5,
-    to: times.length - 1 + 0.5,
+    to: toIndex + 0.5,
   });
+  showAtTime(state, end);
 }
 
 function applyChartHeight(state, data) {
@@ -637,6 +672,7 @@ function createState(root) {
       borderVisible: true,
       timeVisible: false,
       secondsVisible: false,
+      minBarSpacing: 0.001,
       tickMarkFormatter: function (time, tickType) {
         var iso = timeToIso(time);
         var parts = iso.split("-");
@@ -685,6 +721,8 @@ function createState(root) {
     signature: null,
     data: null,
     gesture: null,
+    rangeKind: "",
+    didFit: false,
   };
   chart.subscribeCrosshairMove(function (param) {
     if (state.holdReadout) {
@@ -707,12 +745,20 @@ function createState(root) {
       applyChartHeight(state, state.data);
     }
     if (chart.autoSizeActive && chart.autoSizeActive()) {
+      if (container.clientWidth && !state.didFit && !state.rangeKind) {
+        state.didFit = true;
+        chart.timeScale().fitContent();
+      }
       return;
     }
     chart.applyOptions({
       width: container.clientWidth || 320,
       height: container.clientHeight || 320,
     });
+    if (container.clientWidth && !state.didFit && !state.rangeKind) {
+      state.didFit = true;
+      chart.timeScale().fitContent();
+    }
   });
   state.observer.observe(container);
   state.media = window.matchMedia ? window.matchMedia("(max-width: 699px)") : null;
@@ -819,8 +865,7 @@ function createState(root) {
   container.addEventListener("touchend", state.onTouchEnd, { passive: true });
   container.addEventListener("touchcancel", state.onTouchEnd, { passive: true });
   state.onReset = function () {
-    chart.timeScale().fitContent();
-    showAtTime(state, state.times.length ? state.times[state.times.length - 1] : null);
+    applyRange(state, "Full range");
   };
   reset.addEventListener("click", state.onReset);
   state.onRangeClick = function (event) {
@@ -1099,8 +1144,10 @@ function updateState(state, data) {
     syncSeries(state, prepared);
     state.times = times;
     state.signature = signature;
+    state.rangeKind = "";
+    state.didFit = !!state.container.clientWidth;
     state.chart.timeScale().fitContent();
-    showAtTime(state, times.length ? times[times.length - 1] : null);
+    showAtTime(state, plottedTimes(state).pop() || (times.length ? times[times.length - 1] : null));
   } else {
     var j;
     for (j = 0; j < prepared.length && j < state.seriesList.length; j++) {

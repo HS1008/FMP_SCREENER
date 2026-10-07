@@ -23,6 +23,16 @@ FRONTEND = ROOT / "frontend"
 PAGES_UI = Path(__file__).resolve().parents[1] / "market_intelligence" / "pages_ui.py"
 
 
+def test_range_buttons_zoom_plotted_points_not_gap_dates():
+    """Gap dates are not bars. Using them as logical indexes scrolls past the line."""
+    source = (FRONTEND / "chart.js").read_text(encoding="utf-8")
+    assert "function plottedTimes" in source
+    assert "times = plottedTimes(state)" in source
+    assert "to: times.length - 1 + 0.5" not in source
+    assert "minBarSpacing: 0.001" in source
+    assert 'kind === "Full range"' in source
+
+
 def test_legend_click_toggles_a_series():
     source = (FRONTEND / "chart.js").read_text(encoding="utf-8")
     css = (FRONTEND / "chart.css").read_text(encoding="utf-8")
