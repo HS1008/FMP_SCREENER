@@ -744,21 +744,21 @@ function createState(root) {
     if (state.data) {
       applyChartHeight(state, state.data);
     }
-    if (chart.autoSizeActive && chart.autoSizeActive()) {
-      if (container.clientWidth && !state.didFit && !state.rangeKind) {
-        state.didFit = true;
+    if (container.clientWidth && !state.didFit) {
+      state.didFit = true;
+      if (state.rangeKind) {
+        applyRange(state, state.rangeKind);
+      } else {
         chart.timeScale().fitContent();
       }
+    }
+    if (chart.autoSizeActive && chart.autoSizeActive()) {
       return;
     }
     chart.applyOptions({
       width: container.clientWidth || 320,
       height: container.clientHeight || 320,
     });
-    if (container.clientWidth && !state.didFit && !state.rangeKind) {
-      state.didFit = true;
-      chart.timeScale().fitContent();
-    }
   });
   state.observer.observe(container);
   state.media = window.matchMedia ? window.matchMedia("(max-width: 699px)") : null;
