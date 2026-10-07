@@ -100,16 +100,16 @@ def anchored_yoy_pct(obs: Mapping[date, Any], at: date, *, cadence: str = "W") -
     Monthly and quarterly series keep exact-date :func:`yoy_pct`.
     """
     rows = _sorted_valid(obs)
-    current = next((value for day, value in rows if day == at), None)
+    current = _value_on(rows, at)
     anchor = shift_months(at, -12)
     allowed = ALLOWED_ANCHOR_LAG_DAYS.get(cadence.upper(), 5)
     detail = {"at": at.isoformat(), "anchor_date": anchor.isoformat(), "months": 12, "allowed_lag_days": allowed, "cadence": cadence.upper()}
     if current is None:
         return _missing("pct", "missing_current", **detail)
-    candidates = [(day, value) for day, value in rows if day <= anchor]
-    if not candidates:
+    compared = _last_on_or_before(rows, anchor)
+    if compared is None:
         return _missing("pct", "no_observation_on_or_before_anchor", **detail)
-    cmp_date, cmp_value = candidates[-1]
+    cmp_date, cmp_value = compared
     lag = (anchor - cmp_date).days
     detail.update({"comparison_date": cmp_date.isoformat(), "anchor_lag_days": lag})
     if lag > allowed:
@@ -201,21 +201,103 @@ def pct_to_bps(value: float | None) -> float | None:
 
 # ---- comparison changes ------------------------------------------------------------
 
-def _sorted_valid(obs: Mapping[date, Any]) -> list[tuple[date, float]]:
+def _sorted_valid_uncached(obs: Mapping[date, Any]) -> list[tuple[date, float]]:
     rows = [(d, _f(v)) for d, v in obs.items()]
     return sorted((d, v) for d, v in rows if v is not None)
+
+
+class CachedObservations(dict):
+    """Observation map that sorts its valid rows once.
+
+    Transforms call ``sorted_rows``. A later write drops the cache. A plain dict
+    is sorted on every call, so a test that mutates it between calls stays correct.
+    """
+
+    def sorted_rows(self) -> list[tuple[date, float]]:
+        rows = getattr(self, "_sorted_rows", None)
+        if rows is None:
+            rows = _sorted_valid_uncached(self)
+            self._sorted_rows = rows
+        return rows
+
+    def _drop_cache(self) -> None:
+        self._sorted_rows = None
+
+    def __setitem__(self, key: date, value: Any) -> None:
+        self._drop_cache()
+        super().__setitem__(key, value)
+
+    def __delitem__(self, key: date) -> None:
+        self._drop_cache()
+        super().__delitem__(key)
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        self._drop_cache()
+        super().update(*args, **kwargs)
+
+    def clear(self) -> None:
+        self._drop_cache()
+        super().clear()
+
+    def setdefault(self, key: date, default: Any = None) -> Any:
+        self._drop_cache()
+        return super().setdefault(key, default)
+
+
+def _sorted_valid(obs: Mapping[date, Any]) -> list[tuple[date, float]]:
+    reader = getattr(obs, "sorted_rows", None)
+    if callable(reader):
+        return reader()
+    return _sorted_valid_uncached(obs)
+
+
+def _first_on_or_after(rows: Sequence[tuple[date, float]], day: date) -> int:
+    lo = 0
+    hi = len(rows)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if rows[mid][0] < day:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
+def _value_on(rows: Sequence[tuple[date, float]], day: date) -> float | None:
+    idx = _first_on_or_after(rows, day)
+    if idx < len(rows) and rows[idx][0] == day:
+        return rows[idx][1]
+    return None
+
+
+def _last_on_or_before(rows: Sequence[tuple[date, float]], day: date) -> tuple[date, float] | None:
+    idx = _first_on_or_after(rows, day)
+    if idx < len(rows) and rows[idx][0] == day:
+        return rows[idx]
+    if idx == 0:
+        return None
+    return rows[idx - 1]
+
+
+def valid_rows_through(obs: Mapping[date, Any], at: date) -> list[tuple[date, float]]:
+    """Valid observations on or before ``at``, oldest first."""
+    rows = _sorted_valid(obs)
+    idx = _first_on_or_after(rows, at)
+    if idx < len(rows) and rows[idx][0] == at:
+        return list(rows[: idx + 1])
+    return list(rows[:idx])
 
 
 def previous_observation_change(obs: Mapping[date, Any], at: date, *, units: str = "level", scale: float = 1.0) -> TransformResult:
     """Change versus the prior valid observation; flags gaps that are not one session."""
     rows = _sorted_valid(obs)
-    current = next((v for d, v in rows if d == at), None)
-    if current is None:
+    idx = _first_on_or_after(rows, at)
+    if idx >= len(rows) or rows[idx][0] != at:
         return _missing(units, "missing_current", at=at.isoformat())
-    prior = [(d, v) for d, v in rows if d < at]
-    if not prior:
+    if idx == 0:
         return _missing(units, "no_prior_observation", at=at.isoformat())
-    prior_date, prior_value = prior[-1]
+    current = rows[idx][1]
+    prior_date, prior_value = rows[idx - 1]
     gap = (at - prior_date).days
     detail = {"at": at.isoformat(), "comparison_date": prior_date.isoformat(), "gap_days": gap}
     result = TransformResult((current - prior_value) * scale, units, detail=detail)
@@ -237,7 +319,7 @@ def calendar_change(
 ) -> TransformResult:
     """Change versus the last observation on/before a calendar anchor within the allowed lag."""
     rows = _sorted_valid(obs)
-    current = next((v for d, v in rows if d == at), None)
+    current = _value_on(rows, at)
     if current is None:
         return _missing(units, "missing_current", at=at.isoformat())
     if months is not None:
@@ -247,11 +329,11 @@ def calendar_change(
     else:
         raise ValueError("days or months required")
     allowed = ALLOWED_ANCHOR_LAG_DAYS.get(cadence.upper(), 5)
-    candidates = [(d, v) for d, v in rows if d <= anchor]
+    compared = _last_on_or_before(rows, anchor)
     detail = {"at": at.isoformat(), "anchor_date": anchor.isoformat(), "allowed_lag_days": allowed}
-    if not candidates:
+    if compared is None:
         return _missing(units, "no_observation_on_or_before_anchor", **detail)
-    cmp_date, cmp_value = candidates[-1]
+    cmp_date, cmp_value = compared
     lag = (anchor - cmp_date).days
     detail.update({"comparison_date": cmp_date.isoformat(), "anchor_lag_days": lag})
     if lag > allowed:
@@ -352,10 +434,17 @@ def window_statistics(
     ``(at - window_days, at]`` inclusive of ``at``.
     """
     rows = _sorted_valid(obs)
-    current = next((v for d, v in rows if d == at), None)
+    current = _value_on(rows, at)
     start = at - timedelta(days=window_days)
-    window = [v for d, v in rows if start < d <= at]
-    first_date = next((d for d, v in rows if start < d <= at), None)
+    left = _first_on_or_after(rows, start)
+    if left < len(rows) and rows[left][0] == start:
+        left += 1
+    right = _first_on_or_after(rows, at)
+    if right < len(rows) and rows[right][0] == at:
+        right += 1
+    window_rows = rows[left:right] if left < right else []
+    window = [v for _d, v in window_rows]
+    first_date = window_rows[0][0] if window_rows else None
     detail = {
         "at": at.isoformat(),
         "window": label,
@@ -387,7 +476,9 @@ __all__ = [
     "ALLOWED_ANCHOR_LAG_DAYS",
     "ONE_SESSION_MAX_GAP_DAYS",
     "TRANSFORM_VERSION",
+    "CachedObservations",
     "TransformResult",
+    "valid_rows_through",
     "anchored_yoy_pct",
     "ann3m_pct",
     "ann6m_pct",

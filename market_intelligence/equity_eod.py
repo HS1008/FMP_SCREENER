@@ -947,14 +947,17 @@ def ingest_market_monitor(
 
     ``mode='max'`` requests history from 1990-01-01 (the provider returns the
     fund's actual inception onward). ``mode='incremental'`` requests the last
-    21 calendar days and does not redownload the full series. IBKR EQUITY_EOD
-    rows are not read, skipped, overwritten, or spliced. This does not open a
-    TWS socket and does not rewrite sector snapshots.
+    21 calendar days for a symbol that already has a monitor bar. A symbol with
+    no stored monitor bar still requests history from 1990-01-01, so a newly
+    added sector ETF gets a 3M/1Y window on the first incremental run. IBKR
+    EQUITY_EOD rows are not read, skipped, overwritten, or spliced. This does
+    not open a TWS socket and does not rewrite sector snapshots. Bars dated
+    after ``today`` are not stored, and any already stored bar after ``today``
+    for that symbol is deleted.
     """
     today = today or utcnow().date()
     if mode not in {"max", "incremental"}:
         raise ValueError("mode must be max or incremental")
-    start = MARKET_HISTORY_START if mode == "max" else today - timedelta(days=MARKET_INCREMENTAL_DAYS)
     adapter = adapter or YahooAdapter()
     requested = list(symbols or MARKET_MONITOR_SYMBOLS)
     errors: list[dict[str, str]] = []
@@ -991,11 +994,29 @@ def ingest_market_monitor(
         )
         retrieved = utcnow()
         for symbol in eligible:
+            if mode == "max":
+                start = MARKET_HISTORY_START
+            else:
+                stored = latest_stored_bar_date(conn, [symbol], source_id=MARKET_MONITOR_SOURCE_ID)
+                start = MARKET_HISTORY_START if stored is None else today - timedelta(days=MARKET_INCREMENTAL_DAYS)
             try:
-                bars = _monitor_bars(adapter.fetch([symbol], start, today))
+                fetched = adapter.fetch([symbol], start, today)
             except Exception as exc:  # noqa: BLE001 - one symbol must not discard the others
                 errors.append({"symbol": symbol, "error": exc.__class__.__name__})
                 continue
+            bars = [bar for bar in _monitor_bars(fetched) if bar.bar_date <= today]
+            conn.execute(
+                text(
+                    """
+                    DELETE FROM mi_market_bars
+                    WHERE instrument_id = :symbol
+                      AND source_id = :source_id
+                      AND bar_interval = '1D'
+                      AND bar_date > :today
+                    """
+                ),
+                {"symbol": symbol, "source_id": MARKET_MONITOR_SOURCE_ID, "today": today},
+            )
             if not bars:
                 errors.append({"symbol": symbol, "error": "no_bars"})
                 continue

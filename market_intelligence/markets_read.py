@@ -134,6 +134,60 @@ def us_markets_history(conn) -> dict[str, Any]:
     return load_monitor_history(conn, US_MARKET_SYMBOLS)
 
 
+def sector_monitor_symbols() -> list[str]:
+    """SPY plus the eleven sector ETFs, in heatmap order."""
+    symbols = [BENCHMARK_SPY]
+    for etf in SECTOR_PROXIES.values():
+        if etf not in symbols:
+            symbols.append(etf)
+    return symbols
+
+
+def _latest_price_date(record: Mapping[str, Any] | None) -> date | None:
+    prices = (record or {}).get("prices") or {}
+    return max(prices) if prices else None
+
+
+def prefer_current_sector_records(
+    equity: Mapping[str, Mapping[str, Any]],
+    monitor: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, dict[str, Any]], str]:
+    """Sector ETFs and SPY from Yahoo market-monitor when that history is newer.
+
+    The whole sector set moves together so the heatmap uses one adjustment basis.
+    A missing monitor series, or any monitor series older than its EQUITY_EOD
+    series, keeps the IBKR panel. A tie keeps EQUITY_EOD. Stock symbols are not
+    part of the returned map.
+    """
+    symbols = sector_monitor_symbols()
+    equity_spy = _latest_price_date(equity.get(BENCHMARK_SPY))
+    monitor_spy = _latest_price_date(monitor.get(BENCHMARK_SPY))
+    use_monitor = monitor_spy is not None and (equity_spy is None or monitor_spy > equity_spy)
+    if use_monitor:
+        for symbol in symbols:
+            monitor_day = _latest_price_date(monitor.get(symbol))
+            equity_day = _latest_price_date(equity.get(symbol))
+            if monitor_day is None or (equity_day is not None and monitor_day < equity_day):
+                use_monitor = False
+                break
+    source = MARKET_MONITOR_SOURCE_ID if use_monitor else EQUITY_EOD_SOURCE_ID
+    chosen_map = monitor if use_monitor else equity
+    chosen: dict[str, dict[str, Any]] = {}
+    for symbol in symbols:
+        record = chosen_map.get(symbol)
+        if isinstance(record, Mapping):
+            chosen[symbol] = dict(record)
+        else:
+            chosen[symbol] = {
+                "bars": [],
+                "prices": {},
+                "adjustment_basis": None,
+                "provider": None,
+                "rejection": "missing",
+            }
+    return chosen, source
+
+
 def load_equity_eod_closes(conn, symbols: Sequence[str], *, since: date | None = None) -> dict[str, dict[str, Any]]:
     """Adjusted EQUITY_EOD closes for ``symbols`` in one query.
 
@@ -142,6 +196,17 @@ def load_equity_eod_closes(conn, symbols: Sequence[str], *, since: date | None =
     More than one adjustment basis on the chosen provider rejects the series.
     ``since`` bounds the read when only recent session windows are needed.
     """
+    return _load_close_records(conn, symbols, view="mi_v_equity_daily_closes", since=since)
+
+
+def load_monitor_price_records(conn, symbols: Sequence[str], *, since: date | None = None) -> dict[str, dict[str, Any]]:
+    """Yahoo MARKET_MONITOR_EOD closes in the same record shape as EQUITY_EOD."""
+    return _load_close_records(conn, symbols, view="mi_v_market_monitor_closes", since=since)
+
+
+def _load_close_records(conn, symbols: Sequence[str], *, view: str, since: date | None) -> dict[str, dict[str, Any]]:
+    if view not in {"mi_v_equity_daily_closes", "mi_v_market_monitor_closes"}:
+        raise ValueError("unsupported close view")
     wanted = [str(symbol) for symbol in symbols]
     loaded: dict[str, dict[str, Any]] = {
         symbol: {"bars": [], "prices": {}, "adjustment_basis": None, "provider": None, "rejection": "missing"}
@@ -150,6 +215,7 @@ def load_equity_eod_closes(conn, symbols: Sequence[str], *, since: date | None =
     if not wanted:
         return loaded
     bound = "" if since is None else "  AND bar_date >= :since\n"
+    source_sql = "  AND source_id = 'EQUITY_EOD'\n" if view == "mi_v_equity_daily_closes" else ""
     params: dict[str, Any] = {"syms": wanted}
     if since is not None:
         params["since"] = since
@@ -157,12 +223,11 @@ def load_equity_eod_closes(conn, symbols: Sequence[str], *, since: date | None =
         text(
             """
             SELECT symbol, bar_date, adj_close_price, provider, adjustment_basis
-            FROM mi_v_equity_daily_closes
-            WHERE source_id = 'EQUITY_EOD'
-              AND adj_close_price IS NOT NULL
+            FROM {view}
+            WHERE adj_close_price IS NOT NULL
               AND symbol IN :syms
-            {bound}ORDER BY symbol, bar_date
-            """.format(bound=bound)
+            {source}{bound}ORDER BY symbol, bar_date
+            """.format(view=view, source=source_sql, bound=bound)
         ).bindparams(bindparam("syms", expanding=True)),
         params,
     ).all()
@@ -198,18 +263,7 @@ def load_equity_eod_closes(conn, symbols: Sequence[str], *, since: date | None =
     return loaded
 
 
-def aligned_us_equity_returns(conn) -> dict[str, Any]:
-    """One EQUITY_EOD load for SPY, sector ETFs, and curated basket members."""
-    symbols: list[str] = [BENCHMARK_SPY]
-    for etf in SECTOR_PROXIES.values():
-        if etf not in symbols:
-            symbols.append(etf)
-    for basket in stock_subsector_baskets():
-        for symbol in basket.members:
-            if symbol not in symbols:
-                symbols.append(symbol)
-    closes = load_equity_eod_closes(conn, symbols)
-    panel = build_aligned_us_panel(closes)
+def _iso_windows(panel: dict[str, Any]) -> None:
     endpoint = panel.get("endpoint")
     if isinstance(endpoint, date):
         panel["endpoint"] = endpoint.isoformat()
@@ -220,7 +274,45 @@ def aligned_us_equity_returns(conn) -> dict[str, Any]:
             continue
         windows[label] = {"start": bounds["start"].isoformat(), "end": bounds["end"].isoformat()}
     panel["windows"] = windows
+
+
+def aligned_us_equity_returns(conn) -> dict[str, Any]:
+    """EQUITY_EOD for stock baskets, and the newer of EQUITY_EOD or Yahoo for sector ETFs.
+
+    Sector rows switch to MARKET_MONITOR_EOD only when SPY and every sector ETF
+    have Yahoo history that is at least as new as the IBKR series. Stock baskets
+    stay on EQUITY_EOD and keep that panel's own SPY endpoint. Relative sector
+    performance uses ``sector_spy_returns`` from the same source as the sector rows.
+    """
+    symbols: list[str] = [BENCHMARK_SPY]
+    for etf in SECTOR_PROXIES.values():
+        if etf not in symbols:
+            symbols.append(etf)
+    for basket in stock_subsector_baskets():
+        for symbol in basket.members:
+            if symbol not in symbols:
+                symbols.append(symbol)
+    closes = load_equity_eod_closes(conn, symbols)
+    panel = build_aligned_us_panel(closes)
+    _iso_windows(panel)
     panel["symbols"] = symbols
+    sector_symbols = sector_monitor_symbols()
+    monitor: dict[str, dict[str, Any]] = {}
+    try:
+        with conn.begin_nested():
+            monitor = load_monitor_price_records(conn, sector_symbols)
+    except Exception:  # noqa: BLE001 - a missing monitor view keeps the EQUITY_EOD sector panel
+        monitor = {}
+    sector_records, sector_source = prefer_current_sector_records(closes, monitor)
+    if sector_source == MARKET_MONITOR_SOURCE_ID:
+        sector_panel = build_aligned_us_panel(sector_records, baskets=())
+        _iso_windows(sector_panel)
+        if sector_panel.get("sectors"):
+            panel["sectors"] = sector_panel["sectors"]
+            panel["sector_spy_returns"] = sector_panel.get("spy_returns") or {}
+            panel["sector_endpoint"] = sector_panel.get("endpoint")
+            panel["sector_adjustment_basis"] = sector_panel.get("adjustment_basis")
+            panel["sector_source_id"] = sector_source
     return panel
 
 

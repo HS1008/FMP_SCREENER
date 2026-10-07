@@ -24,10 +24,13 @@ from market_intelligence.catalog import (
     SeriesSpec,
 )
 from market_intelligence.nulls import strict_dumps
+from market_intelligence.source_resolve import EQUIVALENTS
 from market_intelligence.store import current_observations
 from market_intelligence.transforms import (
     TRANSFORM_VERSION,
+    CachedObservations,
     TransformResult,
+    valid_rows_through,
     anchored_yoy_pct,
     ann3m_pct,
     ann6m_pct,
@@ -134,8 +137,6 @@ def series_metrics(spec: SeriesSpec, obs: Mapping[date, Decimal | None], *, at: 
         return []
     if obs.get(at) is None:
         return withdrawn_series_metrics(spec, at)
-    if any(d > at for d in obs):
-        obs = {d: v for d, v in obs.items() if d <= at}
     rows: list[MetricRow] = []
     sid = spec.series_id
     cadence = spec.expected_frequency
@@ -316,7 +317,7 @@ def _quarterly_yoy(obs: Mapping[date, Decimal | None], at: date) -> TransformRes
 
 def _trailing_average(obs: Mapping[date, Decimal | None], at: date, n: int, units: str, *, period_days: int = 7) -> TransformResult:
     """Average of the last ``n`` valid observations, flagged when they span more than ``n`` periods."""
-    valid = sorted((d, float(v)) for d, v in obs.items() if v is not None and d <= at)
+    valid = valid_rows_through(obs, at)
     if len(valid) < n:
         return TransformResult(None, units, status="INSUFFICIENT_DATA", reason="fewer than {0} observations".format(n), detail={"at": at.isoformat()})
     window = valid[-n:]
@@ -337,10 +338,8 @@ def credit_snapshot_params(spec: SeriesSpec, obs: Mapping[date, Decimal | None],
         return None
     if obs.get(at) is None:
         return withdrawn_credit_params(spec, at)
-    if any(d > at for d in obs):
-        obs = {d: v for d, v in obs.items() if d <= at}
     current = float(obs[at])
-    valid_dates = sorted(d for d, v in obs.items() if v is not None)
+    valid_dates = [day for day, _value in valid_rows_through(obs, at)]
     n_total = len(valid_dates)
     chosen_label = None
     chosen: TransformResult | None = None
@@ -522,14 +521,12 @@ def build_analytics(conn, *, as_of: date | None = None, run_id: str | None = Non
     """
     report = AnalyticsReport()
     wanted = set(series_ids) if series_ids else None
-    observations: dict[str, dict[date, Decimal | None]] = {}
+    observations: dict[str, CachedObservations] = {}
     inputs_max: dict[str, Any] = {}
     for spec in CATALOG:
         if wanted and spec.series_id not in wanted:
             continue
-        obs = current_observations(conn, spec.series_id, end=as_of)
-        from market_intelligence.source_resolve import EQUIVALENTS
-
+        obs = CachedObservations(current_observations(conn, spec.series_id, end=as_of))
         for alt in EQUIVALENTS.get(spec.series_id, ()):
             if alt == spec.series_id:
                 continue

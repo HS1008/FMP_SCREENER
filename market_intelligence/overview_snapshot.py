@@ -9,9 +9,11 @@ numbers agree with that page:
 * US Indexes, Market Ratios, Global Equity Performance: ``MARKET_MONITOR_EOD``
   adjusted closes through :func:`markets_read.load_monitor_history` and the
   stored-session windows of :data:`markets_analytics.HORIZONS`.
-* Sectors: the shared ``EQUITY_EOD`` session panel of
+* Sectors: the shared session panel of
   :func:`markets_analytics.build_aligned_us_panel` (absolute mode of the US
-  Markets sector heatmap).
+  Markets sector heatmap). Yahoo ``MARKET_MONITOR_EOD`` is used when SPY and
+  every sector ETF are at least as new as ``EQUITY_EOD``; otherwise the IBKR
+  panel is kept.
 * Yield Curve: the same Treasury/FRED observations and
   :func:`source_resolve.resolve_observation` rule as Rates & Curve, with every
   bps move produced by the ingest's own ``transforms`` functions (so the stored
@@ -53,7 +55,12 @@ from market_intelligence.crypto_analytics import calendar_return
 from market_intelligence.fx_analytics import max_gap_days
 from market_intelligence.ibkr_live_universe import SECTOR_ETFS
 from market_intelligence.markets_analytics import HORIZONS, as_day, build_aligned_us_panel, price_ratio_points, session_window_returns
-from market_intelligence.markets_read import load_equity_eod_closes, load_monitor_history
+from market_intelligence.markets_read import (
+    load_equity_eod_closes,
+    load_monitor_history,
+    load_monitor_price_records,
+    prefer_current_sector_records,
+)
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.overview_metrics import (
     CRYPTO_DAYS_PER_YEAR,
@@ -607,7 +614,14 @@ def overview_snapshot(conn, *, today: date | None = None) -> dict[str, Any]:
     monitor = _guarded(conn, "market_monitor", lambda: load_monitor_history(conn, monitor_symbols, since=since), {}, errors)
     sector_symbols = [BENCHMARK_SPY, *SECTOR_PROXIES.values()]
     closes = _guarded(conn, "equity_eod", lambda: load_equity_eod_closes(conn, sector_symbols, since=since), {}, errors)
-    panel = build_aligned_us_panel(closes, baskets=())
+    monitor_sectors: dict[str, Any] = {}
+    try:
+        with conn.begin_nested():
+            monitor_sectors = load_monitor_price_records(conn, sector_symbols, since=since)
+    except Exception:  # noqa: BLE001 - missing monitor history keeps the EQUITY_EOD sector panel
+        monitor_sectors = {}
+    sector_closes, sector_source = prefer_current_sector_records(closes, monitor_sectors)
+    panel = build_aligned_us_panel(sector_closes, baskets=())
     credit = _guarded(conn, "credit", lambda: read_models.credit_context(conn), {}, errors)
     series_ids: list[str] = []
     for canonical in CURVE_TENORS.values():
@@ -657,11 +671,15 @@ def overview_snapshot(conn, *, today: date | None = None) -> dict[str, Any]:
             change_columns=SHORT_WINDOWS,
             change_kind="fraction",
             level_kind="price",
-            rows=_sector_rows(closes, panel, today=reference),
+            rows=_sector_rows(sector_closes, panel, today=reference),
             risk=True,
-            source="EQUITY_EOD adjusted closes on the shared SPY session calendar",
+            source=(
+                "MARKET_MONITOR_EOD Yahoo adjusted closes on the shared SPY session calendar"
+                if sector_source == "MARKET_MONITOR_EOD"
+                else "EQUITY_EOD adjusted closes on the shared SPY session calendar"
+            ),
             notes=(
-                "Sector ETF return between the shared EQUITY_EOD SPY session endpoints, the absolute mode of the US Markets sector heatmap. Select a row to open that sector's subsector heatmap.",
+                "Sector ETF return between the shared SPY session endpoints, the absolute mode of the US Markets sector heatmap. Yahoo market-monitor closes are used when they are current for every sector ETF; otherwise the row stays on EQUITY_EOD. Select a row to open that sector's subsector heatmap.",
                 RISK_METHODOLOGY,
             ),
         ),

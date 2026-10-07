@@ -123,6 +123,25 @@ def test_bps_scaling_reference_cases():
     assert transforms.pct_to_bps(None) is None
 
 
+def test_cached_observations_ignore_later_points_on_a_historical_date():
+    obs = transforms.CachedObservations(
+        {
+            date(2024, 12, 20): 4.25,
+            date(2024, 12, 23): 4.35,
+            date(2025, 1, 6): 4.40,
+        }
+    )
+    first = transforms.previous_observation_change(obs, date(2024, 12, 23), units="bps", scale=100)
+    second = transforms.previous_observation_change(obs, date(2024, 12, 23), units="bps", scale=100)
+    assert first.value == pytest.approx(10.0) and first.status == "OK"
+    assert second.value == first.value
+    assert second.detail["comparison_date"] == "2024-12-20"
+    calendar = transforms.calendar_change(obs, date(2024, 12, 23), days=3, cadence="D", units="bps", scale=100)
+    assert calendar.value == pytest.approx(10.0)
+    stats = transforms.window_statistics(obs, date(2024, 12, 23), window_days=10, min_observations=2, label="test")
+    assert stats.detail["observations"] == 2
+
+
 def test_previous_observation_change_flags_multi_session_gap():
     obs = {date(2024, 12, 20): 4.25, date(2024, 12, 23): 4.35, date(2025, 1, 6): 4.40}
     one_session = transforms.previous_observation_change(obs, date(2024, 12, 23), units="bps", scale=100)
