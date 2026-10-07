@@ -29,6 +29,54 @@ POS_COLOR = "#1e8449"
 LOW_POS_COLOR = "#d4ac0d"
 MISSING_COLOR = "#7f8c8d"
 
+# Pill badges shared by the US Equities index cards and the FOREX header.
+BADGE_COLORS: dict[str, tuple[str, str]] = {
+    "positive": ("#e5f6ec", "#0b6b3a"),
+    "negative": ("#fdecec", "#9b1c1c"),
+    "neutral": ("#f3f4f6", "#4b5563"),
+    "unavailable": ("#f3f4f6", "#4b5563"),
+}
+
+
+def html_text(value: Any) -> str:
+    """Escape text for an ``unsafe_allow_html`` fragment."""
+    return str(value).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+def classify_return(value: Any) -> str:
+    """positive, negative, neutral, or unavailable. Zero is neutral, not missing."""
+    if value is None or isinstance(value, bool):
+        return "unavailable"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return "unavailable"
+    if not math.isfinite(number):
+        return "unavailable"
+    if number > 0:
+        return "positive"
+    if number < 0:
+        return "negative"
+    return "neutral"
+
+
+def signed_percent(value: Any) -> str:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(float(value)):
+        return "—"
+    return "{0:+.2f}%".format(float(value) * 100.0)
+
+
+def return_badge(label: str, value: Any, *, title: str = "") -> str:
+    """Signed-percent pill. Missing shows N/A; it is never drawn as zero."""
+    kind = classify_return(value)
+    background, foreground = BADGE_COLORS[kind]
+    shown = "N/A" if kind == "unavailable" else signed_percent(value)
+    tip = ' title="{0}"'.format(html_text(title)) if title else ""
+    return (
+        '<span{4} style="display:inline-block;margin:2px 4px 0 0;padding:2px 8px;border-radius:999px;'
+        'font-size:12px;font-weight:650;line-height:1.5;background:{0};color:{1};">{2} {3}</span>'
+    ).format(background, foreground, html_text(label), shown, tip)
+
 
 def _run_readonly(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     with readonly_connection() as conn:

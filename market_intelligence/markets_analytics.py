@@ -424,6 +424,35 @@ def heatmap_cell_color(value: Any, max_abs: float) -> str:
     return _rgb(_lerp(_HEAT_NEUTRAL, _HEAT_RED, -weight))
 
 
+_HEAT_AMBER = (191, 134, 46)
+
+
+def magnitude_color_scale(values: Sequence[Any]) -> dict[str, Any]:
+    """Sequential scale for a non-negative magnitude column such as volatility.
+
+    Colour runs from neutral at the column minimum to amber at the column
+    maximum. It is not green/red: a higher volatility is not "better" and must
+    not borrow the return palette. A single-valued column is degenerate.
+    """
+    finite = [number for number in (_finite(value) for value in values) if number is not None]
+    if not finite:
+        return {"min": None, "max": None, "degenerate": True}
+    low = min(finite)
+    high = max(finite)
+    return {"min": low, "max": high, "degenerate": (high - low) <= 1e-12}
+
+
+def magnitude_cell_color(value: Any, scale: Mapping[str, Any]) -> str:
+    """Neutral to amber by position inside the column's [min, max]. Missing stays neutral."""
+    number = _finite(value)
+    low = _finite(scale.get("min"))
+    high = _finite(scale.get("max"))
+    if number is None or low is None or high is None or bool(scale.get("degenerate")):
+        return _rgb(_HEAT_NEUTRAL)
+    weight = (number - low) / (high - low)
+    return _rgb(_lerp(_HEAT_NEUTRAL, _HEAT_AMBER, weight))
+
+
 def running_peak_drawdown(prices: Sequence[Any]) -> list[float | None]:
     """Drawdown versus the running peak: price / peak - 1. Never positive.
 
@@ -1141,6 +1170,7 @@ def subsector_matrix(
         matrix_rows.append(
             {
                 "label": str(row.get("industry") or row.get("label") or ""),
+                "symbol": str(row.get("symbol") or "") or None,
                 "values": values,
                 "notes": notes,
                 "constituents": list(row.get("constituents") or []),

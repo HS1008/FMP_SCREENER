@@ -3,8 +3,9 @@
 Sections follow ``Market_Overview_Template.xlsx`` in order. Each section has a
 chevron that only collapses/expands it (state kept in ``st.session_state`` so it
 survives reruns and returning to the page) and a title that only navigates to
-the full page and subsection. Sector rows open the US Markets subsector heatmap
-with that sector pre-selected through its canonical mapping.
+the full page and subsection. In the Sectors section each instrument name is a
+link that opens the US Markets subsector heatmap with that sector pre-selected
+through its canonical mapping (keyed by the sector ETF, not the display text).
 
 The Excel export and the tables read the same ``overview_snapshot`` read model;
 nothing on this page fetches, recalculates, or writes.
@@ -18,7 +19,8 @@ from typing import Any, Mapping, Sequence
 import pandas as pd
 import streamlit as st
 
-from market_intelligence.navigation_links import clear_origin, navigate_to
+from market_intelligence.components.link_table import link_table
+from market_intelligence.navigation_links import clear_origin, drill_to_subsector, navigate_to
 from market_intelligence.overview_export import EXCEL_MIME, EXPORT_TZ, export_filename, fill_template
 from market_intelligence.overview_snapshot import SECTION_SECTORS, STALE_AFTER_DAYS
 from market_intelligence.page_registry import PAGE_BY_ROUTE
@@ -178,20 +180,7 @@ def render_section(section: Mapping[str, Any]) -> None:
     key = "overview_table_{0}".format(section_id)
     height = table_height(len(rows))
     if section_id == SECTION_SECTORS:
-        event = st.dataframe(
-            _styled(frame, signed),
-            key=key,
-            hide_index=True,
-            use_container_width=True,
-            height=height,
-            on_select="rerun",
-            selection_mode="single-row",
-        )
-        selected = list(getattr(getattr(event, "selection", None), "rows", []) or [])
-        if selected:
-            _drill(rows[int(selected[0])])
-        st.caption("Select a sector row, or one of the tiles below, to open that sector's subsector heatmap on US Markets.")
-        render_sector_tiles(rows)
+        render_sector_link_table(section, frame, signed, key=key)
     else:
         st.dataframe(_styled(frame, signed), key=key, hide_index=True, use_container_width=True, height=height)
     notes = section.get("notes") or []
@@ -223,21 +212,67 @@ def _drill(row: Mapping[str, Any]) -> None:
         navigate_to(str(drill["route_id"]), anchor=drill.get("anchor"), state=drill.get("state") or {})
 
 
-def render_sector_tiles(rows: Sequence[Mapping[str, Any]]) -> None:
-    """One small button per canonical sector; each opens the subsector heatmap for that sector."""
-    with st.container(horizontal=True):
-        for row in rows:
-            drill = row.get("drill") or {}
-            if not drill.get("route_id"):
-                continue
-            label = str(row.get("label"))
-            if st.button(
-                label,
-                key="overview_sector_tile_{0}".format(row.get("key")),
-                type="secondary",
-                help="Open the {0} subsector heatmap on US Markets.".format(label),
-            ):
-                _drill(row)
+def _cell_tone(text: Any, *, signed: bool) -> str:
+    value = str(text or "")
+    if value in ("", MISSING_TEXT):
+        return "missing"
+    if not signed:
+        return "plain"
+    if value.startswith("-"):
+        return "negative"
+    if value.startswith("+") and value.lstrip("+").rstrip("% bps").strip("0.") != "":
+        return "positive"
+    return "plain"
+
+
+def sector_link_rows(section: Mapping[str, Any], frame: pd.DataFrame, signed: Sequence[str]) -> list[dict[str, Any]]:
+    """Link-table rows for the sectors section: stable ETF key, pre-formatted cells, tones.
+
+    Only rows that carry a drill target are clickable; the id is the row key
+    (sector ETF symbol), never the displayed name.
+    """
+    out: list[dict[str, Any]] = []
+    rows = list(section.get("rows") or [])
+    signed_set = set(signed)
+    for index, row in enumerate(rows):
+        if index >= len(frame):
+            break
+        record = frame.iloc[index]
+        cells = [{"text": str(record[column]), "tone": _cell_tone(record[column], signed=column in signed_set)} for column in frame.columns]
+        if cells:
+            cells[0] = {"text": str(record[frame.columns[0]]), "tone": "plain"}
+        out.append(
+            {
+                "id": str(row.get("key") or row.get("label")),
+                "cells": cells,
+                "help": "Open the {0} subsector heatmap on US Markets.".format(row.get("label")),
+            }
+        )
+    return out
+
+
+def render_sector_link_table(section: Mapping[str, Any], frame: pd.DataFrame, signed: Sequence[str], *, key: str) -> None:
+    """Sectors table whose instrument names open that sector's subsector heatmap."""
+    rows = list(section.get("rows") or [])
+    by_key = {str(row.get("key") or row.get("label")): row for row in rows}
+
+    def open_sector(row_id: str) -> None:
+        # Same resolver as the US Markets sector-row click; the snapshot's own
+        # drill payload is the fallback for a key the resolver does not know.
+        if drill_to_subsector(row_id):
+            return
+        row = by_key.get(row_id)
+        if row is not None:
+            _drill(row)
+
+    link_table(
+        [str(column) for column in frame.columns],
+        sector_link_rows(section, frame, signed),
+        key=key,
+        on_row_click=open_sector,
+        link_help="Opens this sector in the US Markets subsector heatmap.",
+    )
+    st.caption("Click a sector name to open that sector's subsector heatmap on US Markets.")
 
 
 def _section_as_of(section: Mapping[str, Any]) -> str:

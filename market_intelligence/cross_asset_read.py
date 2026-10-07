@@ -33,7 +33,7 @@ from market_intelligence.cross_asset_universe import (
     MOVE_SOURCE_NOTE,
     USDCNH_SOURCE_NOTE,
 )
-from market_intelligence.fx_analytics import levels_by_id
+from market_intelligence.fx_analytics import latest_window_returns, levels_by_id
 from market_intelligence.markets_analytics import as_day
 from market_intelligence.overview_metrics import observation_returns
 
@@ -181,30 +181,77 @@ def _eia_history(conn) -> dict[str, dict[str, Any]]:
     return grouped
 
 
+FX_CARD_WINDOWS: tuple[tuple[str, int], ...] = tuple(item for item in FX_WINDOWS if item[0] in {"1D", "1W", "1M"})
+FX_CARD_STALE_AFTER_DAYS = 5
+
+
 def _card(label: str, points: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     last = next((row for row in reversed(list(points)) if row.get("value") is not None), None)
     return {"label": label, "value": None if last is None else last.get("value"), "as_of": None if last is None else last.get("as_of")}
+
+
+def fx_header_card(
+    instrument_id: str,
+    label: str,
+    points: Sequence[tuple[date, float]],
+    *,
+    latest: date | None,
+    stale_after_days: int = FX_CARD_STALE_AFTER_DAYS,
+) -> dict[str, Any]:
+    """Header card in the displayed quote convention (positive = the shown pair rose).
+
+    Returns reuse ``latest_window_returns`` on the raw pair levels, so they are
+    the heatmap's definitions (provider observations, gap guard) without the
+    foreign-vs-USD inversion. A card whose newest observation trails the newest
+    FX observation by more than ``stale_after_days`` is flagged stale.
+    """
+    series = [(day, value) for day, value in points if value is not None]
+    last = series[-1] if series else None
+    as_of = last[0] if last is not None else None
+    returns = latest_window_returns(series, FX_CARD_WINDOWS) if series else {name: None for name, _lag in FX_CARD_WINDOWS}
+    stale = bool(as_of is not None and latest is not None and (latest - as_of).days > stale_after_days)
+    return {
+        "instrument_id": instrument_id,
+        "label": label,
+        "value": None if last is None else last[1],
+        "as_of": as_of,
+        "returns": {name: returns.get(name) for name, _lag in FX_CARD_WINDOWS},
+        "stale": stale,
+    }
+
+
+def forex_header_cards(
+    levels: Mapping[str, Sequence[tuple[date, float]]],
+    *,
+    latest: date | None,
+) -> list[dict[str, Any]]:
+    """One card per ``FX_INSTRUMENTS`` entry in config order. DXY appears exactly once."""
+    cards: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for spec in FX_INSTRUMENTS:
+        if spec.instrument_id in seen:
+            continue
+        seen.add(spec.instrument_id)
+        label = "DXY" if spec.instrument_id == "DXY" else spec.display_name
+        cards.append(fx_header_card(spec.instrument_id, label, levels.get(spec.instrument_id) or [], latest=latest))
+    return cards
 
 
 def forex_context(conn) -> dict[str, Any]:
     bars = _yahoo_bars(conn)
     fx_ids = {row.instrument_id for row in FX_INSTRUMENTS}
     fx_bars = [row for row in bars if row["instrument_id"] in fx_ids]
-    pairs = {row.instrument_id: _points(levels_by_id(fx_bars, instrument_id=row.instrument_id, orient=False)) for row in FX_INSTRUMENTS if row.instrument_id != "DXY"}
+    raw_levels = {row.instrument_id: levels_by_id(fx_bars, instrument_id=row.instrument_id, orient=False) for row in FX_INSTRUMENTS}
+    pairs = {instrument_id: _points(levels) for instrument_id, levels in raw_levels.items() if instrument_id != "DXY"}
     versus = {instrument_id: _points(levels_by_id(fx_bars, instrument_id=instrument_id, orient=True)) for instrument_id, _label in CURRENCY_VS_USD}
-    dxy = _points(levels_by_id(fx_bars, instrument_id="DXY", orient=False))
+    dxy = _points(raw_levels.get("DXY") or [])
     earliest, latest = _bounds([dxy, *pairs.values(), *versus.values()])
     return {
         "status": "OK" if dxy or any(pairs.values()) else "EMPTY",
         "dxy": dxy,
         "pairs": pairs,
         "versus_usd": versus,
-        "cards": [
-            _card("DXY", dxy),
-            _card("EUR/USD", pairs.get("EURUSD") or []),
-            _card("USD/JPY", pairs.get("USDJPY") or []),
-            _card("USD/CNH", pairs.get("USDCNH") or []),
-        ],
+        "cards": forex_header_cards(raw_levels, latest=latest),
         "earliest": earliest,
         "latest": latest,
         "usdcnh_note": USDCNH_SOURCE_NOTE,

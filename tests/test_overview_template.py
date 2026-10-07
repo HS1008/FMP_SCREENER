@@ -13,7 +13,10 @@ import pytest
 from openpyxl import load_workbook
 from streamlit.testing.v1 import AppTest
 
+from market_intelligence import navigation_links
 from market_intelligence import overview_snapshot as snapshot_module
+from market_intelligence.navigation_links import PENDING_SCROLL_KEY, SUBSECTOR_SELECTOR_KEY, drill_to_subsector, subsector_drill
+from market_intelligence.overview_ui import section_frame, sector_link_rows
 from market_intelligence.cross_asset_universe import CURRENCY_VS_USD, FX_PAIRS, INSTRUMENT_BY_ID, MOVE_INSTRUMENT, YAHOO_CROSS_ASSET
 from market_intelligence.ibkr_live_universe import STOCK_GROUPS, SUBSECTOR_ETFS, subsector_groups
 from market_intelligence.ingest_yahoo_cross_asset import incremental_start
@@ -349,7 +352,11 @@ def test_overview_page_renders_template_sections_from_one_snapshot(monkeypatch, 
     labels = [button.label for button in at.button]
     for title in ("US Indexes", "Market Ratios", "Sectors", "Yield Curve", "Credit Spreads", "VIX Term Structure", "Global Equity Performance", "Commodities", "FOREX", "Crypto"):
         assert title in labels
-    assert len(at.dataframe) == len(SECTION_ORDER)
+    # Sectors is the one section drawn as a clickable-name link table instead of a dataframe.
+    assert len(at.dataframe) == len(SECTION_ORDER) - 1
+    assert not [button for button in at.button if button.key and button.key.startswith("overview_sector_tile_")], "tile buttons were replaced by clickable names"
+    captions = [str(c.value) for c in at.caption]
+    assert any("Click a sector name" in c for c in captions)
     heads = [h.value for h in at.subheader]
     assert "What matters" not in heads and "Category snapshot" not in heads
     assert any("Export to Excel" in str(getattr(widget, "label", "")) for widget in at.get("download_button")) or "Export to Excel" in str(at)
@@ -363,7 +370,9 @@ def test_overview_sections_collapse_independently_and_persist(monkeypatch, snaps
     toggle.click().run()
     assert not at.exception, [e.value for e in at.exception]
     assert at.session_state["overview_sections_collapsed"] == {"sectors": True}
+    # Collapsing Sectors hides its link table; the nine dataframe sections stay.
     assert len(at.dataframe) == len(SECTION_ORDER) - 1
+    assert not any("Click a sector name" in str(c.value) for c in at.caption)
     at.run()  # plain rerun keeps the collapsed state
     assert len(at.dataframe) == len(SECTION_ORDER) - 1
     other = next(button for button in at.button if button.key == "overview_toggle_forex")
@@ -372,20 +381,68 @@ def test_overview_sections_collapse_independently_and_persist(monkeypatch, snaps
     assert len(at.dataframe) == len(SECTION_ORDER) - 2
 
 
-def test_sector_tile_primes_subsector_selector_and_switches_page(monkeypatch, snapshot):
+def test_sector_link_rows_carry_stable_etf_ids_and_formatted_cells(snapshot):
+    section = section_by_id(snapshot, SECTION_SECTORS)
+    frame, signed = section_frame(section)
+    rows = sector_link_rows(section, frame, signed)
+    assert [row["id"] for row in rows] == [SECTOR_PROXIES[sector] for sector in CANONICAL_SECTORS]
+    assert [row["cells"][0]["text"] for row in rows] == list(CANONICAL_SECTORS)
+    assert all(row["cells"][0]["tone"] == "plain" for row in rows)
+    assert all(len(row["cells"]) == len(frame.columns) for row in rows)
+    tech = next(row for row in rows if row["id"] == "XLK")
+    by_column = dict(zip(frame.columns, tech["cells"]))
+    assert by_column["1D"]["tone"] in {"positive", "negative", "plain"}
+    utilities = next(row for row in rows if row["id"] == "XLU")
+    assert dict(zip(frame.columns, utilities["cells"]))["Level"]["tone"] == "missing"
+    assert "subsector heatmap" in tech["help"]
+
+
+def test_sector_name_click_primes_subsector_selector_and_switches_page(monkeypatch, snapshot):
+    """The link-table click is delivered as a component trigger; drive the Python handler directly."""
+    captured: dict = {}
+
+    def fake_link_table(columns, rows, *, key, on_row_click=None, link_help=""):
+        captured["columns"] = list(columns)
+        captured["rows"] = list(rows)
+        captured["key"] = key
+        captured["handler"] = on_row_click
+
+    monkeypatch.setattr("market_intelligence.overview_ui.link_table", fake_link_table)
     at = _overview_app(monkeypatch, snapshot)
-    tiles = [button for button in at.button if button.key and button.key.startswith("overview_sector_tile_")]
-    assert [button.label for button in tiles] == list(CANONICAL_SECTORS)
+    assert captured["key"] == "overview_table_sectors"
+    assert captured["columns"][0] == "Instrument"
+    assert [row["id"] for row in captured["rows"]] == [SECTOR_PROXIES[sector] for sector in CANONICAL_SECTORS]
+    calls: list = []
+    primed: dict = {}
+
+    def fake_navigate(route_id, *, anchor=None, state=None, origin="overview"):
+        primed.update({"route_id": route_id, "anchor": anchor, "state": dict(state or {}), "origin": origin})
+        calls.append(route_id)
+
+    monkeypatch.setattr(navigation_links, "navigate_to", fake_navigate)
+    captured["handler"]("XLK")
+    assert calls == ["us_markets"]
+    assert primed == {"route_id": "us_markets", "anchor": "subsector-performance", "state": {"us_subsector_sector": "Tech"}, "origin": "overview"}
+    assert not at.exception, [e.value for e in at.exception]
+
+
+def test_navigate_to_primes_subsector_selector_and_switches_page(monkeypatch, snapshot):
+    """The shared drill primes the selector, remembers the scroll anchor once, and switches page."""
+    assert subsector_drill("XLK") == {"route_id": "us_markets", "anchor": "subsector-performance", "state": {"us_subsector_sector": "Tech"}}
+    assert subsector_drill("Technology") == subsector_drill("XLK") == subsector_drill("Tech")
+    assert subsector_drill("not-a-sector") is None
+    at = _overview_app(monkeypatch, snapshot)
     calls: list = []
     monkeypatch.setattr("market_intelligence.navigation_links.st.switch_page", lambda target: calls.append(target))
-    next(button for button in tiles if button.label == "Technology").click().run()
-    assert not at.exception, [e.value for e in at.exception]
-    assert at.session_state["us_subsector_sector"] == "Tech"
-    assert at.session_state["mi_pending_scroll_anchor"] == "subsector-performance"
+    monkeypatch.setattr("market_intelligence.navigation_links.st.session_state", at.session_state)
+    assert drill_to_subsector("XLK") is True
+    assert at.session_state[SUBSECTOR_SELECTOR_KEY] == "Tech"
+    assert at.session_state[PENDING_SCROLL_KEY] == "subsector-performance"
     # Outside dashboard.py the target is the script path; when st.navigation is live it is the registered st.Page.
     assert len(calls) == 1
     target = calls[0]
     assert target == "pages/22_US_Markets.py" or "22_US_Markets" in str(getattr(target, "_page", target))
+    assert drill_to_subsector("not-a-sector") is False and len(calls) == 1
 
 
 def test_overview_page_does_not_fetch_or_write(monkeypatch, snapshot):

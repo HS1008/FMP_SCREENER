@@ -2,7 +2,12 @@
 
 Streamlit does not import this module. Rows live in ``mi_market_bars`` under
 ``YAHOO_PRICE_DAILY``, separate from MARKET_MONITOR_EOD chart history.
-Closes are Yahoo's split-adjusted Close with ``auto_adjust=False`` (not Adj Close).
+``close_price`` is Yahoo's split-adjusted Close with ``auto_adjust=False`` and
+drives the 1W-1Y price-return columns. ``adj_close_price`` is Yahoo's dividend-
+and split-adjusted Adj Close from the same download; it feeds the realized
+volatility and Sharpe columns only. Yahoo restates the whole Adj Close history
+on every dividend, so a dividend (like a split) triggers a full-window repair
+and the stored series stays on one vintage.
 """
 
 from __future__ import annotations
@@ -76,11 +81,13 @@ def parse_daily_closes(frame: Any, symbol: str) -> list[dict[str, Any]]:
                 "symbol": symbol,
                 "bar_date": day,
                 "close": close,
+                "adj_close": valid_price(raw.get("Adj Close")),
                 "open": valid_price(raw.get("Open")),
                 "high": valid_price(raw.get("High")),
                 "low": valid_price(raw.get("Low")),
                 "volume": raw.get("Volume"),
                 "split": split,
+                "dividend": valid_price(raw.get("Dividends")),
                 "basis": PRICE_RETURN_BASIS,
             }
         )
@@ -99,6 +106,19 @@ def series_has_split(rows: Sequence[Mapping[str, Any]]) -> bool:
         if ratio != 1:
             return True
     return False
+
+
+def series_has_dividend(rows: Sequence[Mapping[str, Any]]) -> bool:
+    """A cash dividend restates every earlier Adj Close, so it needs the same repair as a split."""
+    for row in rows:
+        dividend = _finite(row.get("dividend"))
+        if dividend is not None and dividend > 0:
+            return True
+    return False
+
+
+def series_needs_repair(rows: Sequence[Mapping[str, Any]]) -> bool:
+    return series_has_split(rows) or series_has_dividend(rows)
 
 
 def _finite(value: Any) -> float | None:
@@ -168,6 +188,30 @@ def load_existing_dates(conn, symbols: Sequence[str]) -> dict[str, set[date]]:
     return found
 
 
+def symbols_missing_adj_close(conn, symbols: Sequence[str]) -> set[str]:
+    """Symbols whose stored completed bars predate the Adj Close column.
+
+    Those rows were written before dividend-adjusted closes were stored. One
+    full-window repair fills them; the progress state remembers the attempt so
+    a symbol Yahoo never adjusts does not repair on every cycle.
+    """
+    if not symbols:
+        return set()
+    statement = text(
+        """
+        SELECT DISTINCT instrument_id
+        FROM mi_market_bars
+        WHERE source_id = :source
+          AND bar_interval = '1D'
+          AND instrument_id IN :symbols
+          AND adj_close_price IS NULL
+          AND COALESCE(bar_quality, 'COMPLETE') <> 'PROVISIONAL'
+        """
+    ).bindparams(bindparam("symbols", expanding=True))
+    rows = conn.execute(statement, {"source": PRICE_RETURN_SOURCE, "symbols": list(symbols)}).mappings().all()
+    return {str(row["instrument_id"]) for row in rows}
+
+
 def _ensure_source(conn) -> None:
     conn.execute(
         text(
@@ -178,18 +222,31 @@ def _ensure_source(conn) -> None:
             ) VALUES (
                 :sid, 'Yahoo Finance (yfinance, unofficial)', 'dashboard_price_history', TRUE,
                 'COLLECTOR_ACTIVE', '', 'D', CAST(:units AS JSONB), 'INTERNAL_ONLY',
-                'Split-adjusted daily closes for dashboard price returns. Not dividend-adjusted. '
+                'Split-adjusted daily closes for dashboard price returns (cash dividends excluded) plus the '
+                'dividend- and split-adjusted Adj Close used only for realized volatility and Sharpe. '
                 'Not MARKET_MONITOR_EOD and not EQUITY_EOD.',
                 'Yahoo Finance via yfinance (unofficial; no SLA).',
-                'yahoo_price_daily_v1', NOW()
+                'yahoo_price_daily_v2', NOW()
             )
             ON CONFLICT (source_id) DO UPDATE SET
                 terms_notes = EXCLUDED.terms_notes,
+                units_metadata = EXCLUDED.units_metadata,
+                catalog_version = EXCLUDED.catalog_version,
                 enabled = TRUE,
                 updated_at = NOW()
             """
         ),
-        {"sid": PRICE_RETURN_SOURCE, "units": strict_dumps({"price": "split_adjusted_close", "dividends": "excluded"})},
+        {
+            "sid": PRICE_RETURN_SOURCE,
+            "units": strict_dumps(
+                {
+                    "price": "split_adjusted_close",
+                    "dividends": "excluded",
+                    "adj_close_price": "dividend_and_split_adjusted_close",
+                    "adj_close_usage": "realized_volatility_and_sharpe_only",
+                }
+            ),
+        },
     )
 
 
@@ -235,6 +292,7 @@ def _write_bars(conn, rows: Sequence[Mapping[str, Any]], *, now: datetime, run_i
                 "high": valid_price(row.get("high")),
                 "low": valid_price(row.get("low")),
                 "close": close,
+                "adj_close": valid_price(row.get("adj_close")),
                 "volume": _finite(row.get("volume")),
                 "basis": PRICE_RETURN_BASIS,
                 "quality": quality,
@@ -250,12 +308,12 @@ def _write_bars(conn, rows: Sequence[Mapping[str, Any]], *, now: datetime, run_i
         """
         INSERT INTO mi_market_bars (
             instrument_id, source_id, bar_interval, bar_date, bar_ts,
-            open_price, high_price, low_price, close_price, volume,
+            open_price, high_price, low_price, close_price, adj_close_price, volume,
             currency, adjustment_basis, bar_quality, retrieved_at, ingestion_run_id,
             first_seen_at, last_seen_at, provider_symbol, provider
         ) VALUES (
             :instrument_id, :source_id, '1D', :bar_date, :bar_ts,
-            :open, :high, :low, :close, :volume,
+            :open, :high, :low, :close, :adj_close, :volume,
             'USD', :basis, :quality, :retrieved_at, :run_id,
             :retrieved_at, :retrieved_at, :yahoo, 'YAHOO'
         )
@@ -264,6 +322,7 @@ def _write_bars(conn, rows: Sequence[Mapping[str, Any]], *, now: datetime, run_i
             high_price = EXCLUDED.high_price,
             low_price = EXCLUDED.low_price,
             close_price = EXCLUDED.close_price,
+            adj_close_price = EXCLUDED.adj_close_price,
             volume = EXCLUDED.volume,
             adjustment_basis = EXCLUDED.adjustment_basis,
             bar_quality = EXCLUDED.bar_quality,
@@ -329,10 +388,17 @@ def ingest_price_history(
     completed = last_completed_session(moment)
     session_open = cash_session_open(moment)
     existing = load_existing_dates(conn, wanted)
+    # Rows written before Adj Close was stored get one full-window repair so the
+    # volatility and Sharpe windows see a single dividend-adjusted vintage.
+    adj_backfill = {
+        symbol
+        for symbol in symbols_missing_adj_close(conn, wanted)
+        if not bool((prior.get(symbol) or {}).get("adj_close_backfilled"))
+    }
     groups: dict[tuple[date, date, str], list[str]] = {}
     skipped: list[str] = []
     for symbol in wanted:
-        repair = str((prior.get(symbol) or {}).get("status") or "") == "repair"
+        repair = str((prior.get(symbol) or {}).get("status") or "") == "repair" or symbol in adj_backfill
         window = plan_history_window(
             sorted(existing.get(symbol) or ()),
             today=today,
@@ -356,7 +422,7 @@ def ingest_price_history(
         errors.update(chunk_errors)
         delivered = {str(row["symbol"]) for row in rows}
         if kind != "backfill":
-            repair_next.update(str(row["symbol"]) for row in rows if series_has_split([row]))
+            repair_next.update(str(row["symbol"]) for row in rows if series_needs_repair([row]))
         clean = [row for row in rows if row["symbol"] not in chunk_errors]
         written += _write_bars(conn, clean, now=moment, run_id=run_id)
         for symbol in members:
@@ -384,6 +450,8 @@ def ingest_price_history(
             "last_bar_date": latest_text,
             "error": errors.get(symbol),
             "status": status,
+            "adj_close_backfilled": bool(previous.get("adj_close_backfilled"))
+            or (symbol in adj_backfill and symbol not in errors and symbol not in skipped),
         }
         if symbol in skipped:
             instruments[symbol]["last_success_at"] = previous.get("last_success_at")

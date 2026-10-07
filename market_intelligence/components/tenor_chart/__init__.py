@@ -15,11 +15,18 @@ from __future__ import annotations
 import math
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
+
+import streamlit as st
 
 from market_intelligence.components.chart_component import chart_component
 from market_intelligence.display_dates import format_calendar_date
-from market_intelligence.markets_analytics import column_color_scales, heatmap_cell_color
+from market_intelligence.markets_analytics import (
+    column_color_scale,
+    heatmap_cell_color,
+    magnitude_cell_color,
+    magnitude_color_scale,
+)
 from market_intelligence.perf import span
 
 _FRONTEND = Path(__file__).resolve().parent / "frontend"
@@ -245,23 +252,70 @@ def render_echarts(
     key: str | None = None,
     desktop_height: int = DESKTOP_HEIGHT,
     mobile_height: int = MOBILE_HEIGHT,
+    min_width: int = 0,
+    on_row_click: Callable[[str], None] | None = None,
 ) -> None:
-    """Mount one prepared ECharts option. The browser does not fetch market data."""
+    """Mount one prepared ECharts option. The browser does not fetch market data.
+
+    ``min_width`` lets a wide heatmap scroll horizontally on narrow screens
+    instead of squeezing its cells. ``on_row_click`` receives the stable row id
+    of a clicked heatmap row; each distinct browser click is delivered once.
+    """
     with span("tenor_chart.mount"):
-        _mount_echarts(option, key=key, desktop_height=desktop_height, mobile_height=mobile_height)
+        _mount_echarts(
+            option,
+            key=key,
+            desktop_height=desktop_height,
+            mobile_height=mobile_height,
+            min_width=min_width,
+            on_row_click=on_row_click,
+        )
 
 
-def _mount_echarts(option, key, desktop_height, mobile_height) -> None:
-    _component()(
-        data={
-            "option": option,
-            "desktop_height": int(desktop_height),
-            "mobile_height": int(mobile_height),
-        },
+_CLICK_SEEN_SUFFIX = "__row_click_seen"
+
+
+def _noop_trigger() -> None:
+    """Declared so the ``row_click`` trigger is exposed on the mount result."""
+    return None
+
+
+def _mount_echarts(option, key, desktop_height, mobile_height, min_width=0, on_row_click=None) -> None:
+    data = {
+        "option": option,
+        "desktop_height": int(desktop_height),
+        "mobile_height": int(mobile_height),
+    }
+    if min_width:
+        data["min_width"] = int(min_width)
+    mount_kwargs: dict[str, Any] = {}
+    if on_row_click is not None and key is not None:
+        # Streamlit only surfaces a trigger value for events that declare a
+        # callback. The click itself is handled below in the script body so the
+        # navigation runs after this element, like a button press.
+        mount_kwargs["on_row_click_change"] = _noop_trigger
+    result = _component()(
+        data=data,
         key=key,
         width="stretch",
         height=int(desktop_height),
+        **mount_kwargs,
     )
+    if on_row_click is None or key is None:
+        return
+    event = getattr(result, "row_click", None)
+    row_id = heatmap_click_row_id(event)
+    if row_id is None:
+        return
+    # The trigger value persists across reruns until the browser sends a new
+    # click. Remember the nonce so a rerun for any other reason does not replay
+    # the navigation, while a repeated click on the same row still fires.
+    seen_key = str(key) + _CLICK_SEEN_SUFFIX
+    nonce = event.get("nonce")
+    if st.session_state.get(seen_key) == nonce:
+        return
+    st.session_state[seen_key] = nonce
+    on_row_click(row_id)
 
 
 def _dark_tooltip(*, trigger: str = "axis") -> dict[str, Any]:
@@ -805,47 +859,103 @@ def return_heatmap(
     )
 
 
+HEATMAP_COLUMN_KINDS = ("return", "volatility", "sharpe")
+
+
+def _heatmap_display(number: float, kind: str) -> str:
+    """Printed cell text per column kind. Returns keep their signed percent format."""
+    if kind == "return":
+        return "{0:+.2f}%".format(number * 100.0)
+    if kind == "volatility":
+        return "{0:.2f}%".format(number * 100.0)
+    if kind == "sharpe":
+        return "{0:.2f}".format(number)
+    raise ValueError("unknown heatmap column kind: {0!r}".format(kind))
+
+
+def _heatmap_column_scales(values: Sequence[Sequence[Any]], kinds: Sequence[str]) -> list[dict[str, Any]]:
+    """One scale per column, chosen by that column's kind.
+
+    Return and Sharpe columns are symmetric around zero (green positive, red
+    negative). Volatility is a sequential amber magnitude scale so a higher
+    number never reads as "better". The three kinds never share a scale.
+    """
+    width = max((len(row) for row in values), default=0)
+    scales: list[dict[str, Any]] = []
+    for index in range(width):
+        column = [row[index] if index < len(row) else None for row in values]
+        kind = kinds[index] if index < len(kinds) else "return"
+        if kind == "volatility":
+            scales.append({"kind": kind, **magnitude_color_scale(column)})
+        else:
+            scales.append({"kind": kind, **column_color_scale(column)})
+    return scales
+
+
 def build_column_scaled_heatmap_option(
     row_labels: Sequence[str],
     column_labels: Sequence[str],
     values: Sequence[Sequence[Any]],
     *,
     notes: Sequence[Sequence[Any]] | None = None,
+    column_kinds: Sequence[str] | None = None,
+    row_ids: Sequence[str] | None = None,
+    clickable: bool = False,
 ) -> dict[str, Any]:
     """Heatmap whose color scale is computed independently for each column.
 
-    Cell values are fractional returns. Missing cells display N/A and do not
-    enter that column's scale. The printed value is the percentage.
+    ``column_kinds`` names each column ``return`` (default; fractional, printed
+    as a signed percent), ``volatility`` (fractional annualized, printed as a
+    percent on an amber magnitude scale) or ``sharpe`` (decimal, 2dp, symmetric
+    green/red). Missing cells display N/A and do not enter that column's scale.
+
+    ``row_ids`` are stable identifiers emitted with click events; display text
+    is never used as an identifier. ``clickable`` enables cell and row-label
+    click events and the pointer cursor in the frontend.
     """
-    scales = column_color_scales(values)
+    kinds = [str(kind) for kind in (column_kinds or ())]
+    for kind in kinds:
+        if kind not in HEATMAP_COLUMN_KINDS:
+            raise ValueError("unknown heatmap column kind: {0!r}".format(kind))
+    while len(kinds) < len(column_labels):
+        kinds.append("return")
+    ids = [str(item) for item in (row_ids or ())]
+    scales = _heatmap_column_scales(values, kinds)
     cells: list[dict[str, Any]] = []
     for row_index, row_label in enumerate(row_labels):
         row = values[row_index] if row_index < len(values) else ()
         row_notes = notes[row_index] if notes is not None and row_index < len(notes) else ()
+        row_id = ids[row_index] if row_index < len(ids) else str(row_label)
         for col_index, column in enumerate(column_labels):
             raw = row[col_index] if col_index < len(row) else None
             number = _finite_number(raw)
-            scale = scales[col_index]["max_abs"] if col_index < len(scales) else 0.0
+            kind = kinds[col_index]
+            scale = scales[col_index] if col_index < len(scales) else {"kind": kind, "max_abs": 0.0, "degenerate": True}
             note = row_notes[col_index] if col_index < len(row_notes) else None
             if number is None:
                 display = "N/A"
-                color = heatmap_cell_color(None, scale)
+                color = heatmap_cell_color(None, 0.0)
                 plot = 0.0
             else:
-                display = "{0:+.2f}%".format(number * 100.0)
-                color = heatmap_cell_color(number, scale)
-                plot = number * 100.0
+                display = _heatmap_display(number, kind)
+                if kind == "volatility":
+                    color = magnitude_cell_color(number, scale)
+                else:
+                    color = heatmap_cell_color(number, float(scale.get("max_abs") or 0.0))
+                plot = number * 100.0 if kind != "sharpe" else number
             cell: dict[str, Any] = {
                 "value": [col_index, row_index, plot],
                 "row": str(row_label),
+                "rowId": row_id,
                 "column": str(column),
+                "kind": kind,
                 "display": display,
                 "itemStyle": {"color": color},
             }
             if note:
                 cell["note"] = str(note)
             cells.append(cell)
-    return {
+    option: dict[str, Any] = {
         "chartKind": "heatmap",
         "animation": False,
         "legend": {"show": False},
@@ -865,17 +975,26 @@ def build_column_scaled_heatmap_option(
             "inverse": True,
             "axisLabel": {"interval": 0},
             "splitArea": {"show": False},
+            "triggerEvent": bool(clickable),
         },
         "series": [
             {
                 "type": "heatmap",
                 "data": cells,
                 "label": {"show": True, "fontSize": 11, "color": "#f4f6f8"},
-                "emphasis": {"disabled": True},
+                "emphasis": {"disabled": not clickable},
                 "itemStyle": {"borderColor": "rgba(255,255,255,0.08)", "borderWidth": 1},
             }
         ],
     }
+    if clickable:
+        option["rowIds"] = [ids[index] if index < len(ids) else str(label) for index, label in enumerate(row_labels)]
+        option["clickable"] = True
+        option["series"][0]["emphasis"] = {
+            "disabled": False,
+            "itemStyle": {"borderColor": "rgba(255,255,255,0.55)", "borderWidth": 2},
+        }
+    return option
 
 
 def column_scaled_return_heatmap(
@@ -885,16 +1004,49 @@ def column_scaled_return_heatmap(
     *,
     key: str,
     notes: Sequence[Sequence[Any]] | None = None,
+    column_kinds: Sequence[str] | None = None,
+    row_ids: Sequence[str] | None = None,
+    on_row_click: Callable[[str], None] | None = None,
 ) -> None:
-    """Per-column symmetric heatmap. Nulls render as N/A, not as 0.00%."""
+    """Per-column heatmap. Nulls render as N/A, not as 0.00%.
+
+    With ``on_row_click`` every cell and every row label is clickable; the
+    callback receives the stable ``row_ids`` entry for the clicked row (or the
+    row label when no ids are given) once per distinct click.
+    """
     if not row_labels:
         return
+    option = build_column_scaled_heatmap_option(
+        row_labels,
+        column_labels,
+        values,
+        notes=notes,
+        column_kinds=column_kinds,
+        row_ids=row_ids,
+        clickable=on_row_click is not None,
+    )
+    columns = max(len(column_labels), 1)
+    # Narrow screens scroll the heatmap horizontally instead of squeezing the
+    # cells: room for the longest row label plus a readable cell per column.
+    label_px = min(200, 24 + 8 * max((len(str(label)) for label in row_labels), default=0))
     render_echarts(
-        build_column_scaled_heatmap_option(row_labels, column_labels, values, notes=notes),
+        option,
         key=key,
         desktop_height=min(760, max(320, 46 * max(len(row_labels), 1) + 72)),
         mobile_height=min(820, max(340, 52 * max(len(row_labels), 1) + 88)),
+        min_width=label_px + 64 * columns,
+        on_row_click=on_row_click,
     )
+
+
+def heatmap_click_row_id(event: Any) -> str | None:
+    """Row id carried by a heatmap click trigger, or None for an empty/invalid event."""
+    if not isinstance(event, Mapping):
+        return None
+    row_id = event.get("rowId")
+    if not isinstance(row_id, str) or not row_id:
+        return None
+    return row_id
 
 
 def build_signed_change_bar_option(

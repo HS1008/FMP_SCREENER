@@ -14,13 +14,13 @@ import streamlit as st
 from market_intelligence.cftc_positions import ASSET_GROUPS, CATEGORY_LABELS, POSITIONING_METHODOLOGY
 from market_intelligence.commodity_analytics import COMMODITY_METHODOLOGY, COMMODITY_WINDOWS, same_date_ratio, window_returns
 from market_intelligence.components.market_chart import lightweight_market_chart
-from market_intelligence.components.tenor_chart import ranked_bar_chart, return_heatmap
+from market_intelligence.components.tenor_chart import column_scaled_return_heatmap, ranked_bar_chart, return_heatmap
 from market_intelligence.cross_asset_universe import COMMODITY_INSTRUMENTS, CURRENCY_VS_USD, FX_PAIRS, FX_WINDOWS
 from market_intelligence.crypto_analytics import CRYPTO_METHODOLOGY, CRYPTO_WINDOWS, calendar_return, drawdown_series, same_date_ratio as crypto_ratio
 from market_intelligence.fx_analytics import FX_METHODOLOGY, latest_window_returns
 from market_intelligence.history_range import filter_history_rows, historical_date_range, series_toggles
 from market_intelligence.markets_analytics import as_day, normalize_selected_to_100
-from market_intelligence.ui import load_or_stop, page_header
+from market_intelligence.ui import html_text, load_or_stop, page_header, return_badge
 
 _CHART_HEIGHT = 420
 _POSITION_METRICS = (
@@ -117,10 +117,93 @@ def _heatmap(row_labels: Sequence[str], columns: Sequence[str], values: Sequence
     return_heatmap(list(row_labels), list(columns), values, key=key)
 
 
+FX_CARD_WINDOW_LABELS: tuple[str, ...] = ("1D", "1W", "1M")
+_FX_CARD_STYLE = (
+    "flex:1 1 150px;min-width:150px;max-width:220px;padding:8px 10px;border:1px solid rgba(128,128,128,0.28);"
+    "border-radius:8px;box-sizing:border-box;"
+)
+
+
+def _fx_quote_text(value: Any, instrument_id: str) -> str:
+    number = _finite_or_none(value)
+    if number is None:
+        return "N/A"
+    if instrument_id == "DXY":
+        return "{0:.2f}".format(number)
+    if instrument_id in {"USDJPY"}:
+        return "{0:.3f}".format(number)
+    return "{0:.4f}".format(number)
+
+
+def _finite_or_none(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number in (float("inf"), float("-inf")):
+        return None
+    return number
+
+
+def fx_card_html(card: Mapping[str, Any]) -> str:
+    """One FX header card: label, latest quote, 1D/1W/1M badges, as-of and staleness."""
+    instrument_id = str(card.get("instrument_id") or "")
+    label = str(card.get("label") or instrument_id)
+    quote = _fx_quote_text(card.get("value"), instrument_id)
+    as_of = as_day(card.get("as_of"))
+    stale = bool(card.get("stale"))
+    if as_of is None:
+        stamp = "no stored observation"
+    else:
+        stamp = "as of {0}".format(as_of.isoformat())
+        if stale:
+            stamp += " · stale"
+    returns = card.get("returns") or {}
+    badges = "".join(
+        return_badge(window, returns.get(window), title="{0}: {1} change in the displayed quote ({2}); positive means {3} rose.".format(label, window, quote, label))
+        for window in FX_CARD_WINDOW_LABELS
+    )
+    stale_color = "color:#9b1c1c;" if stale else "opacity:0.7;"
+    return (
+        '<div style="{style}" title="{title}">'
+        '<div style="font-size:12px;font-weight:650;opacity:0.85;">{label}</div>'
+        '<div style="font-size:20px;font-weight:700;line-height:1.25;">{quote}</div>'
+        '<div style="display:flex;flex-wrap:wrap;margin-top:2px;">{badges}</div>'
+        '<div style="font-size:11px;margin-top:4px;{stale_color}">{stamp}</div>'
+        "</div>"
+    ).format(
+        style=_FX_CARD_STYLE,
+        title=html_text("{0}: latest stored Yahoo daily close in quote convention. {1}.".format(label, stamp)),
+        label=html_text(label),
+        quote=html_text(quote),
+        badges=badges,
+        stale_color=stale_color,
+        stamp=html_text(stamp),
+    )
+
+
+def _fx_header(cards: Sequence[Mapping[str, Any]]) -> None:
+    """Every tracked FX instrument from config (DXY once) in a wrapping grid."""
+    if not cards:
+        return
+    st.markdown(
+        '<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;">' + "".join(fx_card_html(card) for card in cards) + "</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(
+        "Latest stored Yahoo daily closes in quote convention; 1D/1W/1M are changes over 1, 5, and 21 provider observations "
+        "(the FX heatmap's definitions). Positive means the displayed pair rose: for USD/JPY, USD/CAD, USD/CHF, and USD/CNH "
+        "that is USD strength, so the heatmap's foreign-vs-USD rows carry the opposite sign. "
+        "Stale marks a pair whose newest observation trails the newest FX observation by more than 5 days."
+    )
+
+
 def render_forex_page() -> None:
     page_header("FOREX", "US dollar level and major-currency performance versus the dollar. Stored Yahoo daily bars.", fred=False)
     payload = load_or_stop("forex_context")
-    _cards(payload.get("cards") or [])
+    _fx_header(payload.get("cards") or [])
     start, end = historical_date_range(key="forex_range", earliest=as_day(payload.get("earliest")), latest=as_day(payload.get("latest")))
     if start is None or end is None or start > end:
         st.info("No Yahoo FX history is stored yet.")
@@ -157,7 +240,8 @@ def render_forex_page() -> None:
     st.caption("Positive means the foreign currency strengthened versus USD over provider daily observations ending at the selected To date.")
     _ranked(rank_labels, rank_values, key="forex_rank")
     st.subheader("FX Return Heatmap")
-    _heatmap(heat_labels, [label for label, _lag in FX_WINDOWS], heat_rows, key="forex_heat")
+    st.caption("Each period column has its own symmetric color scale centred on zero (limit = the column's largest absolute value). Missing cells are N/A.")
+    column_scaled_return_heatmap(heat_labels, [label for label, _lag in FX_WINDOWS], heat_rows, key="forex_heat")
     st.subheader("Major FX Pairs")
     st.caption("Raw Yahoo quote convention. Several pairs are rebased to 100 so different quote scales are not drawn on one axis.")
     if payload.get("usdcnh_note"):

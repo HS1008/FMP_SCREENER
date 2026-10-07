@@ -24,15 +24,22 @@ from market_intelligence.ibkr_live_universe import (
     stock_horizon_values,
     subsector_groups,
 )
+from market_intelligence.navigation_links import SUBSECTOR_SELECTOR_KEY, apply_pending_scroll, select_subsector
 from market_intelligence.price_returns import PRICE_RETURN_CAPTION, parse_timestamp, price_horizons, quote_anchor_date
 from market_intelligence.live_session import heatmap_freshness_label, market_session_state, quote_observation_status
+from market_intelligence.risk_metrics import (
+    RISK_COLUMN_KINDS,
+    RISK_COLUMN_LABELS,
+    STOCK_RISK_CAPTION,
+    risk_metrics_by_symbol,
+    risk_row_cells,
+)
 from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, series_toggles
 from market_intelligence.markets_analytics import (
     GLOBAL_METHODOLOGY,
     HORIZONS,
     US_METHODOLOGY,
     as_day,
-    classify_return,
     clip_points,
     heatmap_rows,
     normalize_selected_to_100,
@@ -56,7 +63,15 @@ from market_intelligence.taxonomy import (
     index_etf_label,
 )
 from market_intelligence.perf import span
-from market_intelligence.ui import load_optional, load_or_stop, load_quote_optional, page_header
+from market_intelligence.ui import (
+    BADGE_COLORS,
+    html_text,
+    load_optional,
+    load_or_stop,
+    load_quote_optional,
+    page_header,
+    return_badge,
+)
 
 # jobs.yahoo_dashboard_quotes is installed on a */15 cron. Heatmaps read those
 # stored quotes, so the fragment follows that cadence instead of polling every
@@ -145,27 +160,9 @@ def render_global_markets_page() -> None:
     _methodology(GLOBAL_METHODOLOGY)
 
 
-_BADGE_COLORS = {
-    "positive": ("#e5f6ec", "#0b6b3a"),
-    "negative": ("#fdecec", "#9b1c1c"),
-    "neutral": ("#f3f4f6", "#4b5563"),
-    "unavailable": ("#f3f4f6", "#4b5563"),
-}
-
-
-def _html_text(value: str) -> str:
-    return value.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-
-
-def _return_badge(label: str, value: Any, *, title: str = "") -> str:
-    kind = classify_return(value)
-    background, foreground = _BADGE_COLORS[kind]
-    shown = "N/A" if kind == "unavailable" else _signed_percent(value)
-    tip = ' title="{0}"'.format(_html_text(title)) if title else ""
-    return (
-        '<span{4} style="display:inline-block;margin:2px 4px 0 0;padding:2px 8px;border-radius:999px;'
-        'font-size:12px;font-weight:650;line-height:1.5;background:{0};color:{1};">{2} {3}</span>'
-    ).format(background, foreground, _html_text(label), shown, tip)
+_BADGE_COLORS = BADGE_COLORS
+_html_text = html_text
+_return_badge = return_badge
 
 
 def _ibkr_quote_price(row: Mapping[str, Any] | None) -> float | None:
@@ -487,6 +484,11 @@ def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
         legs: dict[str, dict[str, Any]] = {}
         _us_subsector_heatmap(priced, mode=mode, loaded=loaded, quotes=quotes, bars=bars, legs=legs)
         _individual_stock_heatmap(loaded=loaded, quotes=quotes, bars=bars, legs=legs)
+        # A sector-row click reruns only this fragment, so the one-time scroll
+        # request it leaves behind is served here, after the destination exists.
+        # A cross-page drill is served by dashboard.main the same way; whichever
+        # runs first consumes the request.
+        apply_pending_scroll()
 
 
 def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
@@ -512,13 +514,21 @@ def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
         "Since open is the newest stored Yahoo price divided by the most recent regular-session open. "
         "Extended-hours prices are included when Yahoo supplies them. A missing open is N/A."
     )
+    st.caption("Click a sector name or any cell in its row to open that sector in the Subsector Performance heatmap below.")
     column_scaled_return_heatmap(
         [row["label"] for row in matrix["rows"]],
         _since_open_columns(matrix["columns"]),
         [row["values"] for row in matrix["rows"]],
         notes=[row["notes"] for row in matrix["rows"]],
         key="us_sector_heatmap_{0}".format(analytical),
+        row_ids=[str(row.get("symbol") or row["label"]) for row in matrix["rows"]],
+        on_row_click=_open_subsector_for_sector,
     )
+
+
+def _open_subsector_for_sector(sector_id: str) -> None:
+    """Sector heatmap click: select that sector below and scroll to it on this run."""
+    select_subsector(sector_id)
 
 
 def _observed(value: Any) -> str:
@@ -541,6 +551,7 @@ def _price_bars_by_symbol() -> dict[str, list[dict[str, Any]]]:
             {
                 "bar_date": row.get("bar_date"),
                 "close": row.get("close_price"),
+                "adj_close": row.get("adj_close_price"),
                 "basis": row.get("adjustment_basis"),
                 "quality": row.get("bar_quality"),
             }
@@ -622,9 +633,9 @@ def _us_subsector_heatmap(
     st.subheader("Subsector Performance", anchor="subsector-performance")
     groups = subsector_groups()
     names = [name for name, _members in groups]
-    if "us_subsector_sector" not in st.session_state:
-        st.session_state["us_subsector_sector"] = names[0]
-    sector = st.selectbox("Sector", names, key="us_subsector_sector")
+    if st.session_state.get(SUBSECTOR_SELECTOR_KEY) not in names:
+        st.session_state[SUBSECTOR_SELECTOR_KEY] = names[0]
+    sector = st.selectbox("Sector", names, key=SUBSECTOR_SELECTOR_KEY)
     members = dict(groups)[str(sector)]
     st.caption(", ".join("{0} · {1}".format(symbol, label) for symbol, label in members))
     st.caption(
@@ -723,6 +734,12 @@ def _individual_stock_heatmap(
     if not groups:
         st.caption("No approved individual stocks are configured.")
         return
+    st.caption(STOCK_RISK_CAPTION)
+    with span("us_equities.stock_risk"):
+        risk = risk_metrics_by_symbol(bars, [row["symbol"] for row in rows])
+    return_columns = _since_open_columns(STOCK_RETURN_HORIZONS)
+    columns = return_columns + list(RISK_COLUMN_LABELS)
+    kinds = ["return"] * len(return_columns) + list(RISK_COLUMN_KINDS)
     for group in groups:
         members = [row for row in rows if row["group"] == group]
         st.caption(group)
@@ -738,13 +755,15 @@ def _individual_stock_heatmap(
                 symbol=row["symbol"],
                 legs_cache=legs,
             )
-            values.append(row_values)
-            notes.append(row_notes)
+            risk_values, risk_notes = risk_row_cells(risk.get(str(row["symbol"]).upper()) or {})
+            values.append(list(row_values) + risk_values)
+            notes.append(list(row_notes) + risk_notes)
         column_scaled_return_heatmap(
             ["{0} · {1}".format(row["symbol"], _price(row["price"])) for row in members],
-            _since_open_columns(STOCK_RETURN_HORIZONS),
+            columns,
             values,
             notes=notes,
+            column_kinds=kinds,
             key="us_stock_heatmap_{0}".format(group),
         )
 

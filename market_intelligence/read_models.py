@@ -1308,17 +1308,29 @@ def dashboard_quotes_latest(conn) -> list[dict[str, Any]]:
 
 
 def dashboard_price_bars(conn) -> list[dict[str, Any]]:
-    """Split-adjusted daily closes for price returns. Does not call Yahoo."""
+    """Split-adjusted daily closes for price returns plus the dividend-adjusted close for risk metrics.
+
+    Does not call Yahoo. Before migration 048 the view has no ``adj_close_price``;
+    the column is then served as NULL and the volatility / Sharpe cells stay N/A.
+    """
     if not _view_exists(conn, "mi_v_yahoo_price_daily"):
         return []
+    has_adj = bool(
+        conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns WHERE table_name = 'mi_v_yahoo_price_daily' AND column_name = 'adj_close_price' LIMIT 1"
+            )
+        ).first()
+    )
+    adj_column = "adj_close_price" if has_adj else "NULL AS adj_close_price"
     return _rows(
         conn,
         """
-        SELECT symbol, bar_date, close_price, adjustment_basis, bar_quality, bar_ts
+        SELECT symbol, bar_date, close_price, {adj}, adjustment_basis, bar_quality, bar_ts
         FROM mi_v_yahoo_price_daily
         WHERE bar_date >= CURRENT_DATE - INTERVAL '450 days'
         ORDER BY symbol, bar_date
-        """,
+        """.format(adj=adj_column),
     )
 
 

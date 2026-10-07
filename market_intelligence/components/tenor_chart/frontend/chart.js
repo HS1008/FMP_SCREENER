@@ -562,6 +562,126 @@ function keepPageScroll(chart) {
   }
 }
 
+function heatmapRowIdAt(state, params) {
+  var option = state.option;
+  if (!option || option.chartKind !== "heatmap" || !option.clickable) {
+    return null;
+  }
+  if (!params) {
+    return null;
+  }
+  var point = params.data && typeof params.data === "object" ? params.data : null;
+  if (point && typeof point.rowId === "string" && point.rowId) {
+    return point.rowId;
+  }
+  var ids = Array.isArray(option.rowIds) ? option.rowIds : [];
+  if (params.componentType === "yAxis" && params.targetType === "axisLabel") {
+    var labels = option.yAxis && Array.isArray(option.yAxis.data) ? option.yAxis.data : [];
+    var index = labels.indexOf(params.value);
+    if (index >= 0 && index < ids.length) {
+      return ids[index];
+    }
+  }
+  return null;
+}
+
+function emitRowClick(state, rowId) {
+  var component = state.component;
+  if (!component || typeof component.setTriggerValue !== "function") {
+    return;
+  }
+  state.clickNonce = (state.clickNonce || 0) + 1;
+  component.setTriggerValue("row_click", {
+    rowId: rowId,
+    nonce: String(Date.now()) + "-" + String(state.clickNonce),
+  });
+}
+
+function setPointer(state, active) {
+  var dom = state.chart.getDom();
+  var cursor = active ? "pointer" : "default";
+  dom.style.cursor = cursor;
+  var canvas = dom.querySelector("canvas");
+  if (canvas) {
+    canvas.style.cursor = cursor;
+  }
+  if (state.container) {
+    state.container.style.cursor = cursor;
+  }
+}
+
+function highlightRow(state, rowId) {
+  var option = state.option;
+  var series = option && Array.isArray(option.series) ? option.series[0] : null;
+  var data = series && Array.isArray(series.data) ? series.data : [];
+  var indexes = [];
+  for (var index = 0; index < data.length; index++) {
+    if (data[index] && data[index].rowId === rowId) {
+      indexes.push(index);
+    }
+  }
+  if (state.highlighted && state.highlighted.length) {
+    state.chart.dispatchAction({ type: "downplay", seriesIndex: 0, dataIndex: state.highlighted });
+  }
+  state.highlighted = indexes;
+  if (indexes.length) {
+    state.chart.dispatchAction({ type: "highlight", seriesIndex: 0, dataIndex: indexes });
+  }
+}
+
+function bindHeatmapClicks(state) {
+  if (state.clicksBound) {
+    return;
+  }
+  state.clicksBound = true;
+  state.chart.on("click", function (params) {
+    var rowId = heatmapRowIdAt(state, params);
+    if (rowId) {
+      emitRowClick(state, rowId);
+    }
+  });
+  state.chart.on("mouseover", function (params) {
+    var rowId = heatmapRowIdAt(state, params);
+    if (rowId) {
+      setPointer(state, true);
+      highlightRow(state, rowId);
+    }
+  });
+  state.chart.on("mouseout", function () {
+    if (state.option && state.option.clickable) {
+      setPointer(state, false);
+      highlightRow(state, null);
+    }
+  });
+  state.chart.getZr().on("mousemove", function (event) {
+    if (!state.option || !state.option.clickable) {
+      return;
+    }
+    // Row labels are zrender elements outside the series. Keep the pointer
+    // cursor while the mouse is over any clickable target of the row.
+    var over = event && event.target;
+    if (!over) {
+      setPointer(state, false);
+      highlightRow(state, null);
+    }
+  });
+}
+
+function applyMinWidth(state, data) {
+  var minWidth = Number(data && data.min_width) || 0;
+  var scroller = state.root.querySelector("#chart-scroll");
+  if (!scroller) {
+    return;
+  }
+  if (minWidth > 0) {
+    scroller.style.overflowX = "auto";
+    state.container.style.minWidth = minWidth + "px";
+  } else {
+    scroller.style.overflowX = "";
+    state.container.style.minWidth = "";
+  }
+}
+
 function createState(root) {
   var container = root.querySelector("#chart");
   var echarts = globalThis.echarts;
@@ -600,6 +720,7 @@ function createState(root) {
     attributeFilter: ["class", "data-theme", "style"],
   });
   bindPolicyReadout(state);
+  bindHeatmapClicks(state);
   keepPageScroll(chart);
   return state;
 }
@@ -611,6 +732,7 @@ function updateState(state, data) {
   }
   state.root.__tenorMobile = Number(data.mobile_height) || MOBILE_HEIGHT;
   state.root.__tenorDesktop = Number(data.desktop_height) || DESKTOP_HEIGHT;
+  applyMinWidth(state, data);
   var signature = JSON.stringify(source);
   var compact = window.matchMedia(MOBILE_QUERY).matches;
   if (state.signature === signature && state.compact === compact) {
@@ -642,6 +764,9 @@ export default function (component) {
     state = createState(root);
     root.__tenorChart = state;
   }
+  // The component handle changes on every run; keep the latest so clicks
+  // report through the live trigger.
+  state.component = component;
   updateState(state, data);
   return function cleanup() {
     if (root.__tenorChart !== state) {
