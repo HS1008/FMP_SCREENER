@@ -25,7 +25,7 @@ from market_intelligence.markets_analytics import (
     snapshot_rejection_reason,
     subsector_matrix,
 )
-from market_intelligence.markets_read import load_equity_eod_closes
+from market_intelligence.markets_read import _load_close_records, load_equity_eod_closes
 from market_intelligence.taxonomy import KIND_CUSTOM_BASKET, KIND_THEME, cross_sector_themes, stock_subsector_baskets
 
 
@@ -304,9 +304,13 @@ def test_taxonomy_keeps_curated_baskets_and_names_themes():
 
 def test_constituent_close_query_is_read_only_and_equity_eod_only():
     source = inspect.getsource(load_equity_eod_closes)
+    query = inspect.getsource(_load_close_records)
     assert "mi_v_equity_daily_closes" in source
-    assert "source_id = 'EQUITY_EOD'" in source
-    assert "adjustment_basis" in source
+    assert "source_id = 'EQUITY_EOD'" in query
+    assert "adjustment_basis" in query
     assert "mi_market_bars" not in source
+    assert "mi_market_bars" not in query
     assert "INSERT" not in source.upper()
     assert "UPDATE" not in source.upper()
+    assert "INSERT" not in query.upper()
+    assert "UPDATE" not in query.upper()
