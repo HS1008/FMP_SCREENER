@@ -50,6 +50,7 @@ from market_intelligence.cross_asset_universe import (
     USDCNH_SOURCE_NOTE,
 )
 from market_intelligence.crypto_analytics import calendar_return
+from market_intelligence.fx_analytics import max_gap_days
 from market_intelligence.ibkr_live_universe import SECTOR_ETFS
 from market_intelligence.markets_analytics import HORIZONS, as_day, build_aligned_us_panel, price_ratio_points, session_window_returns
 from market_intelligence.markets_read import load_equity_eod_closes, load_monitor_history
@@ -539,6 +540,12 @@ def _cross_asset_rows(
     for instrument_id, label in rows:
         points = close_points([row for row in bars if row.get("instrument_id") == instrument_id])
         returns = observation_returns(points, FX_WINDOWS)
+        note = (note_by_key or {}).get(instrument_id)
+        if len(points) >= 2 and (points[-1][0] - points[-2][0]).days > max_gap_days(1):
+            gap = "Sparse provider history: the observation before {0} is {1}; windows whose anchor is too far back are left blank.".format(
+                points[-1][0].isoformat(), points[-2][0].isoformat()
+            )
+            note = gap if not note else "{0} {1}".format(note, gap)
         out.append(
             _row(
                 instrument_id,
@@ -549,7 +556,7 @@ def _cross_asset_rows(
                 risk=risk_window_stats(points) if risk else None,
                 today=today,
                 source=source,
-                note=(note_by_key or {}).get(instrument_id),
+                note=note,
             )
         )
     return out

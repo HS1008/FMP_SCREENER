@@ -27,6 +27,7 @@ FX_METHODOLOGY = (
     "The comparable chart is rebased to 100 at the first common valid date in the selected range. "
     "Returns use that same orientation and count provider daily observations "
     "(1, 5, 21, 63, 126, 252), not NYSE holidays and not a 7-calendar-day crypto week. "
+    "A window is left blank when its anchor observation is much older than the window implies (sparse provider history). "
     "Positive means the foreign currency strengthened versus USD."
 )
 
@@ -42,13 +43,31 @@ def oriented_fx_level(instrument_id: str, close: float | None) -> float | None:
     return number
 
 
+def max_gap_days(lag: int) -> int:
+    """Calendar span beyond which ``lag`` observations no longer mean the labelled window.
+
+    ``lag`` sessions are nominally ``lag * 7 / 5`` calendar days; allow half again
+    plus a few days for holidays (1 -> 6, 5 -> 14, 21 -> 48, 63 -> 136, 252 -> 533).
+    A thinly quoted series (CME CNH=F skipped most of September 2026) would otherwise
+    label a 25-day move as "1D".
+    """
+    return int(lag * 7 / 5 * 1.5) + 4
+
+
 def observation_return(points: Sequence[tuple[date, float]], lag: int) -> float | None:
-    """Return from ``lag`` valid observations earlier to the last point."""
+    """Return from ``lag`` valid observations earlier to the last point.
+
+    ``None`` when the anchor observation is older than :func:`max_gap_days` for
+    that lag, so sparse provider history reads as missing instead of as a return
+    over a much longer span than the column says.
+    """
     if lag < 1 or len(points) <= lag:
         return None
-    past = points[-1 - lag][1]
-    current = points[-1][1]
+    past_day, past = points[-1 - lag]
+    current_day, current = points[-1]
     if past is None or current is None or past == 0:
+        return None
+    if isinstance(past_day, date) and isinstance(current_day, date) and (current_day - past_day).days > max_gap_days(lag):
         return None
     return current / past - 1.0
 
