@@ -692,6 +692,19 @@ def test_market_monitor_bars_do_not_reuse_the_equity_eod_source():
     assert "yahoo_backfill_symbols" not in inspect.getsource(ingest_market_monitor)
 
 
+def test_metric_latest_view_looks_up_one_row_per_metric():
+    """A full-table DISTINCT ON exceeds the 15s read timeout and blanks Rates & Curve."""
+    raw = (Path(__file__).resolve().parents[1] / "db" / "migrations" / "047_metric_latest_index_lookup.sql").read_text(encoding="utf-8")
+    sql = "\n".join(line for line in raw.splitlines() if not line.strip().startswith("--"))
+    assert "DISTINCT ON" not in sql
+    assert "JOIN LATERAL" in sql
+    assert "ORDER BY snap.as_of DESC, snap.computed_at DESC" in sql
+    assert "LIMIT 1" in sql
+    assert "WITHDRAWN_OBSERVATION" in sql
+    assert "inputs_retrieved_max" in sql
+    assert "publication_status" in sql
+
+
 def test_rates_history_query_stays_indexable_and_batched():
     sql, params = _bounded_history_sql(
         "mi_v_macro_observations_current",
