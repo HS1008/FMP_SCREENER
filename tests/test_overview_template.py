@@ -353,6 +353,8 @@ def test_overview_page_renders_template_sections_from_one_snapshot(monkeypatch, 
     heads = [h.value for h in at.subheader]
     assert "What matters" not in heads and "Category snapshot" not in heads
     assert any("Export to Excel" in str(getattr(widget, "label", "")) for widget in at.get("download_button")) or "Export to Excel" in str(at)
+    captions = [str(c.value) for c in at.caption]
+    assert any(c.startswith("USD/CNH: ") and "CNH=F" in c for c in captions), "row-level notes surface in the definitions expander"
 
 
 def test_overview_sections_collapse_independently_and_persist(monkeypatch, snapshot):

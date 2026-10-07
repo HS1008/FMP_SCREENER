@@ -195,7 +195,7 @@ def render_section(section: Mapping[str, Any]) -> None:
     else:
         st.dataframe(_styled(frame, signed), key=key, hide_index=True, use_container_width=True, height=height)
     notes = section.get("notes") or []
-    if notes or section.get("source"):
+    if notes or section.get("source") or any(row.get("note") for row in rows):
         with st.expander("Definitions and sources", expanded=False):
             if section.get("source"):
                 st.caption("Source: {0}".format(section["source"]))
@@ -207,6 +207,9 @@ def render_section(section: Mapping[str, Any]) -> None:
                 st.caption("Stale (older than {0} days): {1}".format(STALE_AFTER_DAYS, ", ".join(str(label) for label in stale_rows)))
             if missing_rows:
                 st.caption("Missing (no stored value; never shown as zero): {0}".format(", ".join(str(label) for label in missing_rows)))
+            for row in rows:
+                if row.get("note"):
+                    st.caption("{0}: {1}".format(row.get("label"), row["note"]))
 
 
 def table_height(row_count: int) -> int:
