@@ -27,6 +27,7 @@ from market_intelligence.price_returns import (
     OVERLAP_DAYS,
     PRICE_RETURN_BASIS,
     PRICE_RETURN_SOURCE,
+    history_floor,
     plan_history_window,
 )
 from market_intelligence.yahoo_dashboard import (
@@ -46,7 +47,21 @@ from market_intelligence.live_session import latest_opened_rth_session
 logger = logging.getLogger("market_intelligence.yahoo_price_history")
 
 CHUNK = 40
+MAX_EXTEND_ATTEMPTS = 3
 Download = Callable[[Sequence[str], date, date], Any]
+
+
+def _parse_day(value: Any) -> date | None:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if value in (None, ""):
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except ValueError:
+        return None
 
 
 def last_completed_session(now: datetime) -> date:
@@ -397,18 +412,28 @@ def ingest_price_history(
     }
     groups: dict[tuple[date, date, str], list[str]] = {}
     skipped: list[str] = []
+    extending: set[str] = set()
     for symbol in wanted:
-        repair = str((prior.get(symbol) or {}).get("status") or "") == "repair" or symbol in adj_backfill
+        previous = prior.get(symbol) or {}
+        repair = str(previous.get("status") or "") == "repair" or symbol in adj_backfill
+        attempts = int(previous.get("coverage_attempts") or 0)
+        coverage_floor = _parse_day(previous.get("coverage_floor"))
+        if coverage_floor is None and attempts >= MAX_EXTEND_ATTEMPTS:
+            # Repeated extension failures must not block incremental updates.
+            coverage_floor = history_floor(today)
         window = plan_history_window(
             sorted(existing.get(symbol) or ()),
             today=today,
             last_completed=completed,
             session_open=session_open,
             repair=repair,
+            coverage_floor=coverage_floor,
         )
         if window is None:
             skipped.append(symbol)
             continue
+        if window[2] in {"extend", "backfill"}:
+            extending.add(symbol)
         groups.setdefault(window, []).append(symbol)
     _ensure_source(conn)
     grant_price_view(conn)
@@ -431,23 +456,37 @@ def ingest_price_history(
             if symbol not in delivered:
                 errors[symbol] = "no bars"
     if repair_next:
-        floor = today - timedelta(days=400)
+        floor = history_floor(today)
         rows, chunk_errors = _download_group(sorted(repair_next), floor, today + timedelta(days=1), download=fetch)
         errors.update(chunk_errors)
         written += _write_bars(conn, [row for row in rows if row["symbol"] not in chunk_errors], now=moment, run_id=run_id)
+        extending.update(symbol for symbol in repair_next if symbol not in chunk_errors)
     stored = load_existing_dates(conn, wanted)
     instruments: dict[str, dict[str, Any]] = {}
+    floor_text = history_floor(today).isoformat()
     for symbol in wanted:
         previous = prior.get(symbol) or {}
-        latest = max(stored.get(symbol) or {date.min})
+        bars_stored = stored.get(symbol) or set()
+        latest = max(bars_stored or {date.min})
         latest_text = None if latest == date.min else latest.isoformat()
+        earliest_text = None if not bars_stored else min(bars_stored).isoformat()
         status = "skipped" if symbol in skipped else "failed" if symbol in errors else "ok"
         if symbol in repair_next and symbol not in errors:
             status = "ok"
+        coverage_floor = previous.get("coverage_floor")
+        attempts = int(previous.get("coverage_attempts") or 0)
+        if symbol in extending:
+            if symbol in errors:
+                attempts += 1
+            else:
+                coverage_floor = floor_text
         instruments[symbol] = {
             "last_attempt_at": attempted,
             "last_success_at": previous.get("last_success_at") if symbol in errors or symbol in skipped else attempted,
             "last_bar_date": latest_text,
+            "first_bar_date": earliest_text,
+            "coverage_floor": coverage_floor,
+            "coverage_attempts": attempts,
             "error": errors.get(symbol),
             "status": status,
             "adj_close_backfilled": bool(previous.get("adj_close_backfilled"))

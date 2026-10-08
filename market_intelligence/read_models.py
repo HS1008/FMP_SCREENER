@@ -1307,6 +1307,182 @@ def dashboard_quotes_latest(conn) -> list[dict[str, Any]]:
     )
 
 
+def cross_asset_quotes_latest(conn, instrument_ids: Sequence[str] | None = None) -> list[dict[str, Any]]:
+    """Latest stored Yahoo quotes for FX, futures-proxy, and crypto instruments, keyed by instrument id.
+
+    Written by ``jobs.yahoo_dashboard_quotes``; Streamlit never calls Yahoo.
+    """
+    if not _view_exists(conn, "mi_v_live_quotes_by_source"):
+        return []
+    wanted = [str(item).upper() for item in (instrument_ids or ()) if item]
+    if instrument_ids is not None and not wanted:
+        return []
+    clauses = ["source_id = 'YAHOO_DASHBOARD'"]
+    params: dict[str, Any] = {}
+    if wanted:
+        binds = {"i{0}".format(index): item for index, item in enumerate(wanted)}
+        clauses.append("instrument_id IN ({0})".format(", ".join(":" + key for key in binds)))
+        params.update(binds)
+    return _rows(
+        conn,
+        "SELECT instrument_id, quote_ts, retrieved_at, last_price, provenance FROM mi_v_live_quotes_by_source WHERE {0} ORDER BY instrument_id".format(
+            " AND ".join(clauses)
+        ),
+        params,
+    )
+
+
+def stock_history_bars(conn, symbol: str, *, since: date | None = None) -> dict[str, Any]:
+    """Stored daily closes for one tracked stock, read only after a click.
+
+    Selects one symbol and one date range from ``mi_v_yahoo_price_daily``; it
+    never preloads history for the whole universe. ``earliest_stored`` is the
+    first stored session regardless of ``since`` so the dialog can say when the
+    series begins. Does not call Yahoo.
+    """
+    ticker = str(symbol or "").upper().strip()
+    if not ticker or not _view_exists(conn, "mi_v_yahoo_price_daily"):
+        return {"symbol": ticker, "bars": [], "earliest_stored": None, "data_version": None}
+    has_adj = bool(
+        conn.execute(
+            text(
+                "SELECT 1 FROM information_schema.columns WHERE table_name = 'mi_v_yahoo_price_daily' AND column_name = 'adj_close_price' LIMIT 1"
+            )
+        ).first()
+    )
+    adj_column = "adj_close_price" if has_adj else "NULL AS adj_close_price"
+    clauses = ["symbol = :symbol"]
+    params: dict[str, Any] = {"symbol": ticker}
+    if since is not None:
+        clauses.append("bar_date >= :since")
+        params["since"] = since
+    bars = _rows(
+        conn,
+        """
+        SELECT bar_date, close_price, {adj}, adjustment_basis, bar_quality, bar_ts, retrieved_at
+        FROM mi_v_yahoo_price_daily
+        WHERE {where}
+        ORDER BY bar_date
+        """.format(adj=adj_column, where=" AND ".join(clauses)),
+        params,
+    )
+    bounds = conn.execute(
+        text("SELECT MIN(bar_date) AS earliest, MAX(retrieved_at) AS version FROM mi_v_yahoo_price_daily WHERE symbol = :symbol"),
+        {"symbol": ticker},
+    ).mappings().first()
+    return {
+        "symbol": ticker,
+        "bars": bars,
+        "earliest_stored": None if bounds is None else bounds.get("earliest"),
+        "data_version": None if bounds is None else bounds.get("version"),
+    }
+
+
+def observation_histories(
+    conn,
+    series_ids: Sequence[str],
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = MAX_HISTORY_ROWS,
+) -> dict[str, list[dict[str, Any]]]:
+    """Bounded current observations for several series in one indexed read.
+
+    Replaces per-series ``observation_history`` loops on Macro pages. ``limit``
+    applies per series (newest rows inside the window), matching the
+    single-series helper.
+    """
+    wanted: list[str] = []
+    for series_id in series_ids:
+        text_id = str(series_id or "")
+        if text_id and text_id not in wanted:
+            wanted.append(text_id)
+    grouped: dict[str, list[dict[str, Any]]] = {series_id: [] for series_id in wanted}
+    if not wanted:
+        return grouped
+    clauses = ["series_id = ids.series_id", "value IS NOT NULL"]
+    params: dict[str, Any] = {"limit": int(limit)}
+    if start is not None:
+        clauses.append("observation_date >= :start")
+        params["start"] = start
+    if end is not None:
+        clauses.append("observation_date <= :end")
+        params["end"] = end
+    binds = {"s{0}".format(index): series_id for index, series_id in enumerate(wanted)}
+    values_sql = ", ".join("(CAST(:s{0} AS varchar))".format(index) for index in range(len(wanted)))
+    rows = _rows(
+        conn,
+        """
+        SELECT ids.series_id, o.observation_date, o.value
+        FROM (VALUES {values}) AS ids(series_id)
+        JOIN LATERAL (
+            SELECT observation_date, value
+            FROM mi_v_macro_observations_current
+            WHERE {where}
+            ORDER BY observation_date DESC
+            LIMIT :limit
+        ) o ON TRUE
+        ORDER BY ids.series_id, o.observation_date
+        """.format(values=values_sql, where=" AND ".join(clauses)),
+        {**binds, **params},
+    )
+    for row in rows:
+        series_id = str(row.get("series_id") or "")
+        if series_id in grouped:
+            grouped[series_id].append({"observation_date": row.get("observation_date"), "value": row.get("value")})
+    return grouped
+
+
+def metric_histories(
+    conn,
+    metric_ids: Sequence[str],
+    *,
+    start: date | None = None,
+    end: date | None = None,
+    limit: int = MAX_HISTORY_ROWS,
+) -> dict[str, list[dict[str, Any]]]:
+    """Several metric histories in one read. Same row shape as :func:`metric_history`."""
+    wanted: list[str] = []
+    for metric_id in metric_ids:
+        text_id = str(metric_id or "")
+        if text_id and text_id not in wanted:
+            wanted.append(text_id)
+    grouped: dict[str, list[dict[str, Any]]] = {metric_id: [] for metric_id in wanted}
+    if not wanted:
+        return grouped
+    clauses = ["metric_id = ids.metric_id"]
+    params: dict[str, Any] = {"limit": int(limit)}
+    if start is not None:
+        clauses.append("as_of >= :start")
+        params["start"] = start
+    if end is not None:
+        clauses.append("as_of <= :end")
+        params["end"] = end
+    binds = {"m{0}".format(index): metric_id for index, metric_id in enumerate(wanted)}
+    values_sql = ", ".join("(CAST(:m{0} AS varchar))".format(index) for index in range(len(wanted)))
+    rows = _rows(
+        conn,
+        """
+        SELECT ids.metric_id, h.as_of, h.value, h.units, h.status
+        FROM (VALUES {values}) AS ids(metric_id)
+        JOIN LATERAL (
+            SELECT as_of, value, units, status
+            FROM mi_v_metric_history
+            WHERE {where}
+            ORDER BY as_of DESC
+            LIMIT :limit
+        ) h ON TRUE
+        ORDER BY ids.metric_id, h.as_of
+        """.format(values=values_sql, where=" AND ".join(clauses)),
+        {**binds, **params},
+    )
+    for row in rows:
+        metric_id = str(row.get("metric_id") or "")
+        if metric_id in grouped:
+            grouped[metric_id].append({"as_of": row.get("as_of"), "value": row.get("value"), "units": row.get("units"), "status": row.get("status")})
+    return grouped
+
+
 def dashboard_price_bars(conn) -> list[dict[str, Any]]:
     """Split-adjusted daily closes for price returns plus the dividend-adjusted close for risk metrics.
 
@@ -1859,8 +2035,39 @@ def overview_snapshot(conn) -> dict[str, Any]:
     return _overview_snapshot_module.overview_snapshot(conn)
 
 
+def overview_snapshot_published(conn) -> dict[str, Any]:
+    """Newest snapshot published by the server job; the live composition only when none is stored.
+
+    The published row is one indexed read of a JSONB payload. ``published_at``
+    tells the page how old the EOD composition is; the stored-quote 1D overlay is
+    applied separately by ``overview_live``.
+    """
+    if _view_exists(conn, "mi_v_overview_snapshot_latest"):
+        row = conn.execute(
+            text("SELECT snapshot_id, published_at, payload FROM mi_v_overview_snapshot_latest")
+        ).mappings().first()
+        if row is not None and row.get("payload"):
+            payload = row["payload"]
+            if isinstance(payload, str):
+                payload = json.loads(payload)
+            snapshot = dict(payload)
+            snapshot["published"] = True
+            published_at = row.get("published_at")
+            snapshot["published_at"] = published_at.isoformat() if isinstance(published_at, datetime) else (str(published_at) if published_at else None)
+            return snapshot
+    snapshot = dict(_overview_snapshot_module.overview_snapshot(conn))
+    snapshot["published"] = False
+    snapshot["published_at"] = None
+    return snapshot
+
+
 __all__ = [
     "overview_snapshot",
+    "overview_snapshot_published",
+    "cross_asset_quotes_latest",
+    "stock_history_bars",
+    "observation_histories",
+    "metric_histories",
     "move_index_context",
     "yahoo_vol_metric_history",
     "SNAPSHOT_AGE_POLICY_VERSION",

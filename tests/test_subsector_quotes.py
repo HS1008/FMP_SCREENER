@@ -273,7 +273,7 @@ def test_aligned_live_basket_uses_only_that_session_and_labels_the_cell():
         spy_quote=quoted["spy_quote_1d"],
     )
     assert relative["rows"][0]["values"][0] == pytest.approx(0.02)
-    assert "same session as SPY" in relative["rows"][0]["notes"][0]
+    assert "same session and basis as SPY" in relative["rows"][0]["notes"][0]
     tech = next(row for row in quoted["sectors"] if row["symbol"] == "XLK")
     assert tech["values"][0] == pytest.approx(0.03)
     assert tech["eod_values"][0] == pytest.approx(0.0)

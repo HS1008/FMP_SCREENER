@@ -289,21 +289,33 @@ def _texts(at: AppTest) -> str:
     return "\n".join(chunks)
 
 
+def _fake_observation_history(series_id):
+    value = 1.0
+    return [
+        {"observation_date": date(2020, 1, 1), "value": 0.0 if series_id == "USREC" else value},
+        {"observation_date": date(2020, 3, 1), "value": value},
+        {"observation_date": date(2024, 6, 1), "value": value + 1},
+    ]
+
+
+def _fake_metric_history():
+    return [
+        {"as_of": date(1998, 1, 1), "value": 2.1},
+        {"as_of": date(2020, 3, 1), "value": 2.5},
+        {"as_of": date(2024, 6, 1), "value": 2.8},
+    ]
+
+
 def _fake_read(fn_name, *args, **kwargs):
     if fn_name == "observation_history":
-        series_id = args[0]
-        value = 1.0 if series_id != "USREC" else 1.0
-        return [
-            {"observation_date": date(2020, 1, 1), "value": 0.0 if series_id == "USREC" else value},
-            {"observation_date": date(2020, 3, 1), "value": value},
-            {"observation_date": date(2024, 6, 1), "value": value + 1},
-        ]
+        return _fake_observation_history(args[0])
     if fn_name == "metric_history":
-        return [
-            {"as_of": date(1998, 1, 1), "value": 2.1},
-            {"as_of": date(2020, 3, 1), "value": 2.5},
-            {"as_of": date(2024, 6, 1), "value": 2.8},
-        ]
+        return _fake_metric_history()
+    # The Macro page batches a whole group into one read per source kind.
+    if fn_name == "observation_histories":
+        return {series_id: _fake_observation_history(series_id) for series_id in args[0]}
+    if fn_name == "metric_histories":
+        return {metric_id: _fake_metric_history() for metric_id in args[0]}
     raise AssertionError(fn_name)
 
 

@@ -287,6 +287,7 @@ function applyTheme(state) {
   if (state.root.host) {
     state.root.host.style.background = palette.background;
     state.root.host.style.color = palette.text;
+    state.root.host.style.setProperty("--mc-background", palette.background);
   }
   state.chart.applyOptions({
     layout: {
@@ -498,6 +499,19 @@ function plottedTimes(state) {
   return times;
 }
 
+function markActiveRange(state, kind) {
+  // The pressed range button is the only visual state the toolbar keeps.
+  var buttons = state.rangesEl ? state.rangesEl.querySelectorAll("button[data-range]") : [];
+  var i;
+  for (i = 0; i < buttons.length; i++) {
+    var active = !!kind && buttons[i].getAttribute("data-range") === kind;
+    buttons[i].setAttribute("aria-pressed", active ? "true" : "false");
+  }
+  if (state.reset) {
+    state.reset.setAttribute("aria-pressed", kind ? "false" : "true");
+  }
+}
+
 function applyRange(state, kind) {
   // Zoom inside the points Streamlit supplied. Does not fetch older data
   // and does not change the page's From/To selectors. Full range is fitContent.
@@ -508,6 +522,7 @@ function applyRange(state, kind) {
   var end = times[times.length - 1];
   if (!kind || kind === "Full range") {
     state.rangeKind = "";
+    markActiveRange(state, "");
     state.chart.timeScale().fitContent();
     showAtTime(state, end);
     return;
@@ -515,6 +530,7 @@ function applyRange(state, kind) {
   var start = rangeStart(end, kind);
   if (!start) {
     state.rangeKind = "";
+    markActiveRange(state, "");
     state.chart.timeScale().fitContent();
     showAtTime(state, end);
     return;
@@ -532,6 +548,7 @@ function applyRange(state, kind) {
     fromIndex = Math.max(0, toIndex - 1);
   }
   state.rangeKind = kind;
+  markActiveRange(state, kind);
   state.chart.timeScale().setVisibleLogicalRange({
     from: fromIndex - 0.5,
     to: toIndex + 0.5,
@@ -1146,8 +1163,20 @@ function updateState(state, data) {
     state.signature = signature;
     state.rangeKind = "";
     state.didFit = !!state.container.clientWidth;
-    state.chart.timeScale().fitContent();
-    showAtTime(state, plottedTimes(state).pop() || (times.length ? times[times.length - 1] : null));
+    var initialRange = state.data.ranges === true ? String(state.data.initial_range || "") : "";
+    if (initialRange && state.didFit) {
+      // Opening zoom (for example the stock dialog's default 3Y). Buttons still zoom within the supplied points.
+      applyRange(state, initialRange);
+    } else {
+      if (initialRange) {
+        state.rangeKind = initialRange;
+        markActiveRange(state, initialRange);
+      } else {
+        markActiveRange(state, "");
+      }
+      state.chart.timeScale().fitContent();
+      showAtTime(state, plottedTimes(state).pop() || (times.length ? times[times.length - 1] : null));
+    }
   } else {
     var j;
     for (j = 0; j < prepared.length && j < state.seriesList.length; j++) {

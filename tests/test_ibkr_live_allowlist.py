@@ -11,6 +11,7 @@ import pytest
 from ibkr_collector.session_open import choose_latest_open, needs_open_refresh
 from market_intelligence.ibkr_live_universe import (
     APPROVED_EQUITY_ETF_COUNT,
+    APPROVED_EQUITY_ETF_SYMBOLS,
     APPROVED_EXTRA_INDEXES,
     EXPECTED_IBKR_LIVE_COUNT,
     STOCK_GROUPS,
@@ -29,12 +30,13 @@ ET = ZoneInfo("America/New_York")
 
 
 def test_named_catalog_is_not_padded_to_the_heading_counts():
-    """93 names: the equity/ETF book plus VIX. The eight Power names are included."""
+    """100 names: the equity/ETF book, seven Global Markets regional ETFs, plus VIX. The eight Power names are included."""
     stocks = unique_stock_symbols()
     assert len(stocks) == 47
-    assert APPROVED_EQUITY_ETF_COUNT == 92
+    assert APPROVED_EQUITY_ETF_COUNT == 99
     assert APPROVED_EXTRA_INDEXES == frozenset({"VIX"})
-    assert EXPECTED_IBKR_LIVE_COUNT == 93
+    assert EXPECTED_IBKR_LIVE_COUNT == 100
+    assert all(symbol in APPROVED_EQUITY_ETF_SYMBOLS for symbol in ("VEA", "VGK", "EWJ", "VWO", "MCHI", "INDA", "EWZ"))
     power = [symbol for name, members in STOCK_GROUPS if name.startswith("Power") for symbol in members]
     assert power == ["CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"]
 

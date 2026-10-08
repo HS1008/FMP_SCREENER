@@ -13,18 +13,30 @@ nothing on this page fetches, recalculates, or writes.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 import pandas as pd
 import streamlit as st
 
 from market_intelligence.components.link_table import link_table
+from market_intelligence.live_1d_ui import ONE_DAY_POLICY_CAPTION
 from market_intelligence.navigation_links import clear_origin, drill_to_subsector, navigate_to
 from market_intelligence.overview_export import EXCEL_MIME, EXPORT_TZ, export_filename, fill_template
+from market_intelligence.overview_live import EOD_LABEL, compose_overview
 from market_intelligence.overview_snapshot import SECTION_SECTORS, STALE_AFTER_DAYS
 from market_intelligence.page_registry import PAGE_BY_ROUTE
-from market_intelligence.ui import CACHE_TTL_SECONDS, MISSING_COLOR, NEG_COLOR, POS_COLOR, compact_as_of, load_or_stop, page_header
+from market_intelligence.return_policy import BASIS_LAST_CLOSE, BASIS_SESSION_OPEN, format_eastern
+from market_intelligence.ui import (
+    CACHE_TTL_SECONDS,
+    MISSING_COLOR,
+    NEG_COLOR,
+    POS_COLOR,
+    compact_as_of,
+    load_or_stop,
+    load_quote_optional,
+    page_header,
+)
 
 COLLAPSE_STATE_KEY = "overview_sections_collapsed"
 EXPAND_ICON = "▾"
@@ -76,7 +88,19 @@ def format_change(value: Any, change_kind: str) -> str:
     return "{0:+.2f}%".format(float(value) * 100.0)
 
 
+_SHORT_BASIS = {BASIS_SESSION_OPEN: "since open", BASIS_LAST_CLOSE: "since last close"}
+
+
 def format_as_of(row: Mapping[str, Any]) -> str:
+    """EOD rows show the session date. Rows with a stored quote show that quote's own ET observation time."""
+    observed = row.get("observed_at")
+    if observed:
+        stamp = format_eastern(observed)
+        if stamp:
+            basis = _SHORT_BASIS.get(str(row.get("one_day_basis") or ""))
+            label = str(row.get("one_day_label") or "")
+            suffix = basis if basis and label not in ("pending", "N/A") else (label or "")
+            return "{0} · {1}".format(stamp, suffix) if suffix else stamp
     day = row.get("as_of")
     if not day:
         return MISSING_TEXT
@@ -118,7 +142,7 @@ def section_frame(section: Mapping[str, Any]) -> tuple[pd.DataFrame, list[str]]:
     for row in section.get("rows") or []:
         record: dict[str, Any] = {"Instrument": row.get("label")}
         record["Level"] = format_level(row.get("level"), str(row.get("level_kind") or level_kind))
-        record["As of"] = format_as_of(row)
+        record["As of / last updated"] = format_as_of(row)
         kind = row_change_kind(section, row)
         for label in change_columns:
             record[label] = format_change((row.get("changes") or {}).get(label), kind)
@@ -199,6 +223,14 @@ def render_section(section: Mapping[str, Any]) -> None:
             for row in rows:
                 if row.get("note"):
                     st.caption("{0}: {1}".format(row.get("label"), row["note"]))
+            live = [row for row in rows if row.get("observed_at")]
+            if live:
+                st.caption("1D basis per row (each row carries its own observation time; rows are not simultaneous):")
+                for row in live:
+                    st.caption("{0}: {1}".format(row.get("label"), row.get("one_day_note") or row.get("one_day_label")))
+            eod_rows = [row for row in rows if row.get("one_day_basis") == "EOD_CLOSE_TO_CLOSE"]
+            if eod_rows:
+                st.caption("{0}: {1}".format(EOD_LABEL, ", ".join(str(row.get("label")) for row in eod_rows)))
 
 
 def table_height(row_count: int) -> int:
@@ -277,48 +309,74 @@ def render_sector_link_table(section: Mapping[str, Any], frame: pd.DataFrame, si
 
 def _section_as_of(section: Mapping[str, Any]) -> str:
     first, last = section.get("as_of_min"), section.get("as_of_max")
+    live = sum(1 for row in section.get("rows") or [] if row.get("observed_at"))
     if not first:
+        if live:
+            return "no stored EOD observations · {0} row{1} from stored quotes".format(live, "" if live == 1 else "s")
         return "no observations"
-    if first == last:
-        return "as of {0}".format(first)
-    return "as of {0} … {1}".format(first, last)
+    text = "as of {0}".format(first) if first == last else "as of {0} … {1}".format(first, last)
+    if live:
+        text += " · {0} live 1D row{1}".format(live, "" if live == 1 else "s")
+    return text
 
 
 @st.cache_data(ttl=CACHE_TTL_SECONDS, show_spinner=False)
 def _workbook_bytes(snapshot_id: str, _snapshot: dict[str, Any]) -> bytes:
-    """Workbook per snapshot id. The snapshot is frozen, so the bytes are too."""
+    """Workbook per composed snapshot id. The composed snapshot is frozen, so the bytes are too."""
     return fill_template(_snapshot, exported_at=datetime.now(EXPORT_TZ))
 
 
 def render_export_controls(snapshot: Mapping[str, Any]) -> None:
     left, right = st.columns([1.4, 4.6])
+    composed = dict(snapshot)
+    snapshot_id = str(snapshot.get("snapshot_id"))
     with left:
+        # Deferred data: the workbook is built only when the button is clicked,
+        # from the same composed snapshot the tables above were rendered from.
         st.download_button(
             "Export to Excel",
-            data=_workbook_bytes(str(snapshot.get("snapshot_id")), dict(snapshot)),
+            data=lambda: _workbook_bytes(snapshot_id, composed),
             file_name=export_filename(),
             mime=EXCEL_MIME,
-            help="Downloads the Market Overview template filled from this snapshot. All sections export regardless of collapse state.",
+            help="Builds the Market Overview template from this exact snapshot when clicked. All sections export regardless of collapse state.",
             key="overview_export_button",
+            on_click="ignore",
         )
     with right:
+        published = snapshot.get("published_at")
+        prepared = "prepared by the server job {0}".format(format_eastern(published)) if published else "composed on this request (no published snapshot yet)"
         st.caption(
-            "Snapshot {0} generated {1} UTC · observations {2} to {3} · {4} rows, {5} missing, {6} stale. "
-            "Export is generated in memory from this same snapshot.".format(
-                snapshot.get("snapshot_id"),
-                str(snapshot.get("generated_at") or "")[:16].replace("T", " "),
+            "EOD snapshot {0} {1} · observations {2} to {3} · {4} rows, {5} missing, {6} stale · {7} rows carry a stored-quote 1D. "
+            "Export is generated on click from this same composed snapshot ({8}).".format(
+                snapshot.get("eod_snapshot_id") or snapshot.get("snapshot_id"),
+                prepared,
                 snapshot.get("as_of_min") or MISSING_TEXT,
                 snapshot.get("as_of_max") or MISSING_TEXT,
                 snapshot.get("rows_total"),
                 snapshot.get("rows_missing"),
                 snapshot.get("rows_stale"),
+                snapshot.get("live_rows") or 0,
+                snapshot_id,
             )
         )
 
 
+def _composed_snapshot() -> dict[str, Any]:
+    """Published EOD snapshot (one indexed read) plus the stored-quote 1D overlay."""
+    base = load_or_stop("overview_snapshot_published")
+    equity = load_quote_optional("dashboard_quotes_latest", default=[])
+    cross = load_quote_optional("cross_asset_quotes_latest", default=[])
+    return compose_overview(
+        base,
+        equity_quotes=list(equity.get("data") or []) if equity.get("available") else [],
+        cross_asset_quotes=list(cross.get("data") or []) if cross.get("available") else [],
+        now=datetime.now(timezone.utc),
+    )
+
+
 def render_market_overview() -> None:
     clear_origin()
-    snapshot = load_or_stop("overview_snapshot")
+    snapshot = _composed_snapshot()
     dates = [row.get("as_of") for section in snapshot.get("sections") or [] for row in section.get("rows") or []]
     as_of, _freshness = compact_as_of([day for day in dates if day])
     errors = snapshot.get("read_errors") or {}
@@ -327,13 +385,14 @@ def render_market_overview() -> None:
         warning = "Some stored reads failed and their sections are blank: {0}.".format(", ".join(sorted(errors)))
     page_header(
         "Market Overview",
-        "Stored end-of-day observations in the Market Overview template layout. Click a section title to open the full page; use the chevron to collapse it.",
+        "Stored end-of-day observations in the Market Overview template layout, with a stored-quote 1D where a live quote exists. Click a section title to open the full page; use the chevron to collapse it.",
         fred=True,  # yields and credit OAS come from FRED; its terms require the attribution
         as_of=as_of,
         freshness="STALE" if snapshot.get("rows_stale") else None,
         warning=warning,
     )
     render_export_controls(snapshot)
+    st.caption(ONE_DAY_POLICY_CAPTION + " Rows without a stored quote are {0}. Each live row shows its own observation time in America/New_York.".format(EOD_LABEL))
     if snapshot.get("rows_total") and snapshot.get("rows_missing") == snapshot.get("rows_total"):
         st.info("No stored observations yet for any Market Overview instrument. Rows fill in after the ingestion jobs run; nothing is fabricated in the meantime.")
     for section in snapshot.get("sections") or []:

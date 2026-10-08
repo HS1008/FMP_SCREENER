@@ -261,6 +261,11 @@ def _run_credit(monkeypatch):
         if fn_name == "metric_history":
             calls.append((args[0], kwargs.get("limit")))
             return list(histories.get(args[0], []))
+        if fn_name == "metric_histories":
+            # One batched read per selection; record each requested metric in order.
+            for metric_id in args[0]:
+                calls.append((metric_id, kwargs.get("limit")))
+            return {metric_id: list(histories.get(metric_id, [])) for metric_id in args[0]}
         raise RuntimeError(fn_name)
 
     monkeypatch.setattr("market_intelligence.ui.cached_read", fake_cached)

@@ -121,15 +121,16 @@ def test_repeated_view_checks_use_the_connection_cache():
 def test_shared_ticker_horizons_are_prepared_once(monkeypatch):
     calls = {"n": 0}
 
-    def _legs(_bars, _price, _anchor):
+    def _legs(_bars):
+        # Longer horizons are completed close-to-close: no quote price or anchor is involved.
         calls["n"] += 1
         return {"1W": {"label": "1W", "value": 0.1, "reason": "close 2026-09-23", "reference": None, "target": None}}
 
-    monkeypatch.setattr("market_intelligence.markets_ui.price_horizons", _legs)
+    monkeypatch.setattr("market_intelligence.markets_ui.completed_price_horizons", _legs)
     cache: dict = {}
     bars = [{"bar_date": "2026-09-23", "close": 80.0, "basis": "SPLIT_ADJUSTED_PRICE", "quality": "FINAL"}]
-    first = _remember_legs(cache, "NVDA", bars, 100.0, "2026-09-30T14:00:00+00:00")
-    second = _remember_legs(cache, "NVDA", bars, 100.0, "2026-09-30T14:00:00+00:00")
+    first = _remember_legs(cache, "NVDA", bars)
+    second = _remember_legs(cache, "NVDA", bars)
     assert first == second
     assert calls["n"] == 1
     assert first["1W"]["value"] == 0.1

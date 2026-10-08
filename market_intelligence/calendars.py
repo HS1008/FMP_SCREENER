@@ -9,6 +9,7 @@ an NYSE holiday from 2022. Observed dates can fall in the preceding year
 from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
+from functools import lru_cache
 from zoneinfo import ZoneInfo
 
 NY_TZ = ZoneInfo("America/New_York")
@@ -108,8 +109,16 @@ def _federal_named(year: int) -> dict[str, date]:
 
 
 def holiday_set(calendar: str, year: int) -> set[date]:
-    """Holidays whose *observed* date may land in ``year`` or an adjacent year."""
-    cal = (calendar or CAL_US_FEDERAL).upper()
+    """Holidays whose *observed* date may land in ``year`` or an adjacent year.
+
+    Returns a fresh set; the computation is memoized per ``(calendar, year)``
+    because the 1D policy asks this for every quote cell on a page.
+    """
+    return set(_holiday_set_cached((calendar or CAL_US_FEDERAL).upper(), int(year)))
+
+
+@lru_cache(maxsize=512)
+def _holiday_set_cached(cal: str, year: int) -> frozenset[date]:
     out: set[date] = set()
     for y in (year - 1, year, year + 1):
         named = _federal_named(y)
@@ -148,14 +157,18 @@ def holiday_set(calendar: str, year: int) -> set[date]:
             out.add(good_friday(y))
         else:
             out.update(named.values())
-    return {d for d in out if d.year == year}
+    return frozenset(d for d in out if d.year == year)
+
+
+@lru_cache(maxsize=512)
+def _rule_holidays_around(cal: str, year: int) -> frozenset[date]:
+    return _holiday_set_cached(cal, year) | _holiday_set_cached(cal, year - 1) | _holiday_set_cached(cal, year + 1)
 
 
 def _rule_is_session(d: date, calendar: str) -> bool:
     if d.weekday() >= 5:
         return False
-    holidays = holiday_set(calendar, d.year) | holiday_set(calendar, d.year - 1) | holiday_set(calendar, d.year + 1)
-    return d not in holidays
+    return d not in _rule_holidays_around((calendar or CAL_US_FEDERAL).upper(), d.year)
 
 
 def _saturday_new_year_observance(d: date) -> bool:
@@ -215,6 +228,41 @@ def last_completed_session(now: datetime, calendar: str = CAL_NYSE, *, session_c
     return previous_session(candidate, calendar)
 
 
+def nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
+    first = date(year, month, 1)
+    offset = (weekday - first.weekday()) % 7
+    return first + timedelta(days=offset + 7 * (n - 1))
+
+
+def nyse_early_close_dates(year: int) -> set[date]:
+    """NYSE 13:00 ET closes. A full-day holiday is not an early close."""
+    return set(_nyse_early_close_dates_cached(int(year)))
+
+
+@lru_cache(maxsize=256)
+def _nyse_early_close_dates_cached(year: int) -> frozenset[date]:
+    found: set[date] = set()
+    thanksgiving = nth_weekday(year, 11, 3, 4)
+    black_friday = thanksgiving + timedelta(days=1)
+    if is_session(black_friday, CAL_NYSE):
+        found.add(black_friday)
+    christmas_eve = date(year, 12, 24)
+    if is_session(christmas_eve, CAL_NYSE):
+        found.add(christmas_eve)
+    july3 = date(year, 7, 3)
+    july4 = date(year, 7, 4)
+    if july4.weekday() < 5 and is_session(july3, CAL_NYSE):
+        found.add(july3)
+    return frozenset(found)
+
+
+def nyse_regular_close(session: date) -> time:
+    """Cash-session close for one NYSE session: 13:00 on an early-close day, else 16:00."""
+    if session in nyse_early_close_dates(session.year):
+        return time(13, 0)
+    return time(16, 0)
+
+
 def skipped_session(prev: date, day: date, calendar: str = CAL_NYSE) -> bool:
     """True when an exchange session falls strictly between two observations.
 
@@ -252,6 +300,9 @@ __all__ = [
     "is_session",
     "last_completed_session",
     "next_session",
+    "nth_weekday",
+    "nyse_early_close_dates",
+    "nyse_regular_close",
     "observed_weekday",
     "previous_session",
     "sessions_between",

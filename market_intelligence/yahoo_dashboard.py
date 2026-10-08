@@ -14,16 +14,25 @@ import math
 import random
 import time
 import uuid
-from datetime import date, datetime, time as clock_time, timedelta, timezone
+from datetime import date, datetime, time as clock_time, timezone
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import yfinance as yf
 
-from market_intelligence.calendars import CAL_NYSE, is_session
-from market_intelligence.ibkr_live_universe import approved_contracts, yahoo_symbol
+from market_intelligence.calendars import CAL_NYSE, is_session, nyse_early_close_dates, nyse_regular_close
+from market_intelligence.cross_asset_universe import INSTRUMENT_BY_ID
+from market_intelligence.ibkr_live_universe import approved_contracts, yahoo_symbol as _equity_yahoo_symbol
 from market_intelligence.live_session import latest_opened_rth_session
 from market_intelligence.nulls import strict_dumps
+from market_intelligence.return_policy import (
+    SessionState,
+    completed_close_from_daily,
+    live_quote_instruments,
+    one_day_return,
+    policy_for,
+    session_state,
+)
 
 logger = logging.getLogger("market_intelligence.yahoo_dashboard")
 
@@ -37,7 +46,31 @@ REGULAR_OPEN = clock_time(9, 30)
 
 
 def dashboard_symbols() -> tuple[str, ...]:
+    """Equity/ETF universe plus VIX. These also receive YAHOO_PRICE_DAILY history."""
     return tuple(row["symbol"] for row in approved_contracts())
+
+
+def cross_asset_quote_symbols() -> tuple[str, ...]:
+    """Tracked FX, futures-proxy, and crypto instrument ids that receive intraday quotes."""
+    return tuple(spec.instrument_id for spec in live_quote_instruments())
+
+
+def quote_symbols() -> tuple[str, ...]:
+    """Every tracked Yahoo instrument the quote collector polls. No new instruments."""
+    return dashboard_symbols() + cross_asset_quote_symbols()
+
+
+def is_cross_asset_symbol(symbol: str) -> bool:
+    key = str(symbol or "").upper().strip()
+    return key in INSTRUMENT_BY_ID and key != "VIX"
+
+
+def yahoo_symbol(symbol: str) -> str:
+    """Yahoo ticker for a dashboard symbol or a cross-asset instrument id."""
+    key = str(symbol or "").upper().strip()
+    if is_cross_asset_symbol(key):
+        return INSTRUMENT_BY_ID[key].yahoo_symbol
+    return _equity_yahoo_symbol(key)
 
 
 def valid_price(value: Any) -> float | None:
@@ -58,33 +91,13 @@ def as_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def nth_weekday(year: int, month: int, weekday: int, n: int) -> date:
-    first = date(year, month, 1)
-    offset = (weekday - first.weekday()) % 7
-    return first + timedelta(days=offset + 7 * (n - 1))
-
-
 def early_close_dates(year: int) -> set[date]:
-    """NYSE 13:00 ET closes. A full-day holiday is not an early close."""
-    found: set[date] = set()
-    thanksgiving = nth_weekday(year, 11, 3, 4)
-    black_friday = thanksgiving + timedelta(days=1)
-    if is_session(black_friday, CAL_NYSE):
-        found.add(black_friday)
-    christmas_eve = date(year, 12, 24)
-    if is_session(christmas_eve, CAL_NYSE):
-        found.add(christmas_eve)
-    july3 = date(year, 7, 3)
-    july4 = date(year, 7, 4)
-    if july4.weekday() < 5 and is_session(july3, CAL_NYSE):
-        found.add(july3)
-    return found
+    """NYSE 13:00 ET closes. Shared with the read-side session policy."""
+    return nyse_early_close_dates(year)
 
 
 def regular_close(session: date) -> clock_time:
-    if session in early_close_dates(session.year):
-        return clock_time(13, 0)
-    return clock_time(16, 0)
+    return nyse_regular_close(session)
 
 
 def session_open_at(session: date) -> datetime:
@@ -265,14 +278,29 @@ def parse_daily_opens(frame: Any, yahoo: str) -> tuple[dict[date, float], list[d
     return opens, splits
 
 
-def fetch_yahoo_frames(symbols: Sequence[str]) -> tuple[Any, Any]:
-    """One intraday request and one daily request. No proxy, bounded timeout."""
+def parse_daily_closes_map(frame: Any, yahoo: str) -> dict[date, float]:
+    """Session date -> Close from the daily frame. The in-progress bar is included; the policy decides completeness."""
+    closes: dict[date, float] = {}
+    for row in _frame_rows(frame, yahoo):
+        day = bar_session_date(row["_ts"])
+        close = valid_price(row.get("Close"))
+        if day is not None and close is not None:
+            closes[day] = close
+    return closes
+
+
+def fetch_yahoo_frames(symbols: Sequence[str], *, minute_period: str = "1d") -> tuple[Any, Any]:
+    """One intraday request and one daily request. No proxy, bounded timeout.
+
+    ``minute_period="2d"`` is used for cross-asset instruments so the last print
+    before a session roll is available as a close fallback.
+    """
     tickers = [yahoo_symbol(symbol) for symbol in symbols]
     jitter = random.uniform(0, 1.5)
     time.sleep(jitter)
     minutes = yf.download(
         tickers,
-        period="1d",
+        period=minute_period,
         interval="1m",
         prepost=True,
         auto_adjust=False,
@@ -331,7 +359,65 @@ def _empty_observation(symbol: str, yahoo: str, error: str) -> dict[str, Any]:
         "open_to_current": None,
         "quote_error": error,
         "price_field": None,
+        "policy_id": policy_for(symbol).policy_id,
+        "session_state": None,
+        "last_close": None,
+        "last_close_date": None,
+        "close_basis": None,
+        "one_day": None,
     }
+
+
+def policy_session_open(
+    daily_opens: Mapping[date, float],
+    minute_bars: Sequence[tuple[datetime, float]],
+    state: SessionState,
+) -> tuple[date, float, str] | None:
+    """Open of the policy's current session: the provider daily Open, else the first in-session print."""
+    official = valid_price(daily_opens.get(state.session_date))
+    if official is not None:
+        return state.session_date, official, "regular_session_open"
+    proxy: tuple[datetime, float] | None = None
+    for ts, raw in minute_bars:
+        price = valid_price(raw)
+        if price is None:
+            continue
+        stamp = as_utc(ts)
+        if stamp < state.open_at or stamp >= state.close_at:
+            continue
+        if proxy is None or stamp < proxy[0]:
+            proxy = (stamp, price)
+    if proxy is None:
+        return None
+    return state.session_date, proxy[1], "first_session_bar"
+
+
+def policy_last_close(
+    daily_closes: Mapping[date, float],
+    minute_bars: Sequence[tuple[datetime, float]],
+    state: SessionState,
+    *,
+    allow_minute_fallback: bool,
+) -> tuple[date, float, str] | None:
+    """Most recent completed close for the policy session, else the last print before the current open."""
+    found = completed_close_from_daily(daily_closes, state)
+    if found is not None:
+        return found[0], found[1], "daily_close"
+    if not allow_minute_fallback or not state.active:
+        return None
+    last: tuple[datetime, float] | None = None
+    for ts, raw in minute_bars:
+        price = valid_price(raw)
+        if price is None:
+            continue
+        stamp = as_utc(ts)
+        if stamp >= state.open_at:
+            continue
+        if last is None or stamp > last[0]:
+            last = (stamp, price)
+    if last is None:
+        return None
+    return state.previous_session_date, last[1], "last_bar_before_open"
 
 
 def _one_observation(
@@ -343,37 +429,60 @@ def _one_observation(
     now: datetime,
     cached: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
+    cross_asset = is_cross_asset_symbol(symbol)
     instrument = "VIX" if symbol == "VIX" else "equity"
+    spec = policy_for(symbol)
+    state = session_state(spec, now)
     bars = parse_minute_bars(minute_frame, yahoo)
     daily_opens, splits = parse_daily_opens(daily_frame, yahoo)
+    daily_closes = parse_daily_closes_map(daily_frame, yahoo)
     latest = newest_observation([(ts, px, "minute_close") for ts, px in bars])
     if latest is None:
         return _empty_observation(symbol, yahoo, "no Yahoo price")
     price_ts, price, _field = latest
-    opened = reference_open(daily_opens, [(ts, px) for ts, px in bars], now)
-    if opened is None and cached and str(cached.get("session_date") or "") == latest_opened_rth_session(now).isoformat():
-        cached_open = valid_price(cached.get("open"))
-        if cached_open is not None:
-            opened = (latest_opened_rth_session(now), cached_open, str(cached.get("basis") or "regular_session_open"))
-    session_name = classify_session(price_ts, instrument=instrument)
     change = None
     error = None
     open_px = None
     open_day = None
     basis = None
-    if opened is None:
-        error = "regular-session open unavailable"
-    else:
-        open_day, open_px, basis = opened
-        price_day = price_ts.astimezone(ET).date()
-        if split_blocks_comparison(splits, open_day, price_day):
-            error = "corporate action between the open and the price"
-        elif instrument == "VIX" and session_name != "regular" and price_ts < session_open_at(open_day):
-            error = "VIX since-open reference unavailable"
+    session_name = classify_session(price_ts, instrument=instrument) if not cross_asset else state.state
+    if cross_asset:
+        opened = policy_session_open(daily_opens, bars, state)
+        if opened is None:
+            error = "session open unavailable"
         else:
-            change = since_open_fraction(price, price_ts, open_px, open_day, now)
-            if change is None:
-                error = "since-open pending a price from this regular session"
+            open_day, open_px, basis = opened
+    else:
+        opened = reference_open(daily_opens, [(ts, px) for ts, px in bars], now)
+        if opened is None and cached and str(cached.get("session_date") or "") == latest_opened_rth_session(now).isoformat():
+            cached_open = valid_price(cached.get("open"))
+            if cached_open is not None:
+                opened = (latest_opened_rth_session(now), cached_open, str(cached.get("basis") or "regular_session_open"))
+        if opened is None:
+            error = "regular-session open unavailable"
+        else:
+            open_day, open_px, basis = opened
+            price_day = price_ts.astimezone(ET).date()
+            if split_blocks_comparison(splits, open_day, price_day):
+                error = "corporate action between the open and the price"
+            elif instrument == "VIX" and session_name != "regular" and price_ts < session_open_at(open_day):
+                error = "VIX since-open reference unavailable"
+            else:
+                change = since_open_fraction(price, price_ts, open_px, open_day, now)
+                if change is None:
+                    error = "since-open pending a price from this regular session"
+    closed = policy_last_close(daily_closes, bars, state, allow_minute_fallback=cross_asset)
+    one_day = one_day_return(
+        symbol,
+        price=price,
+        price_ts=price_ts,
+        session_open=open_px,
+        session_open_date=open_day,
+        last_close=None if closed is None else closed[1],
+        last_close_date=None if closed is None else closed[0],
+        now=now,
+        corporate_action=bool(error and "corporate action" in error),
+    )
     return {
         "symbol": symbol,
         "yahoo_symbol": yahoo,
@@ -386,6 +495,12 @@ def _one_observation(
         "open_to_current": change,
         "quote_error": error,
         "price_field": "minute_close",
+        "policy_id": spec.policy_id,
+        "session_state": state.state,
+        "last_close": None if closed is None else closed[1],
+        "last_close_date": None if closed is None else closed[0].isoformat(),
+        "close_basis": None if closed is None else closed[2],
+        "one_day": one_day.as_dict(),
     }
 
 
@@ -412,7 +527,21 @@ def observation_record(row: Mapping[str, Any], *, retrieved_at: datetime) -> dic
         "since_open_pct": None if change is None else float(change) * 100.0,
         "quote_error": row.get("quote_error"),
         "rights": "INTERNAL_ONLY_UNVERIFIED",
+        # Explicit 1D lineage: which session policy, whether that session was
+        # open at collection time, and both reference prices with their dates.
+        # The page recomputes the 1D basis from these at read time.
+        "policy_id": row.get("policy_id") or policy_for(str(row["symbol"])).policy_id,
+        "session_state": row.get("session_state"),
+        "last_close": row.get("last_close"),
+        "last_close_date": row.get("last_close_date"),
+        "close_basis": row.get("close_basis"),
+        "one_day": row.get("one_day"),
     }
+    one_day = row.get("one_day") if isinstance(row.get("one_day"), Mapping) else None
+    if one_day:
+        provenance["reference_price"] = one_day.get("reference_price")
+        provenance["reference_ts"] = one_day.get("reference_ts")
+        provenance["reference_basis"] = one_day.get("basis")
     quote_iso = as_utc(quote_ts).isoformat()
     return {
         "symbol": row["symbol"],
@@ -522,22 +651,42 @@ def _ensure_instrument(conn, symbol: str) -> None:
             """
             INSERT INTO mi_market_instruments (instrument_id, display_name, asset_type, security_type, currency)
             VALUES (:id, :id, 'equity', 'etf_or_stock', 'USD')
-            ON CONFLICT (instrument_id) DO UPDATE SET display_name = EXCLUDED.display_name, updated_at = NOW()
+            ON CONFLICT (instrument_id) DO UPDATE SET updated_at = NOW()
             """
         ),
         {"id": symbol},
     )
 
 
+def _quote_groups(symbols: Sequence[str]) -> list[tuple[list[str], str]]:
+    """Equities share one request; cross-asset instruments share another with two days of prints."""
+    equities = [symbol for symbol in symbols if not is_cross_asset_symbol(symbol)]
+    cross = [symbol for symbol in symbols if is_cross_asset_symbol(symbol)]
+    groups: list[tuple[list[str], str]] = []
+    if equities:
+        groups.append((equities, "1d"))
+    if cross:
+        groups.append((cross, "2d"))
+    return groups
+
+
 def collect_once(conn, *, now: datetime | None = None, symbols: Sequence[str] | None = None, cached_opens: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     moment = now or datetime.now(timezone.utc)
-    wanted = list(symbols or dashboard_symbols())
-    try:
-        minutes, daily = fetch_yahoo_frames(wanted)
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("yahoo download failed: %s", exc.__class__.__name__)
-        return {"status": "ERROR", "error": exc.__class__.__name__, "inserted": 0, "symbols": len(wanted)}
-    built = build_observations(wanted, minutes, daily, now=moment, cached_opens=cached_opens)
+    wanted = list(symbols or quote_symbols())
+    built: list[dict[str, Any]] = []
+    failed_groups: list[str] = []
+    groups = _quote_groups(wanted)
+    for members, period in groups:
+        try:
+            minutes, daily = fetch_yahoo_frames(members, minute_period=period)
+        except Exception as exc:  # noqa: BLE001 - one provider request must not drop the other group
+            logger.warning("yahoo download failed (%s symbols): %s", len(members), exc.__class__.__name__)
+            failed_groups.append(exc.__class__.__name__)
+            built.extend(_empty_observation(symbol, yahoo_symbol(symbol), exc.__class__.__name__) for symbol in members)
+            continue
+        built.extend(build_observations(members, minutes, daily, now=moment, cached_opens=cached_opens))
+    if groups and len(failed_groups) == len(groups):
+        return {"status": "ERROR", "error": failed_groups[0], "inserted": 0, "symbols": len(wanted)}
     records = []
     priced = 0
     for row in built:

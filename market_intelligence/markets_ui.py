@@ -6,14 +6,14 @@ This module does not call Yahoo, IBKR, FRED, or the database driver.
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import streamlit as st
 
 from market_intelligence.components.market_chart import lightweight_market_chart
-from market_intelligence.components.tenor_chart import column_scaled_return_heatmap, ranked_bar_chart, return_heatmap
+from market_intelligence.components.tenor_chart import column_scaled_return_heatmap, ranked_bar_chart
 from market_intelligence.equity_live import attach_live_1d_to_sector_rows, preferred_canonical_sector_rows
 from market_intelligence.ibkr_live_universe import (
     STOCK_RETURN_HORIZONS,
@@ -24,9 +24,19 @@ from market_intelligence.ibkr_live_universe import (
     stock_horizon_values,
     subsector_groups,
 )
+from market_intelligence.live_1d_ui import (
+    EOD_ONLY_CAPTION,
+    ONE_DAY_POLICY_CAPTION,
+    basis_badge_title,
+    freshness_summary,
+    one_day_cell,
+    one_day_note,
+)
 from market_intelligence.navigation_links import SUBSECTOR_SELECTOR_KEY, apply_pending_scroll, select_subsector
-from market_intelligence.price_returns import PRICE_RETURN_CAPTION, parse_timestamp, price_horizons, quote_anchor_date
+from market_intelligence.price_returns import PRICE_RETURN_CAPTION, completed_price_horizons, parse_timestamp
+from market_intelligence.return_policy import OneDay, format_eastern
 from market_intelligence.live_session import heatmap_freshness_label, market_session_state, quote_observation_status
+from market_intelligence.stock_dialog import render_stock_dialog_if_requested, request_stock_dialog
 from market_intelligence.risk_metrics import (
     RISK_COLUMN_KINDS,
     RISK_COLUMN_LABELS,
@@ -150,14 +160,53 @@ def render_global_markets_page() -> None:
             end=end,
             key="global_ratio_{0}".format(symbol),
         )
-    _heatmap_section(
-        "Global Return Heatmap",
-        "Percentage returns from adjusted USD ETF prices. Finalized EOD session windows.",
-        history,
-        list(GLOBAL_MARKET_ETFS),
-        key="global_heatmap",
-    )
+    _global_heatmap(history, list(GLOBAL_MARKET_ETFS), key="global_heatmap")
     _methodology(GLOBAL_METHODOLOGY)
+
+
+def _global_heatmap(history: Mapping[str, Any], order: Sequence[tuple[str, str]], *, key: str) -> None:
+    """Regional ETF heatmap. 1D follows the stored-quote policy per row; 1W-1Y stay completed close-to-close."""
+    st.subheader("Global Return Heatmap")
+    st.caption("Percentage returns from adjusted USD ETF prices. 1W and longer are completed close-to-close session windows.")
+    matrix = heatmap_rows(order, history.get("returns") or {})
+    moment = _now()
+    _prices, one_days = _index_quote_state(_dashboard_loaded_rows(), now=moment)
+    endpoint = as_day((history.get("bounds") or {}).get("latest"))
+    cells: dict[str, OneDay] = {}
+    notes: list[list[str | None]] = []
+    values: list[list[Any]] = []
+    for row in matrix["rows"]:
+        symbol = str(row.get("symbol") or "")
+        row_values = list(row["values"])
+        row_notes: list[str | None] = [
+            "Completed close-to-close over stored sessions{0}.".format(" through {0}".format(endpoint.isoformat()) if endpoint else "")
+            for _column in matrix["columns"]
+        ]
+        one_day = one_days.get(symbol)
+        if one_day is not None and one_day.available and "1D" in matrix["columns"]:
+            index = matrix["columns"].index("1D")
+            row_values[index] = one_day.value
+            row_notes[index] = one_day_note(one_day, symbol=symbol, now=moment)
+            cells[symbol] = one_day
+        elif "1D" in matrix["columns"]:
+            index = matrix["columns"].index("1D")
+            row_notes[index] = "EOD close-to-close: no usable stored quote. " + EOD_ONLY_CAPTION
+        values.append(row_values)
+        notes.append(row_notes)
+    populated = any(value is not None for row in values for value in row)
+    if not populated:
+        st.caption("No stored session returns for this heatmap.")
+        return
+    st.caption(ONE_DAY_POLICY_CAPTION + " Each horizon has its own color scale. Missing cells are N/A.")
+    if cells:
+        st.caption(freshness_summary(cells, now=moment))
+    column_scaled_return_heatmap(
+        [row["label"] for row in matrix["rows"]],
+        matrix["columns"],
+        values,
+        notes=notes,
+        key=key,
+    )
 
 
 _BADGE_COLORS = BADGE_COLORS
@@ -191,38 +240,48 @@ def _provenance(row: Mapping[str, Any]) -> Mapping[str, Any]:
     return provenance if isinstance(provenance, Mapping) else {}
 
 
-def _index_quote_state(rows: Sequence[Mapping[str, Any]]) -> tuple[dict[str, float], dict[str, float | None]]:
-    """One pass over the prepared quote rows. Prices and since-open stay paired."""
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _index_quote_state(rows: Sequence[Mapping[str, Any]], *, now: datetime | None = None) -> tuple[dict[str, float], dict[str, OneDay]]:
+    """One pass over the prepared quote rows. Prices and policy 1D stay paired."""
+    moment = now or _now()
     prices: dict[str, float] = {}
-    since_open: dict[str, float | None] = {}
+    one_day: dict[str, OneDay] = {}
     for row in rows:
         symbol = quote_symbol(row)
         price = _ibkr_quote_price(row)
         if symbol and price is not None:
             prices[symbol] = price
-        value = _provenance(row).get("open_to_current")
-        since_open[symbol] = float(value) if isinstance(value, (int, float)) else None
-    return prices, since_open
+        one_day[symbol] = one_day_cell(symbol, row, now=moment)
+    return prices, one_day
 
 
-def _dashboard_quote_legs(quotes: Sequence[Mapping[str, Any]] | None) -> dict[str, dict[str, Any]]:
+def _dashboard_quote_legs(quotes: Sequence[Mapping[str, Any]] | None, *, now: datetime | None = None) -> dict[str, dict[str, Any]]:
+    """Policy 1D per approved symbol in the shape ``overlay_stored_quote_returns`` expects.
+
+    ``return_basis`` is SESSION_OPEN or LAST_CLOSE; ``session_open_date`` is the
+    reference session so a sector cell and SPY are only paired on one session
+    and basis. A pending 1D contributes no live leg.
+    """
+    moment = now or _now()
     legs: dict[str, dict[str, Any]] = {}
     for row in display_quote_rows(list(quotes or [])):
         symbol = quote_symbol(row)
         provenance = _provenance(row)
-        live = provenance.get("open_to_current")
-        if not isinstance(live, (int, float)):
-            live = None
-        session = provenance.get("session_date")
+        one_day = one_day_cell(symbol, row, now=moment)
         legs[symbol] = {
-            "live_return": live,
-            "return_basis": "RTH_OPEN" if live is not None else None,
-            "session_open_date": session,
+            "live_return": one_day.value,
+            "return_basis": one_day.basis if one_day.available else None,
+            "session_open_date": one_day.reference_date.isoformat() if one_day.reference_date else None,
             "session_open": provenance.get("session_open"),
+            "reference_price": one_day.reference_price,
+            "one_day": one_day,
             "current": {
                 "market_data_status": quote_observation_status(row.get("quote_ts")),
                 "observation_ts": row.get("quote_ts"),
-                "session_date": session,
+                "session_date": provenance.get("session_date"),
                 "session": provenance.get("session"),
             },
         }
@@ -230,10 +289,8 @@ def _dashboard_quote_legs(quotes: Sequence[Mapping[str, Any]] | None) -> dict[st
 
 
 def _since_open_columns(columns: Sequence[str]) -> list[str]:
-    labels = list(columns)
-    if labels and labels[0] == "1D":
-        labels[0] = "Since open"
-    return labels
+    """Column labels. 1D keeps its name; the basis (since open / since last close) is in each cell note."""
+    return list(columns)
 
 
 def _index_snapshot(history: Mapping[str, Any]) -> None:
@@ -241,38 +298,50 @@ def _index_snapshot(history: Mapping[str, Any]) -> None:
     st.subheader("Index Snapshot", anchor="index-snapshot")
     returns = history.get("returns") or {}
     stored_prices = history.get("latest_price") or {}
-    live_prices, since_open = _index_quote_state(_dashboard_loaded_rows())
+    moment = _now()
+    live_prices, one_days = _index_quote_state(_dashboard_loaded_rows(), now=moment)
     cards: list[str] = []
     for symbol, name in US_INDEX_ETFS:
         window = returns.get(symbol) or {}
         price = live_prices.get(symbol)
         if price is None:
             price = stored_prices.get(symbol)
-        since = since_open.get(symbol)
+        one_day = one_days.get(symbol)
+        if one_day is None:
+            one_day = one_day_cell(symbol, None, now=moment)
         badges = _return_badge(
-            "Since open",
-            since,
-            title="Since open uses the most recent regular-session open. Extended-hours prices are included when Yahoo supplies them.",
+            "1D",
+            one_day.value,
+            title=one_day_note(one_day, symbol=symbol, now=moment) + " " + basis_badge_title(one_day),
         ) + "".join(
-            _return_badge(label, window.get(label)) for label in ("1W", "1M")
+            _return_badge(label, window.get(label), title="Completed close-to-close over {0} stored sessions.".format(5 if label == "1W" else 21))
+            for label in ("1W", "1M")
         )
+        stamp = format_eastern(one_day.price_ts) if one_day.price_ts else ""
+        updated = "Last updated: {0}".format(stamp) if stamp else "Last updated: unavailable (showing last stored close)"
+        basis = one_day.basis_label if one_day.available else ("pending" if one_day.price_ts else "N/A")
         cards.append(
             '<div style="flex:1 1 210px;min-width:190px;padding:10px 12px;border:1px solid rgba(128,128,128,0.35);border-radius:10px;">'
             '<div style="font-weight:700;font-size:15px;">{0}</div>'
             '<div style="font-size:12px;opacity:0.82;">{1}</div>'
             '<div style="font-size:22px;font-weight:700;margin:4px 0 6px 0;">{2}</div>'
-            "<div>{3}</div></div>".format(_html_text(symbol), _html_text(name), _html_text(_price(price)), badges)
+            "<div>{3}</div>"
+            '<div style="font-size:11px;opacity:0.75;margin-top:6px;" title="{5}">{4} · {5}</div></div>'.format(
+                _html_text(symbol), _html_text(name), _html_text(_price(price)), badges, _html_text(basis), _html_text(updated)
+            )
         )
     st.markdown(
         '<div style="display:flex;flex-wrap:wrap;gap:10px;">{0}</div>'.format("".join(cards)),
         unsafe_allow_html=True,
     )
     latest = (history.get("bounds") or {}).get("latest")
+    st.caption(freshness_summary({symbol: one_days[symbol] for symbol, _name in US_INDEX_ETFS if symbol in one_days}, now=moment))
     st.caption(
-        "The price on each card is the newest stored Yahoo price. When that quote has no price, the card shows the last stored adjusted close. "
-        "Since open is that price divided by the regular-session open, including extended-hours prices when Yahoo supplies them. "
-        "1W and 1M are stored trading sessions (5 and 21), not calendar days. "
-        "Each badge is colored independently. Missing data is N/A. Session returns through {0}.".format(latest or "—")
+        "The price on each card is the newest stored Yahoo observation and each card shows that observation's own time in America/New_York; "
+        "cards are not simultaneous. When no quote is stored the card shows the last stored adjusted close. "
+        + ONE_DAY_POLICY_CAPTION
+        + " 1W and 1M are completed close-to-close over stored trading sessions (5 and 21), not calendar days. "
+        "Each badge is colored independently. Missing data is N/A. Completed sessions through {0}.".format(latest or "—")
     )
 
 
@@ -432,8 +501,8 @@ def _aligned_source_caption(panel: Mapping[str, Any]) -> None:
         )
 
 
-def _quote_snapshot(panel: Mapping[str, Any], quotes: Sequence[Mapping[str, Any]], *, mode: str) -> dict[str, Any]:
-    overlaid = overlay_stored_quote_returns(panel, _dashboard_quote_legs(quotes))
+def _quote_snapshot(panel: Mapping[str, Any], quotes: Sequence[Mapping[str, Any]], *, mode: str, now: datetime | None = None) -> dict[str, Any]:
+    overlaid = overlay_stored_quote_returns(panel, _dashboard_quote_legs(quotes, now=now))
     freshness = overlaid.get("quote_freshness") or {}
     relative = mode == "Relative vs SPY"
     updated = freshness.get("relative_updated") if relative else freshness.get("updated")
@@ -474,16 +543,20 @@ def _return_matrix(
 def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
     """Heatmaps read one stored quote snapshot. This fragment does not open TWS."""
     with span("us_equities.heatmaps"):
+        now = _now()
         loaded = load_quote_optional("dashboard_quotes_latest", default=[])
         quotes = list(loaded.get("data") or []) if loaded.get("available") else []
-        snapshot = _quote_snapshot(panel, quotes, mode=mode)
+        snapshot = _quote_snapshot(panel, quotes, mode=mode, now=now)
         priced = snapshot["panel"]
         st.caption(snapshot["caption"])
-        _us_sector_heatmap(priced, mode=mode)
+        _us_sector_heatmap(priced, mode=mode, quotes=quotes, now=now)
         bars = _price_bars_by_symbol()
         legs: dict[str, dict[str, Any]] = {}
-        _us_subsector_heatmap(priced, mode=mode, loaded=loaded, quotes=quotes, bars=bars, legs=legs)
-        _individual_stock_heatmap(loaded=loaded, quotes=quotes, bars=bars, legs=legs)
+        _us_subsector_heatmap(priced, mode=mode, loaded=loaded, quotes=quotes, bars=bars, legs=legs, now=now)
+        _individual_stock_heatmap(loaded=loaded, quotes=quotes, bars=bars, legs=legs, now=now)
+        # A stock click stores the ticker; the dialog opens on this same fragment
+        # run and reads only that ticker's history. Dismissing it clears the request.
+        render_stock_dialog_if_requested(now=now)
         # A sector-row click reruns only this fragment, so the one-time scroll
         # request it leaves behind is served here, after the destination exists.
         # A cross-page drill is served by dashboard.main the same way; whichever
@@ -491,11 +564,17 @@ def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
         apply_pending_scroll()
 
 
-def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
+def _us_sector_heatmap(
+    panel: Mapping[str, Any],
+    *,
+    mode: str,
+    quotes: Sequence[Mapping[str, Any]] | None = None,
+    now: datetime | None = None,
+) -> None:
     st.subheader("Sector Performance", anchor="sector-performance")
     analytical = "relative" if mode == "Relative vs SPY" else "absolute"
     if analytical == "relative":
-        st.caption("Relative vs SPY subtracts the SPY return on the same session and price basis, in percentage points. +2.30% means the sector outperformed SPY by 2.30 percentage points. A live quote that does not share SPY's session uses the EQUITY_EOD pair.")
+        st.caption("Relative vs SPY subtracts the SPY return on the same session and price basis, in percentage points. +2.30% means the sector outperformed SPY by 2.30 percentage points. A live quote that does not share SPY's session and 1D basis uses the EQUITY_EOD pair.")
     else:
         st.caption("Absolute percentage return of each sector ETF between the shared trading sessions.")
     st.caption("Each horizon has its own color scale. Technology is the Information Technology sector (XLK). Missing cells are N/A.")
@@ -510,10 +589,16 @@ def _us_sector_heatmap(panel: Mapping[str, Any], *, mode: str) -> None:
         mode=analytical,
         spy_returns=panel.get("sector_spy_returns") or panel.get("spy_returns"),
     )
-    st.caption(
-        "Since open is the newest stored Yahoo price divided by the most recent regular-session open. "
-        "Extended-hours prices are included when Yahoo supplies them. A missing open is N/A."
-    )
+    st.caption(ONE_DAY_POLICY_CAPTION + " Longer horizons are completed close-to-close.")
+    if quotes:
+        moment = now or _now()
+        by_symbol = quotes_by_symbol(list(quotes))
+        cells = {
+            str(row.get("symbol") or ""): one_day_cell(str(row.get("symbol") or ""), by_symbol.get(str(row.get("symbol") or "")), now=moment)
+            for row in matrix["rows"]
+            if row.get("symbol")
+        }
+        st.caption(freshness_summary(cells, now=moment))
     st.caption("Click a sector name or any cell in its row to open that sector in the Subsector Performance heatmap below.")
     column_scaled_return_heatmap(
         [row["label"] for row in matrix["rows"]],
@@ -535,7 +620,7 @@ def _observed(value: Any) -> str:
     ts = parse_timestamp(value)
     if ts is None:
         return ""
-    return ts.astimezone(_ET).strftime("%m/%d/%Y %H:%M ET")
+    return "Last updated: {0}".format(format_eastern(ts))
 
 
 def _price_bars_by_symbol() -> dict[str, list[dict[str, Any]]]:
@@ -563,16 +648,12 @@ def _remember_legs(
     cache: dict[str, dict[str, Any]],
     symbol: str,
     bars: Sequence[Mapping[str, Any]],
-    price: Any,
-    quote_ts: Any,
 ) -> dict[str, Any]:
-    """Historical horizons are stable for one quote snapshot. Compute each ticker once."""
+    """Completed close-to-close horizons depend only on stored bars. Compute each ticker once."""
     found = cache.get(symbol)
     if found is not None:
         return found
-    ts = parse_timestamp(quote_ts)
-    anchor = quote_anchor_date(ts) if ts is not None else None
-    found = price_horizons(bars, price, anchor)
+    found = completed_price_horizons(bars)
     if symbol:
         cache[symbol] = found
     return found
@@ -580,32 +661,46 @@ def _remember_legs(
 
 def _horizon_cells(
     *,
-    open_to_current: float | None,
-    price: Any,
-    quote_ts: Any,
+    quote: Mapping[str, Any] | None,
     bars: Sequence[Mapping[str, Any]],
     note: str,
     symbol: str = "",
     legs_cache: dict[str, dict[str, Any]] | None = None,
+    now: datetime | None = None,
+    open_to_current: float | None = None,
+    price: Any = None,
+    quote_ts: Any = None,
 ) -> tuple[list[float | None], list[str]]:
+    """One heatmap row: policy 1D from the stored quote, 1W-1Y from completed closes.
+
+    ``open_to_current`` / ``price`` / ``quote_ts`` are accepted for callers that
+    still pass them but are not used for any value: the quote row decides 1D
+    and the stored bars decide the longer horizons.
+    """
+    del open_to_current, price
+    moment = now or _now()
     if legs_cache is not None:
-        legs = _remember_legs(legs_cache, symbol, bars, price, quote_ts)
+        legs = _remember_legs(legs_cache, symbol, bars)
     else:
-        ts = parse_timestamp(quote_ts)
-        anchor = quote_anchor_date(ts) if ts is not None else None
-        legs = price_horizons(bars, price, anchor)
+        legs = completed_price_horizons(bars)
     stored = {label: legs[label]["value"] for label in legs}
-    values = stock_horizon_values(open_to_current, stored)
-    stale = quote_observation_status(quote_ts) == "STALE"
-    observed = _observed(quote_ts)
+    one_day = one_day_cell(symbol, quote, now=moment)
+    values = stock_horizon_values(one_day.value, stored)
+    stamp = quote.get("quote_ts") if quote else quote_ts
+    observed = _observed(stamp)
     notes: list[str] = []
     for label in STOCK_RETURN_HORIZONS:
         if label == "1D":
-            parts = [part for part in (note, observed, "stale" if stale else "") if part]
-            notes.append(" · ".join(parts))
+            notes.append(one_day_note(one_day, symbol=symbol, extra=(note,), now=moment))
         else:
-            parts = [part for part in (str(legs[label]["reason"]), observed, "stale" if stale else "") if part]
-            notes.append(" · ".join(parts))
+            endpoint = legs[label].get("endpoint")
+            parts = [
+                "completed close-to-close",
+                str(legs[label]["reason"]),
+                "last completed close {0}".format(endpoint) if endpoint else "",
+                observed,
+            ]
+            notes.append(" · ".join(part for part in parts if part))
     return values, notes
 
 
@@ -629,8 +724,10 @@ def _us_subsector_heatmap(
     quotes: Sequence[Mapping[str, Any]] | None = None,
     bars: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     legs: dict[str, dict[str, Any]] | None = None,
+    now: datetime | None = None,
 ) -> None:
     st.subheader("Subsector Performance", anchor="subsector-performance")
+    moment = now or _now()
     groups = subsector_groups()
     names = [name for name, _members in groups]
     if st.session_state.get(SUBSECTOR_SELECTOR_KEY) not in names:
@@ -638,12 +735,9 @@ def _us_subsector_heatmap(
     sector = st.selectbox("Sector", names, key=SUBSECTOR_SELECTOR_KEY)
     members = dict(groups)[str(sector)]
     st.caption(", ".join("{0} · {1}".format(symbol, label) for symbol, label in members))
-    st.caption(
-        "Rows are the listed subsector ETFs in list order. Since open is the newest stored Yahoo price divided by the most recent regular-session open. "
-        + PRICE_RETURN_CAPTION
-    )
+    st.caption("Rows are the listed subsector ETFs in list order. " + ONE_DAY_POLICY_CAPTION + " " + PRICE_RETURN_CAPTION)
     if mode == "Relative vs SPY":
-        st.caption("Relative vs SPY subtracts SPY's return on the same price basis, in percentage points.")
+        st.caption("Relative vs SPY subtracts SPY's return on the same price basis, in percentage points. 1D is subtracted only when the row and SPY share one 1D basis and reference session.")
     if loaded is None:
         loaded = load_quote_optional("dashboard_quotes_latest", default=[])
         quotes = list(loaded.get("data") or []) if loaded.get("available") else []
@@ -655,49 +749,52 @@ def _us_subsector_heatmap(
         bars = _price_bars_by_symbol()
     if legs is None:
         legs = {}
-    spy = by_symbol.get("SPY") or {}
-    spy_provenance = spy.get("provenance") or {}
-    if not isinstance(spy_provenance, Mapping):
-        spy_provenance = {}
-    spy_values, _spy_notes = _horizon_cells(
-        open_to_current=spy_provenance.get("open_to_current"),
-        price=spy_provenance.get("current_price", spy.get("last_price")),
-        quote_ts=spy.get("quote_ts"),
-        bars=bars.get("SPY") or [],
-        note="",
-        symbol="SPY",
-        legs_cache=legs,
-    )
+    spy = by_symbol.get("SPY") or None
+    spy_one_day = one_day_cell("SPY", spy, now=moment)
+    spy_values, _spy_notes = _horizon_cells(quote=spy, bars=bars.get("SPY") or [], note="", symbol="SPY", legs_cache=legs, now=moment)
     relative = mode == "Relative vs SPY"
     labels: list[str] = []
     values: list[list[float | None]] = []
     notes: list[list[str]] = []
+    cells: dict[str, OneDay] = {}
     for symbol, label in members:
-        quote = by_symbol.get(symbol) or {}
-        provenance = quote.get("provenance") or {}
+        quote = by_symbol.get(symbol) or None
+        provenance = (quote or {}).get("provenance") or {}
         if not isinstance(provenance, Mapping):
             provenance = {}
-        price = provenance.get("current_price", quote.get("last_price"))
         row_values, row_notes = _horizon_cells(
-            open_to_current=provenance.get("open_to_current"),
-            price=price,
-            quote_ts=quote.get("quote_ts"),
+            quote=quote,
             bars=bars.get(symbol) or [],
             note=str(provenance.get("session") or ""),
             symbol=symbol,
             legs_cache=legs,
+            now=moment,
         )
+        cells[symbol] = one_day_cell(symbol, quote, now=moment)
         if relative:
             row_values = _minus_spy(row_values, spy_values)
+            if not _same_one_day_basis(cells[symbol], spy_one_day):
+                row_values[0] = None
+                row_notes[0] = "N/A: row and SPY 1D are on different bases or reference sessions · " + row_notes[0]
         labels.append("{0} · {1}".format(symbol, label))
         values.append(row_values)
         notes.append(row_notes)
+    st.caption(freshness_summary(cells, now=moment))
     column_scaled_return_heatmap(
         labels,
         _since_open_columns(STOCK_RETURN_HORIZONS),
         values,
         notes=notes,
         key="us_subsector_heatmap_{0}_{1}".format(sector, "relative" if relative else "absolute"),
+    )
+
+
+def _same_one_day_basis(left: OneDay, right: OneDay) -> bool:
+    return (
+        left.available
+        and right.available
+        and left.basis == right.basis
+        and left.reference_date == right.reference_date
     )
 
 
@@ -708,14 +805,13 @@ def _individual_stock_heatmap(
     quotes: Sequence[Mapping[str, Any]] | None = None,
     bars: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     legs: dict[str, dict[str, Any]] | None = None,
+    now: datetime | None = None,
 ) -> None:
     """Approved stocks only. Quotes and daily closes come from PostgreSQL."""
-    st.subheader("Individual Stocks")
-    st.caption(
-        "Since open is the newest stored Yahoo price divided by the most recent regular-session open, including extended hours when Yahoo supplies them. "
-        + PRICE_RETURN_CAPTION
-        + " A ticker listed in more than one group uses the same stored quote."
-    )
+    st.subheader("Individual Stocks", anchor="individual-stocks")
+    moment = now or _now()
+    st.caption(ONE_DAY_POLICY_CAPTION + " " + PRICE_RETURN_CAPTION + " A ticker listed in more than one group uses the same stored quote.")
+    st.caption("Click a ticker or any cell in its row to open a 3-year performance chart for that stock.")
     if loaded is None:
         loaded = load_quote_optional("dashboard_quotes_latest", default=[])
         quotes = list(loaded.get("data") or []) if loaded.get("available") else []
@@ -740,6 +836,7 @@ def _individual_stock_heatmap(
     return_columns = _since_open_columns(STOCK_RETURN_HORIZONS)
     columns = return_columns + list(RISK_COLUMN_LABELS)
     kinds = ["return"] * len(return_columns) + list(RISK_COLUMN_KINDS)
+    cells: dict[str, OneDay] = {}
     for group in groups:
         members = [row for row in rows if row["group"] == group]
         st.caption(group)
@@ -747,14 +844,14 @@ def _individual_stock_heatmap(
         notes = []
         for row in members:
             row_values, row_notes = _horizon_cells(
-                open_to_current=row["open_to_current"],
-                price=row["price"],
-                quote_ts=row.get("quote_ts"),
+                quote=row.get("quote"),
                 bars=bars.get(row["symbol"]) or [],
                 note=row["note"],
                 symbol=row["symbol"],
                 legs_cache=legs,
+                now=moment,
             )
+            cells.setdefault(str(row["symbol"]), one_day_cell(str(row["symbol"]), row.get("quote"), now=moment))
             risk_values, risk_notes = risk_row_cells(risk.get(str(row["symbol"]).upper()) or {})
             values.append(list(row_values) + risk_values)
             notes.append(list(row_notes) + risk_notes)
@@ -765,24 +862,60 @@ def _individual_stock_heatmap(
             notes=notes,
             column_kinds=kinds,
             key="us_stock_heatmap_{0}".format(group),
+            row_ids=[str(row["symbol"]) for row in members],
+            on_row_click=request_stock_dialog,
         )
+    st.caption(freshness_summary(cells, now=moment))
 
 
 def _snapshot_row(history: Mapping[str, Any], symbols: Sequence[str], labels: Mapping[str, str]) -> None:
+    """Regional cards. Each card states its own 1D basis and observation time.
+
+    Every regional ETF is on the tracked Yahoo quote watchlist, so 1D follows
+    the standard policy when a stored quote exists. A card without a usable
+    quote falls back to the stored completed close-to-close 1D, labeled EOD
+    with the close date, so a stale card never looks live.
+    """
     prices = history.get("latest_price") or {}
     returns = history.get("returns") or {}
-    visible = [symbol for symbol in symbols if prices.get(symbol) is not None]
+    moment = _now()
+    live_prices, one_days = _index_quote_state(_dashboard_loaded_rows(), now=moment)
+    # A card needs a price: the stored close or a stored quote. A tracked ETF with
+    # a quote but no market-monitor history still shows its live 1D.
+    visible = [symbol for symbol in symbols if prices.get(symbol) is not None or live_prices.get(symbol) is not None]
     if not visible:
         return
+    endpoint = as_day((history.get("bounds") or {}).get("latest"))
+    cells: dict[str, OneDay] = {}
     for offset in range(0, len(visible), 2):
         cols = st.columns(2)
         for column, symbol in zip(cols, visible[offset : offset + 2]):
             window = returns.get(symbol) or {}
-            column.metric(
-                labels.get(symbol, symbol),
-                _price(prices.get(symbol)),
-                delta="{0} 1D · {1} 1M".format(_signed_percent(window.get("1D")), _signed_percent(window.get("1M"))),
+            one_day = one_days.get(symbol)
+            if one_day is not None and one_day.available:
+                cells[symbol] = one_day
+                price = live_prices.get(symbol, prices.get(symbol))
+                delta = "{0} 1D ({1}) · {2} 1M".format(
+                    _signed_percent(one_day.value), one_day.basis_label.lower(), _signed_percent(window.get("1M"))
+                )
+                help_text = one_day_note(one_day, symbol=symbol, now=moment) + " 1M is completed close-to-close."
+            else:
+                price = prices.get(symbol) if prices.get(symbol) is not None else live_prices.get(symbol)
+                delta = "{0} 1D (EOD) · {1} 1M".format(_signed_percent(window.get("1D")), _signed_percent(window.get("1M")))
+                help_text = "1D and 1M are completed close-to-close from stored daily closes{0}. {1}".format(
+                    " through {0}".format(endpoint.isoformat()) if endpoint else "", EOD_ONLY_CAPTION
+                )
+            column.metric(labels.get(symbol, symbol), _price(price), delta=delta, help=help_text)
+    if cells:
+        st.caption(freshness_summary(cells, now=moment))
+    st.caption(ONE_DAY_POLICY_CAPTION)
+    missing = [symbol for symbol in visible if symbol not in cells]
+    if missing:
+        st.caption(
+            "No usable stored quote yet for {0}: 1D shows the stored completed close over the prior close{1}.".format(
+                ", ".join(missing), " (last close {0})".format(endpoint.isoformat()) if endpoint else ""
             )
+        )
 
 
 def _range_selector(history: Mapping[str, Any], *, key: str) -> tuple[date | None, date | None]:
@@ -962,29 +1095,6 @@ def _ranked_return_section(
         ranked_bar_chart(labels, values, key="{0}_{1}".format(key, horizon), unit="percent", benchmark=_spy_benchmark(history, {}, horizon, use_live=False) if "SPY" not in {symbol for symbol, _label in options} else None)
     else:
         st.caption("No stored returns for this horizon.")
-
-
-def _heatmap_section(
-    title: str,
-    caption: str,
-    history: Mapping[str, Any],
-    order: Sequence[tuple[str, str]],
-    *,
-    key: str,
-) -> None:
-    st.subheader(title)
-    st.caption(caption)
-    matrix = heatmap_rows(order, history.get("returns") or {})
-    populated = any(value is not None for row in matrix["rows"] for value in row["values"])
-    if not populated:
-        st.caption("No stored session returns for this heatmap.")
-        return
-    return_heatmap(
-        [row["label"] for row in matrix["rows"]],
-        matrix["columns"],
-        [row["values"] for row in matrix["rows"]],
-        key=key,
-    )
 
 
 def _methodology(lines: Sequence[str], *, sectors: bool = False) -> None:

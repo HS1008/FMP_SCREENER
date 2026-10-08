@@ -7,7 +7,7 @@ requests, no score, and no raw observation table.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import streamlit as st
 
@@ -44,6 +44,7 @@ from market_intelligence.macro_dashboard import (
     recession_intervals,
     selected_lines,
 )
+from market_intelligence.perf import span
 from market_intelligence.read_models import MACRO_HISTORY_LIMIT
 from market_intelligence.ui import load_or_stop, page_header
 
@@ -76,12 +77,24 @@ def _choice(label: str, options: list[str], *, key: str, default: str) -> str:
     return str(selected)
 
 
-def _load_source(source_id: str) -> list[dict[str, Any]]:
-    if "." in source_id:
-        rows = load_or_stop("metric_history", source_id, limit=MACRO_HISTORY_LIMIT) or []
-        return [{"as_of": row.get("as_of"), "value": row.get("value")} for row in rows]
-    rows = load_or_stop("observation_history", source_id, limit=MACRO_HISTORY_LIMIT) or []
-    return [{"as_of": row.get("observation_date"), "value": row.get("value")} for row in rows]
+def _load_sources(source_ids: Sequence[str]) -> dict[str, list[dict[str, Any]]]:
+    """All of a group's histories in two batched reads (series observations, derived metrics).
+
+    One read per group instead of one per series. Rows are normalised to
+    ``{"as_of", "value"}`` so chart code is unchanged.
+    """
+    series_ids = [source_id for source_id in source_ids if "." not in source_id]
+    metric_ids = [source_id for source_id in source_ids if "." in source_id]
+    histories: dict[str, list[dict[str, Any]]] = {}
+    if series_ids:
+        grouped = load_or_stop("observation_histories", list(series_ids), limit=MACRO_HISTORY_LIMIT) or {}
+        for source_id in series_ids:
+            histories[source_id] = [{"as_of": row.get("observation_date"), "value": row.get("value")} for row in grouped.get(source_id) or []]
+    if metric_ids:
+        grouped = load_or_stop("metric_histories", list(metric_ids), limit=MACRO_HISTORY_LIMIT) or {}
+        for source_id in metric_ids:
+            histories[source_id] = [{"as_of": row.get("as_of"), "value": row.get("value")} for row in grouped.get(source_id) or []]
+    return histories
 
 
 def _clip_bands(bands: list[dict[str, str]], start: date | None, end: date | None) -> list[dict[str, str]]:
@@ -114,7 +127,8 @@ def _render_group(group: str) -> None:
     if note:
         st.caption(note)
     st.caption(VINTAGE_NOTE)
-    histories = {source_id: _load_source(source_id) for source_id in group_source_ids(group)}
+    with span("macro.histories"):
+        histories = _load_sources(list(group_source_ids(group)))
     materialize_derived(group, histories)
     bands = recession_intervals(histories.get("USREC") or [])
     if group == "fed":
