@@ -205,6 +205,8 @@ def _stage_label(kind: Any, mode: Any) -> str:
     kind_text = str(kind or "").lower()
     if kind_text == "platform_research":
         return "Platform · {0}".format(friendly_label(mode))
+    if kind_text == "high_beta_rotation_rule_v1":
+        return "High-beta rotation"
     if kind_text in {"stage2_ml", "stage2"}:
         return "Stage 2"
     if kind_text in {"stage1", "stage1_research"}:
