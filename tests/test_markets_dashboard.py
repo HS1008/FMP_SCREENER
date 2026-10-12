@@ -542,6 +542,79 @@ def test_us_and_global_pages_render_required_sections(monkeypatch):
     assert len(global_page.dataframe) == 0
 
 
+def _stock_quote(symbol: str, *, price: float, open_: float, close: float, stamp: datetime) -> dict:
+    return {
+        "symbol": symbol,
+        "display_name": symbol,
+        "instrument_id": symbol,
+        "last_price": price,
+        "quote_ts": stamp,
+        "provenance": {
+            "symbol": symbol,
+            "current_price": price,
+            "session_open": open_,
+            "session_date": stamp.date().isoformat(),
+            "last_close": close,
+            "last_close_date": "2026-10-09",
+        },
+    }
+
+
+def test_us_page_sections_are_collapsible_and_stock_groups_are_era_expanders(monkeypatch):
+    from market_intelligence import markets_ui
+    from market_intelligence.ibkr_live_universe import STOCK_GROUPS, stock_groups_by_era
+
+    stamp = datetime(2026, 10, 12, 15, 10, tzinfo=ZoneInfo("America/New_York"))
+    quotes = [
+        _stock_quote("NVDA", price=102.0, open_=100.0, close=99.0, stamp=stamp),
+        _stock_quote("ORCL", price=98.0, open_=100.0, close=99.0, stamp=stamp),
+        _stock_quote("OKLO", price=110.0, open_=100.0, close=99.0, stamp=stamp),
+    ]
+
+    def fake_quote_read(fn_name, *args, **kwargs):
+        if fn_name == "dashboard_quotes_latest":
+            return quotes
+        return _fake_quote_read(fn_name, *args, **kwargs)
+
+    monkeypatch.setattr("market_intelligence.ui.cached_read", _fake_read)
+    monkeypatch.setattr("market_intelligence.ui.cached_quote_read", fake_quote_read)
+    monkeypatch.setattr(markets_ui, "_now", lambda: datetime(2026, 10, 12, 15, 11, tzinfo=ZoneInfo("America/New_York")))
+    us = AppTest.from_file(str(ROOT / "pages" / "22_US_Markets.py"), default_timeout=60)
+    us.run()
+    assert not us.exception, [item.value for item in us.exception]
+
+    labels = [str(widget.label) for widget in us.expander]
+    for section in ("Index Snapshot", "Index Performance", "Relative Performance", "Sector Performance", "Subsector Performance"):
+        assert section in labels, section
+    # Page sections open by default; every stock group is its own collapsed expander.
+    by_label = {str(widget.label): widget for widget in us.expander}
+    assert by_label["Sector Performance"].proto.expanded is True
+    group_labels = [label for label in labels if " · " in label and " name" in label]
+    assert len(group_labels) == len(STOCK_GROUPS)
+    assert all(by_label[label].proto.expanded is False for label in group_labels)
+    assert any(label.startswith("Semiconductors · 7 names · median 1D +2.00%") for label in group_labels)
+    assert any(label.startswith("Hyperscalers · 6 names · median 1D -2.00%") for label in group_labels)
+    assert any(label.startswith("Power — Nuclear · 6 names · median 1D +10.00%") for label in group_labels)
+    assert any(label.startswith("EDA / Chip Design · 2 names") and "median" not in label for label in group_labels)
+    # Era headings appear in order, and the Individual Stocks title is not itself an expander (no nesting).
+    text = _texts(us)
+    eras = [title for title, _caption, _groups in stock_groups_by_era()]
+    positions = [text.index(title) for title in eras]
+    assert positions == sorted(positions)
+    assert "Individual Stocks" in [h.value for h in us.subheader]
+    assert "Individual Stocks" not in labels
+
+    # Expand all flips every group open; Collapse all closes them again.
+    next(button for button in us.button if button.label == "Expand all").click().run()
+    assert not us.exception, [item.value for item in us.exception]
+    opened = {str(w.label): w for w in us.expander if " name" in str(w.label)}
+    assert opened and all(widget.proto.expanded is True for widget in opened.values())
+    next(button for button in us.button if button.label == "Collapse all").click().run()
+    assert not us.exception, [item.value for item in us.exception]
+    closed = {str(w.label): w for w in us.expander if " name" in str(w.label)}
+    assert closed and all(widget.proto.expanded is False for widget in closed.values())
+
+
 def test_chart_code_does_not_call_providers_or_the_database():
     files = [
         ROOT / "market_intelligence" / "markets_ui.py",

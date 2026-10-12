@@ -10,13 +10,18 @@ import pandas as pd
 import pytest
 
 from market_intelligence.ibkr_live_universe import (
+    DASHBOARD_EQUITY_SYMBOLS,
     EXPECTED_IBKR_LIVE_COUNT,
     STOCK_GROUPS,
     approved_contracts,
     yahoo_symbol,
 )
 from market_intelligence.yahoo_dashboard import (
+    EQUITY_REQUEST_CHUNK,
+    _quote_groups,
     backoff_seconds,
+    dashboard_symbols,
+    quote_symbols,
     bar_session_date,
     build_observations,
     classify_session,
@@ -48,11 +53,32 @@ def test_canonical_universe_maps_every_symbol_including_vix_and_power():
     assert yahoo_symbol("BRK.B") == "BRK-B"
     assert yahoo_symbol("SPY") == "SPY"
     power = [symbol for name, members in STOCK_GROUPS if name.startswith("Power") for symbol in members]
-    assert power == ["CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"]
-    assert set(power) <= set(symbols)
+    assert {"CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"} <= set(power)
+    assert {"CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"} <= set(symbols)
     mapped = {yahoo_symbol(symbol) for symbol in symbols}
     assert "^VIX" in mapped
     assert len(mapped) == len(symbols)
+
+
+def test_yahoo_quote_universe_is_the_dashboard_superset_in_chunks_of_at_most_100():
+    """The quote job polls every thematic stock, not only the 100-line IBKR book."""
+    polled = dashboard_symbols()
+    assert len(polled) == len(DASHBOARD_EQUITY_SYMBOLS) + 1
+    assert polled[-1] == "VIX"
+    assert set(symbol for symbol in symbols_in_ibkr_book()) <= set(polled)
+    assert {"ORCL", "TSM", "OKLO", "LMT"} <= set(polled)
+    groups = _quote_groups(list(quote_symbols()))
+    equity_chunks = [members for members, period in groups if period == "1d"]
+    assert len(equity_chunks) >= 2
+    assert all(len(members) <= EQUITY_REQUEST_CHUNK for members in equity_chunks)
+    assert [symbol for members in equity_chunks for symbol in members] == list(polled)
+    cross = [members for members, period in groups if period == "2d"]
+    assert len(cross) == 1 and "GC" in cross[0] and "NG" in cross[0]
+    assert "NG" not in polled  # NG is the natural-gas futures id, never a stock here
+
+
+def symbols_in_ibkr_book() -> list[str]:
+    return [row["symbol"] for row in approved_contracts()]
 
 
 def test_naive_daily_bar_keeps_the_session_date():

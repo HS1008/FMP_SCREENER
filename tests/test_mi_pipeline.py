@@ -813,6 +813,9 @@ def _texts(at) -> str:
     for kind in ("title", "caption", "info", "warning", "error", "markdown", "subheader"):
         for el in getattr(at, kind):
             parts.append(str(el.value))
+    # Collapsible page sections carry their heading as the expander label.
+    for el in at.expander:
+        parts.append(str(el.label))
     return "\n".join(parts)
 
 

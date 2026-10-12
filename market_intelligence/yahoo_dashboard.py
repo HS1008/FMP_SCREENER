@@ -22,7 +22,7 @@ import yfinance as yf
 
 from market_intelligence.calendars import CAL_NYSE, is_session, nyse_early_close_dates, nyse_regular_close
 from market_intelligence.cross_asset_universe import INSTRUMENT_BY_ID
-from market_intelligence.ibkr_live_universe import approved_contracts, yahoo_symbol as _equity_yahoo_symbol
+from market_intelligence.ibkr_live_universe import APPROVED_EXTRA_INDEXES, DASHBOARD_EQUITY_SYMBOLS, yahoo_symbol as _equity_yahoo_symbol
 from market_intelligence.live_session import latest_opened_rth_session
 from market_intelligence.nulls import strict_dumps
 from market_intelligence.return_policy import (
@@ -45,9 +45,16 @@ ACTIVE_END = clock_time(20, 0)
 REGULAR_OPEN = clock_time(9, 30)
 
 
+EQUITY_REQUEST_CHUNK = 100
+
+
 def dashboard_symbols() -> tuple[str, ...]:
-    """Equity/ETF universe plus VIX. These also receive YAHOO_PRICE_DAILY history."""
-    return tuple(row["symbol"] for row in approved_contracts())
+    """Equity/ETF universe plus VIX. These also receive YAHOO_PRICE_DAILY history.
+
+    This is the Yahoo universe (IBKR allowlist plus the Yahoo-only thematic
+    stocks), not the 100-line IBKR book.
+    """
+    return DASHBOARD_EQUITY_SYMBOLS + tuple(sorted(APPROVED_EXTRA_INDEXES))
 
 
 def cross_asset_quote_symbols() -> tuple[str, ...]:
@@ -659,12 +666,14 @@ def _ensure_instrument(conn, symbol: str) -> None:
 
 
 def _quote_groups(symbols: Sequence[str]) -> list[tuple[list[str], str]]:
-    """Equities share one request; cross-asset instruments share another with two days of prints."""
+    """Equities share requests of at most ``EQUITY_REQUEST_CHUNK`` tickers; cross-asset
+    instruments share one request with two days of prints. A failed chunk only
+    drops its own members."""
     equities = [symbol for symbol in symbols if not is_cross_asset_symbol(symbol)]
     cross = [symbol for symbol in symbols if is_cross_asset_symbol(symbol)]
     groups: list[tuple[list[str], str]] = []
-    if equities:
-        groups.append((equities, "1d"))
+    for start in range(0, len(equities), EQUITY_REQUEST_CHUNK):
+        groups.append((equities[start : start + EQUITY_REQUEST_CHUNK], "1d"))
     if cross:
         groups.append((cross, "2d"))
     return groups

@@ -73,7 +73,7 @@ def test_screenshot_list_is_29_etfs_in_order_and_power_stays():
     assert all(yahoo_symbol(symbol) == symbol for symbol in symbols)
     assert all(APPROVED_EQUITY_ETF_SYMBOLS.count(symbol) == 1 for symbol in symbols)
     power = [symbol for name, members in STOCK_GROUPS if name.startswith("Power") for symbol in members]
-    assert power == ["CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"]
+    assert {"CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"} <= set(power)
     page = (ROOT / "market_intelligence" / "markets_ui.py").read_text(encoding="utf-8")
     assert "Constituent" not in page
     assert "import yfinance" not in page
