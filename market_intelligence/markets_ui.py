@@ -6,8 +6,10 @@ This module does not call Yahoo, IBKR, FRED, or the database driver.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import date, datetime, timezone
-from typing import Any, Mapping, Sequence
+from statistics import median
+from typing import Any, Iterator, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import streamlit as st
@@ -20,6 +22,7 @@ from market_intelligence.ibkr_live_universe import (
     display_quote_rows,
     quote_symbol,
     quotes_by_symbol,
+    stock_groups_by_era,
     stock_heatmap_rows,
     stock_horizon_values,
     subsector_groups,
@@ -92,6 +95,19 @@ _CHART_HEIGHT = 420
 _ET = ZoneInfo("America/New_York")
 _HORIZON_LABELS = [label for label, _field, _sessions in HORIZONS]
 
+# Individual-stock group expanders. The nonce forces the frontend to take the new
+# ``expanded`` value when the user presses Expand all / Collapse all.
+STOCK_GROUPS_EXPANDED_KEY = "us_stock_groups_expanded"
+STOCK_GROUPS_NONCE_KEY = "us_stock_groups_nonce"
+
+
+@contextmanager
+def _section(title: str, *, anchor: str, expanded: bool = True) -> Iterator[None]:
+    """Collapsible page section. The anchor element keeps in-page scroll targets working."""
+    with st.expander(title, expanded=expanded):
+        st.markdown('<div id="{0}"></div>'.format(html_text(anchor)), unsafe_allow_html=True)
+        yield
+
 
 def render_us_markets_page() -> None:
     """US equity indexes, relative performance, sectors, and subsectors."""
@@ -103,11 +119,14 @@ def render_us_markets_page() -> None:
     with span("us_equities.history"):
         history = load_or_stop("us_markets_history")
         aligned = _aligned_panel(load_optional("aligned_us_equity_returns"))
-    _index_snapshot(history)
+    with _section("Index Snapshot", anchor="index-snapshot"):
+        _index_snapshot(history)
     start, end = _range_selector(history, key="markets_us")
     price_mode = _single_choice("Display", ["Indexed to 100", "Absolute"], key="us_price_mode", default="Indexed to 100")
-    _us_index_performance(history, start, end, mode=price_mode)
-    _us_relative_performance(history, start, end, mode=price_mode)
+    with _section("Index Performance", anchor="index-performance"):
+        _us_index_performance(history, start, end, mode=price_mode)
+    with _section("Relative Performance", anchor="relative-performance"):
+        _us_relative_performance(history, start, end, mode=price_mode)
     return_mode = _single_choice(
         "Sector performance",
         ["Absolute Performance", "Relative vs SPY"],
@@ -295,7 +314,6 @@ def _since_open_columns(columns: Sequence[str]) -> list[str]:
 
 def _index_snapshot(history: Mapping[str, Any]) -> None:
     """Five index cards. Each horizon badge is colored on its own sign."""
-    st.subheader("Index Snapshot", anchor="index-snapshot")
     returns = history.get("returns") or {}
     stored_prices = history.get("latest_price") or {}
     moment = _now()
@@ -357,7 +375,6 @@ def _single_choice(label: str, options: Sequence[str], *, key: str, default: str
 
 
 def _us_index_performance(history: Mapping[str, Any], start: date | None, end: date | None, *, mode: str) -> None:
-    st.subheader("Index Performance")
     indexed = mode != "Absolute"
     if indexed:
         st.caption("Indexed to 100 on the first session in the range where every selected series has an adjusted close. This display also applies to the ratios below.")
@@ -400,7 +417,6 @@ def _absolute_price_chart(
 
 
 def _us_relative_performance(history: Mapping[str, Any], start: date | None, end: date | None, *, mode: str) -> None:
-    st.subheader("Relative Performance", anchor="relative-performance")
     indexed = mode != "Absolute"
     if indexed:
         st.caption("Indexed to 100 rebases each price ratio at the first overlapping session. It does not divide two indexed price series.")
@@ -549,10 +565,14 @@ def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
         snapshot = _quote_snapshot(panel, quotes, mode=mode, now=now)
         priced = snapshot["panel"]
         st.caption(snapshot["caption"])
-        _us_sector_heatmap(priced, mode=mode, quotes=quotes, now=now)
+        with _section("Sector Performance", anchor="sector-performance"):
+            _us_sector_heatmap(priced, mode=mode, quotes=quotes, now=now)
         bars = _price_bars_by_symbol()
         legs: dict[str, dict[str, Any]] = {}
-        _us_subsector_heatmap(priced, mode=mode, loaded=loaded, quotes=quotes, bars=bars, legs=legs, now=now)
+        with _section("Subsector Performance", anchor="subsector-performance"):
+            _us_subsector_heatmap(priced, mode=mode, loaded=loaded, quotes=quotes, bars=bars, legs=legs, now=now)
+        # Individual Stocks is not an expander: its groups are expanders and
+        # Streamlit does not allow nesting them.
         _individual_stock_heatmap(loaded=loaded, quotes=quotes, bars=bars, legs=legs, now=now)
         # A stock click stores the ticker; the dialog opens on this same fragment
         # run and reads only that ticker's history. Dismissing it clears the request.
@@ -571,7 +591,6 @@ def _us_sector_heatmap(
     quotes: Sequence[Mapping[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> None:
-    st.subheader("Sector Performance", anchor="sector-performance")
     analytical = "relative" if mode == "Relative vs SPY" else "absolute"
     if analytical == "relative":
         st.caption("Relative vs SPY subtracts the SPY return on the same session and price basis, in percentage points. +2.30% means the sector outperformed SPY by 2.30 percentage points. A live quote that does not share SPY's session and 1D basis uses the EQUITY_EOD pair.")
@@ -726,7 +745,6 @@ def _us_subsector_heatmap(
     legs: dict[str, dict[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> None:
-    st.subheader("Subsector Performance", anchor="subsector-performance")
     moment = now or _now()
     groups = subsector_groups()
     names = [name for name, _members in groups]
@@ -823,49 +841,83 @@ def _individual_stock_heatmap(
     if legs is None:
         legs = {}
     rows = stock_heatmap_rows(list(quotes or []))
-    groups: list[str] = []
+    rows_by_group: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        if row["group"] not in groups:
-            groups.append(row["group"])
-    if not groups:
+        rows_by_group.setdefault(str(row["group"]), []).append(row)
+    if not rows_by_group:
         st.caption("No approved individual stocks are configured.")
         return
     st.caption(STOCK_RISK_CAPTION)
+    expanded = _stock_group_controls()
     with span("us_equities.stock_risk"):
         risk = risk_metrics_by_symbol(bars, [row["symbol"] for row in rows])
     return_columns = _since_open_columns(STOCK_RETURN_HORIZONS)
     columns = return_columns + list(RISK_COLUMN_LABELS)
     kinds = ["return"] * len(return_columns) + list(RISK_COLUMN_KINDS)
     cells: dict[str, OneDay] = {}
-    for group in groups:
-        members = [row for row in rows if row["group"] == group]
-        st.caption(group)
-        values = []
-        notes = []
-        for row in members:
-            row_values, row_notes = _horizon_cells(
-                quote=row.get("quote"),
-                bars=bars.get(row["symbol"]) or [],
-                note=row["note"],
-                symbol=row["symbol"],
-                legs_cache=legs,
-                now=moment,
-            )
-            cells.setdefault(str(row["symbol"]), one_day_cell(str(row["symbol"]), row.get("quote"), now=moment))
-            risk_values, risk_notes = risk_row_cells(risk.get(str(row["symbol"]).upper()) or {})
-            values.append(list(row_values) + risk_values)
-            notes.append(list(row_notes) + risk_notes)
-        column_scaled_return_heatmap(
-            ["{0} · {1}".format(row["symbol"], _price(row["price"])) for row in members],
-            columns,
-            values,
-            notes=notes,
-            column_kinds=kinds,
-            key="us_stock_heatmap_{0}".format(group),
-            row_ids=[str(row["symbol"]) for row in members],
-            on_row_click=request_stock_dialog,
-        )
+    nonce = int(st.session_state.get(STOCK_GROUPS_NONCE_KEY, 0))
+    for era_title, era_caption, era_groups in stock_groups_by_era():
+        st.markdown("#### {0}".format(era_title))
+        st.caption(era_caption)
+        for group, _members in era_groups:
+            members = rows_by_group.get(group) or []
+            if not members:
+                continue
+            values = []
+            notes = []
+            group_cells: list[OneDay] = []
+            for row in members:
+                symbol = str(row["symbol"])
+                row_values, row_notes = _horizon_cells(
+                    quote=row.get("quote"),
+                    bars=bars.get(symbol) or [],
+                    note=row["note"],
+                    symbol=symbol,
+                    legs_cache=legs,
+                    now=moment,
+                )
+                cell = cells.setdefault(symbol, one_day_cell(symbol, row.get("quote"), now=moment))
+                group_cells.append(cell)
+                risk_values, risk_notes = risk_row_cells(risk.get(symbol.upper()) or {})
+                values.append(list(row_values) + risk_values)
+                notes.append(list(row_notes) + risk_notes)
+            with st.expander(_stock_group_label(group, group_cells), expanded=expanded):
+                # The key carries the nonce so Expand all / Collapse all re-mounts
+                # the heatmap with the new expander state.
+                column_scaled_return_heatmap(
+                    ["{0} · {1}".format(row["symbol"], _price(row["price"])) for row in members],
+                    columns,
+                    values,
+                    notes=notes,
+                    column_kinds=kinds,
+                    key="us_stock_heatmap_{0}_{1}".format(group, nonce),
+                    row_ids=[str(row["symbol"]) for row in members],
+                    on_row_click=request_stock_dialog,
+                )
     st.caption(freshness_summary(cells, now=moment))
+
+
+def _stock_group_controls() -> bool:
+    """Expand all / Collapse all for the stock-group expanders. Returns the expanded state."""
+    if STOCK_GROUPS_EXPANDED_KEY not in st.session_state:
+        st.session_state[STOCK_GROUPS_EXPANDED_KEY] = False
+    with st.container(horizontal=True, gap="small"):
+        if st.button("Expand all", key="us_stock_groups_expand_all", help="Open every stock group below."):
+            st.session_state[STOCK_GROUPS_EXPANDED_KEY] = True
+            st.session_state[STOCK_GROUPS_NONCE_KEY] = int(st.session_state.get(STOCK_GROUPS_NONCE_KEY, 0)) + 1
+        if st.button("Collapse all", key="us_stock_groups_collapse_all", help="Close every stock group below."):
+            st.session_state[STOCK_GROUPS_EXPANDED_KEY] = False
+            st.session_state[STOCK_GROUPS_NONCE_KEY] = int(st.session_state.get(STOCK_GROUPS_NONCE_KEY, 0)) + 1
+    return bool(st.session_state[STOCK_GROUPS_EXPANDED_KEY])
+
+
+def _stock_group_label(group: str, cells: Sequence[OneDay]) -> str:
+    """Expander label: group, member count, and the median available 1D so a closed group still says something."""
+    available = [cell.value for cell in cells if cell.available and cell.value is not None]
+    label = "{0} · {1} name{2}".format(group, len(cells), "" if len(cells) == 1 else "s")
+    if available:
+        label += " · median 1D {0}".format(_signed_percent(median(available)))
+    return label
 
 
 def _snapshot_row(history: Mapping[str, Any], symbols: Sequence[str], labels: Mapping[str, str]) -> None:

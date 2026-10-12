@@ -1,8 +1,18 @@
 """Canonical dashboard quote universe.
 
+Two universes share this module:
+
+* ``APPROVED_EQUITY_ETF_SYMBOLS`` / ``approved_contracts()`` is the IBKR
+  streaming allowlist. It is capped by IBKR's 100 market-data lines and the
+  collector refuses any drift, so it stays at the index, sector, subsector, and
+  regional ETFs plus ``IBKR_STOCK_SYMBOLS``.
+* ``DASHBOARD_EQUITY_SYMBOLS`` is the Yahoo quote and daily-history universe:
+  the allowlist plus every ``STOCK_GROUPS`` member. Yahoo has no line limit, so
+  the thematic stock map on US Equities can be wider than the IBKR book.
+
 Display groups may repeat a ticker (NVDA, TSLA, SPCX). One contract per symbol.
 VIX is included. Yahoo quotes use ``yahoo_symbol``; VIX is ``^VIX``.
-The eight Power names are part of this universe. The Global Markets regional
+The eight Power names are part of both universes. The Global Markets regional
 ETFs (VEA, VGK, EWJ, VWO, MCHI, INDA, EWZ) are included so their 1D follows the
 same stored-quote policy as the US indexes.
 """
@@ -70,26 +80,188 @@ SUBSECTOR_ETFS: tuple[tuple[str, str, str], ...] = (
     ("GRID", "grid/transmission infrastructure", "Utilities"),
 )
 
-# Group name, member tickers. Repeats across groups are display-only.
+# Stocks the IBKR collector streams. Frozen at the 47 names that fit the 100-line
+# book with the ETFs and VIX; new thematic names are Yahoo-only (see STOCK_GROUPS).
+IBKR_STOCK_SYMBOLS: tuple[str, ...] = (
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "SPCX",
+    "AMD", "AVGO",
+    "MU", "SNDK",
+    "ANET",
+    "GLW", "COHR", "LITE",
+    "CAT",
+    "WULF", "IREN", "APLD", "CRWV", "NBIS", "NUAI", "HUT", "CIFR",
+    "SMCI", "VRT", "ALAB", "CRDO",
+    "PLTR", "SNOW", "DDOG", "NET",
+    "RKLB", "ASTS",
+    "IONQ",
+    "RIVN",
+    "AFRM", "SOFI",
+    "CEG", "VST", "TLN",
+    "GEV", "ETN", "PWR",
+    "CCJ",
+    "BE",
+)  # fmt: skip
+
+# Thematic eras shown as headings on US Equities. Each era lists its group names in
+# display order; every name must exist in STOCK_GROUPS.
+STOCK_GROUP_ERAS: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    (
+        "2026 – 2027 · AI & Power Buildout",
+        "Chips. Data centers. Infrastructure. Power.",
+        (
+            "Mag 8",
+            "Hyperscalers",
+            "Semiconductors",
+            "EDA / Chip Design",
+            "Foundries",
+            "Memory",
+            "Networking/Routers",
+            "Optical/Connectivity",
+            "Interconnects",
+            "Edge AI / Devices",
+            "AI Data Centers / Neocloud",
+            "Data Centers",
+            "Cooling",
+            "Servers",
+            "Storage",
+            "GPU Cloud",
+            "Digital Infrastructure",
+            "AI Hardware",
+            "Cloud Software",
+            "High-Beta Software",
+            "Cybersecurity",
+            "Construction",
+            "Power — Grid Infrastructure",
+            "Electrical Equipment",
+            "Power — IPP",
+            "Utilities",
+            "Energy Storage",
+        ),
+    ),
+    (
+        "2027 – 2029 · Energy & Resources",
+        "Power. Fuel. Minerals. The backbone.",
+        (
+            "Natural Gas / Turbines",
+            "Power — Distributed / On-Site Power",
+            "Power — Nuclear",
+            "Uranium / Nuclear Fuel",
+            "Copper",
+            "Lithium",
+            "Critical Minerals",
+            "Rare Earths",
+            "Real Assets (ETFs)",
+            "Energy (ETFs)",
+            "Infrastructure (ETFs)",
+        ),
+    ),
+    (
+        "2028 – 2030+ · Physical AI",
+        "Robotics. Autonomy. Real-world AI.",
+        (
+            "AI Applications",
+            "Robotics",
+            "Industrial Automation",
+            "Autonomy",
+            "EV",
+            "Drones",
+            "Defense",
+            "New Aerospace",
+            "Quantum",
+            "Fintech",
+            "AI Healthcare",
+            "Biotech (ETFs)",
+            "Emerging Tech (ETFs)",
+            "AI Infrastructure (ETFs)",
+            "Economy / Risk (ETFs)",
+            "Other Key Names",
+        ),
+    ),
+)
+
+# Group name, member tickers. Repeats across groups are display-only. The first
+# members of each Power group are the original eight Power names, in order.
+# Not tracked from the source map because Yahoo has no US daily bars for them:
+# PSTG (delisted), PLL (merged into Elevra), REE (delisted), ABB (no US listing;
+# ABBNY is OTC), IVN and LUN (TSX only), TMRC (OTC, no daily bars). "NG" is the
+# natural-gas futures instrument id in cross_asset_universe, so the NovaGold
+# ticker cannot be a stock symbol here.
 STOCK_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("Mag 8", ("AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "SPCX")),
-    ("Semiconductors", ("AMD", "AVGO", "NVDA")),
-    ("Memory", ("MU", "SNDK")),
-    ("Networking/Routers", ("ANET",)),
-    ("Optical/Connectivity", ("GLW", "COHR", "LITE")),
-    ("Construction", ("CAT",)),
-    ("AI Data Centers / Neocloud", ("WULF", "IREN", "APLD", "CRWV", "NBIS", "NUAI", "HUT", "CIFR")),
+    ("Hyperscalers", ("AMZN", "MSFT", "GOOGL", "META", "ORCL", "IBM")),
+    ("Semiconductors", ("AMD", "AVGO", "NVDA", "MRVL", "INTC", "ARM", "QCOM")),
+    ("EDA / Chip Design", ("SNPS", "CDNS")),
+    ("Foundries", ("TSM", "ASML")),
+    ("Memory", ("MU", "SNDK", "WDC", "SKHY")),
+    ("Networking/Routers", ("ANET", "CSCO", "CLS", "AAOI", "NVTS", "LITE", "CRDO", "GLW")),
+    ("Optical/Connectivity", ("GLW", "COHR", "LITE", "AAOI", "NVTS")),
+    ("Interconnects", ("APH", "CIEN", "FN", "MTSI")),
+    ("Edge AI / Devices", ("QCOM", "ARM", "NTNX")),
+    ("AI Data Centers / Neocloud", ("WULF", "IREN", "APLD", "CRWV", "NBIS", "NUAI", "HUT", "CIFR", "CORZ")),
+    ("Data Centers", ("VRT", "SMCI", "IREN", "DLR", "EQIX", "CIFR", "APLD", "CORZ")),
+    ("Cooling", ("VRT", "AAON")),
+    ("Servers", ("DELL", "SMCI", "HPE", "NTAP")),
+    ("Storage", ("WDC", "NTAP", "SNDK")),
+    ("GPU Cloud", ("CRWV", "NBIS", "DOCN", "MSFT", "AMZN")),
+    ("Digital Infrastructure", ("EQIX", "DLR", "AMZN", "ORCL", "IBM", "NTNX", "AKAM")),
     ("AI Hardware", ("SMCI", "VRT", "ALAB", "CRDO")),
+    ("Cloud Software", ("NET", "FSLY")),
     ("High-Beta Software", ("PLTR", "SNOW", "DDOG", "NET")),
-    ("New Aerospace", ("RKLB", "ASTS", "SPCX")),
-    ("Quantum", ("IONQ",)),
+    ("Cybersecurity", ("CRWD", "PANW")),
+    ("Construction", ("CAT", "FIX", "EME", "WCC")),
+    ("Power — Grid Infrastructure", ("GEV", "ETN", "PWR", "HUBB", "EME", "WCC", "VRT")),
+    ("Electrical Equipment", ("ETN", "POWL", "NVT", "TE", "CMI")),
+    ("Power — IPP", ("CEG", "VST", "TLN", "NEE", "NRG", "DLR")),
+    ("Utilities", ("AEP", "ETR", "NEE", "DUK", "SO", "EXC")),
+    ("Energy Storage", ("EOSE", "FLNC", "BE")),
+    ("Natural Gas / Turbines", ("GEV", "EQT", "BE", "CMI", "KMI")),
+    ("Power — Distributed / On-Site Power", ("BE", "CMI", "GNRC", "VST", "BWXT")),
+    ("Power — Nuclear", ("CCJ", "OKLO", "SMR", "UUUU", "BWXT", "CEG")),
+    ("Uranium / Nuclear Fuel", ("CCJ", "LEU", "UUUU", "DNN", "NXE")),
+    ("Copper", ("FCX", "SCCO", "TECK")),
+    ("Lithium", ("ALB", "SQM", "LAC")),
+    ("Critical Minerals", ("LAC", "CRML", "USAU")),
+    ("Rare Earths", ("MP", "USAR", "UAMY")),
+    ("Real Assets (ETFs)", ("GLD", "SLV", "COPX", "REMX")),
+    ("Energy (ETFs)", ("XLE", "IWM", "XLF", "JETS")),
+    ("Infrastructure (ETFs)", ("PAVE", "XLU")),
+    ("AI Applications", ("PLTR", "NOW", "META", "AMZN", "MSFT", "GOOGL", "ORCL", "CRM", "SNOW")),
+    ("Robotics", ("TSLA", "SYM", "ROK", "TER", "ISRG", "PATH")),
+    ("Industrial Automation", ("ROK", "ETN", "IR", "HON", "CAT", "DE")),
+    ("Autonomy", ("GOOGL", "MBLY", "TSLA", "AMZN", "UBER", "LIDR")),
     ("EV", ("RIVN", "TSLA")),
+    ("Drones", ("AVAV", "RCAT", "ACHR", "JOBY")),
+    ("Defense", ("KTOS", "NOC", "LMT", "GD", "RTX", "BA")),
+    ("New Aerospace", ("RKLB", "ASTS", "SPCX", "LUNR", "RDW", "PL", "BKSY")),
+    ("Quantum", ("IONQ", "QBTS", "RGTI", "QUBT")),
     ("Fintech", ("AFRM", "SOFI")),
-    ("Power — IPP", ("CEG", "VST", "TLN")),
-    ("Power — Grid Infrastructure", ("GEV", "ETN", "PWR")),
-    ("Power — Nuclear", ("CCJ",)),
-    ("Power — Distributed / On-Site Power", ("BE",)),
+    ("AI Healthcare", ("TEM", "RXRX", "ISRG", "TDOC", "HIMS", "VERX")),
+    ("Biotech (ETFs)", ("XBI", "IBB", "ARKG")),
+    ("Emerging Tech (ETFs)", ("QTUM", "BOTZ", "ARKX", "NLR")),
+    ("AI Infrastructure (ETFs)", ("SMH", "DRAM", "EUV", "IGV", "CIBR", "WGMI", "DTCR")),
+    ("Economy / Risk (ETFs)", ("IWM", "XLF", "JETS", "XLE")),
+    ("Other Key Names", ("ASTS", "VZ", "T")),
 )
+
+
+def stock_groups_by_era() -> tuple[tuple[str, str, tuple[tuple[str, tuple[str, ...]], ...]], ...]:
+    """``(era title, era caption, ((group, members), ...))`` in display order.
+
+    Groups missing from every era are appended to the last era so a new group
+    is never silently hidden.
+    """
+    members_by_name = dict(STOCK_GROUPS)
+    placed: set[str] = set()
+    eras: list[tuple[str, str, tuple[tuple[str, tuple[str, ...]], ...]]] = []
+    for title, caption, names in STOCK_GROUP_ERAS:
+        groups = tuple((name, members_by_name[name]) for name in names if name in members_by_name)
+        placed.update(name for name, _members in groups)
+        eras.append((title, caption, groups))
+    leftovers = tuple((name, members) for name, members in STOCK_GROUPS if name not in placed)
+    if leftovers and eras:
+        title, caption, groups = eras[-1]
+        eras[-1] = (title, caption, groups + leftovers)
+    return tuple(eras)
 
 
 YAHOO_SYMBOL_OVERRIDES: dict[str, str] = {"VIX": "^VIX"}
@@ -152,12 +324,21 @@ def _equity_symbols() -> tuple[str, ...]:
         _add(ordered, seen, symbol)
     for symbol, _label, _parent in SUBSECTOR_ETFS:
         _add(ordered, seen, symbol)
-    for _group, members in STOCK_GROUPS:
-        for symbol in members:
-            _add(ordered, seen, symbol)
+    for symbol in IBKR_STOCK_SYMBOLS:
+        _add(ordered, seen, symbol)
     # Global Markets regional ETFs: SPY is already present; seven new tickers.
     for symbol, _label in GLOBAL_MARKET_ETFS:
         _add(ordered, seen, symbol)
+    return tuple(ordered)
+
+
+def _dashboard_symbols() -> tuple[str, ...]:
+    """IBKR allowlist order first, then Yahoo-only thematic names in STOCK_GROUPS order."""
+    ordered = list(_equity_symbols())
+    seen = set(ordered)
+    for _group, members in STOCK_GROUPS:
+        for symbol in members:
+            _add(ordered, seen, symbol)
     return tuple(ordered)
 
 
@@ -172,6 +353,10 @@ def _add(ordered: list[str], seen: set[str], symbol: str) -> None:
 APPROVED_EQUITY_ETF_SYMBOLS: tuple[str, ...] = _equity_symbols()
 APPROVED_EQUITY_ETF_COUNT = len(APPROVED_EQUITY_ETF_SYMBOLS)
 EXPECTED_IBKR_LIVE_COUNT = APPROVED_EQUITY_ETF_COUNT + len(APPROVED_EXTRA_INDEXES)
+
+# Yahoo quote + YAHOO_PRICE_DAILY universe (no IBKR line limit). Superset of the allowlist.
+DASHBOARD_EQUITY_SYMBOLS: tuple[str, ...] = _dashboard_symbols()
+YAHOO_ONLY_STOCK_SYMBOLS: tuple[str, ...] = tuple(symbol for symbol in DASHBOARD_EQUITY_SYMBOLS if symbol not in set(APPROVED_EQUITY_ETF_SYMBOLS))
 
 
 def _contract(symbol: str, *, sec_type: str, exchange: str, primary: str | None = None) -> dict[str, str]:
@@ -289,9 +474,9 @@ def quotes_by_symbol(quotes: list[Mapping[str, Any]] | None) -> dict[str, Mappin
 
 
 def display_quote_rows(quotes: list[Mapping[str, Any]] | None) -> list[Mapping[str, Any]]:
-    """Approved symbols only, in allowlist order. TLT and other old rows are omitted."""
+    """Tracked dashboard symbols only, in universe order. TLT and other old rows are omitted."""
     chosen = quotes_by_symbol(quotes)
-    order = list(APPROVED_EQUITY_ETF_SYMBOLS) + sorted(APPROVED_EXTRA_INDEXES)
+    order = list(DASHBOARD_EQUITY_SYMBOLS) + sorted(APPROVED_EXTRA_INDEXES)
     return [chosen[symbol] for symbol in order if symbol in chosen]
 
 

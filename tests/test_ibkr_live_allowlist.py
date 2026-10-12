@@ -13,15 +13,20 @@ from market_intelligence.ibkr_live_universe import (
     APPROVED_EQUITY_ETF_COUNT,
     APPROVED_EQUITY_ETF_SYMBOLS,
     APPROVED_EXTRA_INDEXES,
+    DASHBOARD_EQUITY_SYMBOLS,
     EXPECTED_IBKR_LIVE_COUNT,
+    IBKR_STOCK_SYMBOLS,
     STOCK_GROUPS,
+    YAHOO_ONLY_STOCK_SYMBOLS,
     UnapprovedSubscription,
     approved_contracts,
     assert_subscription_allowed,
     display_quote_rows,
+    stock_groups_by_era,
     stock_heatmap_rows,
     stock_horizon_values,
     unique_stock_symbols,
+    yahoo_symbol,
 )
 from market_intelligence.taxonomy import index_etf_label
 from market_intelligence.live_session import ibkr_mark_price, latest_opened_rth_session, open_to_current_return
@@ -30,15 +35,49 @@ ET = ZoneInfo("America/New_York")
 
 
 def test_named_catalog_is_not_padded_to_the_heading_counts():
-    """100 names: the equity/ETF book, seven Global Markets regional ETFs, plus VIX. The eight Power names are included."""
-    stocks = unique_stock_symbols()
-    assert len(stocks) == 47
+    """IBKR book stays at 100 lines: 47 streamed stocks, the ETFs, seven regional ETFs, plus VIX.
+
+    The thematic stock map is wider and Yahoo-only; it must be a strict superset
+    of the streamed stocks and never change the IBKR allowlist.
+    """
+    assert len(IBKR_STOCK_SYMBOLS) == len(set(IBKR_STOCK_SYMBOLS)) == 47
     assert APPROVED_EQUITY_ETF_COUNT == 99
     assert APPROVED_EXTRA_INDEXES == frozenset({"VIX"})
     assert EXPECTED_IBKR_LIVE_COUNT == 100
     assert all(symbol in APPROVED_EQUITY_ETF_SYMBOLS for symbol in ("VEA", "VGK", "EWJ", "VWO", "MCHI", "INDA", "EWZ"))
-    power = [symbol for name, members in STOCK_GROUPS if name.startswith("Power") for symbol in members]
-    assert power == ["CEG", "VST", "TLN", "GEV", "ETN", "PWR", "CCJ", "BE"]
+    stocks = unique_stock_symbols()
+    assert len(stocks) == len(set(stocks)) > 47
+    assert set(IBKR_STOCK_SYMBOLS) <= set(stocks)
+    assert DASHBOARD_EQUITY_SYMBOLS[: len(APPROVED_EQUITY_ETF_SYMBOLS)] == APPROVED_EQUITY_ETF_SYMBOLS
+    assert set(DASHBOARD_EQUITY_SYMBOLS) == set(APPROVED_EQUITY_ETF_SYMBOLS) | set(stocks)
+    assert len(DASHBOARD_EQUITY_SYMBOLS) == len(set(DASHBOARD_EQUITY_SYMBOLS))
+    assert set(YAHOO_ONLY_STOCK_SYMBOLS).isdisjoint(APPROVED_EQUITY_ETF_SYMBOLS)
+    assert {"ORCL", "TSM", "SKHY", "OKLO", "FCX", "LMT", "GLD"} <= set(YAHOO_ONLY_STOCK_SYMBOLS)
+    # Names the source map lists that Yahoo cannot serve as US daily bars, or that
+    # collide with a cross-asset instrument id (NG = natural gas futures).
+    assert {"PSTG", "PLL", "REE", "ABB", "IVN", "LUN", "TMRC", "NG"}.isdisjoint(stocks)
+    # The original eight Power names lead their groups, in order.
+    power_groups = {name: members for name, members in STOCK_GROUPS if name.startswith("Power")}
+    assert power_groups["Power — IPP"][:3] == ("CEG", "VST", "TLN")
+    assert power_groups["Power — Grid Infrastructure"][:3] == ("GEV", "ETN", "PWR")
+    assert power_groups["Power — Nuclear"][0] == "CCJ"
+    assert power_groups["Power — Distributed / On-Site Power"][0] == "BE"
+
+
+def test_every_stock_group_sits_in_exactly_one_era_and_members_are_real_symbols():
+    names = [name for name, _members in STOCK_GROUPS]
+    assert len(names) == len(set(names))
+    placed = [group for _title, _caption, groups in stock_groups_by_era() for group, _members in groups]
+    assert placed == names or set(placed) == set(names)
+    assert len(placed) == len(names)
+    for _title, _caption, groups in stock_groups_by_era():
+        for group, members in groups:
+            assert members == dict(STOCK_GROUPS)[group]
+            assert all(symbol == symbol.upper().strip() and symbol for symbol in members)
+            assert len(members) == len(set(members)), group
+    for group, members in STOCK_GROUPS:
+        for symbol in members:
+            assert yahoo_symbol(symbol) == symbol or symbol == "VIX", (group, symbol)
 
 
 def test_display_duplicates_subscribe_once_and_unapproved_symbols_are_rejected():
@@ -50,7 +89,7 @@ def test_display_duplicates_subscribe_once_and_unapproved_symbols_are_rejected()
     assert symbols.count("SPCX") == 1
     listed = [symbol for _name, members in STOCK_GROUPS for symbol in members]
     assert listed.count("NVDA") == 2
-    assert listed.count("TSLA") == 2
+    assert listed.count("TSLA") == 4  # Mag 8, Robotics, Autonomy, EV
     assert listed.count("SPCX") == 2
     vix = next(row for row in rows if row["symbol"] == "VIX")
     assert vix["sec_type"] == "IND"
