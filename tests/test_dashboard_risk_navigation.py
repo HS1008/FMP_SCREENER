@@ -440,6 +440,8 @@ def test_individual_stock_heatmap_appends_four_risk_columns_after_the_returns(mo
 
     monkeypatch.setattr(markets_ui, "column_scaled_return_heatmap", spy)
     at = _us_app(monkeypatch)
+    next(button for button in at.button if button.label == "Expand all").click().run()
+    assert not at.exception, [item.value for item in at.exception]
     returns = list(markets_ui._since_open_columns(STOCK_RETURN_HORIZONS))
     assert captured["columns"] == returns + list(RISK_COLUMN_LABELS)
     assert captured["kinds"] == ["return"] * len(returns) + list(RISK_COLUMN_KINDS)

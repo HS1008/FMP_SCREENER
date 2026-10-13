@@ -6,10 +6,8 @@ This module does not call Yahoo, IBKR, FRED, or the database driver.
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from datetime import date, datetime, timezone
-from statistics import median
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 from zoneinfo import ZoneInfo
 
 import streamlit as st
@@ -35,17 +33,47 @@ from market_intelligence.live_1d_ui import (
     one_day_cell,
     one_day_note,
 )
-from market_intelligence.navigation_links import SUBSECTOR_SELECTOR_KEY, apply_pending_scroll, select_subsector
-from market_intelligence.price_returns import PRICE_RETURN_CAPTION, completed_price_horizons, parse_timestamp
-from market_intelligence.return_policy import OneDay, format_eastern
+from market_intelligence.navigation_links import PENDING_SCROLL_KEY, SUBSECTOR_SELECTOR_KEY, apply_pending_scroll, select_subsector
+from market_intelligence.price_returns import PRICE_RETURN_CAPTION, latest_completed_close, parse_timestamp
+from market_intelligence.return_policy import OneDay, format_eastern, quote_freshness
 from market_intelligence.live_session import heatmap_freshness_label, market_session_state, quote_observation_status
 from market_intelligence.stock_dialog import render_stock_dialog_if_requested, request_stock_dialog
 from market_intelligence.risk_metrics import (
     RISK_COLUMN_KINDS,
     RISK_COLUMN_LABELS,
     STOCK_RISK_CAPTION,
-    risk_metrics_by_symbol,
     risk_row_cells,
+)
+from market_intelligence.stock_board import (
+    COLUMNS_KEY,
+    COLUMN_ALL,
+    COLUMN_VIEWS,
+    ERA_KEY,
+    FILTER_ALL,
+    FORCED_OPEN_KEY,
+    GROUP_FILTER_KEY,
+    LAYOUTS,
+    LAYOUT_ALL,
+    LAYOUT_GROUPED,
+    LAYOUT_KEY,
+    OPEN_MAP_KEY,
+    QUERY_KEY,
+    SORT_CATALOG,
+    SORT_DESC_KEY,
+    SORT_KEY,
+    cached_horizons,
+    cached_risk,
+    dedupe_symbols,
+    filter_members,
+    group_has_match,
+    group_state_key,
+    group_summary_label,
+    normalize_query,
+    section_state_key,
+    slice_columns,
+    sort_choices,
+    sort_rows,
+    value_map,
 )
 from market_intelligence.history_range import historical_date_range, pills_layout_kwargs, series_toggles
 from market_intelligence.markets_analytics import (
@@ -95,18 +123,31 @@ _CHART_HEIGHT = 420
 _ET = ZoneInfo("America/New_York")
 _HORIZON_LABELS = [label for label, _field, _sessions in HORIZONS]
 
-# Individual-stock group expanders. The nonce forces the frontend to take the new
-# ``expanded`` value when the user presses Expand all / Collapse all.
-STOCK_GROUPS_EXPANDED_KEY = "us_stock_groups_expanded"
-STOCK_GROUPS_NONCE_KEY = "us_stock_groups_nonce"
+def _section_is_open(anchor: str, *, default_open: bool) -> bool:
+    """Session state for a keyed expander, before the widget is created this run."""
+    if st.session_state.get(PENDING_SCROLL_KEY) == anchor:
+        return True
+    key = section_state_key(anchor)
+    if key in st.session_state:
+        return bool(st.session_state[key])
+    return default_open
 
 
-@contextmanager
-def _section(title: str, *, anchor: str, expanded: bool = True) -> Iterator[None]:
-    """Collapsible page section. The anchor element keeps in-page scroll targets working."""
-    with st.expander(title, expanded=expanded):
+def _render_section(title: str, *, anchor: str, default_open: bool, render: Any) -> None:
+    """Collapsible section. The body runs only while the section is open.
+
+    A pending in-page scroll opens the destination first, so the anchor exists
+    on the same run that scrolls to it. The key is the anchor, not the label.
+    """
+    key = section_state_key(anchor)
+    if st.session_state.get(PENDING_SCROLL_KEY) == anchor:
+        st.session_state[key] = True
+    box = st.expander(title, expanded=default_open, key=key, on_change="rerun")
+    if not box.open:
+        return
+    with box:
         st.markdown('<div id="{0}"></div>'.format(html_text(anchor)), unsafe_allow_html=True)
-        yield
+        render()
 
 
 def render_us_markets_page() -> None:
@@ -118,15 +159,30 @@ def render_us_markets_page() -> None:
     )
     with span("us_equities.history"):
         history = load_or_stop("us_markets_history")
-        aligned = _aligned_panel(load_optional("aligned_us_equity_returns"))
-    with _section("Index Snapshot", anchor="index-snapshot"):
-        _index_snapshot(history)
+        # Sector and subsector heatmaps are the only consumers of this panel.
+        # Stock baskets stay available from aligned_us_equity_returns for other
+        # callers; this page reads Yahoo bars for the symbols it actually draws.
+        needs_panel = _section_is_open("sector-performance", default_open=True) or _section_is_open(
+            "subsector-performance", default_open=True
+        )
+        aligned = _aligned_panel(
+            load_optional("aligned_us_equity_returns", include_stock_baskets=False) if needs_panel else {"available": False, "data": {}}
+        )
+    _render_section("Index Snapshot", anchor="index-snapshot", default_open=True, render=lambda: _index_snapshot(history))
     start, end = _range_selector(history, key="markets_us")
     price_mode = _single_choice("Display", ["Indexed to 100", "Absolute"], key="us_price_mode", default="Indexed to 100")
-    with _section("Index Performance", anchor="index-performance"):
-        _us_index_performance(history, start, end, mode=price_mode)
-    with _section("Relative Performance", anchor="relative-performance"):
-        _us_relative_performance(history, start, end, mode=price_mode)
+    _render_section(
+        "Index Performance",
+        anchor="index-performance",
+        default_open=True,
+        render=lambda: _us_index_performance(history, start, end, mode=price_mode),
+    )
+    _render_section(
+        "Relative Performance",
+        anchor="relative-performance",
+        default_open=True,
+        render=lambda: _us_relative_performance(history, start, end, mode=price_mode),
+    )
     return_mode = _single_choice(
         "Sector performance",
         ["Absolute Performance", "Relative vs SPY"],
@@ -134,6 +190,11 @@ def render_us_markets_page() -> None:
         default="Absolute Performance",
     )
     _us_return_heatmaps(aligned, mode=return_mode)
+    # Search, sort, and expansion live outside the 15-minute heatmap fragment.
+    # A fragment-local widget is reset when a control outside the fragment
+    # reruns the whole page (the Refresh button). The open-state map is what
+    # the stock fragment restores.
+    _render_stock_board()
     _methodology(US_METHODOLOGY, sectors=True)
 
 
@@ -312,12 +373,26 @@ def _since_open_columns(columns: Sequence[str]) -> list[str]:
     return list(columns)
 
 
+@st.fragment(run_every=YAHOO_HEATMAP_REFRESH_SECONDS)
 def _index_snapshot(history: Mapping[str, Any]) -> None:
-    """Five index cards. Each horizon badge is colored on its own sign."""
+    """Five index cards. Each horizon badge is colored on its own sign.
+
+    This fragment re-reads stored quotes on the Yahoo collection cadence. It does
+    not call a provider, and it does not touch the historical From/To range.
+    """
     returns = history.get("returns") or {}
     stored_prices = history.get("latest_price") or {}
     moment = _now()
-    live_prices, one_days = _index_quote_state(_dashboard_loaded_rows(), now=moment)
+    loaded = load_quote_optional("dashboard_quotes_latest", default=[])
+    quotes_available = bool(loaded.get("available"))
+    rows = list(display_quote_rows(loaded.get("data") or [])) if quotes_available else []
+    if not quotes_available:
+        st.caption(
+            "Stored quote read failed ({0}). 1D is N/A and is not filled from daily history. The price below is the last stored adjusted close when one exists.".format(
+                loaded.get("error") or "unread"
+            )
+        )
+    live_prices, one_days = _index_quote_state(rows, now=moment)
     cards: list[str] = []
     for symbol, name in US_INDEX_ETFS:
         window = returns.get(symbol) or {}
@@ -354,6 +429,7 @@ def _index_snapshot(history: Mapping[str, Any]) -> None:
     )
     latest = (history.get("bounds") or {}).get("latest")
     st.caption(freshness_summary({symbol: one_days[symbol] for symbol, _name in US_INDEX_ETFS if symbol in one_days}, now=moment))
+    st.caption("Page draw {0}. Observation times above are each quote's own timestamp, not this draw.".format(format_eastern(moment)))
     st.caption(
         "The price on each card is the newest stored Yahoo observation and each card shows that observation's own time in America/New_York; "
         "cards are not simultaneous. When no quote is stored the card shows the last stored adjusted close. "
@@ -565,18 +641,32 @@ def _us_return_heatmaps(panel: Mapping[str, Any], *, mode: str) -> None:
         snapshot = _quote_snapshot(panel, quotes, mode=mode, now=now)
         priced = snapshot["panel"]
         st.caption(snapshot["caption"])
-        with _section("Sector Performance", anchor="sector-performance"):
-            _us_sector_heatmap(priced, mode=mode, quotes=quotes, now=now)
-        bars = _price_bars_by_symbol()
+        _render_section(
+            "Sector Performance",
+            anchor="sector-performance",
+            default_open=True,
+            render=lambda: _us_sector_heatmap(priced, mode=mode, quotes=quotes, now=now),
+        )
+        subsector_open = _section_is_open("subsector-performance", default_open=True)
+        subsector_symbols = _selected_subsector_symbols() if subsector_open else ()
+        bars, bars_available, bars_error = _price_bars_by_symbol(subsector_symbols)
         legs: dict[str, dict[str, Any]] = {}
-        with _section("Subsector Performance", anchor="subsector-performance"):
-            _us_subsector_heatmap(priced, mode=mode, loaded=loaded, quotes=quotes, bars=bars, legs=legs, now=now)
-        # Individual Stocks is not an expander: its groups are expanders and
-        # Streamlit does not allow nesting them.
-        _individual_stock_heatmap(loaded=loaded, quotes=quotes, bars=bars, legs=legs, now=now)
-        # A stock click stores the ticker; the dialog opens on this same fragment
-        # run and reads only that ticker's history. Dismissing it clears the request.
-        render_stock_dialog_if_requested(now=now)
+        _render_section(
+            "Subsector Performance",
+            anchor="subsector-performance",
+            default_open=True,
+            render=lambda: _us_subsector_heatmap(
+                priced,
+                mode=mode,
+                loaded=loaded,
+                quotes=quotes,
+                bars=bars,
+                bars_available=bars_available,
+                bars_error=bars_error,
+                legs=legs,
+                now=now,
+            ),
+        )
         # A sector-row click reruns only this fragment, so the one-time scroll
         # request it leaves behind is served here, after the destination exists.
         # A cross-page drill is served by dashboard.main the same way; whichever
@@ -642,11 +732,31 @@ def _observed(value: Any) -> str:
     return "Last updated: {0}".format(format_eastern(ts))
 
 
-def _price_bars_by_symbol() -> dict[str, list[dict[str, Any]]]:
-    loaded = load_optional("dashboard_price_bars", default=[])
+def _selected_subsector_symbols() -> tuple[str, ...]:
+    """ETFs for the sector currently selected, plus SPY. Does not create the selectbox."""
+    groups = subsector_groups()
+    names = [name for name, _members in groups]
+    selected = st.session_state.get(SUBSECTOR_SELECTOR_KEY)
+    if selected not in names:
+        selected = names[0] if names else None
+    members = dict(groups).get(str(selected), ())
+    return dedupe_symbols([symbol for symbol, _label in members] + ["SPY"])
+
+
+def _price_bars_by_symbol(symbols: Sequence[str]) -> tuple[dict[str, list[dict[str, Any]]], bool, str | None]:
+    """One batched daily-history read. Empty input does not query.
+
+    Returns ``(bars, available, error)``. ``available`` is False only when the
+    read failed. An empty bar list with ``available`` True means the symbols
+    have no stored rows.
+    """
+    wanted = dedupe_symbols(symbols)
+    if not wanted:
+        return {}, True, None
+    loaded = load_optional("dashboard_price_bars", tuple(sorted(wanted)))
     grouped: dict[str, list[dict[str, Any]]] = {}
     if not loaded.get("available"):
-        return grouped
+        return grouped, False, str(loaded.get("error") or "unread")
     for row in loaded.get("data") or []:
         symbol = str(row.get("symbol") or "").upper()
         if not symbol:
@@ -660,7 +770,7 @@ def _price_bars_by_symbol() -> dict[str, list[dict[str, Any]]]:
                 "quality": row.get("bar_quality"),
             }
         )
-    return grouped
+    return grouped, True, None
 
 
 def _remember_legs(
@@ -672,7 +782,7 @@ def _remember_legs(
     found = cache.get(symbol)
     if found is not None:
         return found
-    found = completed_price_horizons(bars)
+    found = cached_horizons(symbol, bars)
     if symbol:
         cache[symbol] = found
     return found
@@ -689,6 +799,8 @@ def _horizon_cells(
     open_to_current: float | None = None,
     price: Any = None,
     quote_ts: Any = None,
+    quote_failure: str | None = None,
+    history_failure: str | None = None,
 ) -> tuple[list[float | None], list[str]]:
     """One heatmap row: policy 1D from the stored quote, 1W-1Y from completed closes.
 
@@ -710,7 +822,16 @@ def _horizon_cells(
     notes: list[str] = []
     for label in STOCK_RETURN_HORIZONS:
         if label == "1D":
-            notes.append(one_day_note(one_day, symbol=symbol, extra=(note,), now=moment))
+            if quote_failure:
+                notes.append(
+                    "N/A: stored quote read failed ({0}). 1D is not filled from daily history.".format(quote_failure)
+                )
+            elif quote is None:
+                notes.append(one_day_note(one_day, symbol=symbol, extra=(note, "no stored quote for {0}".format(symbol)), now=moment))
+            else:
+                notes.append(one_day_note(one_day, symbol=symbol, extra=(note,), now=moment))
+        elif history_failure:
+            notes.append("N/A: daily history read failed ({0}). This is not an empty history.".format(history_failure))
         else:
             endpoint = legs[label].get("endpoint")
             parts = [
@@ -742,6 +863,8 @@ def _us_subsector_heatmap(
     loaded: Mapping[str, Any] | None = None,
     quotes: Sequence[Mapping[str, Any]] | None = None,
     bars: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    bars_available: bool = True,
+    bars_error: str | None = None,
     legs: dict[str, dict[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> None:
@@ -759,17 +882,37 @@ def _us_subsector_heatmap(
     if loaded is None:
         loaded = load_quote_optional("dashboard_quotes_latest", default=[])
         quotes = list(loaded.get("data") or []) if loaded.get("available") else []
-    if not loaded.get("available"):
-        st.caption("Stored Yahoo quotes are unavailable ({0}).".format(loaded.get("error") or "unread"))
-        return
+    quotes_available = bool(loaded.get("available"))
+    quote_failure = None if quotes_available else str(loaded.get("error") or "unread")
+    if not quotes_available:
+        st.caption(
+            "Stored Yahoo quotes are unavailable ({0}). 1D is N/A. Longer horizons still use stored daily history when that read succeeds.".format(
+                quote_failure
+            )
+        )
+    elif not quotes:
+        st.caption("Stored quote snapshot is empty. 1D is N/A. Longer horizons use stored daily history.")
     by_symbol = quotes_by_symbol(list(quotes or []))
     if bars is None:
-        bars = _price_bars_by_symbol()
+        bars, bars_available, bars_error = _price_bars_by_symbol(_selected_subsector_symbols())
+    if not bars_available:
+        st.caption("Daily history read failed ({0}). Longer returns are N/A. This is not an empty history.".format(bars_error or "unread"))
+    bar_map = bars or {}
     if legs is None:
         legs = {}
+    history_failure = None if bars_available else (bars_error or "unread")
     spy = by_symbol.get("SPY") or None
     spy_one_day = one_day_cell("SPY", spy, now=moment)
-    spy_values, _spy_notes = _horizon_cells(quote=spy, bars=bars.get("SPY") or [], note="", symbol="SPY", legs_cache=legs, now=moment)
+    spy_values, _spy_notes = _horizon_cells(
+        quote=spy,
+        bars=bar_map.get("SPY") or [],
+        note="",
+        symbol="SPY",
+        legs_cache=legs,
+        now=moment,
+        quote_failure=quote_failure,
+        history_failure=history_failure,
+    )
     relative = mode == "Relative vs SPY"
     labels: list[str] = []
     values: list[list[float | None]] = []
@@ -782,11 +925,13 @@ def _us_subsector_heatmap(
             provenance = {}
         row_values, row_notes = _horizon_cells(
             quote=quote,
-            bars=bars.get(symbol) or [],
+            bars=bar_map.get(symbol) or [],
             note=str(provenance.get("session") or ""),
             symbol=symbol,
             legs_cache=legs,
             now=moment,
+            quote_failure=quote_failure,
+            history_failure=history_failure,
         )
         cells[symbol] = one_day_cell(symbol, quote, now=moment)
         if relative:
@@ -816,6 +961,234 @@ def _same_one_day_basis(left: OneDay, right: OneDay) -> bool:
     )
 
 
+def _reset_stock_controls() -> None:
+    """Clear discovery controls. Group expansion is kept."""
+    st.session_state[QUERY_KEY] = ""
+    st.session_state[ERA_KEY] = FILTER_ALL
+    st.session_state[GROUP_FILTER_KEY] = FILTER_ALL
+    st.session_state[SORT_KEY] = SORT_CATALOG
+    st.session_state[SORT_DESC_KEY] = False
+    st.session_state[COLUMNS_KEY] = COLUMN_ALL
+    st.session_state[LAYOUT_KEY] = LAYOUT_GROUPED
+
+
+def _on_group_toggle(group: str) -> None:
+    """User toggle. A full-page rerun does not call this, so it cannot wipe the map."""
+    mapping = dict(st.session_state.get(OPEN_MAP_KEY) or {})
+    mapping[str(group)] = bool(st.session_state.get(group_state_key(group), False))
+    st.session_state[OPEN_MAP_KEY] = mapping
+
+
+_COLLAPSE_ONCE_KEY = "us_stock_collapse_once"
+
+
+def _set_every_group(open_: bool) -> None:
+    mapping: dict[str, bool] = {}
+    for _title, _caption, groups in stock_groups_by_era():
+        for group, _members in groups:
+            mapping[group] = open_
+            st.session_state[group_state_key(group)] = open_
+    st.session_state[OPEN_MAP_KEY] = mapping
+    st.session_state[FORCED_OPEN_KEY] = []
+    # Search would otherwise reopen matches in this same run. The stock fragment
+    # consumes the flag once, so a later rerun can open matches again.
+    if open_:
+        st.session_state.pop(_COLLAPSE_ONCE_KEY, None)
+    else:
+        st.session_state[_COLLAPSE_ONCE_KEY] = True
+
+
+def _select_choice(label: str, options: Sequence[str], *, key: str, default: str) -> str:
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = default
+    return str(st.selectbox(label, list(options), key=key))
+
+
+def _stock_controls() -> dict[str, Any]:
+    """Search, filters, sort, and column view. State lives in session keys."""
+    st.text_input("Search", key=QUERY_KEY, placeholder="Ticker, group, or company", help="Matches the ticker, the group or era name, and a curated company name when one is stored.")
+    era_options = [FILTER_ALL] + [title for title, _caption, _groups in stock_groups_by_era()]
+    era = _select_choice("Era", era_options, key=ERA_KEY, default=FILTER_ALL)
+    group_options = [FILTER_ALL]
+    for title, _caption, groups in stock_groups_by_era():
+        if era != FILTER_ALL and title != era:
+            continue
+        group_options.extend(group for group, _members in groups)
+    group = _select_choice("Group", group_options, key=GROUP_FILTER_KEY, default=FILTER_ALL)
+    sort_by = _select_choice("Sort rows by", sort_choices(), key=SORT_KEY, default=SORT_CATALOG)
+    descending = st.checkbox("Descending", key=SORT_DESC_KEY, help="Missing values stay last. Ties break by ticker A to Z.")
+    columns = _select_choice("Columns", COLUMN_VIEWS, key=COLUMNS_KEY, default=COLUMN_ALL)
+    layout = _select_choice("Layout", LAYOUTS, key=LAYOUT_KEY, default=LAYOUT_GROUPED)
+    collapsed = False
+    with st.container(horizontal=True, gap="small"):
+        if st.button("Expand all", key="us_stock_groups_expand_all", help="Open every stock group."):
+            _set_every_group(True)
+        if st.button("Collapse all", key="us_stock_groups_collapse_all", help="Close every stock group."):
+            _set_every_group(False)
+            collapsed = True
+        st.button("Reset", key="us_stock_controls_reset", on_click=_reset_stock_controls, help="Clear search, filters, sort, and column view.")
+    return {
+        "query": str(st.session_state.get(QUERY_KEY) or ""),
+        "era": era,
+        "group": group,
+        "sort_by": sort_by,
+        "descending": bool(descending),
+        "columns": columns,
+        "layout": layout,
+        "collapsed": collapsed,
+    }
+
+
+def _coverage_counts(symbols: Sequence[str], quotes_by_row: Sequence[Mapping[str, Any] | None], *, now: datetime) -> tuple[list[float], int, int, list[OneDay]]:
+    available: list[float] = []
+    pending = 0
+    stale = 0
+    cells: list[OneDay] = []
+    for symbol, quote in zip(symbols, quotes_by_row):
+        cell = one_day_cell(symbol, quote, now=now)
+        cells.append(cell)
+        if cell.available and cell.value is not None:
+            available.append(float(cell.value))
+        elif cell.price_ts is not None:
+            pending += 1
+        if cell.price_ts is not None and quote_freshness(symbol, cell.price_ts, now=now) == "stale":
+            stale += 1
+    return available, pending, stale, cells
+
+
+def _member_label(
+    row: Mapping[str, Any],
+    symbol_bars: Sequence[Mapping[str, Any]],
+    *,
+    quotes_available: bool,
+    now: datetime | None = None,
+) -> tuple[str, str]:
+    """Row label. A stale or pending quote is labeled; it is not shown as a live price."""
+    symbol = str(row.get("symbol") or "")
+    if quotes_available and row.get("price") is not None:
+        cell = one_day_cell(symbol, row.get("quote"), now=now or _now())
+        if cell.available:
+            return "{0} · {1}".format(symbol, _price(row.get("price"))), ""
+        when = format_eastern(cell.price_ts) if cell.price_ts is not None else ""
+        status = "stale" if cell.price_ts is not None and quote_freshness(symbol, cell.price_ts, now=now or _now()) == "stale" else "pending"
+        label = "{0} · {1}".format(symbol, _price(row.get("price")))
+        if when:
+            label = "{0} ({1}, {2})".format(label, status, when)
+        note = "Displayed price is the stored quote{0}. 1D is N/A. It is not a live price.".format(
+            " from {0}".format(when) if when else ""
+        )
+        return label, note
+    closed = latest_completed_close(symbol_bars)
+    if closed is not None:
+        day, close = closed
+        return (
+            "{0} · close {1} ({2})".format(symbol, _price(close), day.isoformat()),
+            "Displayed price is the stored split-adjusted close on {0}, not a live quote.".format(day.isoformat()),
+        )
+    return "{0} · —".format(symbol), ""
+
+
+def _ordered_heatmap(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    bars: Mapping[str, Sequence[Mapping[str, Any]]],
+    legs: dict[str, dict[str, Any]],
+    moment: datetime,
+    quote_failure: str | None,
+    history_failure: str | None,
+    quotes_available: bool,
+    column_view: str,
+    sort_by: str,
+    descending: bool,
+    heatmap_key: str,
+    group_note: Mapping[str, str] | None = None,
+) -> None:
+    """Build one heatmap. Risk and history run only because the caller decided this view is open."""
+    built: list[dict[str, Any]] = []
+    with span("us_equities.stock_risk"):
+        for row in rows:
+            symbol = str(row["symbol"])
+            symbol_bars = list(bars.get(symbol.upper()) or bars.get(symbol) or [])
+            row_values, row_notes = _horizon_cells(
+                quote=row.get("quote"),
+                bars=symbol_bars,
+                note=str(row.get("note") or ""),
+                symbol=symbol,
+                legs_cache=legs,
+                now=moment,
+                quote_failure=quote_failure,
+                history_failure=history_failure,
+            )
+            if history_failure:
+                risk_values = [None for _label in RISK_COLUMN_LABELS]
+                risk_notes = [
+                    "N/A: daily history read failed ({0}). This is not an empty history.".format(history_failure)
+                    for _label in RISK_COLUMN_LABELS
+                ]
+            else:
+                risk_values, risk_notes = risk_row_cells(cached_risk(symbol, symbol_bars))
+            extra = (group_note or {}).get(symbol.upper()) or ""
+            close_note = _member_label(row, symbol_bars, quotes_available=quotes_available, now=moment)[1]
+            if extra or close_note:
+                row_notes = list(row_notes)
+                row_notes[0] = " · ".join(part for part in (extra, close_note, row_notes[0]) if part)
+            label, _note = _member_label(row, symbol_bars, quotes_available=quotes_available, now=moment)
+            built.append(
+                {
+                    "row": row,
+                    "symbol": symbol.upper(),
+                    "label": label,
+                    "returns": list(row_values),
+                    "return_notes": list(row_notes),
+                    "risk": list(risk_values),
+                    "risk_notes": list(risk_notes),
+                }
+            )
+    values_for_sort = value_map(
+        [item["symbol"] for item in built],
+        [item["returns"] for item in built],
+        [item["risk"] for item in built],
+    )
+    ordered = sort_rows(
+        [{"symbol": item["symbol"], "item": item} for item in built],
+        values_for_sort,
+        sort_by=sort_by,
+        descending=descending,
+    )
+    ordered_items = [entry["item"] for entry in ordered]
+    combined_values = [item["returns"] + item["risk"] for item in ordered_items]
+    combined_notes = [item["return_notes"] + item["risk_notes"] for item in ordered_items]
+    columns, kinds, sliced_values, sliced_notes = slice_columns(
+        column_view,
+        _since_open_columns(STOCK_RETURN_HORIZONS),
+        RISK_COLUMN_LABELS,
+        RISK_COLUMN_KINDS,
+        combined_values,
+        combined_notes,
+    )
+    column_scaled_return_heatmap(
+        [item["label"] for item in ordered_items],
+        columns,
+        sliced_values,
+        notes=sliced_notes,
+        column_kinds=kinds,
+        key=heatmap_key,
+        row_ids=[item["symbol"] for item in ordered_items],
+        on_row_click=request_stock_dialog,
+    )
+
+
+def _render_stock_board() -> None:
+    """Discovery controls stay outside the quote fragment so Refresh keeps them."""
+    _stock_controls()
+    st.subheader("Individual Stocks", anchor="individual-stocks")
+    st.caption(ONE_DAY_POLICY_CAPTION + " " + PRICE_RETURN_CAPTION + " A ticker listed in more than one group uses the same stored quote and the same stored bars.")
+    st.caption("Click a ticker or any cell in its row to open a 3-year performance chart for that stock.")
+    st.caption(STOCK_RISK_CAPTION)
+    _individual_stock_heatmap()
+
+
+@st.fragment(run_every=YAHOO_HEATMAP_REFRESH_SECONDS)
 def _individual_stock_heatmap(
     _panel: Mapping[str, Any] | None = None,
     *,
@@ -825,101 +1198,192 @@ def _individual_stock_heatmap(
     legs: dict[str, dict[str, Any]] | None = None,
     now: datetime | None = None,
 ) -> None:
-    """Approved stocks only. Quotes and daily closes come from PostgreSQL."""
-    st.subheader("Individual Stocks", anchor="individual-stocks")
+    """Approved stocks only. A closed group does not mount a heatmap or compute risk."""
+    del bars, legs
     moment = now or _now()
-    st.caption(ONE_DAY_POLICY_CAPTION + " " + PRICE_RETURN_CAPTION + " A ticker listed in more than one group uses the same stored quote.")
-    st.caption("Click a ticker or any cell in its row to open a 3-year performance chart for that stock.")
+    collapsed_once = bool(st.session_state.pop(_COLLAPSE_ONCE_KEY, False))
+    st.caption(
+        "Page draw {0}. Quote times are each observation's own timestamp in America/New_York. Closed groups show coverage only and do not read daily history.".format(
+            format_eastern(moment)
+        )
+    )
     if loaded is None:
         loaded = load_quote_optional("dashboard_quotes_latest", default=[])
         quotes = list(loaded.get("data") or []) if loaded.get("available") else []
-    if not loaded.get("available"):
-        st.caption("Stored Yahoo quotes are unavailable ({0}).".format(loaded.get("error") or "unread"))
-        return
-    if bars is None:
-        bars = _price_bars_by_symbol()
-    if legs is None:
-        legs = {}
+    quotes_available = bool(loaded.get("available"))
+    quote_failure = None if quotes_available else str(loaded.get("error") or "unread")
+    if not quotes_available:
+        st.caption(
+            "Stored quote read failed ({0}). 1D and live prices are unavailable. Completed historical returns and risk still use stored daily bars when that read succeeds.".format(
+                quote_failure
+            )
+        )
+    elif not quotes:
+        st.caption("Stored quote snapshot is empty. 1D is N/A. Longer horizons use stored daily history for groups you open.")
     rows = stock_heatmap_rows(list(quotes or []))
     rows_by_group: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         rows_by_group.setdefault(str(row["group"]), []).append(row)
     if not rows_by_group:
         st.caption("No approved individual stocks are configured.")
+        render_stock_dialog_if_requested(now=moment)
         return
-    st.caption(STOCK_RISK_CAPTION)
-    expanded = _stock_group_controls()
-    with span("us_equities.stock_risk"):
-        risk = risk_metrics_by_symbol(bars, [row["symbol"] for row in rows])
-    return_columns = _since_open_columns(STOCK_RETURN_HORIZONS)
-    columns = return_columns + list(RISK_COLUMN_LABELS)
-    kinds = ["return"] * len(return_columns) + list(RISK_COLUMN_KINDS)
-    cells: dict[str, OneDay] = {}
-    nonce = int(st.session_state.get(STOCK_GROUPS_NONCE_KEY, 0))
-    for era_title, era_caption, era_groups in stock_groups_by_era():
-        st.markdown("#### {0}".format(era_title))
-        st.caption(era_caption)
+    controls = {
+        "query": str(st.session_state.get(QUERY_KEY) or ""),
+        "era": str(st.session_state.get(ERA_KEY) or FILTER_ALL),
+        "group": str(st.session_state.get(GROUP_FILTER_KEY) or FILTER_ALL),
+        "sort_by": str(st.session_state.get(SORT_KEY) or SORT_CATALOG),
+        "descending": bool(st.session_state.get(SORT_DESC_KEY, False)),
+        "columns": str(st.session_state.get(COLUMNS_KEY) or COLUMN_ALL),
+        "layout": str(st.session_state.get(LAYOUT_KEY) or LAYOUT_GROUPED),
+        "collapsed": collapsed_once,
+    }
+    query = str(controls["query"])
+    era_filter = str(controls["era"])
+    group_filter = str(controls["group"])
+    query_active = bool(normalize_query(query))
+    open_map = dict(st.session_state.get(OPEN_MAP_KEY) or {})
+    eras = stock_groups_by_era()
+    if controls["layout"] == LAYOUT_ALL:
+        _render_all_tracked(
+            eras,
+            rows_by_group,
+            query=query,
+            era_filter=era_filter,
+            group_filter=group_filter,
+            moment=moment,
+            quote_failure=quote_failure,
+            quotes_available=quotes_available,
+            column_view=str(controls["columns"]),
+            sort_by=str(controls["sort_by"]),
+            descending=bool(controls["descending"]),
+        )
+        render_stock_dialog_if_requested(now=moment)
+        return
+    forced: list[str] = []
+    drawn_symbols: list[str] = []
+    visible_plan: list[tuple[str, str, str, list[Mapping[str, Any]], bool]] = []
+    for era_title, _era_caption, era_groups in eras:
+        if era_filter != FILTER_ALL and era_title != era_filter:
+            continue
         for group, _members in era_groups:
-            members = rows_by_group.get(group) or []
-            if not members:
+            if group_filter != FILTER_ALL and group != group_filter:
                 continue
-            values = []
-            notes = []
-            group_cells: list[OneDay] = []
-            for row in members:
-                symbol = str(row["symbol"])
-                row_values, row_notes = _horizon_cells(
-                    quote=row.get("quote"),
-                    bars=bars.get(symbol) or [],
-                    note=row["note"],
-                    symbol=symbol,
-                    legs_cache=legs,
-                    now=moment,
-                )
-                cell = cells.setdefault(symbol, one_day_cell(symbol, row.get("quote"), now=moment))
-                group_cells.append(cell)
-                risk_values, risk_notes = risk_row_cells(risk.get(symbol.upper()) or {})
-                values.append(list(row_values) + risk_values)
-                notes.append(list(row_notes) + risk_notes)
-            with st.expander(_stock_group_label(group, group_cells), expanded=expanded):
-                # The key carries the nonce so Expand all / Collapse all re-mounts
-                # the heatmap with the new expander state.
-                column_scaled_return_heatmap(
-                    ["{0} · {1}".format(row["symbol"], _price(row["price"])) for row in members],
-                    columns,
-                    values,
-                    notes=notes,
-                    column_kinds=kinds,
-                    key="us_stock_heatmap_{0}_{1}".format(group, nonce),
-                    row_ids=[str(row["symbol"]) for row in members],
-                    on_row_click=request_stock_dialog,
-                )
+            members = rows_by_group.get(group) or []
+            shown = filter_members(members, query, group=group, era=era_title)
+            if not shown:
+                continue
+            user_open = bool(open_map.get(group, False))
+            matched = query_active and group_has_match(query, group=group, era=era_title, symbols=[str(row["symbol"]) for row in shown])
+            show_heatmap = user_open or (matched and not controls["collapsed"])
+            if matched and not user_open:
+                forced.append(group)
+            visible_plan.append((era_title, group, _era_caption, shown, show_heatmap))
+            if show_heatmap:
+                drawn_symbols.extend(str(row["symbol"]) for row in shown)
+    st.session_state[FORCED_OPEN_KEY] = forced
+    stock_bars, bars_available, bars_error = _price_bars_by_symbol(dedupe_symbols(drawn_symbols))
+    history_failure = None if bars_available else (bars_error or "unread")
+    if not bars_available:
+        st.caption("Daily history read failed ({0}). Longer returns and risk are N/A for open groups. This is not an empty history.".format(history_failure))
+    legs: dict[str, dict[str, Any]] = {}
+    cells: dict[str, OneDay] = {}
+    last_era = None
+    for era_title, group, era_caption, shown, show_heatmap in visible_plan:
+        if era_title != last_era:
+            st.markdown("#### {0}".format(era_title))
+            st.caption(era_caption)
+            last_era = era_title
+        symbols = [str(row["symbol"]) for row in shown]
+        available, pending, stale, group_cells = _coverage_counts(symbols, [row.get("quote") for row in shown], now=moment)
+        for symbol, cell in zip(symbols, group_cells):
+            cells.setdefault(symbol, cell)
+        label = group_summary_label(group, count=len(shown), available=available, pending=pending, stale=stale)
+        key = group_state_key(group)
+        # The map wins over a fragment widget that a full-page Refresh just reset.
+        st.session_state[key] = bool(show_heatmap)
+        box = st.expander(label, expanded=False, key=key, on_change=_on_group_toggle, args=(group,))
+        if not box.open:
+            continue
+        with box:
+            _ordered_heatmap(
+                shown,
+                bars=stock_bars,
+                legs=legs,
+                moment=moment,
+                quote_failure=quote_failure,
+                history_failure=history_failure,
+                quotes_available=quotes_available,
+                column_view=str(controls["columns"]),
+                sort_by=str(controls["sort_by"]),
+                descending=bool(controls["descending"]),
+                heatmap_key="us_stock_heatmap_{0}".format(key),
+            )
     st.caption(freshness_summary(cells, now=moment))
+    render_stock_dialog_if_requested(now=moment)
 
 
-def _stock_group_controls() -> bool:
-    """Expand all / Collapse all for the stock-group expanders. Returns the expanded state."""
-    if STOCK_GROUPS_EXPANDED_KEY not in st.session_state:
-        st.session_state[STOCK_GROUPS_EXPANDED_KEY] = False
-    with st.container(horizontal=True, gap="small"):
-        if st.button("Expand all", key="us_stock_groups_expand_all", help="Open every stock group below."):
-            st.session_state[STOCK_GROUPS_EXPANDED_KEY] = True
-            st.session_state[STOCK_GROUPS_NONCE_KEY] = int(st.session_state.get(STOCK_GROUPS_NONCE_KEY, 0)) + 1
-        if st.button("Collapse all", key="us_stock_groups_collapse_all", help="Close every stock group below."):
-            st.session_state[STOCK_GROUPS_EXPANDED_KEY] = False
-            st.session_state[STOCK_GROUPS_NONCE_KEY] = int(st.session_state.get(STOCK_GROUPS_NONCE_KEY, 0)) + 1
-    return bool(st.session_state[STOCK_GROUPS_EXPANDED_KEY])
+def _render_all_tracked(
+    eras: Sequence[tuple[str, str, Sequence[tuple[str, tuple[str, ...]]]]],
+    rows_by_group: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    query: str,
+    era_filter: str,
+    group_filter: str,
+    moment: datetime,
+    quote_failure: str | None,
+    quotes_available: bool,
+    column_view: str,
+    sort_by: str,
+    descending: bool,
+) -> None:
+    """One row per ticker. Opt-in: daily history is read for the rows this view will draw."""
+    chosen: dict[str, dict[str, Any]] = {}
+    for era_title, _caption, era_groups in eras:
+        if era_filter != FILTER_ALL and era_title != era_filter:
+            continue
+        for group, _members in era_groups:
+            if group_filter != FILTER_ALL and group != group_filter:
+                continue
+            for row in rows_by_group.get(group) or []:
+                if not filter_members([row], query, group=group, era=era_title):
+                    continue
+                symbol = str(row["symbol"]).upper()
+                entry = chosen.get(symbol)
+                if entry is None:
+                    entry = dict(row)
+                    entry["symbol"] = symbol
+                    entry["groups"] = []
+                    chosen[symbol] = entry
+                if group not in entry["groups"]:
+                    entry["groups"].append(group)
+    rows = list(chosen.values())
+    st.caption("{0} tracked stock{1}. Each ticker is listed once; group memberships are in the 1D note.".format(len(rows), "" if len(rows) == 1 else "s"))
+    if not rows:
+        st.caption("No stocks match this search.")
+        return
+    stock_bars, bars_available, bars_error = _price_bars_by_symbol([str(row["symbol"]) for row in rows])
+    history_failure = None if bars_available else (bars_error or "unread")
+    if not bars_available:
+        st.caption("Daily history read failed ({0}). Longer returns and risk are N/A. This is not an empty history.".format(history_failure))
+    notes = {str(row["symbol"]).upper(): "Groups: {0}.".format(", ".join(row["groups"])) for row in rows}
+    _ordered_heatmap(
+        rows,
+        bars=stock_bars,
+        legs={},
+        moment=moment,
+        quote_failure=quote_failure,
+        history_failure=history_failure,
+        quotes_available=quotes_available,
+        column_view=column_view,
+        sort_by=sort_by,
+        descending=descending,
+        heatmap_key="us_stock_heatmap_all_tracked",
+        group_note=notes,
+    )
 
 
-def _stock_group_label(group: str, cells: Sequence[OneDay]) -> str:
-    """Expander label: group, member count, and the median available 1D so a closed group still says something."""
-    available = [cell.value for cell in cells if cell.available and cell.value is not None]
-    label = "{0} · {1} name{2}".format(group, len(cells), "" if len(cells) == 1 else "s")
-    if available:
-        label += " · median 1D {0}".format(_signed_percent(median(available)))
-    return label
-
-
+@st.fragment(run_every=YAHOO_HEATMAP_REFRESH_SECONDS)
 def _snapshot_row(history: Mapping[str, Any], symbols: Sequence[str], labels: Mapping[str, str]) -> None:
     """Regional cards. Each card states its own 1D basis and observation time.
 
@@ -931,7 +1395,18 @@ def _snapshot_row(history: Mapping[str, Any], symbols: Sequence[str], labels: Ma
     prices = history.get("latest_price") or {}
     returns = history.get("returns") or {}
     moment = _now()
-    live_prices, one_days = _index_quote_state(_dashboard_loaded_rows(), now=moment)
+    loaded = load_quote_optional("dashboard_quotes_latest", default=[])
+    if not loaded.get("available"):
+        st.caption(
+            "Stored quote read failed ({0}). 1D stays on the stored completed close and is labeled EOD. It is not a live quote.".format(
+                loaded.get("error") or "unread"
+            )
+        )
+        quote_rows: list[Mapping[str, Any]] = []
+    else:
+        quote_rows = list(display_quote_rows(loaded.get("data") or []))
+    live_prices, one_days = _index_quote_state(quote_rows, now=moment)
+    st.caption("Page draw {0}. Card observation times are each quote's own timestamp.".format(format_eastern(moment)))
     # A card needs a price: the stored close or a stored quote. A tracked ETF with
     # a quote but no market-monitor history still shows its live 1D.
     visible = [symbol for symbol in symbols if prices.get(symbol) is not None or live_prices.get(symbol) is not None]

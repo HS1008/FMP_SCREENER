@@ -122,6 +122,12 @@ def _safe_page_config(title: str) -> None:
         pass
 
 
+def _refresh_cached_reads() -> None:
+    """Button callback. A body-level st.rerun() drops every widget created below it."""
+    clear_read_cache()
+    st.rerun()
+
+
 def page_header(
     title: str,
     caption: str | None = None,
@@ -146,9 +152,11 @@ def page_header(
             if freshness:
                 st.caption(freshness_chip(freshness))
     with head[2]:
-        if st.button("Refresh", help="Reloads cached database reads only. No provider calls."):
-            clear_read_cache()
-            st.rerun()
+        st.button(
+            "Refresh",
+            help="Reloads cached database reads only. No provider calls.",
+            on_click=_refresh_cached_reads,
+        )
     if title != OVERVIEW_TITLE and came_from_overview() and registered_page("overview") is not None:
         st.page_link(registered_page("overview"), label="← Back to Market Overview")
     if warning:
