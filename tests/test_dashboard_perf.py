@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
 from market_intelligence.components.market_chart import _component as market_component
 from market_intelligence.components.tenor_chart import _component as tenor_component
 from market_intelligence.markets_ui import YAHOO_HEATMAP_REFRESH_SECONDS, _remember_legs
+from market_intelligence.stock_board import clear_preparation_cache
 from market_intelligence.read_models import _view_exists
 from market_intelligence.schema_cache import VIEW_EXISTS_TTL_SECONDS, clear_view_exists_cache
 
@@ -118,6 +120,34 @@ def test_repeated_view_checks_use_the_connection_cache():
     assert VIEW_EXISTS_TTL_SECONDS == 60
 
 
+def test_concurrent_bundle_writes_do_not_raise(tmp_path):
+    from market_intelligence.components import chart_component
+
+    parts = []
+    for name in ("left.js", "right.js"):
+        path = tmp_path / name
+        path.write_text("var ready = 1;\n", encoding="utf-8")
+        parts.append(path)
+    errors: list[BaseException] = []
+    roots: list[Path] = []
+
+    def _write() -> None:
+        try:
+            roots.append(chart_component._bundle_root("bundle_race_probe", parts))
+        except BaseException as exc:  # noqa: BLE001 - the test is that none escape
+            errors.append(exc)
+
+    threads = [threading.Thread(target=_write) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    assert len(roots) == 4
+    text = (roots[0] / "bundle.js").read_text(encoding="utf-8")
+    assert text.count("var ready = 1;") == 2
+
+
 def test_shared_ticker_horizons_are_prepared_once(monkeypatch):
     calls = {"n": 0}
 
@@ -126,7 +156,8 @@ def test_shared_ticker_horizons_are_prepared_once(monkeypatch):
         calls["n"] += 1
         return {"1W": {"label": "1W", "value": 0.1, "reason": "close 2026-09-23", "reference": None, "target": None}}
 
-    monkeypatch.setattr("market_intelligence.markets_ui.completed_price_horizons", _legs)
+    monkeypatch.setattr("market_intelligence.stock_board.completed_price_horizons", _legs)
+    clear_preparation_cache()
     cache: dict = {}
     bars = [{"bar_date": "2026-09-23", "close": 80.0, "basis": "SPLIT_ADJUSTED_PRICE", "quality": "FINAL"}]
     first = _remember_legs(cache, "NVDA", bars)

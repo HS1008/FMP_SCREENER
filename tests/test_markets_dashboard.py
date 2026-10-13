@@ -592,10 +592,10 @@ def test_us_page_sections_are_collapsible_and_stock_groups_are_era_expanders(mon
     group_labels = [label for label in labels if " · " in label and " name" in label]
     assert len(group_labels) == len(STOCK_GROUPS)
     assert all(by_label[label].proto.expanded is False for label in group_labels)
-    assert any(label.startswith("Semiconductors · 7 names · median 1D +2.00%") for label in group_labels)
-    assert any(label.startswith("Hyperscalers · 6 names · median 1D -2.00%") for label in group_labels)
-    assert any(label.startswith("Power — Nuclear · 6 names · median 1D +10.00%") for label in group_labels)
-    assert any(label.startswith("EDA / Chip Design · 2 names") and "median" not in label for label in group_labels)
+    assert any(label.startswith("Semiconductors · 7 names · 1D available 1/7 · median 1D +2.00%") for label in group_labels)
+    assert any(label.startswith("Hyperscalers · 6 names · 1D available 1/6 · median 1D -2.00%") for label in group_labels)
+    assert any(label.startswith("Power — Nuclear · 6 names · 1D available 1/6 · median 1D +10.00%") for label in group_labels)
+    assert any(label.startswith("EDA / Chip Design · 2 names · 1D available 0/2") and "median" not in label for label in group_labels)
     # Era headings appear in order, and the Individual Stocks title is not itself an expander (no nesting).
     text = _texts(us)
     eras = [title for title, _caption, _groups in stock_groups_by_era()]

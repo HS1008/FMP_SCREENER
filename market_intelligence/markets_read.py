@@ -276,22 +276,28 @@ def _iso_windows(panel: dict[str, Any]) -> None:
     panel["windows"] = windows
 
 
-def aligned_us_equity_returns(conn) -> dict[str, Any]:
+def aligned_us_equity_returns(conn, *, include_stock_baskets: bool = True) -> dict[str, Any]:
     """EQUITY_EOD for stock baskets, and the newer of EQUITY_EOD or Yahoo for sector ETFs.
 
     Sector rows switch to MARKET_MONITOR_EOD only when SPY and every sector ETF
     have Yahoo history that is at least as new as the IBKR series. Stock baskets
     stay on EQUITY_EOD and keep that panel's own SPY endpoint. Relative sector
     performance uses ``sector_spy_returns`` from the same source as the sector rows.
+
+    The US Equities page passes ``include_stock_baskets=False``. Its subsector
+    and stock heatmaps read Yahoo daily bars for the symbols on screen, so the
+    curated basket history is not part of that page's read. Other callers keep
+    the baskets.
     """
     symbols: list[str] = [BENCHMARK_SPY]
     for etf in SECTOR_PROXIES.values():
         if etf not in symbols:
             symbols.append(etf)
-    for basket in stock_subsector_baskets():
-        for symbol in basket.members:
-            if symbol not in symbols:
-                symbols.append(symbol)
+    if include_stock_baskets:
+        for basket in stock_subsector_baskets():
+            for symbol in basket.members:
+                if symbol not in symbols:
+                    symbols.append(symbol)
     closes = load_equity_eod_closes(conn, symbols)
     panel = build_aligned_us_panel(closes)
     _iso_windows(panel)

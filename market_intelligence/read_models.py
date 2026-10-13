@@ -13,7 +13,7 @@ import json
 from datetime import date, datetime, time, timezone
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 
 from market_intelligence.calendars import NY_TZ
 from market_intelligence.schema_cache import view_exists
@@ -1483,12 +1483,30 @@ def metric_histories(
     return grouped
 
 
-def dashboard_price_bars(conn) -> list[dict[str, Any]]:
+def dashboard_price_bars(conn, symbols: Sequence[str] | None = None) -> list[dict[str, Any]]:
     """Split-adjusted daily closes for price returns plus the dividend-adjusted close for risk metrics.
 
-    Does not call Yahoo. Before migration 048 the view has no ``adj_close_price``;
-    the column is then served as NULL and the volatility / Sharpe cells stay N/A.
+    ``symbols`` limits the read to one batch (open stock groups, or the selected
+    subsector ETFs). ``None`` keeps the full-view read for callers that still
+    want every symbol. An empty sequence reads nothing. Does not call Yahoo.
+    Before migration 048 the view has no ``adj_close_price``; the column is then
+    served as NULL and the volatility / Sharpe cells stay N/A. Provisional bars
+    stay in the result so the page can exclude them without closing gaps.
     """
+    wanted: list[str] | None
+    if symbols is None:
+        wanted = None
+    else:
+        wanted = []
+        seen: set[str] = set()
+        for symbol in symbols:
+            key = str(symbol or "").upper().strip()
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            wanted.append(key)
+        if not wanted:
+            return []
     if not _view_exists(conn, "mi_v_yahoo_price_daily"):
         return []
     has_adj = bool(
@@ -1499,15 +1517,23 @@ def dashboard_price_bars(conn) -> list[dict[str, Any]]:
         ).first()
     )
     adj_column = "adj_close_price" if has_adj else "NULL AS adj_close_price"
-    return _rows(
-        conn,
+    symbol_sql = ""
+    params: dict[str, Any] = {}
+    if wanted is not None:
+        symbol_sql = "AND symbol IN :symbols"
+        params["symbols"] = wanted
+    statement = text(
         """
         SELECT symbol, bar_date, close_price, {adj}, adjustment_basis, bar_quality, bar_ts
         FROM mi_v_yahoo_price_daily
         WHERE bar_date >= CURRENT_DATE - INTERVAL '450 days'
+        {symbol_sql}
         ORDER BY symbol, bar_date
-        """.format(adj=adj_column),
+        """.format(adj=adj_column, symbol_sql=symbol_sql)
     )
+    if wanted is not None:
+        statement = statement.bindparams(bindparam("symbols", expanding=True))
+    return [normalize_payload(dict(row)) for row in conn.execute(statement, params).mappings().all()]
 
 
 def order_flow_context(conn, *, today: date | None = None, history_limit: int = 120, include_history: bool = True) -> dict[str, Any]:

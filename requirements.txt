@@ -9,7 +9,9 @@ fastapi>=0.110
 uvicorn[standard]>=0.27
 # AI gateway OAuth 2.1 authorization form (PKCE) parses application/x-www-form-urlencoded.
 python-multipart>=0.0.9
-streamlit>=1.37
+# 1.55 adds keyed expanders with on_change and ExpanderContainer.open, which the
+# US Equities page uses to skip work inside collapsed sections. Verified on 1.63.
+streamlit>=1.55
 yfinance==1.7.0
 plotly>=5.20
 SQLAlchemy>=2.0

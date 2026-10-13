@@ -345,6 +345,9 @@ def test_stock_click_opens_a_dialog_that_reads_only_that_symbol(monkeypatch):
     at = AppTest.from_file(str(ROOT / "pages" / "22_US_Markets.py"), default_timeout=40)
     at.run()
     assert not at.exception, [item.value for item in at.exception]
+    assert not captured, "collapsed groups do not mount a stock heatmap"
+    next(widget for widget in at.text_input if widget.label == "Search").set_value("NVDA").run()
+    assert not at.exception, [item.value for item in at.exception]
     assert "NVDA" in captured["row_ids"], "rows are identified by the canonical ticker"
     assert captured["columns"][0] == "1D"
     assert not [call for call in calls if call[0] == "stock_history_bars"], "no history is read before a click"

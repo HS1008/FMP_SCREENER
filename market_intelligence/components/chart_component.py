@@ -11,16 +11,24 @@ only for the registry instance that registered it.
 
 from __future__ import annotations
 
+import os
 import tempfile
+import threading
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 import streamlit.components.v2 as components
 
 _MOUNTS: dict[tuple[str, int], Callable[..., Any]] = {}
+_BUNDLE_LOCK = threading.Lock()
 
 
 def _bundle_root(name: str, parts: Sequence[Path]) -> Path:
+    """Write the shared bundle once. Concurrent fragment mounts must not replace it together.
+
+    On Windows, two threads replacing the same ``bundle.js`` raises
+    ``PermissionError`` and the heatmap fragment dies.
+    """
     root = Path(tempfile.gettempdir()) / "fmp_screener_bidi" / name
     root.mkdir(parents=True, exist_ok=True)
     target = root / "bundle.js"
@@ -28,13 +36,22 @@ def _bundle_root(name: str, parts: Sequence[Path]) -> Path:
     signature = "|".join(
         "{0}:{1}:{2}".format(path.name, path.stat().st_mtime_ns, path.stat().st_size) for path in parts
     )
-    if target.is_file() and stamp.is_file() and stamp.read_text(encoding="utf-8") == signature:
-        return root
-    payload = "\n".join(path.read_text(encoding="utf-8") for path in parts)
-    temporary = root / "bundle.js.tmp"
-    temporary.write_text(payload, encoding="utf-8")
-    temporary.replace(target)
-    stamp.write_text(signature, encoding="utf-8")
+    with _BUNDLE_LOCK:
+        if target.is_file() and stamp.is_file() and stamp.read_text(encoding="utf-8") == signature:
+            return root
+        payload = "\n".join(path.read_text(encoding="utf-8") for path in parts)
+        temporary = root / "bundle.js.{0}.tmp".format(os.getpid())
+        temporary.write_text(payload, encoding="utf-8")
+        try:
+            temporary.replace(target)
+        except OSError:
+            temporary.unlink(missing_ok=True)
+            if not (target.is_file() and stamp.is_file() and stamp.read_text(encoding="utf-8") == signature):
+                raise
+            return root
+        else:
+            temporary.unlink(missing_ok=True)
+        stamp.write_text(signature, encoding="utf-8")
     return root
 
 
